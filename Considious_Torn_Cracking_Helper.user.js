@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Cracking Helper
 // @namespace    Considious [3853023]
-// @version      2.2.0
+// @version      2.2.1
 // @description  Focus-only Cracking pattern helper with a local dictionary and opt-in password contributions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Considious_Torn_Cracking_Helper.user.js
@@ -54,6 +54,7 @@
         consentAsked: 'ctch_contribution_consent_asked_v1',
         paused: 'ctch_helper_paused_v2',
         settingsOpen: 'ctch_settings_open_v2',
+        panelPosition: 'ctch_panel_position_v1',
     };
 
     const COMMON_CORES = new Set([
@@ -642,6 +643,72 @@
         setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     }
 
+    function makePanelDraggable(panel) {
+        const header = panel.querySelector('header');
+        const saved = GM_getValue(PREF.panelPosition, null);
+
+        const clampToViewport = (left, top) => ({
+            left: Math.max(4, Math.min(left, window.innerWidth - panel.offsetWidth - 4)),
+            top: Math.max(4, Math.min(top, window.innerHeight - panel.offsetHeight - 4)),
+        });
+
+        const applyPosition = position => {
+            if (!position || !Number.isFinite(position.left) ||
+                !Number.isFinite(position.top)) return;
+            const next = clampToViewport(position.left, position.top);
+            panel.style.left = `${next.left}px`;
+            panel.style.top = `${next.top}px`;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        };
+        panel._ctchClamp = () => {
+            const rect = panel.getBoundingClientRect();
+            applyPosition({ left: rect.left, top: rect.top });
+        };
+
+        applyPosition(saved);
+
+        let drag = null;
+        header.addEventListener('pointerdown', event => {
+            if (event.button !== 0 || event.target.closest('button')) return;
+            const rect = panel.getBoundingClientRect();
+            drag = {
+                pointerId: event.pointerId,
+                offsetX: event.clientX - rect.left,
+                offsetY: event.clientY - rect.top,
+            };
+            header.setPointerCapture(event.pointerId);
+            panel.classList.add('ctch-dragging');
+            event.preventDefault();
+        });
+
+        header.addEventListener('pointermove', event => {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            applyPosition({
+                left: event.clientX - drag.offsetX,
+                top: event.clientY - drag.offsetY,
+            });
+        });
+
+        const finishDrag = event => {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            drag = null;
+            panel.classList.remove('ctch-dragging');
+            const rect = panel.getBoundingClientRect();
+            GM_setValue(PREF.panelPosition, {
+                left: Math.round(rect.left),
+                top: Math.round(rect.top),
+            });
+        };
+        header.addEventListener('pointerup', finishDrag);
+        header.addEventListener('pointercancel', finishDrag);
+
+        window.addEventListener('resize', () => {
+            const rect = panel.getBoundingClientRect();
+            applyPosition({ left: rect.left, top: rect.top });
+        }, { passive: true });
+    }
+
     function buildPanel() {
         const panel = document.createElement('section');
         panel.id = 'ctch-panel';
@@ -674,6 +741,7 @@
                 </div>
             </div>`;
         document.body.appendChild(panel);
+        makePanelDraggable(panel);
 
         const body = panel.querySelector('#ctch-body');
         const settingsToggle = panel.querySelector('#ctch-settings-toggle');
@@ -683,6 +751,7 @@
             settingsToggle.textContent = open ? '×' : '⚙';
             settingsToggle.title = open ? 'Close settings' : 'Open settings';
             GM_setValue(PREF.settingsOpen, open);
+            requestAnimationFrame(() => panel._ctchClamp?.());
         };
         applySettingsOpen(Boolean(GM_getValue(PREF.settingsOpen, false)));
         settingsToggle.addEventListener(
@@ -741,8 +810,10 @@
             #ctch-panel header {
                 display: flex; justify-content: space-between; align-items: center;
                 padding: 8px 10px; background: #20262d;
-                border-radius: 8px 8px 0 0;
+                border-radius: 8px 8px 0 0; cursor: move;
+                user-select: none; touch-action: none;
             }
+            #ctch-panel.ctch-dragging { opacity: .92; }
             #ctch-panel button {
                 color: #e8edf2; background: #2b333c;
                 border: 1px solid #536170; border-radius: 4px;
