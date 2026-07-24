@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Cracking Helper
 // @namespace    Considious [3853023]
-// @version      2.1.0
+// @version      2.2.0
 // @description  Focus-only Cracking pattern helper with a local dictionary and opt-in password contributions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Considious_Torn_Cracking_Helper.user.js
@@ -73,15 +73,13 @@
     let dictionaryCount = 0;
     let dictionaryUpdatedAt = '';
     let scanTimer = null;
+    let liveScanInterval = null;
     let idleSubmitTimer = null;
     let observer = null;
     let minimized = false;
     let submitting = false;
     let statusMessage = 'Opening local storage…';
     let lastPatterns = new WeakMap();
-    const rowHelpers = new Map();
-    let activePopup = null;
-    let popupCloseTimer = null;
     const candidateCache = new Map();
 
     function isFocusedAndVisible() {
@@ -295,7 +293,7 @@
         // This function must only ever be called behind mayReadTorn().
         if (!mayReadTorn()) return '';
         const slots = row.querySelectorAll(
-            '[class*="charSlot_"], [class*="charSlot"]'
+            '[class^="charSlot"]:not([class*="charSlotDummy"])'
         );
         if (slots.length < MIN_LENGTH || slots.length > MAX_LENGTH) return '';
         let pattern = '';
@@ -433,184 +431,82 @@
         }, IDLE_SUBMIT_MS);
     }
 
-    function positionHelper(helper, slots) {
-        const anchor = slots[slots.length - 1];
-        if (!anchor?.isConnected) return;
-        const rect = anchor.getBoundingClientRect();
-        const badgeWidth = helper.badge.offsetWidth || 42;
-        const left = Math.min(window.innerWidth - badgeWidth - 6, rect.right + 6);
-        helper.badge.style.left = `${Math.max(4, left)}px`;
-        helper.badge.style.top = `${Math.max(4, rect.top + rect.height / 2)}px`;
+    function renderTornCrackPanel(row, pattern) {
+        let panel = row.querySelector(':scope > .__ctch-inline-panel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.className = '__ctch-inline-panel';
+            row.prepend(panel);
+        }
 
-        const popupWidth = Math.min(290, window.innerWidth - 12);
-        const popupLeft = Math.min(
-            window.innerWidth - popupWidth - 6,
-            Math.max(6, rect.right + 6)
-        );
-        helper.popup.style.width = `${popupWidth}px`;
-        helper.popup.style.left = `${popupLeft}px`;
-        helper.popup.style.top = `${Math.min(
-            window.innerHeight - helper.popup.offsetHeight - 6,
-            rect.bottom + 5
-        )}px`;
-    }
+        panel.dataset.pattern = pattern;
+        panel.style.display = '';
+        const { results } = getCandidates(pattern);
+        panel.replaceChildren();
 
-    function closePopup(helper) {
-        if (!helper) return;
-        helper.popup.hidden = true;
-        if (activePopup === helper) activePopup = null;
-    }
-
-    function openPopup(helper, slots) {
-        clearTimeout(popupCloseTimer);
-        if (activePopup && activePopup !== helper) closePopup(activePopup);
-        helper.popup.hidden = false;
-        activePopup = helper;
-        positionHelper(helper, slots);
-    }
-
-    function schedulePopupClose(helper, delay = 4000) {
-        clearTimeout(popupCloseTimer);
-        popupCloseTimer = setTimeout(() => closePopup(helper), delay);
-    }
-
-    function createRowHelper(row) {
-        const badge = document.createElement('button');
-        badge.type = 'button';
-        badge.className = 'ctch-match-badge';
-        badge.hidden = true;
-
-        const popup = document.createElement('aside');
-        popup.className = 'ctch-match-popup';
-        popup.hidden = true;
-
-        const helper = { row, badge, popup, pattern: '', slots: [] };
-        badge.addEventListener('click', event => {
-            event.stopPropagation();
-            if (popup.hidden) openPopup(helper, helper.slots);
-            else closePopup(helper);
-        });
-        badge.addEventListener('mouseenter', () => openPopup(helper, helper.slots));
-        badge.addEventListener('mouseleave', () => schedulePopupClose(helper, 500));
-        popup.addEventListener('mouseenter', () => clearTimeout(popupCloseTimer));
-        popup.addEventListener('mouseleave', () => schedulePopupClose(helper, 500));
-
-        document.body.append(badge, popup);
-        rowHelpers.set(row, helper);
-        return helper;
-    }
-
-    function renderCompactPopup(helper, pattern, candidates) {
-        const { total, results } = candidates;
-        helper.popup.replaceChildren();
-
-        const header = document.createElement('div');
-        header.className = 'ctch-popup-header';
-        const patternText = document.createElement('strong');
-        patternText.textContent = pattern;
-        const count = document.createElement('span');
-        count.textContent = `${total.toLocaleString()} match${total === 1 ? '' : 'es'}`;
-        header.append(patternText, count);
-        helper.popup.appendChild(header);
-
-        const list = document.createElement('div');
-        list.className = 'ctch-popup-list';
         if (!results.length) {
-            const empty = document.createElement('div');
-            empty.className = 'ctch-popup-empty';
-            empty.textContent = 'No dictionary matches';
-            list.appendChild(empty);
-        } else {
-            for (const result of results.slice(0, 10)) {
-                const item = document.createElement('div');
-                item.className = 'ctch-popup-result';
-                const word = document.createElement('span');
-                word.textContent = result.word;
-                item.appendChild(word);
-                if (result.core && COMMON_CORES.has(result.core)) {
-                    const core = document.createElement('small');
-                    core.textContent = result.core;
-                    item.appendChild(core);
-                }
-                list.appendChild(item);
-            }
+            const message = document.createElement('span');
+            message.className = '__ctch-message';
+            message.textContent = dictionaryCount
+                ? '(no matches)'
+                : '(download dictionary in settings)';
+            panel.appendChild(message);
+            return;
         }
-        helper.popup.appendChild(list);
-    }
 
-    function hideAllRowHelpers() {
-        closePopup(activePopup);
-        for (const helper of rowHelpers.values()) {
-            helper.badge.hidden = true;
-            helper.popup.hidden = true;
+        for (const result of results.slice(0, 8)) {
+            const suggestion = document.createElement('span');
+            suggestion.className = '__ctch-suggestion';
+            suggestion.textContent = result.word;
+            panel.appendChild(suggestion);
         }
     }
 
-    function cleanDetachedHelpers() {
-        for (const [row, helper] of rowHelpers) {
-            if (row.isConnected) continue;
-            helper.badge.remove();
-            helper.popup.remove();
-            rowHelpers.delete(row);
+    function hideInlinePanels() {
+        for (const panel of document.querySelectorAll('.__ctch-inline-panel')) {
+            panel.style.display = 'none';
         }
     }
 
     function attachOrRefreshRow(row) {
         if (!mayReadTorn()) return;
-        const slots = [
-            ...row.querySelectorAll('[class*="charSlot_"], [class*="charSlot"]')
-        ];
-        if (slots.length < MIN_LENGTH || slots.length > MAX_LENGTH) return;
-
         const pattern = readPatternFromRow(row);
-        const revealedCount = [...pattern].filter(char => char !== '?').length;
-        let helper = rowHelpers.get(row);
+        if (!pattern) return;
 
-        // Completely untouched crimes remain exactly as Torn rendered them.
-        if (!revealedCount) {
-            if (helper) {
-                helper.badge.hidden = true;
-                closePopup(helper);
-                helper.pattern = pattern;
-            }
+        const entirelyUnknown = /^[?]+$/.test(pattern);
+        const existing = row.querySelector(':scope > .__ctch-inline-panel');
+        if (entirelyUnknown) {
+            existing?.remove();
             lastPatterns.set(row, pattern);
             return;
         }
 
-        if (!helper) helper = createRowHelper(row);
-        helper.slots = slots;
-        helper.badge.hidden = false;
-        positionHelper(helper, slots);
-
-        const changed = helper.pattern !== pattern;
-        if (!changed) {
-            if (!helper.popup.hidden) positionHelper(helper, slots);
-            return;
+        const changed = lastPatterns.get(row) !== pattern || !existing;
+        if (changed) {
+            lastPatterns.set(row, pattern);
+            renderTornCrackPanel(row, pattern);
+        } else if (existing.style.display === 'none') {
+            existing.style.display = '';
         }
 
-        helper.pattern = pattern;
-        lastPatterns.set(row, pattern);
-        const candidates = getCandidates(pattern);
-        helper.badge.textContent = candidates.total === 1
-            ? candidates.results[0]?.word || '1'
-            : candidates.total.toLocaleString();
-        helper.badge.title =
-            `${pattern} · ${candidates.total.toLocaleString()} dictionary matches`;
-        renderCompactPopup(helper, pattern, candidates);
-        openPopup(helper, slots);
-        schedulePopupClose(helper);
-
-        if (!pattern.includes('?')) void recordCompletedPassword(pattern);
+        if (changed && !pattern.includes('?')) {
+            void recordCompletedPassword(pattern);
+        }
     }
 
     function scanFocusedPage() {
         scanTimer = null;
         if (!mayReadTorn() || !/sid=crimes/i.test(location.href)) return;
-        const rows = document.querySelectorAll(
-            '.crime-option, [class*="crimeOption_"], [class*="crimeOption"]'
-        );
+        if (location.hash !== '#/cracking') {
+            hideInlinePanels();
+            return;
+        }
+        const currentCrime = document.querySelector('[class^="currentCrime"]');
+        if (!currentCrime) return;
+        const container = currentCrime.querySelector('[class^="virtualList"]');
+        if (!container) return;
+        const rows = container.querySelectorAll('[class^="crimeOptionWrapper"]');
         for (const row of rows) attachOrRefreshRow(row);
-        cleanDetachedHelpers();
     }
 
     function scheduleScan() {
@@ -623,9 +519,11 @@
     function suspend() {
         clearTimeout(scanTimer);
         clearTimeout(idleSubmitTimer);
+        clearInterval(liveScanInterval);
         scanTimer = null;
         idleSubmitTimer = null;
-        hideAllRowHelpers();
+        liveScanInterval = null;
+        hideInlinePanels();
         setFocusIndicator();
     }
 
@@ -634,6 +532,11 @@
         if (!mayReadTorn()) return;
         scheduleScan();
         scheduleIdleSubmission();
+        if (!liveScanInterval) {
+            liveScanInterval = setInterval(() => {
+                if (mayReadTorn()) scanFocusedPage();
+            }, 800);
+        }
     }
 
     function installFocusGuards() {
@@ -651,13 +554,12 @@
             // queried later by scanFocusedPage(), after the hard focus gate.
             if (mayReadTorn()) scheduleScan();
         });
-        observer.observe(document.body, { childList: true, subtree: true });
-        window.addEventListener('scroll', () => {
-            if (mayReadTorn()) scheduleScan();
-        }, { passive: true });
-        window.addEventListener('resize', () => {
-            if (mayReadTorn()) scheduleScan();
-        }, { passive: true });
+        observer.observe(document.body, {
+            childList: true,
+            characterData: true,
+            attributes: true,
+            subtree: true,
+        });
     }
 
     function setStatus(message) {
@@ -861,43 +763,20 @@
             }
             .ctch-setting { display: block; margin: 8px 0; color: #c8d0d8; }
             #ctch-queue-counts { margin-top: 5px; color: #aeb9c4; }
-            .ctch-match-badge {
-                position: fixed; z-index: 999997; transform: translateY(-50%);
-                min-width: 38px; max-width: 118px; height: 22px; padding: 2px 6px;
-                overflow: hidden; color: #d9f1ff; background: #183a50;
-                border: 1px solid #4c91b8; border-radius: 11px;
-                box-shadow: 0 2px 7px rgba(0,0,0,.5);
-                font: 700 10px/1 monospace; text-overflow: ellipsis;
-                white-space: nowrap; cursor: pointer;
+            .__ctch-inline-panel {
+                position: absolute; z-index: 9999; text-align: center;
+                margin-top: 2px; color: #0f0; background: #000;
+                border: 1px solid #0f0; border-radius: 4px;
+                font: 10px/1.2 Arial, sans-serif;
             }
-            .ctch-match-popup {
-                position: fixed; z-index: 999998; box-sizing: border-box;
-                overflow: hidden; color: #e8edf2; background: #151a20;
-                border: 1px solid #4c91b8; border-radius: 6px;
-                box-shadow: 0 7px 22px rgba(0,0,0,.62);
-                font: 11px/1.25 Arial, sans-serif;
+            .__ctch-suggestion {
+                display: inline-block; margin: 0 2px; padding: 2px 4px;
+                color: #0f0; border-radius: 3px; font-size: 10px;
             }
-            .ctch-popup-header {
-                display: flex; justify-content: space-between; gap: 8px;
-                padding: 6px 8px; color: #9ddaff; background: #202832;
-                border-bottom: 1px solid #354553;
+            .__ctch-message {
+                display: inline-block; padding: 2px 4px;
+                color: #a00; background: transparent; font-size: 10px;
             }
-            .ctch-popup-header strong { color: #fff; font-family: monospace; }
-            .ctch-popup-list {
-                display: grid; grid-template-columns: 1fr 1fr;
-                max-height: 150px; overflow: auto; padding: 3px;
-            }
-            .ctch-popup-result {
-                display: flex; justify-content: space-between; gap: 5px;
-                min-width: 0; padding: 4px 5px;
-                border-bottom: 1px solid rgba(255,255,255,.055);
-                font: 700 11px/1.2 monospace;
-            }
-            .ctch-popup-result span {
-                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-            }
-            .ctch-popup-result small { color: #79d99a; font: 9px/1.2 monospace; }
-            .ctch-popup-empty { grid-column: 1 / -1; padding: 8px; color: #aeb9c4; }
             #ctch-consent-overlay {
                 position: fixed; inset: 0; z-index: 1000000;
                 display: grid; place-items: center; padding: 20px;
@@ -917,7 +796,6 @@
             }
             @media (max-width: 720px) {
                 #ctch-panel { top: 62px; left: 6px; }
-                .ctch-popup-list { grid-template-columns: 1fr; }
             }
         `;
         document.head.appendChild(style);
