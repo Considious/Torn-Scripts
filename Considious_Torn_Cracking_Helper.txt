@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Cracking Helper
 // @namespace    Considious [3853023]
-// @version      2.0.1
+// @version      2.1.0
 // @description  Focus-only Cracking pattern helper with a local dictionary and opt-in password contributions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Considious_Torn_Cracking_Helper.user.js
@@ -52,7 +52,8 @@
     const PREF = {
         consent: 'ctch_contribution_consent_v1',
         consentAsked: 'ctch_contribution_consent_asked_v1',
-        minimized: 'ctch_minimized_v1',
+        paused: 'ctch_helper_paused_v2',
+        settingsOpen: 'ctch_settings_open_v2',
     };
 
     const COMMON_CORES = new Set([
@@ -78,6 +79,9 @@
     let submitting = false;
     let statusMessage = 'Opening local storage…';
     let lastPatterns = new WeakMap();
+    const rowHelpers = new Map();
+    let activePopup = null;
+    let popupCloseTimer = null;
     const candidateCache = new Map();
 
     function isFocusedAndVisible() {
@@ -429,57 +433,172 @@
         }, IDLE_SUBMIT_MS);
     }
 
-    function renderResults(container, pattern) {
-        const normalized = normalizePattern(pattern);
-        const { total, results } = getCandidates(normalized);
-        container.replaceChildren();
+    function positionHelper(helper, slots) {
+        const anchor = slots[slots.length - 1];
+        if (!anchor?.isConnected) return;
+        const rect = anchor.getBoundingClientRect();
+        const badgeWidth = helper.badge.offsetWidth || 42;
+        const left = Math.min(window.innerWidth - badgeWidth - 6, rect.right + 6);
+        helper.badge.style.left = `${Math.max(4, left)}px`;
+        helper.badge.style.top = `${Math.max(4, rect.top + rect.height / 2)}px`;
 
-        const summary = document.createElement('div');
-        summary.className = 'ctch-summary';
-        summary.textContent = normalized.length < MIN_LENGTH
-            ? 'Enter or reveal a 4–10 character pattern.'
-            : `${total.toLocaleString()} matches · showing ${results.length}`;
-        container.appendChild(summary);
+        const popupWidth = Math.min(290, window.innerWidth - 12);
+        const popupLeft = Math.min(
+            window.innerWidth - popupWidth - 6,
+            Math.max(6, rect.right + 6)
+        );
+        helper.popup.style.width = `${popupWidth}px`;
+        helper.popup.style.left = `${popupLeft}px`;
+        helper.popup.style.top = `${Math.min(
+            window.innerHeight - helper.popup.offsetHeight - 6,
+            rect.bottom + 5
+        )}px`;
+    }
 
-        for (const result of results) {
-            const item = document.createElement('div');
-            item.className = 'ctch-result';
-            const word = document.createElement('span');
-            word.className = 'ctch-word';
-            word.textContent = result.word;
-            item.appendChild(word);
-            if (result.core) {
-                const core = document.createElement('span');
-                core.className =
-                    `ctch-core${COMMON_CORES.has(result.core) ? ' known' : ''}`;
-                core.textContent = `core: ${result.core}`;
-                item.appendChild(core);
+    function closePopup(helper) {
+        if (!helper) return;
+        helper.popup.hidden = true;
+        if (activePopup === helper) activePopup = null;
+    }
+
+    function openPopup(helper, slots) {
+        clearTimeout(popupCloseTimer);
+        if (activePopup && activePopup !== helper) closePopup(activePopup);
+        helper.popup.hidden = false;
+        activePopup = helper;
+        positionHelper(helper, slots);
+    }
+
+    function schedulePopupClose(helper, delay = 4000) {
+        clearTimeout(popupCloseTimer);
+        popupCloseTimer = setTimeout(() => closePopup(helper), delay);
+    }
+
+    function createRowHelper(row) {
+        const badge = document.createElement('button');
+        badge.type = 'button';
+        badge.className = 'ctch-match-badge';
+        badge.hidden = true;
+
+        const popup = document.createElement('aside');
+        popup.className = 'ctch-match-popup';
+        popup.hidden = true;
+
+        const helper = { row, badge, popup, pattern: '', slots: [] };
+        badge.addEventListener('click', event => {
+            event.stopPropagation();
+            if (popup.hidden) openPopup(helper, helper.slots);
+            else closePopup(helper);
+        });
+        badge.addEventListener('mouseenter', () => openPopup(helper, helper.slots));
+        badge.addEventListener('mouseleave', () => schedulePopupClose(helper, 500));
+        popup.addEventListener('mouseenter', () => clearTimeout(popupCloseTimer));
+        popup.addEventListener('mouseleave', () => schedulePopupClose(helper, 500));
+
+        document.body.append(badge, popup);
+        rowHelpers.set(row, helper);
+        return helper;
+    }
+
+    function renderCompactPopup(helper, pattern, candidates) {
+        const { total, results } = candidates;
+        helper.popup.replaceChildren();
+
+        const header = document.createElement('div');
+        header.className = 'ctch-popup-header';
+        const patternText = document.createElement('strong');
+        patternText.textContent = pattern;
+        const count = document.createElement('span');
+        count.textContent = `${total.toLocaleString()} match${total === 1 ? '' : 'es'}`;
+        header.append(patternText, count);
+        helper.popup.appendChild(header);
+
+        const list = document.createElement('div');
+        list.className = 'ctch-popup-list';
+        if (!results.length) {
+            const empty = document.createElement('div');
+            empty.className = 'ctch-popup-empty';
+            empty.textContent = 'No dictionary matches';
+            list.appendChild(empty);
+        } else {
+            for (const result of results.slice(0, 10)) {
+                const item = document.createElement('div');
+                item.className = 'ctch-popup-result';
+                const word = document.createElement('span');
+                word.textContent = result.word;
+                item.appendChild(word);
+                if (result.core && COMMON_CORES.has(result.core)) {
+                    const core = document.createElement('small');
+                    core.textContent = result.core;
+                    item.appendChild(core);
+                }
+                list.appendChild(item);
             }
-            container.appendChild(item);
+        }
+        helper.popup.appendChild(list);
+    }
+
+    function hideAllRowHelpers() {
+        closePopup(activePopup);
+        for (const helper of rowHelpers.values()) {
+            helper.badge.hidden = true;
+            helper.popup.hidden = true;
+        }
+    }
+
+    function cleanDetachedHelpers() {
+        for (const [row, helper] of rowHelpers) {
+            if (row.isConnected) continue;
+            helper.badge.remove();
+            helper.popup.remove();
+            rowHelpers.delete(row);
         }
     }
 
     function attachOrRefreshRow(row) {
         if (!mayReadTorn()) return;
-        const pattern = readPatternFromRow(row);
-        if (!pattern || lastPatterns.get(row) === pattern) return;
-        lastPatterns.set(row, pattern);
+        const slots = [
+            ...row.querySelectorAll('[class*="charSlot_"], [class*="charSlot"]')
+        ];
+        if (slots.length < MIN_LENGTH || slots.length > MAX_LENGTH) return;
 
-        let panel = row.querySelector(':scope > .ctch-row-panel');
-        if (!panel) {
-            panel = document.createElement('div');
-            panel.className = 'ctch-row-panel';
-            row.appendChild(panel);
+        const pattern = readPatternFromRow(row);
+        const revealedCount = [...pattern].filter(char => char !== '?').length;
+        let helper = rowHelpers.get(row);
+
+        // Completely untouched crimes remain exactly as Torn rendered them.
+        if (!revealedCount) {
+            if (helper) {
+                helper.badge.hidden = true;
+                closePopup(helper);
+                helper.pattern = pattern;
+            }
+            lastPatterns.set(row, pattern);
+            return;
         }
-        panel.replaceChildren();
-        const title = document.createElement('div');
-        title.className = 'ctch-row-title';
-        title.textContent = `Cracking Helper · ${pattern}`;
-        panel.appendChild(title);
-        const results = document.createElement('div');
-        results.className = 'ctch-row-results';
-        panel.appendChild(results);
-        renderResults(results, pattern);
+
+        if (!helper) helper = createRowHelper(row);
+        helper.slots = slots;
+        helper.badge.hidden = false;
+        positionHelper(helper, slots);
+
+        const changed = helper.pattern !== pattern;
+        if (!changed) {
+            if (!helper.popup.hidden) positionHelper(helper, slots);
+            return;
+        }
+
+        helper.pattern = pattern;
+        lastPatterns.set(row, pattern);
+        const candidates = getCandidates(pattern);
+        helper.badge.textContent = candidates.total === 1
+            ? candidates.results[0]?.word || '1'
+            : candidates.total.toLocaleString();
+        helper.badge.title =
+            `${pattern} · ${candidates.total.toLocaleString()} dictionary matches`;
+        renderCompactPopup(helper, pattern, candidates);
+        openPopup(helper, slots);
+        schedulePopupClose(helper);
 
         if (!pattern.includes('?')) void recordCompletedPassword(pattern);
     }
@@ -491,6 +610,7 @@
             '.crime-option, [class*="crimeOption_"], [class*="crimeOption"]'
         );
         for (const row of rows) attachOrRefreshRow(row);
+        cleanDetachedHelpers();
     }
 
     function scheduleScan() {
@@ -505,6 +625,7 @@
         clearTimeout(idleSubmitTimer);
         scanTimer = null;
         idleSubmitTimer = null;
+        hideAllRowHelpers();
         setFocusIndicator();
     }
 
@@ -531,6 +652,12 @@
             if (mayReadTorn()) scheduleScan();
         });
         observer.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener('scroll', () => {
+            if (mayReadTorn()) scheduleScan();
+        }, { passive: true });
+        window.addEventListener('resize', () => {
+            if (mayReadTorn()) scheduleScan();
+        }, { passive: true });
     }
 
     function setStatus(message) {
@@ -618,19 +745,20 @@
         panel.id = 'ctch-panel';
         panel.innerHTML = `
             <header>
-                <strong>Considious Cracking Helper</strong>
-                <button id="ctch-minimize" type="button" title="Minimize">—</button>
+                <strong>Crack Helper</strong>
+                <button id="ctch-settings-toggle" type="button"
+                    title="Open settings">⚙</button>
             </header>
-            <div id="ctch-body">
+            <div id="ctch-body" hidden>
                 <div id="ctch-focus">Checking focus…</div>
-                <label for="ctch-pattern">Manual pattern (? = unknown)</label>
-                <input id="ctch-pattern" maxlength="${MAX_LENGTH}"
-                    placeholder="11FREAK???" autocomplete="off" spellcheck="false">
                 <div class="ctch-controls">
                     <button id="ctch-update" type="button">Update dictionary</button>
-                    <button id="ctch-scan" type="button">Scan focused page</button>
                 </div>
                 <div id="ctch-status">${statusMessage}</div>
+                <label class="ctch-setting">
+                    <input id="ctch-paused" type="checkbox">
+                    Pause all scanning
+                </label>
                 <div class="ctch-contribution">
                     <label>
                         <input id="ctch-consent" type="checkbox">
@@ -642,38 +770,38 @@
                         <button id="ctch-export" type="button">Export local archive</button>
                     </div>
                 </div>
-                <div id="ctch-results"></div>
             </div>`;
         document.body.appendChild(panel);
 
         const body = panel.querySelector('#ctch-body');
-        const minimize = panel.querySelector('#ctch-minimize');
-        const applyMinimized = value => {
-            minimized = Boolean(value);
-            body.hidden = minimized;
-            minimize.textContent = minimized ? '+' : '—';
-            minimize.title = minimized ? 'Restore' : 'Minimize';
-            GM_setValue(PREF.minimized, minimized);
+        const settingsToggle = panel.querySelector('#ctch-settings-toggle');
+        const applySettingsOpen = value => {
+            const open = Boolean(value);
+            body.hidden = !open;
+            settingsToggle.textContent = open ? '×' : '⚙';
+            settingsToggle.title = open ? 'Close settings' : 'Open settings';
+            GM_setValue(PREF.settingsOpen, open);
+        };
+        applySettingsOpen(Boolean(GM_getValue(PREF.settingsOpen, false)));
+        settingsToggle.addEventListener(
+            'click',
+            () => applySettingsOpen(body.hidden)
+        );
+
+        const paused = panel.querySelector('#ctch-paused');
+        minimized = Boolean(GM_getValue(PREF.paused, false));
+        paused.checked = minimized;
+        paused.addEventListener('change', () => {
+            minimized = paused.checked;
+            GM_setValue(PREF.paused, minimized);
             if (minimized) suspend();
             else resumeIfFocused();
-        };
-        applyMinimized(Boolean(GM_getValue(PREF.minimized, false)));
-        minimize.addEventListener('click', () => applyMinimized(!minimized));
-
-        const pattern = panel.querySelector('#ctch-pattern');
-        pattern.addEventListener('input', () => {
-            const normalized = normalizePattern(pattern.value);
-            if (pattern.value !== normalized) pattern.value = normalized;
-            renderResults(panel.querySelector('#ctch-results'), normalized);
         });
+
         panel.querySelector('#ctch-update').addEventListener(
             'click',
             event => void updateDictionary(event.currentTarget)
         );
-        panel.querySelector('#ctch-scan').addEventListener('click', () => {
-            if (mayReadTorn()) scanFocusedPage();
-            else setStatus('Focus and restore this tab before scanning.');
-        });
         panel.querySelector('#ctch-submit').addEventListener(
             'click',
             () => void submitPending('manual')
@@ -703,7 +831,7 @@
         style.textContent = `
             #ctch-panel {
                 position: fixed; top: 86px; left: 12px; z-index: 999999;
-                width: min(400px, calc(100vw - 24px)); color: #e8edf2;
+                width: auto; max-width: calc(100vw - 24px); color: #e8edf2;
                 background: #15191e; border: 1px solid #43505c;
                 border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.45);
                 font: 12px/1.35 Arial, sans-serif;
@@ -719,14 +847,7 @@
                 padding: 5px 8px; cursor: pointer;
             }
             #ctch-panel button:disabled { opacity: .5; cursor: default; }
-            #ctch-body { padding: 10px; }
-            #ctch-body > label { display: block; margin: 8px 0 4px; color: #aeb9c4; }
-            #ctch-pattern {
-                box-sizing: border-box; width: 100%; color: #fff;
-                background: #0e1114; border: 1px solid #536170;
-                border-radius: 4px; padding: 8px;
-                font: 700 16px/1.2 monospace; text-transform: uppercase;
-            }
+            #ctch-body { width: min(340px, calc(100vw - 44px)); padding: 10px; }
             #ctch-focus {
                 padding: 5px 7px; color: #ffcd78; background: #3d3018;
                 border-radius: 4px; font-weight: 700;
@@ -738,30 +859,45 @@
                 margin: 9px 0; padding: 8px; background: #101419;
                 border: 1px solid #343d46; border-radius: 5px;
             }
+            .ctch-setting { display: block; margin: 8px 0; color: #c8d0d8; }
             #ctch-queue-counts { margin-top: 5px; color: #aeb9c4; }
-            #ctch-results {
-                max-height: 330px; overflow: auto;
-                border-top: 1px solid #343d46;
+            .ctch-match-badge {
+                position: fixed; z-index: 999997; transform: translateY(-50%);
+                min-width: 38px; max-width: 118px; height: 22px; padding: 2px 6px;
+                overflow: hidden; color: #d9f1ff; background: #183a50;
+                border: 1px solid #4c91b8; border-radius: 11px;
+                box-shadow: 0 2px 7px rgba(0,0,0,.5);
+                font: 700 10px/1 monospace; text-overflow: ellipsis;
+                white-space: nowrap; cursor: pointer;
             }
-            .ctch-summary { padding: 6px 4px; color: #aeb9c4; }
-            .ctch-result {
+            .ctch-match-popup {
+                position: fixed; z-index: 999998; box-sizing: border-box;
+                overflow: hidden; color: #e8edf2; background: #151a20;
+                border: 1px solid #4c91b8; border-radius: 6px;
+                box-shadow: 0 7px 22px rgba(0,0,0,.62);
+                font: 11px/1.25 Arial, sans-serif;
+            }
+            .ctch-popup-header {
                 display: flex; justify-content: space-between; gap: 8px;
-                padding: 4px 6px; border-top: 1px solid rgba(255,255,255,.06);
+                padding: 6px 8px; color: #9ddaff; background: #202832;
+                border-bottom: 1px solid #354553;
             }
-            .ctch-word { font: 700 13px/1.35 monospace; color: #fff; }
-            .ctch-core { color: #9eabb7; font: 11px/1.35 monospace; }
-            .ctch-core.known { color: #79d99a; }
-            .ctch-row-panel {
-                box-sizing: border-box; width: 100%; padding: 5px 8px;
-                color: #e8edf2; background: rgba(17,21,25,.96);
-                border-top: 1px solid #3a4651; font: 11px/1.3 Arial, sans-serif;
+            .ctch-popup-header strong { color: #fff; font-family: monospace; }
+            .ctch-popup-list {
+                display: grid; grid-template-columns: 1fr 1fr;
+                max-height: 150px; overflow: auto; padding: 3px;
             }
-            .ctch-row-title { color: #8fc9ff; margin-bottom: 3px; }
-            .ctch-row-results {
-                display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr));
-                max-height: 110px; overflow: auto;
+            .ctch-popup-result {
+                display: flex; justify-content: space-between; gap: 5px;
+                min-width: 0; padding: 4px 5px;
+                border-bottom: 1px solid rgba(255,255,255,.055);
+                font: 700 11px/1.2 monospace;
             }
-            .ctch-row-results .ctch-summary { grid-column: 1 / -1; }
+            .ctch-popup-result span {
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            }
+            .ctch-popup-result small { color: #79d99a; font: 9px/1.2 monospace; }
+            .ctch-popup-empty { grid-column: 1 / -1; padding: 8px; color: #aeb9c4; }
             #ctch-consent-overlay {
                 position: fixed; inset: 0; z-index: 1000000;
                 display: grid; place-items: center; padding: 20px;
@@ -780,8 +916,8 @@
                 border-radius: 4px; padding: 7px 11px; cursor: pointer;
             }
             @media (max-width: 720px) {
-                #ctch-panel { top: 62px; left: 6px; width: calc(100vw - 12px); }
-                #ctch-results { max-height: 220px; }
+                #ctch-panel { top: 62px; left: 6px; }
+                .ctch-popup-list { grid-template-columns: 1fr; }
             }
         `;
         document.head.appendChild(style);
