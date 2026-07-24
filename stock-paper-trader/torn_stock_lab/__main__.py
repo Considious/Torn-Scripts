@@ -7,9 +7,9 @@ import sys
 from .broker import ensure_portfolio
 from .config import load_config
 from .database import connect, initialize
-from .engine import backtest, latest_decision
+from .engine import backtest, backtest_all, latest_decision
 from .strategies import STRATEGIES
-from .tornsy import fetch_watchlist, import_ohlc_file, store_watchlist
+from .tornsy import backfill_all, fetch_watchlist, import_ohlc_file, store_watchlist
 
 
 def parser() -> argparse.ArgumentParser:
@@ -25,6 +25,12 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("collect")
 
+    backfill = commands.add_parser("backfill-all")
+    backfill.add_argument("--interval", default="d1")
+    backfill.add_argument("--limit", type=int, default=2000)
+    backfill.add_argument("--delay", type=float, default=0.25)
+    backfill.add_argument("--include-index", action="store_true")
+
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("--ticker", default="FHG")
     evaluate.add_argument("--strategy", choices=STRATEGIES, default="composite")
@@ -34,6 +40,10 @@ def parser() -> argparse.ArgumentParser:
     test.add_argument("--ticker", required=True)
     test.add_argument("--strategy", choices=STRATEGIES, default="composite")
     test.add_argument("--interval", default="d1")
+
+    test_all = commands.add_parser("backtest-all")
+    test_all.add_argument("--strategy", choices=STRATEGIES, default="composite")
+    test_all.add_argument("--interval", default="d1")
 
     commands.add_parser("report")
     return root
@@ -65,6 +75,20 @@ def main() -> int:
         print(f"Stored {count} current observations")
         return 0
 
+    if args.command == "backfill-all":
+        with connect(config.database_path) as db:
+            result = backfill_all(
+                db,
+                base_url=config.tornsy_base_url,
+                interval=args.interval,
+                limit=args.limit,
+                timeout=config.request_timeout_seconds,
+                delay_seconds=args.delay,
+                include_index=args.include_index,
+            )
+        print(json.dumps(result, indent=2))
+        return 0
+
     if args.command == "evaluate":
         with connect(config.database_path) as db:
             signal_id, timestamp, features, decision = latest_decision(
@@ -94,6 +118,12 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 0
 
+    if args.command == "backtest-all":
+        with connect(config.database_path) as db:
+            result = backtest_all(db, config, args.strategy, args.interval)
+        print(json.dumps(result, indent=2))
+        return 0
+
     if args.command == "report":
         with connect(config.database_path) as db:
             portfolios = [
@@ -116,4 +146,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -121,3 +121,59 @@ def backtest(
         "buy_hold_return": buy_hold / config.starting_cash - 1,
         "trades": int(trades),
     }
+
+
+def backtest_all(
+    db: sqlite3.Connection,
+    config: Config,
+    strategy_name: str,
+    interval: str = "d1",
+) -> dict[str, object]:
+    tickers = [
+        row["ticker"]
+        for row in db.execute(
+            """
+            SELECT ticker FROM candles
+            WHERE interval=?
+            GROUP BY ticker
+            HAVING COUNT(*) >= 32
+            ORDER BY ticker
+            """,
+            (interval,),
+        )
+    ]
+    results: dict[str, dict[str, float] | dict[str, str]] = {}
+    for ticker in tickers:
+        try:
+            results[ticker] = backtest(
+                db, config, ticker, strategy_name, interval
+            )
+        except Exception as exc:
+            results[ticker] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    valid = [
+        result
+        for result in results.values()
+        if "strategy_return" in result
+    ]
+    beat_buy_hold = sum(
+        result["strategy_return"] > result["buy_hold_return"] for result in valid
+    )
+    return {
+        "strategy": strategy_name,
+        "interval": interval,
+        "tickers_tested": len(valid),
+        "beat_buy_hold_count": beat_buy_hold,
+        "beat_buy_hold_rate": beat_buy_hold / len(valid) if valid else 0.0,
+        "average_strategy_return": (
+            sum(result["strategy_return"] for result in valid) / len(valid)
+            if valid
+            else 0.0
+        ),
+        "average_buy_hold_return": (
+            sum(result["buy_hold_return"] for result in valid) / len(valid)
+            if valid
+            else 0.0
+        ),
+        "results": results,
+    }

@@ -118,3 +118,55 @@ def store_watchlist(db, payload: dict, source: str = "tornsy") -> int:
     )
     return len(rows)
 
+
+def tickers_from_watchlist(payload: dict, include_index: bool = False) -> list[str]:
+    tickers = []
+    for item in payload.get("data", []):
+        ticker = item.get("stock")
+        if not ticker:
+            continue
+        if item.get("index") and not include_index:
+            continue
+        tickers.append(str(ticker).upper())
+    return sorted(set(tickers))
+
+
+def backfill_all(
+    db,
+    *,
+    base_url: str,
+    interval: str,
+    limit: int,
+    timeout: int,
+    delay_seconds: float = 0.25,
+    include_index: bool = False,
+) -> dict[str, object]:
+    watchlist = fetch_watchlist(base_url, timeout)
+    tickers = tickers_from_watchlist(watchlist, include_index=include_index)
+    imported: dict[str, int] = {}
+    errors: dict[str, str] = {}
+    for ticker in tickers:
+        try:
+            payload = fetch_history(
+                base_url,
+                ticker,
+                interval=interval,
+                limit=limit,
+                timeout=timeout,
+            )
+            imported[ticker] = import_ohlc_payload(
+                db,
+                payload,
+                ticker=ticker,
+                interval=interval,
+                source="tornsy",
+            )
+        except Exception as exc:  # continue so one ticker cannot ruin the backfill
+            errors[ticker] = f"{type(exc).__name__}: {exc}"
+        time.sleep(delay_seconds)
+    return {
+        "interval": interval,
+        "requested_tickers": len(tickers),
+        "imported": imported,
+        "errors": errors,
+    }

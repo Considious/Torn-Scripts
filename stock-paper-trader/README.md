@@ -9,6 +9,7 @@ It never buys or sells real Torn stocks.
 ## What v0.1 does
 
 - Imports Tornsy OHLC history.
+- Discovers and backfills every Torn stock automatically.
 - Collects the public Tornsy stock watchlist once per run.
 - Stores observations and candles in SQLite.
 - Calculates momentum, mean-reversion, volatility, and moving-average features.
@@ -28,6 +29,20 @@ python -m torn_stock_lab import-json data/seed/FHG-d1.json --ticker FHG --interv
 python -m torn_stock_lab backtest --ticker FHG --strategy composite
 python -m torn_stock_lab report
 ```
+
+To populate and compare the entire market:
+
+```bash
+python -m torn_stock_lab backfill-all --interval d1 --limit 2000
+python -m torn_stock_lab backtest-all --strategy momentum
+python -m torn_stock_lab backtest-all --strategy mean-reversion
+python -m torn_stock_lab backtest-all --strategy composite
+```
+
+`backfill-all` obtains the ticker list from Tornsy instead of relying on a
+hard-coded list, so newly added stocks can be included automatically. TCSE is
+excluded by default because it is the market index rather than a tradable
+stock; pass `--include-index` to collect it for benchmark analysis.
 
 For a live paper cycle:
 
