@@ -1,0 +1,11 @@
+{
+  "database_path": "data/stock_history.sqlite3",
+  "starting_cash": 10000000000,
+  "sell_fee_rate": 0.001,
+  "max_position_percent": 0.1,
+  "minimum_trade_value": 1000000,
+  "strategy_version": "paper-v0.1",
+  "tornsy_base_url": "https://tornsy.com/api",
+  "request_timeout_seconds": 20
+}
+

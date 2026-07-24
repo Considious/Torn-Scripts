@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torn-stock-paper-trader"
+version = "0.1.0"
+description = "Evidence-first paper trading laboratory for Torn stocks"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools]
+packages = ["torn_stock_lab"]
+
