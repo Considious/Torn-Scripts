@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn Stock Paper Trader
 // @namespace    Considious [3853023]
-// @version      0.1.0
-// @description  Focus-only all-stock history collector and fake-money trading laboratory.
+// @version      0.1.1
+// @description  All-stock API history collector and fake-money trading laboratory for the open stock page.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/page.php*
 // @run-at       document-idle
@@ -20,14 +20,18 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.1.0';
+    const VERSION = '0.1.1';
     const DB_NAME = 'considious_torn_stock_lab';
     const DB_VERSION = 1;
     const API = 'https://tornsy.com/api';
     const COLLECT_EVERY_MS = 60_000;
     const EVALUATE_EVERY_MS = 5 * 60_000;
-    const BACKFILL_INTERVALS = ['d1', 'h1', 'm5'];
     const BACKFILL_LIMIT = 2000;
+    const BACKFILL_PLAN = {
+        d1: { historyMs: Infinity, label: 'complete daily history' },
+        h1: { historyMs: 2 * 365 * 24 * 60 * 60 * 1000, label: '2 years hourly' },
+        m5: { historyMs: 90 * 24 * 60 * 60 * 1000, label: '90 days five-minute' },
+    };
     const SELL_FEE = 0.001;
     const STARTING_CASH = 10_000_000_000;
     const POSITION_PCT = 0.10;
@@ -61,6 +65,10 @@
             document.visibilityState === 'visible' &&
             document.hasFocus() &&
             !GM_getValue(PREF.paused, false);
+    }
+
+    function canUseApi() {
+        return isStockPage() && !GM_getValue(PREF.paused, false);
     }
 
     function sleep(ms) {
@@ -259,34 +267,92 @@
         return rows.length;
     }
 
+    function earliestCandleTimestamp(ticker, interval) {
+        const tx = state.db.transaction(['candles'], 'readonly');
+        const index = tx.objectStore('candles').index('ticker_interval_time');
+        const range = IDBKeyRange.bound(
+            [ticker, interval, 0],
+            [ticker, interval, Number.MAX_SAFE_INTEGER],
+        );
+        return new Promise((resolve, reject) => {
+            const request = index.openCursor(range, 'next');
+            request.onsuccess = event =>
+                resolve(event.target.result?.value?.timestamp ?? null);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async function backfillTickerInterval(ticker, interval, plan) {
+        const cutoff = Number.isFinite(plan.historyMs)
+            ? Math.floor((Date.now() - plan.historyMs) / 1000)
+            : 0;
+        let cursor = await earliestCandleTimestamp(ticker, interval);
+        let totalAdded = 0;
+        let pages = 0;
+
+        while (canUseApi()) {
+            if (cursor !== null && cursor <= cutoff) break;
+            const parameters = {
+                interval,
+                limit: String(BACKFILL_LIMIT),
+            };
+            if (cursor !== null) parameters.to = String(cursor);
+            if (cutoff > 0) parameters.from = String(cutoff);
+            const query = new URLSearchParams(parameters);
+            const payload = await apiGet(`/${ticker.toLowerCase()}?${query}`);
+            const rows = payload.data || [];
+            if (!rows.length) break;
+            totalAdded += await storeHistory(ticker, interval, payload);
+            pages += 1;
+            const oldest = Number(rows[0][0]);
+            if (!Number.isFinite(oldest) || oldest >= (cursor ?? Infinity)) {
+                throw new Error(`Backfill cursor stalled for ${ticker} ${interval}`);
+            }
+            cursor = oldest;
+            await setMeta(`backfillProgress:${ticker}:${interval}`, {
+                oldestTimestamp: cursor,
+                totalAdded,
+                pages,
+                updatedAt: Date.now(),
+            });
+            render();
+            if (rows.length < BACKFILL_LIMIT || cursor <= cutoff) break;
+            await sleep(350);
+        }
+        return { totalAdded, pages, oldestTimestamp: cursor };
+    }
+
     async function backfill() {
-        if (state.backfilling || !isActive()) return;
+        if (state.backfilling || !canUseApi()) return;
         state.backfilling = true;
         render();
         try {
             if (!state.tickers.length) {
                 await storeWatchlist(await apiGet('/stocks'));
             }
-            for (const interval of BACKFILL_INTERVALS) {
+            for (const [interval, plan] of Object.entries(BACKFILL_PLAN)) {
                 for (const ticker of state.tickers) {
-                    if (!isActive()) return;
-                    const key = `backfill:${ticker}:${interval}:${BACKFILL_LIMIT}`;
+                    if (!canUseApi()) return;
+                    const key = `backfill:v2:${ticker}:${interval}`;
                     if (await getMeta(key)) continue;
-                    const query = new URLSearchParams({
+                    const result = await backfillTickerInterval(
+                        ticker,
                         interval,
-                        limit: String(BACKFILL_LIMIT),
+                        plan,
+                    );
+                    await setMeta(key, {
+                        ...result,
+                        target: plan.label,
+                        completedAt: Date.now(),
                     });
-                    const payload = await apiGet(`/${ticker.toLowerCase()}?${query}`);
-                    const count = await storeHistory(ticker, interval, payload);
-                    await setMeta(key, { count, completedAt: Date.now() });
                     render();
                     await sleep(300);
                 }
             }
-            await setMeta('initialBackfillComplete', {
+            await setMeta('initialBackfillCompleteV2', {
                 completedAt: Date.now(),
                 tickers: state.tickers.length,
-                intervals: BACKFILL_INTERVALS,
+                plan: BACKFILL_PLAN,
             });
         } catch (error) {
             state.lastError = error.message;
@@ -297,7 +363,7 @@
     }
 
     async function collect() {
-        if (state.collecting || !isActive()) return;
+        if (state.collecting || !canUseApi()) return;
         state.collecting = true;
         render();
         try {
@@ -495,10 +561,10 @@
     }
 
     async function evaluate() {
-        if (!isActive() || state.backfilling) return;
+        if (!canUseApi() || state.backfilling) return;
         const strategies = ['momentum', 'mean-reversion', 'composite'];
         for (const ticker of state.tickers) {
-            if (!isActive()) return;
+            if (!canUseApi()) return;
             const closes = await recentCloses(ticker);
             const value = features(closes);
             if (!value) continue;
@@ -556,15 +622,14 @@
     async function render() {
         if (!state.panel) return;
         const paused = GM_getValue(PREF.paused, false);
-        const active = isActive();
+        const active = canUseApi();
         const counts = await databaseCounts();
         const portfolios = await portfolioSummary();
         const status = paused ? 'Paused'
-            : !document.hasFocus() || document.visibilityState !== 'visible'
-                ? 'Waiting for focus'
-                : state.backfilling ? 'Backfilling history'
+            : state.backfilling ? 'Backfilling history'
                     : state.collecting ? 'Collecting'
-                        : active ? 'Watching' : 'Inactive';
+                        : active && !isActive() ? 'Background API'
+                            : active ? 'Watching' : 'Inactive';
         state.panel.querySelector('#ctspt-status').textContent = status;
         state.panel.querySelector('#ctspt-status').dataset.state =
             active && !paused ? 'active' : 'paused';
@@ -767,11 +832,11 @@
 
     async function tick() {
         if (!isStockPage()) return;
-        if (isActive()) {
+        if (canUseApi()) {
             if (Date.now() - state.lastCollection >= COLLECT_EVERY_MS) {
                 await collect();
             }
-            const backfilled = await getMeta('initialBackfillComplete');
+            const backfilled = await getMeta('initialBackfillCompleteV2');
             if (!backfilled && !state.backfilling) backfill();
             if (Date.now() - state.lastEvaluation >= EVALUATE_EVERY_MS) {
                 await evaluate();
