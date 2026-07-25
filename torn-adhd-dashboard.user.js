@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.3.0
+// @version      1.3.1
 // @description  A privacy-conscious daily reminder dashboard powered by Torn API v2.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -228,7 +228,8 @@
     apiLimiterUntil: 0,
     windowFocused: document.hasFocus(),
     resizing: null,
-    shareComposer: null,
+    chatShareArm: null,
+    lastChatInput: null,
   };
 
   function loadSettings() {
@@ -2052,14 +2053,7 @@
         title: `Item Market: ${name} is below your target`,
         detail: cheapest ? `Item Market listing - $${Number(cheapest.price).toLocaleString()}${Number(cheapest.amount) > 1 ? ` x ${Number(cheapest.amount).toLocaleString()}` : ''} - target $${threshold.toLocaleString()}` : '',
         links: [{ label: 'Open Item Market', href }],
-        share: cheapest ? {
-          source: 'Item Market',
-          item: name,
-          price: Number(cheapest.price),
-          quantity: Number(cheapest.amount) || 0,
-          href,
-          destination: `Item Market for ${name}`,
-        } : null,
+        shareText: cheapest ? `Item Market | ${name} | $${Number(cheapest.price).toLocaleString()}${Number(cheapest.amount) > 0 ? ` x ${Number(cheapest.amount).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${href}` : '',
         tone: 'urgent',
       };
     });
@@ -2099,16 +2093,7 @@
               { label: `${listing.sellerName}'s Bazaar`, href: listing.href },
               { label: 'W3B', href: result?.sourceUrl || `https://weav3r.dev/item/${itemId}` },
             ],
-            share: {
-              source: 'Bazaar',
-              item: name,
-              sellerName: listing.sellerName,
-              sellerId: listing.sellerId,
-              price: Number(listing.price),
-              quantity: Number(listing.quantity) || 0,
-              href: listing.href,
-              destination: `${listing.sellerName}'s Bazaar`,
-            },
+            shareText: `Bazaar | ${name} | ${listing.sellerName} [${listing.sellerId}] | $${Number(listing.price).toLocaleString()}${Number(listing.quantity) > 0 ? ` x ${Number(listing.quantity).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${listing.href}`,
             tone: 'urgent',
             noDisable: true,
           };
@@ -2469,66 +2454,120 @@
     }
   }
 
-  function listingShareComposer(alert) {
-    const listing = alert?.share;
-    if (!listing?.href) return null;
-    const source = String(listing.source || 'Listing');
-    const item = String(listing.item || 'Item');
-    const seller = listing.sellerName
-      ? `${String(listing.sellerName)}${listing.sellerId ? ` [${String(listing.sellerId)}]` : ''}`
-      : '';
-    const price = Number(listing.price);
-    const quantity = Math.max(0, Math.trunc(Number(listing.quantity) || 0));
-    const href = String(listing.href);
-    const priceText = Number.isFinite(price) ? `$${price.toLocaleString()}` : 'Price unavailable';
-    const title = seller ? `${source}: ${item} from ${seller}` : `${source}: ${item}`;
-    const details = [
-      title,
-      `Price: ${priceText} each`,
-      quantity > 0 ? `Quantity: ${quantity.toLocaleString()}` : '',
-      `Link: ${href}`,
-    ].filter(Boolean);
-    const bbcodeLabel = title.replaceAll('[', '(').replaceAll(']', ')').replace(/[\r\n]+/g, ' ').trim();
-    return {
-      alertId: alert.id,
-      source,
-      item,
-      seller,
-      priceText,
-      quantity,
-      href,
-      destination: String(listing.destination || source),
-      plain: details.join('\n'),
-      bbcode: `[url=${href}]${bbcodeLabel}[/url] - ${priceText} each${quantity > 0 ? ` - Qty ${quantity.toLocaleString()}` : ''}`,
-    };
+  function visibleChatElement(element) {
+    if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
-  function shareComposerMarkup() {
-    const share = state.shareComposer;
-    if (!share) return '';
-    return `
-      <section class="share-composer" aria-label="Listing link creator">
-        <div class="share-heading">
-          <div>
-            <strong>Share this listing</strong>
-            <small>${escapeHtml(share.source)} destination</small>
-          </div>
-          <button data-action="close-share" title="Close link creator" aria-label="Close link creator">&times;</button>
-        </div>
-        <dl class="share-facts">
-          <div><dt>For sale</dt><dd>${escapeHtml(share.item)}</dd></div>
-          ${share.seller ? `<div><dt>Seller</dt><dd>${escapeHtml(share.seller)}</dd></div>` : ''}
-          <div><dt>Price</dt><dd>${escapeHtml(share.priceText)} each</dd></div>
-          ${share.quantity > 0 ? `<div><dt>Quantity</dt><dd>${escapeHtml(share.quantity.toLocaleString())}</dd></div>` : ''}
-          <div><dt>Goes to</dt><dd><a data-tdd-nav href="${escapeHtml(share.href)}">${escapeHtml(share.destination)}</a></dd></div>
-        </dl>
-        <div class="share-preview">${escapeHtml(share.plain)}</div>
-        <div class="share-actions">
-          <button data-action="copy-share" data-share-format="plain">Copy details + link</button>
-          <button data-action="copy-share" data-share-format="bbcode">Copy Torn BBCode link</button>
-        </div>
-      </section>`;
+  function tornChatInput(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const editable = element.matches('textarea, input[type="text"], [contenteditable="true"]');
+    if (!editable || element.matches(':disabled, [readonly]')) return false;
+    return Boolean(element.closest('#chatRoot, [id^="chatRoot"], [class*="chat-box"], [class*="chatBox"], [data-chat-id], [data-chat]'));
   }
+
+  function visibleTornChatInputs() {
+    const selector = [
+      '#chatRoot textarea',
+      '#chatRoot input[type="text"]',
+      '#chatRoot [contenteditable="true"]',
+      '[id^="chatRoot"] textarea',
+      '[id^="chatRoot"] input[type="text"]',
+      '[id^="chatRoot"] [contenteditable="true"]',
+      '[class*="chat-box"] textarea',
+      '[class*="chatBox"] textarea',
+    ].join(',');
+    return [...new Set(document.querySelectorAll(selector))]
+      .filter((element) => tornChatInput(element) && visibleChatElement(element));
+  }
+
+  function chatSendButton(input, { includeDisabled = false } = {}) {
+    let container = input?.parentElement;
+    while (container && container !== document.documentElement) {
+      const candidates = [...container.querySelectorAll('button, [role="button"]')]
+        .filter((button) => visibleChatElement(button) && (includeDisabled || !button.matches(':disabled, [aria-disabled="true"]')))
+        .map((button) => {
+          const signature = [
+            button.textContent,
+            button.getAttribute('aria-label'),
+            button.getAttribute('title'),
+            button.getAttribute('data-testid'),
+            button.className,
+          ].join(' ').toLowerCase();
+          let score = /\bsend\b/.test(signature) ? 20 : 0;
+          if (button.matches('button[type="submit"]')) score += 10;
+          return { button, score };
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score);
+      if (candidates.length && (candidates.length === 1 || candidates[0].score > candidates[1].score)) {
+        return candidates[0].button;
+      }
+      if (container.matches('#chatRoot, [id^="chatRoot"]')) break;
+      container = container.parentElement;
+    }
+    return null;
+  }
+
+  function setChatInputValue(input, text) {
+    input.focus();
+    if (input.isContentEditable) {
+      input.textContent = text;
+    } else {
+      const prototype = input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (setter) setter.call(input, text);
+      else input.value = text;
+    }
+    try {
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+    } catch {
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  async function sendListingToTornChat(text) {
+    if (!focusedTornPage()) {
+      return { ok: false, label: 'Focus Torn first' };
+    }
+    const savedInput = tornChatInput(state.lastChatInput) && visibleChatElement(state.lastChatInput)
+      ? state.lastChatInput
+      : null;
+    const inputs = savedInput ? [savedInput] : visibleTornChatInputs();
+    if (!inputs.length) return { ok: false, label: 'Open a chat first' };
+    if (inputs.length > 1) return { ok: false, label: 'Pick a chat first' };
+    const input = inputs[0];
+    if (!chatSendButton(input, { includeDisabled: true })) {
+      return { ok: false, label: 'Chat send not found' };
+    }
+    setChatInputValue(input, text);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (!focusedTornPage()) return { ok: false, label: 'Focus Torn first' };
+    const sendButton = chatSendButton(input);
+    if (!sendButton) return { ok: false, label: 'Chat send not ready' };
+    sendButton.click();
+    return { ok: true, label: 'Sent' };
+  }
+
+  function chatShareArmed(alertId) {
+    const arm = state.chatShareArm;
+    if (!arm || arm.alertId !== alertId || arm.expiresAt <= Date.now()) return false;
+    return true;
+  }
+
+  document.addEventListener('focusin', (event) => {
+    if (focusedTornPage() && tornChatInput(event.target)) state.lastChatInput = event.target;
+  }, true);
 
   function applyPosition() {
     const pos = state.settings.position;
@@ -3088,19 +3127,6 @@
         .status button { padding: 3px 8px; font-size: 11px; }
         .toolbar { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
         .toolbar button { flex: 1; padding: 5px 6px; font-size: 11px; }
-        .share-composer { margin: 9px 10px; padding: 10px; border: 1px solid rgba(101,214,155,.3); border-radius: 9px; color: #dce4e9; background: #202b27; }
-        .share-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-        .share-heading strong { display: block; color: #8be2b3; font-size: 13px; }
-        .share-heading small { color: #93a49c; font-size: 10px; }
-        .share-heading button { width: 26px; height: 24px; padding: 0; }
-        .share-facts { display: grid; gap: 4px; margin: 9px 0; }
-        .share-facts div { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 8px; }
-        .share-facts dt { color: #8f9b95; }
-        .share-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #eef3f0; }
-        .share-facts a { color: #8ecbff; }
-        .share-preview { padding: 7px 8px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; color: #bac5c0; background: #151b18; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
-        .share-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-        .share-actions button { flex: 1 1 150px; padding: 6px 8px; }
         .empty { padding: 22px 16px; text-align: center; color: #aeb7c1; }
         .empty strong { display: block; margin-bottom: 3px; color: #e7ecef; }
         .alert { display: grid; grid-template-columns: 8px minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.075); }
@@ -3201,7 +3227,6 @@
               <button data-action="set-turtle-timer" ${state.turtleChecking ? 'disabled' : ''}>${state.turtleChecking ? 'Checking hospital…' : turtleSeconds > 0 ? `Reset Turtle (${formatDuration(turtleSeconds)})` : 'Set Turtle timer'}</button>
               ${turtleSeconds > 0 ? '<button data-action="clear-turtle-timer" title="Cancel the saved Turtle timer">Cancel Turtle</button>' : ''}
             </div>
-            ${shareComposerMarkup()}
             <div class="alerts">
               ${alerts.length ? alerts.map((alert) => `
                 <article class="alert ${escapeHtml(alert.tone)}">
@@ -3212,7 +3237,10 @@
                   </div>
                   <div class="alert-actions">
                     ${(alert.links || [{ label: 'Open', href: alert.href }]).filter((link) => link?.href).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
-                    ${alert.share ? `<button data-action="compose-share" data-alert-id="${escapeHtml(alert.id)}" title="Create a shareable listing link">Share</button>` : ''}
+                    ${alert.shareText ? `
+                      <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the 1.2-style listing details and link">Copy</button>
+                      <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing to the selected Torn chat' : 'Copy this listing first to unlock chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to chat</button>
+                    ` : ''}
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="3600000" title="Snooze 1 hour">1h</button>
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="${TORN_DAY_MS}" title="Snooze 1 day">1d</button>
                     ${alert.noDisable ? '' : `<button data-action="disable" data-alert-id="${alert.id}" title="Turn off until re-enabled in Settings">Off</button>`}
@@ -3288,22 +3316,62 @@
     } else if (action === 'request-notification-permission') {
       requestBrowserNotifications();
       return;
-    } else if (action === 'compose-share') {
-      const alert = publishedAlerts().find((item) => item.id === button.dataset.alertId);
-      state.shareComposer = listingShareComposer(alert);
-      render({ force: true });
-      return;
-    } else if (action === 'close-share') {
-      state.shareComposer = null;
-      render({ force: true });
-      return;
-    } else if (action === 'copy-share') {
-      const format = button.dataset.shareFormat === 'bbcode' ? 'bbcode' : 'plain';
-      const value = state.shareComposer?.[format];
+    } else if (action === 'copy-alert') {
+      const value = String(button.dataset.copyText || '');
       const original = button.textContent;
       copyAlertText(value).then((copied) => {
-        button.textContent = copied ? (format === 'bbcode' ? 'BBCode copied' : 'Copied') : 'Copy failed';
+        button.textContent = copied ? 'Copied' : 'Copy failed';
+        if (copied) {
+          const arm = {
+            alertId: button.dataset.alertId,
+            text: value,
+            expiresAt: Date.now() + 120_000,
+          };
+          state.chatShareArm = arm;
+          shadow.querySelectorAll('[data-action="send-chat"]').forEach((sendButton) => {
+            const armed = sendButton.dataset.alertId === arm.alertId;
+            sendButton.disabled = !armed;
+            sendButton.title = armed
+              ? 'Send the copied listing to the selected Torn chat'
+              : 'Copy this listing first to unlock chat sending';
+          });
+          window.setTimeout(() => {
+            if (state.chatShareArm !== arm || arm.expiresAt > Date.now()) return;
+            state.chatShareArm = null;
+            shadow.querySelectorAll('[data-action="send-chat"]').forEach((sendButton) => {
+              sendButton.disabled = true;
+              sendButton.title = 'Copy this listing first to unlock chat sending';
+            });
+          }, 120_100);
+        }
         window.setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1_500);
+      });
+      return;
+    } else if (action === 'send-chat') {
+      if (!chatShareArmed(button.dataset.alertId)) {
+        button.disabled = true;
+        button.title = 'Copy this listing first to unlock chat sending';
+        return;
+      }
+      const arm = state.chatShareArm;
+      const original = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Sending...';
+      sendListingToTornChat(arm.text).then((result) => {
+        if (!button.isConnected) return;
+        button.textContent = result.label;
+        if (result.ok) {
+          state.chatShareArm = null;
+          shadow.querySelectorAll('[data-action="send-chat"]').forEach((sendButton) => {
+            sendButton.disabled = true;
+            sendButton.title = 'Copy this listing first to unlock chat sending';
+          });
+        } else {
+          button.disabled = !chatShareArmed(button.dataset.alertId);
+        }
+        window.setTimeout(() => {
+          if (button.isConnected) button.textContent = original;
+        }, 1_800);
       });
       return;
     } else if (action === 'snooze') {
