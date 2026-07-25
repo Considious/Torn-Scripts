@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Incoming Retaliation Monitor
 // @namespace    Considious [3853023]
-// @version      1.7.6
+// @version      1.7.7
 // @description  Focused Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
 // @author       Considious [3853023]
 // @run-at       document-idle
@@ -12,12 +12,16 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
 // @connect      api.torn.com
 // @connect      ffscouter.com
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    const TornLib = globalThis.ConsidiousTornLib;
+    if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
     const POLL_MS = 20_000;
     const RETAL_WINDOW_SECONDS = 5 * 60;
@@ -225,7 +229,7 @@
 
     function buildCallout(target) { const linkedName=`<a href="${target.profileUrl}">${escapeHtml(target.attackerName)} [${target.attackerId}]</a>`; const linkedAttack=`<a href="${target.attackUrl}">Attack</a>`; const details=[formatFactionLabel(target),target.isRetal?'Retal':'',target.isWar?'War':'',target.location?`Location: ${target.location}`:'',target.defenderName?`Attacked: ${target.defenderName}${target.defenderId?` [${target.defenderId}]`:''}`:'',target.defenderStatus?`Status: ${target.defenderStatus}`:''].filter(Boolean); return `🚨 Retaliation: Please Hospitalize 🚨<br>${linkedName} - ${linkedAttack} - (${escapeHtml(formatFF(target.ffData))})`+(details.length?`<br>${escapeHtml(details.join(' • '))}`:''); }
     function copyCallout(target,button) { const message=buildCallout(target); copyText(message); authorizeChatSend(target,message); const original=button.textContent; button.textContent='✅ Copied'; setTimeout(()=>{button.textContent=original;},1300); }
-    function copyText(text) { const textarea=document.createElement('textarea'); textarea.value=text; textarea.style.position='fixed'; textarea.style.left='-9999px'; document.body.appendChild(textarea); textarea.select(); try { document.execCommand('copy'); } finally { textarea.remove(); } }
+    function copyText(text) { void TornLib.copyText(text); }
 
     function clearPendingChatSend(){pendingChatSend=null;if(pendingChatSendTimer){clearTimeout(pendingChatSendTimer);pendingChatSendTimer=null;}updateChatSendButtons();}
     function updateChatSendButtons(){const now=Date.now();if(pendingChatSend&&pendingChatSend.expiresAt<=now)pendingChatSend=null;document.querySelectorAll('.trm-chat-send').forEach(button=>{const attackId=String(button.dataset.attackId||'');const authorized=Boolean(pendingChatSend&&pendingChatSend.attackId===attackId&&pendingChatSend.expiresAt>now);button.disabled=!authorized;button.classList.toggle('trm-chat-authorized',authorized);button.title=authorized?'Send the copied callout to Faction Chat':'Press Copy first. Send remains available for 30 seconds.';});}
@@ -240,8 +244,8 @@
     async function sendTargetToFactionChat(target,button){const attackId=String(target.attackId);const authorization=pendingChatSend;if(!authorization||authorization.attackId!==attackId||authorization.expiresAt<=Date.now()){clearPendingChatSend();alert('Press Copy for this retaliation first. Send is enabled for 30 seconds after Copy.');return;}if(!pageHasFocus()){alert('Open and focus the Torn tab before sending to Faction Chat.');return;}const frozenMessage=authorization.message;const original=button.textContent;button.disabled=true;button.textContent='…';try{let{container,composer}=await waitForFactionChat(250);if(!container||!composer){const launcher=findFactionChatLauncher();if(!launcher)throw new Error('Faction Chat could not be found. Open Faction Chat and try again.');launcher.click();({container,composer}=await waitForFactionChat());}if(!container||!composer)throw new Error('Faction Chat opened, but its message box could not be found.');setChatComposerContent(composer,frozenMessage);const sendButton=findChatSendButton(container,composer);if(!sendButton)throw new Error('The Faction Chat send button could not be found.');const enabled=await waitForEnabledButton(sendButton);if(!enabled)throw new Error('The message was placed in Faction Chat, but Torn did not enable the Send button.');sendButton.click();button.textContent='✓';clearPendingChatSend();}catch(error){console.warn('[Retal Monitor] Faction Chat send failed:',error);alert(error.message);button.textContent='!';updateChatSendButtons();}finally{setTimeout(()=>{button.textContent=original;updateChatSendButtons();},1200);}}
 
     async function getOwnFactionId(apiKey){const data=await tornRequest('https://api.torn.com/v2/user/faction',apiKey);const id=Number(data.faction?.id??data.profile?.faction?.id??data.id??0);if(!id)throw new Error('Could not determine your faction ID. Check the Torn API key and its access.');return id;}
-    function pageIsActiveTab(){return document.visibilityState==='visible';}
-    function pageHasFocus(){return pageIsActiveTab()&&document.hasFocus();}
+    function pageIsActiveTab(){return TornLib.isPageActive({requireFocus:false});}
+    function pageHasFocus(){return TornLib.isPageActive();}
     function findChainWidget(){return document.querySelector('a[href*="factions.php?step=your#/war/chain"]')||document.querySelector('a[href*="#/war/chain"]')||document.querySelector('a[class*="chain-bar___"]');}
     function scrapeActiveTabChainWidget(){if(GM_getValue(KEYS.minimized,false)||!pageHasFocus())return false;const widget=findChainWidget();if(!widget)return false;const valueNode=widget.querySelector('p[class*="bar-value___"]');const timeNode=widget.querySelector('p[class*="bar-timeleft___"]');const multiplierNode=widget.querySelector('span[class*="value___"]');if(!valueNode||!timeNode)return false;const chainText=(valueNode.textContent||'').trim();const timeText=(timeNode.textContent||'').trim();const multiplierText=(multiplierNode?.textContent||'').trim();const chainMatch=chainText.match(/^([\d,.]+)\s*\/\s*([\d,.]+[kKmMbB]?)$/);const timeMatch=timeText.match(/^(\d{1,2}):(\d{2})$/);if(!chainMatch||!timeMatch)return false;currentChainCount=parseCompactNumber(chainMatch[1]);currentChainBonus=parseCompactNumber(chainMatch[2]);currentChainMultiplier=multiplierText;currentChainSeconds=Number(timeMatch[1])*60+Number(timeMatch[2]);chainDeadline=unixNow()+currentChainSeconds;chainDataSource='Live';updateChainDisplay();return true;}
     async function refreshChainLinkFromApi(apiKey,forceChainData=false){if(!apiKey||GM_getValue(KEYS.minimized,false))return;try{const data=await tornRequest('https://api.torn.com/v2/faction/chain',apiKey);const chain=data.chain??data.faction?.chain??data;currentChainId=Number(chain?.id??chain?.chain_id??chain?.chainId??data.chain_id??0)||0;updateChainLink();if(forceChainData||!scrapeActiveTabChainWidget()){const now=unixNow();const rawTimeout=Number(chain?.timeout??chain?.time_left??chain?.timeLeft??0);currentChainCount=Number(chain?.current??chain?.hits??chain?.chain??0)||0;currentChainBonus=CHAIN_BONUSES.find(bonus=>bonus>currentChainCount)||0;if(rawTimeout>now){chainDeadline=rawTimeout;currentChainSeconds=rawTimeout-now;}else if(rawTimeout>0){chainDeadline=now+rawTimeout;currentChainSeconds=rawTimeout;}currentChainMultiplier='';chainDataSource='API';updateChainDisplay();}}catch(error){console.warn('[Retal Monitor] Chain link lookup failed:',error);}}
@@ -256,13 +260,13 @@
     function minimizePanel(){const panel=document.getElementById('trm-panel');if(!panel)return;panel.classList.add('trm-minimized');panel.classList.remove('trm-chain-warning');GM_setValue(KEYS.minimized,true);resetAlarmState();stopRuntimeTimers();updateBubble();}
     function restorePanel(){const panel=document.getElementById('trm-panel');if(!panel)return;panel.classList.remove('trm-minimized');GM_setValue(KEYS.minimized,false);scrapeActiveTabChainWidget();start();}
     function parseCompactNumber(value){const normalized=String(value).trim().replace(/,/g,'').toLowerCase();const match=normalized.match(/^([\d.]+)\s*([kmb])?$/);if(!match)return Number(normalized)||0;const multipliers={k:1_000,m:1_000_000,b:1_000_000_000};return Math.round(Number(match[1])*(multipliers[match[2]]||1));}
-    function formatDuration(totalSeconds){const seconds=Math.max(0,Math.floor(totalSeconds));const minutes=Math.floor(seconds/60);const remainder=seconds%60;return `${minutes}:${String(remainder).padStart(2,'0')}`;}
+    function formatDuration(totalSeconds){return TornLib.formatDuration(totalSeconds);}
 
     async function getUserBasic(apiKey,playerId){const data=await tornRequest(`https://api.torn.com/v2/user/${encodeURIComponent(playerId)}/profile`,apiKey);return data?.profile??data?.basic??data?.user??data;}
     async function getFactionAttacks(apiKey,from,to){const url='https://api.torn.com/v2/faction/attacks'+`?from=${encodeURIComponent(from)}`+`&to=${encodeURIComponent(to)}`+`&limit=${MAX_RESULTS}`+'&sort=desc';const data=await tornRequest(url,apiKey);const attacks=data.attacks??data.faction?.attacks??[];if(!Array.isArray(attacks))throw new Error('Torn returned no attacks list. The key may need faction attacks access.');return attacks;}
     async function getFFScouterStats(apiKey,playerIds){if(!playerIds.length)return[];const targets=playerIds.join(',');const url='https://ffscouter.com/api/v1/get-stats'+`?key=${encodeURIComponent(apiKey)}`+`&targets=${encodeURIComponent(targets)}`;const data=await requestJson(url);if(Array.isArray(data))return data;if(Array.isArray(data.results))return data.results;if(Array.isArray(data.data))return data.data;throw new Error(data.error?.message??data.error??'FFScouter returned an unexpected response.');}
-    function tornRequest(url,apiKey){return requestJson(url,{Authorization:`ApiKey ${apiKey}`});}
-    function requestJson(url,headers={}){return new Promise((resolve,reject)=>{GM_xmlhttpRequest({method:'GET',url,headers,timeout:12_000,onload(response){let data;try{data=JSON.parse(response.responseText);}catch{reject(new Error('The API returned invalid JSON.'));return;}if(response.status<200||response.status>=300){reject(new Error(data.error?.error??data.error?.message??data.error??`API request failed with status ${response.status}.`));return;}if(data.error){reject(new Error(data.error.error??data.error.message??data.error));return;}resolve(data);},onerror(){reject(new Error('Network error while contacting the API.'));},ontimeout(){reject(new Error('The API request timed out.'));}});});}
+    function tornRequest(url,apiKey){return TornLib.tornRequest(url,apiKey,{timeout:12_000,invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.'});}
+    function requestJson(url,headers={}){return TornLib.requestJson(url,{headers,timeout:12_000,invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.',httpErrorMessage:(response,data)=>TornLib.errorMessage(data,`API request failed with status ${response.status}.`)});}
 
     function getFactionName(side){return String(side?.faction?.name??side?.faction_name??side?.factionName??'').trim();}
     function getFactionTag(side){return String(side?.faction?.tag??side?.faction_tag??side?.factionTag??side?.faction?.short_name??'').trim();}
@@ -276,12 +280,12 @@
     function getPlayerId(side){return Number(side?.id??side?.player_id??side?.user_id??0);}
     function getPlayerName(side,id){return String(side?.name??side?.player_name??side?.username??`Player ${id}`);}
     function formatFF(data){if(!data)return'FFScouter estimate unavailable';const parts=[];const ff=Number(data.fair_fight??data.fairFight??data.ff??NaN);if(Number.isFinite(ff))parts.push(`FF ${ff.toFixed(2)}`);const human=data.bs_estimate_human??data.estimate_human??data.battle_stats_human;const raw=Number(data.bs_estimate??data.estimate??data.battle_stats??NaN);if(human)parts.push(`~${String(human).toUpperCase()} total`);else if(Number.isFinite(raw))parts.push(`~${shortNumber(raw)} total`);return parts.length?parts.join(' | '):'FFScouter estimate unavailable';}
-    function shortNumber(value){const units=[[1e15,'Q'],[1e12,'T'],[1e9,'B'],[1e6,'M'],[1e3,'K']];for(const[size,suffix]of units)if(value>=size)return`${Number((value/size).toFixed(2))}${suffix}`;return String(Math.round(value));}
+    function shortNumber(value){return TornLib.shortNumber(value);}
     function ageText(timestamp){const seconds=Math.max(0,unixNow()-timestamp);if(seconds<60)return`${seconds}s old`;if(seconds<3600)return`${Math.floor(seconds/60)}m old`;if(seconds<86400)return`${Math.floor(seconds/3600)}h old`;return`${Math.floor(seconds/86400)}d old`;}
     function formatCountdown(expiresAt){const seconds=Math.max(0,expiresAt-unixNow());const minutes=Math.floor(seconds/60);const remainder=seconds%60;return`${minutes}:${String(remainder).padStart(2,'0')}`;}
-    function unixNow(){return Math.floor(Date.now()/1000);}
-    function escapeHtml(value){return String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');}
-    function escapeAttribute(value){return escapeHtml(value);}
+    function unixNow(){return TornLib.unixNow();}
+    function escapeHtml(value){return TornLib.escapeHtml(value);}
+    function escapeAttribute(value){return TornLib.escapeAttribute(value);}
 
     async function refreshChainForFocusState(){if(GM_getValue(KEYS.minimized,false))return;const tornKey=GM_getValue(KEYS.tornApiKey,'');if(pageHasFocus()&&scrapeActiveTabChainWidget())return;if(tornKey)await refreshChainLinkFromApi(tornKey,true);const panel=document.getElementById('trm-panel');if(!pageHasFocus()&&panel){panel.classList.remove('trm-chain-warning');resetAlarmState();}}
     document.addEventListener('visibilitychange',refreshChainForFocusState);window.addEventListener('focus',refreshChainForFocusState);window.addEventListener('blur',refreshChainForFocusState);makePanel();start();

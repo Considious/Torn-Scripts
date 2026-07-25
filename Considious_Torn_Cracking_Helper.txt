@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Cracking Helper
 // @namespace    Considious [3853023]
-// @version      2.2.1
+// @version      2.2.2
 // @description  Focus-only Cracking pattern helper with a local dictionary and opt-in password contributions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Considious_Torn_Cracking_Helper.user.js
@@ -13,12 +13,16 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
 // @connect      raw.githubusercontent.com
 // @connect      docs.google.com
 // ==/UserScript==
 
 (() => {
     'use strict';
+
+    const TornLib = globalThis.ConsidiousTornLib;
+    if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
     /*
      * COMPLIANCE / SAFETY BOUNDARY
@@ -84,7 +88,7 @@
     const candidateCache = new Map();
 
     function isFocusedAndVisible() {
-        return document.visibilityState === 'visible' && document.hasFocus();
+        return TornLib.isPageActive();
     }
 
     function mayReadTorn() {
@@ -170,23 +174,10 @@
     }
 
     function requestText(url, options = {}) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: options.method || 'GET',
-                url,
-                data: options.data,
-                headers: options.headers || { Accept: 'text/plain, */*' },
-                timeout: options.timeout || 120000,
-                onload: response => {
-                    if (response.status >= 200 && response.status < 400) {
-                        resolve(response.responseText || '');
-                    } else {
-                        reject(new Error(`HTTP ${response.status}`));
-                    }
-                },
-                onerror: () => reject(new Error('Network request failed')),
-                ontimeout: () => reject(new Error('Network request timed out')),
-            });
+        return TornLib.requestText(url, {
+            ...options,
+            headers: options.headers || { Accept: 'text/plain, */*' },
+            timeout: options.timeout || 120000,
         });
     }
 
@@ -644,69 +635,12 @@
     }
 
     function makePanelDraggable(panel) {
-        const header = panel.querySelector('header');
-        const saved = GM_getValue(PREF.panelPosition, null);
-
-        const clampToViewport = (left, top) => ({
-            left: Math.max(4, Math.min(left, window.innerWidth - panel.offsetWidth - 4)),
-            top: Math.max(4, Math.min(top, window.innerHeight - panel.offsetHeight - 4)),
+        return TornLib.makePanelDraggable(panel, {
+            handle: 'header',
+            storageKey: PREF.panelPosition,
+            margin: 4,
+            draggingClass: 'ctch-dragging',
         });
-
-        const applyPosition = position => {
-            if (!position || !Number.isFinite(position.left) ||
-                !Number.isFinite(position.top)) return;
-            const next = clampToViewport(position.left, position.top);
-            panel.style.left = `${next.left}px`;
-            panel.style.top = `${next.top}px`;
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-        };
-        panel._ctchClamp = () => {
-            const rect = panel.getBoundingClientRect();
-            applyPosition({ left: rect.left, top: rect.top });
-        };
-
-        applyPosition(saved);
-
-        let drag = null;
-        header.addEventListener('pointerdown', event => {
-            if (event.button !== 0 || event.target.closest('button')) return;
-            const rect = panel.getBoundingClientRect();
-            drag = {
-                pointerId: event.pointerId,
-                offsetX: event.clientX - rect.left,
-                offsetY: event.clientY - rect.top,
-            };
-            header.setPointerCapture(event.pointerId);
-            panel.classList.add('ctch-dragging');
-            event.preventDefault();
-        });
-
-        header.addEventListener('pointermove', event => {
-            if (!drag || event.pointerId !== drag.pointerId) return;
-            applyPosition({
-                left: event.clientX - drag.offsetX,
-                top: event.clientY - drag.offsetY,
-            });
-        });
-
-        const finishDrag = event => {
-            if (!drag || event.pointerId !== drag.pointerId) return;
-            drag = null;
-            panel.classList.remove('ctch-dragging');
-            const rect = panel.getBoundingClientRect();
-            GM_setValue(PREF.panelPosition, {
-                left: Math.round(rect.left),
-                top: Math.round(rect.top),
-            });
-        };
-        header.addEventListener('pointerup', finishDrag);
-        header.addEventListener('pointercancel', finishDrag);
-
-        window.addEventListener('resize', () => {
-            const rect = panel.getBoundingClientRect();
-            applyPosition({ left: rect.left, top: rect.top });
-        }, { passive: true });
     }
 
     function buildPanel() {
