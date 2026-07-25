@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.1.1
+// @version      1.2.0
 // @description  A privacy-conscious daily reminder dashboard powered by Torn API v2.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -129,6 +129,7 @@
     settingsOpen: false,
     settingsSections: {},
     position: { mode: 'top-center', x: null, y: 8 },
+    panelSize: { width: null, height: null },
     medicalThresholdHours: 3,
     boosterThresholdHours: 3,
     pickpocketHelperEnabled: true,
@@ -216,6 +217,7 @@
     renderPending: false,
     domObserver: null,
     domRefreshTimer: null,
+    windowResizeTimer: null,
     pickpocketRefreshTimer: null,
     pickpocketHeartbeat: null,
     pickpocketFormattedCount: 0,
@@ -225,6 +227,7 @@
     apiQueueTimer: null,
     apiLimiterUntil: 0,
     windowFocused: document.hasFocus(),
+    resizing: null,
   };
 
   function loadSettings() {
@@ -239,6 +242,7 @@
       ...DEFAULT_SETTINGS,
       ...(saved && typeof saved === 'object' ? saved : {}),
       position: { ...DEFAULT_SETTINGS.position, ...(saved?.position || {}) },
+      panelSize: { ...DEFAULT_SETTINGS.panelSize, ...(saved?.panelSize || {}) },
       enabled: { ...DEFAULT_SETTINGS.enabled, ...(saved?.enabled || {}) },
       snoozedUntil,
       alarmHistory: { ...(saved?.alarmHistory || {}) },
@@ -2738,6 +2742,7 @@
           <button data-action="save-key">Save key</button>
           <button data-action="clear-key" class="subtle">Clear key</button>
           <button data-action="reset-position" class="subtle">Reset position</button>
+          <button data-action="reset-size" class="subtle">Reset size</button>
           <button data-action="clear-snoozes" class="subtle">Clear snoozes</button>
         </div>
         <div class="api-controls">
@@ -2941,19 +2946,46 @@
     const snoozedCount = allAlerts.filter((alert) => alert.active && state.settings.enabled[alert.id] !== false && !alertVisible(alert)).length;
     const collapsed = state.settings.collapsed;
     const turtleSeconds = Math.max(0, Math.ceil((Number(state.settings.turtleEndAt) - Date.now()) / 1000));
+    const freePosition = state.settings.position.mode === 'free';
+    const panelLeft = freePosition && Number.isFinite(Number(state.settings.position.x))
+      ? Math.max(0, Number(state.settings.position.x))
+      : 10;
+    const panelTop = Math.max(0, Number(state.settings.position.y) || 8);
+    const availablePanelWidth = Math.max(120, freePosition ? innerWidth - panelLeft - 8 : innerWidth - 20);
+    const availablePanelHeight = Math.max(60, innerHeight - panelTop - 8);
+    const minimumPanelWidth = Math.min(300, availablePanelWidth);
+    const minimumPanelHeight = Math.min(180, availablePanelHeight);
+    const requestedPanelWidth = Number(state.settings.panelSize?.width);
+    const requestedPanelHeight = Number(state.settings.panelSize?.height);
+    const savedPanelWidth = Number.isFinite(requestedPanelWidth) && requestedPanelWidth > 0
+      ? Math.min(Math.max(minimumPanelWidth, requestedPanelWidth), availablePanelWidth)
+      : null;
+    const savedPanelHeight = Number.isFinite(requestedPanelHeight) && requestedPanelHeight > 0
+      ? Math.min(Math.max(minimumPanelHeight, requestedPanelHeight), availablePanelHeight)
+      : null;
+    const panelUserSized = savedPanelWidth !== null || savedPanelHeight !== null;
+    const panelStyle = [
+      `--panel-min-width:${minimumPanelWidth}px`,
+      `--panel-max-width:${availablePanelWidth}px`,
+      `--panel-min-height:${minimumPanelHeight}px`,
+      `--panel-max-height:${availablePanelHeight}px`,
+      savedPanelWidth !== null ? `width:${savedPanelWidth}px` : '',
+      !collapsed && savedPanelHeight !== null ? `height:${savedPanelHeight}px` : '',
+    ].filter(Boolean).join(';');
 
     shadow.innerHTML = `
       <style>
         :host { all: initial; color-scheme: dark; }
         * { box-sizing: border-box; }
-        .panel { width: min(500px, calc(100vw - 20px)); overflow: hidden; color: #edf1f5; background: rgba(22, 25, 29, .97); border: 1px solid rgba(255,255,255,.14); border-radius: 0 0 12px 12px; box-shadow: 0 12px 35px rgba(0,0,0,.45); font: 13px/1.35 system-ui, -apple-system, Segoe UI, sans-serif; backdrop-filter: blur(12px); }
+        .panel { width: min(500px, var(--panel-max-width)); min-width: var(--panel-min-width); min-height: var(--panel-min-height); max-width: var(--panel-max-width); max-height: var(--panel-max-height); display: flex; flex-direction: column; overflow: hidden; resize: both; color: #edf1f5; background: rgba(22, 25, 29, .97); border: 1px solid rgba(255,255,255,.14); border-radius: 0 0 12px 12px; box-shadow: 0 12px 35px rgba(0,0,0,.45); font: 13px/1.35 system-ui, -apple-system, Segoe UI, sans-serif; backdrop-filter: blur(12px); }
+        .panel.collapsed { min-height: 39px; height: auto !important; resize: horizontal; }
         .panel.alarm-flash { animation: dashboardAlarmFlash 1s ease-in-out 0s 6; }
         .panel.landing-flash { animation: dashboardLandingFlash 1s ease-in-out 0s 8; }
         .panel.turtle-flash { animation: dashboardTurtleFlash 1s ease-in-out 0s 9; }
         @keyframes dashboardAlarmFlash { 0%,100% { box-shadow: 0 12px 35px rgba(0,0,0,.45); border-color: rgba(255,255,255,.14); } 50% { box-shadow: 0 0 28px 7px rgba(255,72,72,.85); border-color: #ff5b5b; } }
         @keyframes dashboardLandingFlash { 0%,100% { box-shadow: 0 12px 35px rgba(0,0,0,.45); border-color: rgba(255,255,255,.14); } 50% { box-shadow: 0 0 30px 8px rgba(70,174,255,.9); border-color: #58b9ff; } }
         @keyframes dashboardTurtleFlash { 0%,100% { box-shadow: 0 12px 35px rgba(0,0,0,.45); border-color: rgba(255,255,255,.14); } 50% { box-shadow: 0 0 30px 8px rgba(255,153,61,.92); border-color: #ff9a3d; } }
-        .header { min-height: 39px; display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; cursor: grab; user-select: none; background: linear-gradient(180deg, #31363d, #252a30); border-bottom: 1px solid rgba(255,255,255,.09); }
+        .header { min-height: 39px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; cursor: grab; user-select: none; background: linear-gradient(180deg, #31363d, #252a30); border-bottom: 1px solid rgba(255,255,255,.09); }
         .header:active { cursor: grabbing; }
         .title { min-width: 0; flex: 1; font-weight: 750; letter-spacing: .2px; }
         .count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; margin-left: 6px; border-radius: 999px; color: #141414; background: ${alerts.length ? '#ffca55' : '#71d69b'}; font-size: 12px; font-weight: 800; }
@@ -2971,7 +3003,8 @@
         button:hover { background: #414955; }
         button:disabled { cursor: not-allowed; opacity: .55; }
         .icon-button { width: 28px; height: 26px; padding: 0; font-size: 15px; }
-        .body { max-height: min(72vh, 700px); overflow: auto; }
+        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; }
+        .panel.user-sized .body { flex: 1 1 auto; max-height: none; }
         .status { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px; color: #aeb7c1; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; }
         .status span { flex: 1; }
         .status button { padding: 3px 8px; font-size: 11px; }
@@ -3060,7 +3093,7 @@
         details ul { margin: 6px 0 0; padding-left: 18px; }
         @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(120px,1fr) 90px 28px; } }
       </style>
-      <section class="panel ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" aria-label="Torn Daily Dashboard">
+      <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
           <div class="title">Daily Dashboard <span class="count">${alerts.length}</span></div>
           <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
@@ -3232,6 +3265,8 @@
       scheduleNextSnoozeExpiry();
     } else if (action === 'reset-position') {
       state.settings.position = { mode: 'top-center', x: null, y: 8 };
+    } else if (action === 'reset-size') {
+      state.settings.panelSize = { width: null, height: null };
     } else if (action === 'clear-key') {
       state.settings.apiKey = '';
       state.data = {};
@@ -3475,6 +3510,16 @@
 
   shadow.addEventListener('pointerdown', (event) => {
     if (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm) ensureAudioContext();
+    const panel = event.target.closest('.panel');
+    if (panel) {
+      const panelRect = panel.getBoundingClientRect();
+      const onResizeHandle = event.clientX >= panelRect.right - 22 && event.clientY >= panelRect.bottom - 22;
+      if (onResizeHandle) {
+        state.resizing = { pointerId: event.pointerId };
+        state.drag = null;
+        return;
+      }
+    }
     const header = event.target.closest('[data-drag-handle]');
     if (!header || event.target.closest('button, a, input, select')) return;
     const rect = host.getBoundingClientRect();
@@ -3493,11 +3538,42 @@
   });
 
   shadow.addEventListener('pointerup', (event) => {
+    if (state.resizing?.pointerId === event.pointerId) {
+      const panel = shadow.querySelector('.panel');
+      const rect = panel?.getBoundingClientRect();
+      if (rect) {
+        state.settings.panelSize = {
+          width: Math.round(rect.width),
+          height: state.settings.collapsed
+            ? Number(state.settings.panelSize?.height) || null
+            : Math.round(rect.height),
+        };
+        saveSettings();
+      }
+      state.resizing = null;
+      return;
+    }
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
     const rect = host.getBoundingClientRect();
     state.settings.position = { mode: 'free', x: Math.round(rect.left), y: Math.round(rect.top) };
     state.drag = null;
     saveSettings();
+  });
+
+  window.addEventListener('pointerup', (event) => {
+    if (state.resizing?.pointerId !== event.pointerId) return;
+    const panel = shadow.querySelector('.panel');
+    const rect = panel?.getBoundingClientRect();
+    if (rect) {
+      state.settings.panelSize = {
+        width: Math.round(rect.width),
+        height: state.settings.collapsed
+          ? Number(state.settings.panelSize?.height) || null
+          : Math.round(rect.height),
+      };
+      saveSettings();
+    }
+    state.resizing = null;
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -3615,12 +3691,18 @@
   }
 
   window.addEventListener('resize', () => {
-    if (state.settings.position.mode !== 'free') return;
-    const rect = host.getBoundingClientRect();
-    state.settings.position.x = Math.min(Math.max(0, rect.left), Math.max(0, innerWidth - rect.width));
-    state.settings.position.y = Math.min(Math.max(0, rect.top), Math.max(0, innerHeight - 40));
-    saveSettings();
-    applyPosition();
+    if (state.settings.position.mode === 'free') {
+      const rect = host.getBoundingClientRect();
+      state.settings.position.x = Math.min(Math.max(0, rect.left), Math.max(0, innerWidth - rect.width));
+      state.settings.position.y = Math.min(Math.max(0, rect.top), Math.max(0, innerHeight - 40));
+      saveSettings();
+      applyPosition();
+    }
+    if (state.windowResizeTimer) window.clearTimeout(state.windowResizeTimer);
+    state.windowResizeTimer = window.setTimeout(() => {
+      state.windowResizeTimer = null;
+      render();
+    }, 120);
   });
 
   render();
