@@ -1,9 +1,11 @@
 // ==UserScript==
-// @name         Torn ADHD Dashboard
+// @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.3.2
-// @description  A privacy-conscious daily reminder dashboard powered by Torn API v2.
+// @version      1.3.3
+// @description  Privacy-conscious daily reminder dashboard powered by Torn API v2.
 // @author       Considious [3853023]
+// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
+// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @connect      api.torn.com
