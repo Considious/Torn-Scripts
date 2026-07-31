@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.22
+// @version      0.9.21
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -137,7 +137,6 @@
         return TornLib.requestJson(url, {
             ...options,
             timeout: options.timeout || 15000,
-            tornScript: options.tornScript || 'Ranked War Panel',
             invalidJsonMessage: 'Invalid JSON response',
             networkErrorMessage: 'Network request failed',
             timeoutMessage: 'Request timed out',

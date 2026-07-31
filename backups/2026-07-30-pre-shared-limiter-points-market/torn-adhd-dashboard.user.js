@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.0
-// @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
+// @version      1.3.4
+// @description  Privacy-conscious daily reminder dashboard powered by Torn API v2 and v1 city-shop stock.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -28,6 +28,7 @@
   const ITEM_CATALOG_KEY = 'tdd-item-catalog-v1';
   const BAZAAR_CACHE_KEY = 'tdd-weav3r-bazaar-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
+  const API_LEDGER_KEY = 'tdd-torn-api-ledger-v1';
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -40,7 +41,8 @@
   const BAZAAR_FAST_REFRESH_MS = 5_000;
   const BAZAAR_MEDIUM_REFRESH_MS = 30_000;
   const BAZAAR_SLOW_REFRESH_MS = 60_000;
-  const API_HARD_LIMIT = 60;
+  const API_USAGE_WINDOW_MS = 60_000;
+  const API_HARD_LIMIT = 80;
   const API_SLOW_LIMIT = 30;
   const TORN_DAY_MS = 24 * 60 * 60 * 1000;
   const ITEM_CATALOG_MAX_AGE_MS = 7 * TORN_DAY_MS;
@@ -121,7 +123,7 @@
     ['nerveRefill', 'Nerve refill'],
     ['jobAddiction', 'Job addiction'],
     ['playerAddiction', 'Player addiction'],
-    ['itemMarket', 'Market watches'],
+    ['itemMarket', 'Item market watches'],
   ];
   const ALERT_ICONS = {
     boosterCooldown: 'B↻',
@@ -260,9 +262,7 @@
       snoozedUntil,
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
-      marketWatches: Array.isArray(saved?.marketWatches)
-        ? saved.marketWatches.map((watch) => ({ ...watch, marketType: watch?.marketType === 'points' ? 'points' : 'item' }))
-        : [],
+      marketWatches: Array.isArray(saved?.marketWatches) ? saved.marketWatches : [],
     };
   }
 
@@ -394,10 +394,15 @@
     return state.windowFocused && TornLib.isPageActive();
   }
 
-  function rollingTornApiUsage() {
-    return TornLib.getTornApiUsage({
-      limit: state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT,
-    }).events;
+  function rollingTornApiUsage({ record = false } = {}) {
+    const now = Date.now();
+    const stored = GM_getValue(API_LEDGER_KEY, []);
+    const recent = (Array.isArray(stored) ? stored : []).map(Number)
+      .filter((timestamp) => Number.isFinite(timestamp) && timestamp > now - API_USAGE_WINDOW_MS)
+      .sort((a, b) => a - b);
+    if (record) recent.push(now);
+    GM_setValue(API_LEDGER_KEY, recent);
+    return recent;
   }
 
   function apiPriorityLimit(priority) {
@@ -407,45 +412,50 @@
       return 10;
     }
     if (priority === 'high') return API_HARD_LIMIT;
-    if (priority === 'normal') return 50;
-    return 40;
+    if (priority === 'normal') return 65;
+    return 50;
+  }
+
+  function reserveTornApiCall(priority = 'normal') {
+    const now = Date.now();
+    const pausedUntil = Number(state.settings.apiPausedUntil) || 0;
+    if (pausedUntil > now) {
+      throw new Error(`Torn API paused for ${formatDuration(Math.ceil((pausedUntil - now) / 1000))}.`);
+    }
+    const recent = rollingTornApiUsage();
+    const limit = apiPriorityLimit(priority);
+    if (recent.length >= limit) {
+      state.apiLimiterUntil = Number(recent[0] || now) + API_USAGE_WINDOW_MS;
+      const reserved = limit < (state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT)
+        ? ' Lower-priority checks are yielding capacity to market alerts.'
+        : '';
+      throw new Error(`Dashboard Torn API limit reached (${recent.length}/${limit} in the last minute).${reserved}`);
+    }
+    return rollingTornApiUsage({ record: true }).length;
   }
 
   function processApiQueue() {
     if (state.apiQueueTimer) return;
-    const runNext = async () => {
-      state.apiQueueTimer = -1;
+    const runNext = () => {
+      state.apiQueueTimer = null;
       const priority = ['high', 'normal', 'low'].find((name) => state.apiQueues[name].length);
-      if (!priority) {
-        state.apiQueueTimer = null;
-        return;
-      }
+      if (!priority) return;
       const task = state.apiQueues[priority].shift();
       try {
         if (!visibleTornTab()) throw new Error('Paused because this Torn tab is not visible.');
         if (!state.settings.apiKey) throw new Error('Add a Torn API key in Settings.');
-        const pausedUntil = Number(state.settings.apiPausedUntil) || 0;
-        if (pausedUntil > Date.now()) {
-          throw new Error(`Torn API paused for ${formatDuration(Math.ceil((pausedUntil - Date.now()) / 1000))}.`);
-        }
-        await TornLib.reserveTornApiSlot({
-          limit: apiPriorityLimit(priority),
-          script: 'ADHD Dashboard',
-          priority,
-          wait: true,
-          maxWaitMs: 65_000,
-        });
+        reserveTornApiCall(priority);
         state.apiCalls += 1;
-        task.resolve(await task.start());
+        task.start().then(task.resolve, task.reject);
       } catch (error) {
-        if (Number(error?.retryAfterMs) > 0) state.apiLimiterUntil = Date.now() + Number(error.retryAfterMs);
         task.reject(error);
       }
       const spacing = state.settings.slowApiMode ? 1_000 : 100;
       state.apiQueueTimer = window.setTimeout(runNext, spacing);
     };
-    state.apiQueueTimer = window.setTimeout(runNext, 0);
+    runNext();
   }
+
   function enqueueTornApiCall(priority, start) {
     return new Promise((resolve, reject) => {
       state.apiQueues[priority] ||= [];
@@ -500,7 +510,6 @@
             reject(new Error(`Torn API returned invalid JSON (${response.status}).`));
             return;
           }
-          if (Number(body?.error?.code) === 5) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
             reject(new Error(body?.error?.error || `Torn API request failed (${response.status}).`));
             return;
@@ -546,7 +555,6 @@
             reject(new Error(`Torn API returned invalid JSON (${response.status}).`));
             return;
           }
-          if (Number(body?.error?.code) === 5) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
             reject(new Error(body?.error?.error || `Torn API request failed (${response.status}).`));
             return;
@@ -694,39 +702,11 @@
     return BAZAAR_SLOW_REFRESH_MS;
   }
 
-  function watchMarketType(watch) {
-    return watch?.marketType === 'points' ? 'points' : 'item';
-  }
-
   function activeMarketWatches() {
-    return state.settings.marketWatches.filter((watch) => {
-      if (watch.enabled === false || Number(watch.maxPrice) <= 0) return false;
-      return watchMarketType(watch) === 'points' || Number(watch.itemId) > 0;
-    });
+    return state.settings.marketWatches.filter((watch) => watch.enabled !== false && Number(watch.itemId) > 0 && Number(watch.maxPrice) > 0);
   }
 
-  function activeBazaarWatches() {
-    return activeMarketWatches().filter((watch) => watchMarketType(watch) === 'item');
-  }
-
-  function pointsMarketListings(result) {
-    const source = result?.pointsmarket?.listings ?? result?.pointsmarket ?? result?.listings ?? [];
-    const rows = Array.isArray(source) ? source : Object.values(source || {});
-    return rows.map((listing) => {
-      const price = Number(listing?.cost ?? listing?.price ?? listing?.price_per_point ?? listing?.pricePerPoint);
-      const amount = Number(listing?.quantity ?? listing?.amount ?? listing?.points);
-      if (!Number.isFinite(price) || price <= 0) return null;
-      return {
-        price,
-        amount: Number.isFinite(amount) && amount > 0 ? amount : 0,
-      };
-    }).filter(Boolean);
-  }
-
-  function marketResultSignature(result, marketType = 'item') {
-    if (marketType === 'points') {
-      return JSON.stringify(pointsMarketListings(result).map((listing) => [listing.price, listing.amount]));
-    }
+  function marketResultSignature(result) {
     const market = result?.itemmarket;
     return JSON.stringify({
       cacheTimestamp: Number(market?.cache_timestamp) || 0,
@@ -747,15 +727,13 @@
     if (Number(state.settings.apiPausedUntil) > now) return false;
     const groups = new Map();
     watches.forEach((watch) => {
-      const marketType = watchMarketType(watch);
       const itemId = Math.trunc(Number(watch.itemId));
-      const key = marketType === 'points' ? 'points' : `item:${itemId}`;
-      if (!groups.has(key)) groups.set(key, { marketType, itemId, watches: [] });
-      groups.get(key).watches.push(watch);
+      if (!groups.has(itemId)) groups.set(itemId, []);
+      groups.get(itemId).push(watch);
     });
-    const dueGroups = [...groups.values()].filter((group) => {
+    const dueGroups = [...groups.entries()].filter(([, itemWatches]) => {
       if (force) return true;
-      const previous = state.data.market?.[group.watches[0].uid];
+      const previous = state.data.market?.[itemWatches[0].uid];
       return !previous || now >= Math.max(state.marketRetryAt, marketResultNextCheckAt(previous));
     });
     if (!dueGroups.length) {
@@ -766,28 +744,24 @@
     let changed = false;
     let allOkay = true;
     try {
-      await Promise.all(dueGroups.map(async (group) => {
-        const previous = state.data.market?.[group.watches[0].uid];
-        const errorKey = group.marketType === 'points' ? 'market-points' : `market-item:${group.itemId}`;
+      await Promise.all(dueGroups.map(async ([itemId, itemWatches]) => {
+        const previous = state.data.market?.[itemWatches[0].uid];
         try {
-          const body = group.marketType === 'points'
-            ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high' })
-            : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: 'high' });
+          const body = await api(`market/${itemId}/itemmarket`, { limit: 1 }, { priority: 'high' });
           const fetchedAt = Date.now();
-          const payload = group.marketType === 'points' ? body?.pointsmarket : body?.itemmarket;
-          const cacheTimestamp = Number(payload?.cache_timestamp) * 1000;
-          const cacheDelay = Math.max(1, Number(payload?.cache_delay) || 30) * 1000;
+          const cacheTimestamp = Number(body?.itemmarket?.cache_timestamp) * 1000;
+          const cacheDelay = Math.max(1, Number(body?.itemmarket?.cache_delay) || 30) * 1000;
           body.__fetchedAt = fetchedAt;
           body.__nextCheckAt = state.settings.marketRefreshMode === 'cache-aligned'
-            ? (cacheTimestamp > 0 ? Math.max(fetchedAt + 5_000, cacheTimestamp + cacheDelay + 250) : fetchedAt + cacheDelay)
+            ? Math.max(fetchedAt + 5_000, cacheTimestamp + cacheDelay + 250)
             : fetchedAt + marketRefreshMs();
-          if (marketResultSignature(previous, group.marketType) !== marketResultSignature(body, group.marketType)) changed = true;
+          if (marketResultSignature(previous) !== marketResultSignature(body)) changed = true;
           state.data.market ||= {};
-          group.watches.forEach((watch) => { state.data.market[watch.uid] = body; });
-          delete state.errors[errorKey];
+          itemWatches.forEach((watch) => { state.data.market[watch.uid] = body; });
+          delete state.errors[`market-item:${itemId}`];
         } catch (error) {
           allOkay = false;
-          state.errors[errorKey] = error?.message || (group.marketType === 'points' ? 'Torn Points Market check failed.' : 'Torn Item Market check failed.');
+          state.errors[`market-item:${itemId}`] = error?.message || 'Torn Item Market check failed.';
         }
       }));
       state.lastMarketUpdated = Date.now();
@@ -803,6 +777,7 @@
       state.marketPolling = false;
     }
   }
+
   function scheduleMarketPoll(delayMs = 1_000) {
     if (state.marketTimer) window.clearTimeout(state.marketTimer);
     state.marketTimer = window.setTimeout(async () => {
@@ -826,7 +801,7 @@
   }
 
   async function refreshBazaarWatches({ force = false } = {}) {
-    const watches = activeBazaarWatches();
+    const watches = activeMarketWatches();
     if (state.bazaarPolling || !visibleTornTab() || !state.settings.weav3rBazaarEnabled
       || state.settings.enabled.itemMarket === false || !watches.length) return false;
     const now = Date.now();
@@ -894,7 +869,7 @@
     state.bazaarTimer = window.setTimeout(async () => {
       state.bazaarTimer = null;
       await refreshBazaarWatches();
-      const watches = activeBazaarWatches();
+      const watches = activeMarketWatches();
       const normalDelay = bazaarRefreshMs(watches.length);
       const backoffDelay = Math.max(0, state.bazaarBackoffUntil - Date.now());
       scheduleBazaarPoll(Math.max(1_000, backoffDelay || normalDelay));
@@ -1664,7 +1639,7 @@
     }
     const now = Date.now();
     const needsDaily = force || includeDaily || dayChanged || snoozeExpired || now - state.lastDailyUpdated >= dailyRefreshMs();
-    const marketWatchesActive = activeMarketWatches();
+    const activeMarketWatches = state.settings.marketWatches.filter((watch) => watch.enabled !== false && Number(watch.itemId) > 0 && Number(watch.maxPrice) > 0);
     state.syncing = true;
     render();
     const tasks = [];
@@ -1918,16 +1893,16 @@
           saveCheckCache();
         }));
       }
-      if (state.settings.enabled.itemMarket !== false && marketWatchesActive.length && visibleTornTab()) {
+      if (state.settings.enabled.itemMarket !== false && activeMarketWatches.length && visibleTornTab()) {
         tasks.push(refreshMarketWatches({ force }));
-      } else if (state.settings.enabled.itemMarket !== false && marketWatchesActive.length && state.data.market) {
+      } else if (state.settings.enabled.itemMarket !== false && activeMarketWatches.length && state.data.market) {
         publishAlertGroups(['market']);
       }
-      if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeBazaarWatches().length && visibleTornTab()) {
+      if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeMarketWatches.length && visibleTornTab()) {
         tasks.push(refreshBazaarWatches({ force }));
-      } else if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeBazaarWatches().length) {
+      } else if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeMarketWatches.length) {
         state.data.bazaars ||= {};
-        activeBazaarWatches().forEach((watch) => {
+        activeMarketWatches.forEach((watch) => {
           const cached = state.bazaarCache[Math.trunc(Number(watch.itemId))];
           if (cached) state.data.bazaars[watch.uid] = cached;
         });
@@ -2128,27 +2103,11 @@
   function marketAlerts() {
     if (state.settings.enabled.itemMarket === false) return [];
     return state.settings.marketWatches.map((watch) => {
-      const marketType = watchMarketType(watch);
-      const response = state.data.market?.[watch.uid];
-      const threshold = Number(watch.maxPrice);
-      if (marketType === 'points') {
-        const listings = pointsMarketListings(response);
-        const cheapest = listings.length ? listings.reduce((best, listing) => listing.price < best.price ? listing : best) : null;
-        const href = 'https://www.torn.com/pmarket.php';
-        return {
-          id: `market:${watch.uid}`,
-          active: watch.enabled !== false && threshold > 0 && cheapest && cheapest.price <= threshold,
-          title: 'Points Market is below your target',
-          detail: cheapest ? `Points Market listing - $${cheapest.price.toLocaleString()} per point${cheapest.amount > 0 ? ` x ${cheapest.amount.toLocaleString()} points` : ''} - target $${threshold.toLocaleString()}` : '',
-          links: [{ label: 'Open Points Market', href }],
-          shareText: cheapest ? `Points Market | $${cheapest.price.toLocaleString()} per point${cheapest.amount > 0 ? ` x ${cheapest.amount.toLocaleString()} points` : ''} | target $${threshold.toLocaleString()} | ${href}` : '',
-          tone: 'urgent',
-        };
-      }
-      const result = response?.itemmarket;
+      const result = state.data.market?.[watch.uid]?.itemmarket;
       const listings = Array.isArray(result?.listings) ? result.listings.filter((listing) => Number.isFinite(Number(listing?.price))) : [];
       const cheapest = listings.length ? listings.reduce((best, listing) => Number(listing.price) < Number(best.price) ? listing : best) : null;
       const itemId = Math.trunc(Number(watch.itemId));
+      const threshold = Number(watch.maxPrice);
       const name = String(watch.label || result?.item?.name || `Item ${itemId}`);
       const href = `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${encodeURIComponent(itemId)}`;
       return {
@@ -2162,10 +2121,11 @@
       };
     });
   }
+
   function bazaarAlerts() {
     if (!state.settings.weav3rBazaarEnabled || state.settings.enabled.itemMarket === false) return [];
     return state.settings.marketWatches.flatMap((watch) => {
-      if (watchMarketType(watch) !== 'item' || watch.enabled === false || Number(watch.itemId) <= 0 || Number(watch.maxPrice) <= 0) return [];
+      if (watch.enabled === false || Number(watch.itemId) <= 0 || Number(watch.maxPrice) <= 0) return [];
       const result = state.data.bazaars?.[watch.uid];
       const threshold = Number(watch.maxPrice);
       const itemId = Math.trunc(Number(watch.itemId));
@@ -2682,7 +2642,7 @@
     const pauseSeconds = Math.max(0, Math.ceil((Number(state.settings.apiPausedUntil) - Date.now()) / 1000));
     const apiMode = pauseSeconds > 0
       ? `Torn API paused ${formatDuration(pauseSeconds)}`
-      : `${state.settings.slowApiMode ? 'slow mode - ' : ''}${usage}/${limit} shared API calls in the last minute`;
+      : `${state.settings.slowApiMode ? 'slow mode - ' : ''}${usage}/${limit} dashboard API calls in the last minute`;
     const mode = `${live ? 'Live page + API fallback' : 'API fallback - live scraping paused until Torn is focused'} - ${apiMode}`;
     if (!state.settings.apiKey) {
       return live
@@ -2926,32 +2886,22 @@
       return `<option value="${escapeHtml(item.name)}" label="${escapeHtml(`${item.type} · ID ${item.id}${estimate}`)}"></option>`;
     }).join('');
     const marketRows = state.settings.marketWatches.map((watch) => {
-      const marketType = watchMarketType(watch);
-      const isPoints = marketType === 'points';
       const selected = state.itemCatalog.items.find((item) => item.id === Math.trunc(Number(watch.itemId)));
       const type = selected?.type || watch.catalogType || '';
       const itemId = Math.trunc(Number(watch.itemId));
       const estimate = Number(selected?.marketPrice ?? watch.marketEstimate) || 0;
-      const itemMeta = isPoints
-        ? 'Alert when the cheapest listing reaches your maximum price per point'
-        : itemId > 0 ? `${type ? `${type} · ` : ''}ID ${itemId}${estimate ? ` · Torn value ~$${estimate.toLocaleString()}` : ''}` : 'Choose an item from the search results';
+      const itemMeta = itemId > 0 ? `${type ? `${type} · ` : ''}ID ${itemId}${estimate ? ` · Torn value ~$${estimate.toLocaleString()}` : ''}` : 'Choose an item from the search results';
       return `
       <div class="market-watch" data-market-watch="${escapeHtml(watch.uid)}">
         <input type="checkbox" data-watch-field="enabled" data-watch-uid="${escapeHtml(watch.uid)}" ${watch.enabled !== false && state.settings.enabled[`market:${watch.uid}`] !== false ? 'checked' : ''} title="Enable this watch">
         <label class="market-item-search">
-          <select class="market-source-select" data-watch-field="marketType" data-watch-uid="${escapeHtml(watch.uid)}" aria-label="Market source">
-            <option value="item" ${marketType === 'item' ? 'selected' : ''}>Item Market</option>
-            <option value="points" ${marketType === 'points' ? 'selected' : ''}>Points Market</option>
-          </select>
-          ${isPoints
-            ? '<span class="points-watch-name">Points</span>'
-            : `<input type="text" list="tdd-market-items" data-market-search data-watch-uid="${escapeHtml(watch.uid)}" value="${escapeHtml(watch.searchText ?? watch.label ?? '')}" placeholder="Search item name" autocomplete="off" aria-label="Search Torn items">`}
+          <input type="text" list="tdd-market-items" data-market-search data-watch-uid="${escapeHtml(watch.uid)}" value="${escapeHtml(watch.searchText ?? watch.label ?? '')}" placeholder="Search item name" autocomplete="off" aria-label="Search Torn items">
           <small>${escapeHtml(itemMeta)}</small>
         </label>
-        <input type="number" min="1" step="1" data-watch-field="maxPrice" data-watch-uid="${escapeHtml(watch.uid)}" value="${escapeHtml(watch.maxPrice || '')}" placeholder="${isPoints ? 'Max $ / point' : 'Max price'}" aria-label="${isPoints ? 'Maximum price per point' : 'Maximum item price'}">
+        <input type="number" min="1" step="1" data-watch-field="maxPrice" data-watch-uid="${escapeHtml(watch.uid)}" value="${escapeHtml(watch.maxPrice || '')}" placeholder="Max price" aria-label="Maximum price">
         <button data-action="remove-market-watch" data-watch-uid="${escapeHtml(watch.uid)}" title="Remove watch">x</button>
       </div>
-    `;
+    `; 
     }).join('');
     const sectionOpen = (name) => state.settings.settingsSections?.[name] ? 'open' : '';
     const crimeProgressRows = CRIME_UNIQUE_DEFINITIONS.map((definition) => {
@@ -2976,7 +2926,7 @@
           <button data-action="clear-snoozes" class="subtle">Clear snoozes</button>
         </div>
         <div class="api-controls">
-          <strong>Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
+          <strong>Dashboard Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
           <label><input type="checkbox" data-field="slow-api-mode" ${state.settings.slowApiMode ? 'checked' : ''}> Slow API mode (30/min ceiling; low-priority checks yield first)</label>
           <label>Pause Torn API
             <select data-field="api-pause-duration">
@@ -2985,7 +2935,7 @@
           </label>
           <button data-action="pause-api">Pause</button>
           ${Number(state.settings.apiPausedUntil) > Date.now() ? `<button data-action="resume-api">Resume now (${formatDuration(Math.ceil((Number(state.settings.apiPausedUntil) - Date.now()) / 1000))})</button>` : ''}
-          <small>Core Lib coordinates Torn API requests made by this dashboard, Ranked War Panel, and Retaliation Monitor on this browser profile and Torn origin. External apps, extensions, other devices, and TornW3B cannot be counted.</small>
+          <small>Counts only Torn requests made by this dashboard across its page changes. TornW3B checks are separate. Other userscripts cannot be counted unless they share this ledger.</small>
         </div>
         <details class="settings-group" data-settings-section="alerts" ${sectionOpen('alerts')}>
           <summary>Alert toggles</summary>
@@ -3108,8 +3058,8 @@
           </div>
         </details>
         <div class="market-settings">
-          <div class="section-title">Market watches</div>
-          <p>Choose Item Market or Points Market, then set the maximum price that should trigger an alert.</p>
+          <div class="section-title">Item market watches</div>
+          <p>Search by item name, then set the price that should trigger an alert. Item IDs are filled automatically.</p>
           <div class="catalog-controls">
             <label>Category
               <select data-field="market-catalog-category">
@@ -3120,10 +3070,10 @@
             <button data-action="refresh-item-catalog" ${state.itemCatalogLoading || !state.settings.apiKey ? 'disabled' : ''}>${state.itemCatalog.items.length ? 'Refresh list' : 'Load items'}</button>
           </div>
           <datalist id="tdd-market-items">${catalogOptions}</datalist>
-          <div class="market-head"><span></span><span>Market / item</span><span>Max price</span><span></span></div>
+          <div class="market-head"><span></span><span>Item</span><span>Max price</span><span></span></div>
           ${marketRows || '<div class="market-empty">No watched items yet.</div>'}
           <div class="market-controls">
-            <button data-action="add-market-watch" ${state.settings.marketWatches.length >= 10 ? 'disabled' : ''}>${state.settings.marketWatches.length >= 10 ? '10 watch limit' : 'Add watch'}</button>
+            <button data-action="add-market-watch" ${state.settings.marketWatches.length >= 10 ? 'disabled' : ''}>${state.settings.marketWatches.length >= 10 ? '10 item limit' : 'Add item'}</button>
             <label>Torn market polling
               <select data-field="market-refresh-minutes">
                 <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Fast - align to Torn's 30s cache</option>
@@ -3135,7 +3085,7 @@
             <label><input type="checkbox" data-field="weav3r-bazaar-enabled" ${state.settings.weav3rBazaarEnabled ? 'checked' : ''}> Check TornW3B bazaars</label>
             <span>Every 5 sec for 1â€“2 watches; slows automatically for more</span>
           </div>
-          <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
+          <p class="third-party-note">Optional third-party source: sends watched item IDs only to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
         </div>
         <p class="privacy"><strong>Privacy rule:</strong> Torn page content is read only while this tab is visible and the Torn browser window is focused. When visible but unfocused, scraped signals are discarded and Torn API fallback is used. Hidden tabs are paused.</p>
         ${exclusion ? `<p class="exclusion">Casino reminder paused by “${escapeHtml(exclusion.title)}”${exclusion.untilMs ? ` until ${new Date(exclusion.untilMs).toLocaleString()}` : ''}.</p>` : ''}
@@ -3308,9 +3258,7 @@
         .market-head, .market-watch { display: grid; grid-template-columns: 22px minmax(170px,1fr) 105px 28px; gap: 5px; align-items: center; }
         .market-head { margin-bottom: 3px; color: #87919a; font-size: 10px; }
         .market-watch { margin-bottom: 5px; }
-        .market-watch input[type="text"], .market-watch input[type="number"], .market-watch select { min-width: 0; width: 100%; padding: 5px 6px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; color: #eef2f5; background: #111418; }
-        .market-source-select { font-size: 10px; }
-        .points-watch-name { padding: 4px 2px 1px; color: #eef2f5; font-weight: 750; }
+        .market-watch input[type="text"], .market-watch input[type="number"] { min-width: 0; width: 100%; padding: 5px 6px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; color: #eef2f5; background: #111418; }
         .market-item-search { min-width: 0; display: grid; gap: 2px; }
         .market-item-search small { overflow: hidden; color: #87929c; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
         .market-watch button { height: 27px; padding: 0; color: #e2a1a1; }
@@ -3530,7 +3478,7 @@
     } else if (action === 'add-market-watch') {
       if (state.settings.marketWatches.length >= 10) return;
       const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      state.settings.marketWatches.push({ uid, marketType: 'item', itemId: '', label: '', searchText: '', maxPrice: '', enabled: true });
+      state.settings.marketWatches.push({ uid, itemId: '', label: '', searchText: '', maxPrice: '', enabled: true });
       state.settings.enabled[`market:${uid}`] = true;
       if (!itemCatalogFresh()) loadItemCatalog();
     } else if (action === 'refresh-item-catalog') {
@@ -3548,11 +3496,8 @@
       Object.keys(state.settings.alarmHistory).filter((id) => id.startsWith(`bazaar:${uid}:`)).forEach((id) => delete state.settings.alarmHistory[id]);
       if (state.data.market) delete state.data.market[uid];
       if (state.data.bazaars) delete state.data.bazaars[uid];
-      if (removed && watchMarketType(removed) === 'item' && !state.settings.marketWatches.some((watch) => watchMarketType(watch) === 'item' && Number(watch.itemId) === Number(removed.itemId))) {
+      if (removed && !state.settings.marketWatches.some((watch) => Number(watch.itemId) === Number(removed.itemId))) {
         delete state.errors[`market-item:${Math.trunc(Number(removed.itemId))}`];
-      }
-      if (removed && watchMarketType(removed) === 'points' && !state.settings.marketWatches.some((watch) => watchMarketType(watch) === 'points')) {
-        delete state.errors['market-points'];
       }
       state.lastBazaarUpdated = 0;
       state.lastMarketUpdated = 0;
@@ -3743,34 +3688,13 @@
       const watch = state.settings.marketWatches.find((item) => item.uid === event.target.dataset.watchUid);
       if (!watch) return;
       const field = event.target.dataset.watchField;
-      const previousMarketType = watchMarketType(watch);
       const previousItemId = Math.trunc(Number(watch.itemId));
-      if (field === 'enabled') {
-        watch.enabled = event.target.checked;
-        state.settings.enabled[`market:${watch.uid}`] = event.target.checked;
-      } else if (field === 'marketType') {
-        watch.marketType = event.target.value === 'points' ? 'points' : 'item';
-        if (watch.marketType === 'points') {
-          watch.itemId = '';
-          watch.label = '';
-          watch.searchText = '';
-          watch.catalogType = '';
-          watch.marketEstimate = 0;
-        }
-      } else {
-        watch[field] = event.target.value;
-      }
-      if (field === 'marketType' || field === 'itemId') {
-        if (state.data.market) delete state.data.market[watch.uid];
-        if (state.data.bazaars) delete state.data.bazaars[watch.uid];
-      }
-      if ((field === 'marketType' || field === 'itemId') && previousMarketType === 'item' && previousItemId > 0
-        && !state.settings.marketWatches.some((item) => item.uid !== watch.uid && watchMarketType(item) === 'item' && Math.trunc(Number(item.itemId)) === previousItemId)) {
+      watch[field] = field === 'enabled' ? event.target.checked : event.target.value;
+      if (field === 'enabled') state.settings.enabled[`market:${watch.uid}`] = event.target.checked;
+      if (field === 'itemId' && state.data.market) delete state.data.market[watch.uid];
+      if (field === 'itemId' && state.data.bazaars) delete state.data.bazaars[watch.uid];
+      if (field === 'itemId' && previousItemId > 0 && !state.settings.marketWatches.some((item) => item.uid !== watch.uid && Math.trunc(Number(item.itemId)) === previousItemId)) {
         delete state.errors[`market-item:${previousItemId}`];
-      }
-      if (field === 'marketType' && previousMarketType === 'points'
-        && !state.settings.marketWatches.some((item) => item.uid !== watch.uid && watchMarketType(item) === 'points')) {
-        delete state.errors['market-points'];
       }
       state.lastMarketUpdated = 0;
       state.lastBazaarUpdated = 0;

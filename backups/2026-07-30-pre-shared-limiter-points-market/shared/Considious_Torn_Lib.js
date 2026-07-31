@@ -1,0 +1,46 @@
+// ==UserScript==
+// @name         Core Lib
+// @namespace    Considious [3853023]
+// @version      1.1.1
+// @description  Core library of functions for Considious [3853023]'s family of scripts.
+// @author       Considious [3853023]
+// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
+// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
+// @match        https://www.torn.com/*
+// @connect      api.torn.com
+// @connect      twse.dev
+// @connect      ffscouter.com
+// @connect      raw.githubusercontent.com
+// @connect      docs.google.com
+// @connect      weav3r.dev
+// @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @run-at       document-end
+// ==/UserScript==
+
+(function libInstaller(global){
+'use strict';
+if(global.ConsidiousTornLib)return;
+const VERSION='1.1.1';
+function isPageActive({requireFocus=true}={}){return document.visibilityState==='visible'&&(!requireFocus||document.hasFocus());}
+function errorMessage(value,fallback='Request failed'){if(value instanceof Error)return value.message;if(typeof value==='string'&&value.trim())return value.trim();if(value&&typeof value==='object'){const nested=value.error?.error??value.error?.message??value.error??value.message;if(nested!==undefined&&nested!==value)return errorMessage(nested,fallback);}return fallback;}
+function request(url,options={}){if(typeof GM_xmlhttpRequest!=='function')return Promise.reject(new Error('GM_xmlhttpRequest is unavailable. Add it to the userscript grants.'));return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:options.method||'GET',url,data:options.data,headers:options.headers||{},timeout:options.timeout||12_000,responseType:options.responseType,anonymous:options.anonymous,onload:resolve,onerror:()=>reject(new Error(options.networkErrorMessage||'Network request failed')),ontimeout:()=>reject(new Error(options.timeoutMessage||'Network request timed out')),onabort:()=>reject(new Error(options.abortMessage||'Network request was aborted'))}));}
+async function requestText(url,options={}){const response=await request(url,options);const minimum=options.minimumStatus??200,maximum=options.maximumStatus??399;if(response.status<minimum||response.status>maximum)throw new Error(options.httpErrorMessage?.(response)||`HTTP ${response.status}`);return response.responseText||'';}
+async function requestJson(url,options={}){const response=await request(url,options);let data;try{data=JSON.parse(response.responseText);}catch{throw new Error(options.invalidJsonMessage||'The server returned invalid JSON.');}if(response.status<200||response.status>=300){const message=options.httpErrorMessage?.(response,data)||errorMessage(data,`HTTP ${response.status}`);const error=new Error(message);error.status=response.status;error.url=url;error.responseText=response.responseText;throw error;}if(options.rejectApiErrors!==false&&data?.error)throw new Error(errorMessage(data.error));return data;}
+function tornRequest(url,apiKey,options={}){return requestJson(url,{...options,headers:{...(options.headers||{}),Authorization:`ApiKey ${apiKey}`}});}
+function makePanelDraggable(panel,options={}){if(!panel)throw new TypeError('A panel element is required.');const handle=typeof options.handle==='string'?panel.querySelector(options.handle):options.handle;if(!handle)throw new Error('The panel drag handle was not found.');const margin=Number.isFinite(options.margin)?options.margin:4,ignoreSelector=options.ignoreSelector||'button, input, textarea, select, a, [data-no-drag]',draggingClass=options.draggingClass||'',storageKey=options.storageKey||'',getValue=options.getValue||(typeof GM_getValue==='function'?GM_getValue:null),setValue=options.setValue||(typeof GM_setValue==='function'?GM_setValue:null);const clamp=(left,top)=>({left:Math.max(margin,Math.min(left,window.innerWidth-panel.offsetWidth-margin)),top:Math.max(margin,Math.min(top,window.innerHeight-panel.offsetHeight-margin))});const apply=position=>{if(!position||!Number.isFinite(position.left)||!Number.isFinite(position.top))return;const next=clamp(position.left,position.top);panel.style.left=`${next.left}px`;panel.style.top=`${next.top}px`;panel.style.right='auto';panel.style.bottom='auto';};if(storageKey&&getValue)apply(getValue(storageKey,null));let drag=null;handle.addEventListener('pointerdown',event=>{if(event.button!==0||event.target.closest(ignoreSelector))return;const rect=panel.getBoundingClientRect();drag={pointerId:event.pointerId,offsetX:event.clientX-rect.left,offsetY:event.clientY-rect.top};handle.setPointerCapture(event.pointerId);if(draggingClass)panel.classList.add(draggingClass);event.preventDefault();});handle.addEventListener('pointermove',event=>{if(!drag||event.pointerId!==drag.pointerId)return;apply({left:event.clientX-drag.offsetX,top:event.clientY-drag.offsetY});});const finish=event=>{if(!drag||event.pointerId!==drag.pointerId)return;drag=null;if(draggingClass)panel.classList.remove(draggingClass);if(storageKey&&setValue){const rect=panel.getBoundingClientRect();setValue(storageKey,{left:Math.round(rect.left),top:Math.round(rect.top)});}};handle.addEventListener('pointerup',finish);handle.addEventListener('pointercancel',finish);const clampCurrentPosition=()=>{const rect=panel.getBoundingClientRect();apply({left:rect.left,top:rect.top});};window.addEventListener('resize',clampCurrentPosition,{passive:true});return{applyPosition:apply,clampToViewport:clampCurrentPosition,destroy(){window.removeEventListener('resize',clampCurrentPosition);}};}
+async function copyText(text){const value=String(text);if(navigator.clipboard?.writeText&&document.hasFocus()){try{await navigator.clipboard.writeText(value);return true;}catch{}}const textarea=document.createElement('textarea');textarea.value=value;textarea.style.position='fixed';textarea.style.left='-9999px';document.body.appendChild(textarea);textarea.select();try{if(!document.execCommand('copy'))throw new Error('The browser rejected the copy command.');return true;}finally{textarea.remove();}}
+function formatDuration(totalSeconds){const seconds=Math.max(0,Math.floor(Number(totalSeconds)||0));return`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;}
+function shortNumber(value){const number=Number(value);if(!Number.isFinite(number))return String(value);for(const[size,suffix]of[[1e15,'Q'],[1e12,'T'],[1e9,'B'],[1e6,'M'],[1e3,'K']])if(Math.abs(number)>=size)return`${Number((number/size).toFixed(2))}${suffix}`;return String(Math.round(number));}
+function unixNow(){return Math.floor(Date.now()/1000);}
+function escapeHtml(value){return String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');}
+
+function formatHumanDuration(seconds){const total=Math.max(0,Math.floor(Number(seconds)||0)),hours=Math.floor(total/3600),minutes=Math.floor((total%3600)/60);if(hours)return`${hours}h ${minutes}m`;if(total<60)return`${total}s`;return`${minutes}m`;}
+function elementVisible(element){if(!(element instanceof HTMLElement)||!element.isConnected)return false;const style=getComputedStyle(element);if(style.display==='none'||style.visibility==='hidden')return false;const rect=element.getBoundingClientRect();return rect.width>0&&rect.height>0;}
+function readJsonStorage(key,fallback,options={}){const storage=options.storage||localStorage;try{const parsed=JSON.parse(storage.getItem(key));if(parsed==null)return options.merge&&fallback&&typeof fallback==='object'?{...fallback}:fallback;if(options.merge&&fallback&&typeof fallback==='object'&&!Array.isArray(fallback)&&typeof parsed==='object'&&!Array.isArray(parsed))return{...fallback,...parsed};return parsed;}catch{return options.merge&&fallback&&typeof fallback==='object'?{...fallback}:fallback;}}
+function writeJsonStorage(key,value,options={}){const storage=options.storage||localStorage;storage.setItem(key,JSON.stringify(value));return value;}
+Object.defineProperty(global,'ConsidiousTornLib',{value:Object.freeze({VERSION,copyText,errorMessage,escapeAttribute:escapeHtml,escapeHtml,formatDuration,formatHumanDuration,elementVisible,isPageActive,makePanelDraggable,request,requestJson,requestText,readJsonStorage,shortNumber,tornRequest,unixNow,writeJsonStorage}),configurable:false,enumerable:true,writable:false});
+})(globalThis);

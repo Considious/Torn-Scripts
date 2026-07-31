@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Incoming Retaliation Monitor
 // @namespace    Considious [3853023]
-// @version      1.7.9
+// @version      1.7.8
 // @description  Focused Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
@@ -265,7 +265,7 @@
     async function getUserBasic(apiKey,playerId){const data=await tornRequest(`https://api.torn.com/v2/user/${encodeURIComponent(playerId)}/profile`,apiKey);return data?.profile??data?.basic??data?.user??data;}
     async function getFactionAttacks(apiKey,from,to){const url='https://api.torn.com/v2/faction/attacks'+`?from=${encodeURIComponent(from)}`+`&to=${encodeURIComponent(to)}`+`&limit=${MAX_RESULTS}`+'&sort=desc';const data=await tornRequest(url,apiKey);const attacks=data.attacks??data.faction?.attacks??[];if(!Array.isArray(attacks))throw new Error('Torn returned no attacks list. The key may need faction attacks access.');return attacks;}
     async function getFFScouterStats(apiKey,playerIds){if(!playerIds.length)return[];const targets=playerIds.join(',');const url='https://ffscouter.com/api/v1/get-stats'+`?key=${encodeURIComponent(apiKey)}`+`&targets=${encodeURIComponent(targets)}`;const data=await requestJson(url);if(Array.isArray(data))return data;if(Array.isArray(data.results))return data.results;if(Array.isArray(data.data))return data.data;throw new Error(data.error?.message??data.error??'FFScouter returned an unexpected response.');}
-    function tornRequest(url,apiKey){return TornLib.tornRequest(url,apiKey,{timeout:12_000,tornScript:'Retaliation Monitor',invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.'});}
+    function tornRequest(url,apiKey){return TornLib.tornRequest(url,apiKey,{timeout:12_000,invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.'});}
     function requestJson(url,headers={}){return TornLib.requestJson(url,{headers,timeout:12_000,invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.',httpErrorMessage:(response,data)=>TornLib.errorMessage(data,`API request failed with status ${response.status}.`)});}
 
     function getFactionName(side){return String(side?.faction?.name??side?.faction_name??side?.factionName??'').trim();}
