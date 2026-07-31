@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.26
+// @version      0.9.25
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -1869,12 +1869,6 @@
         summary.querySelector('.rw-war-hits').textContent =
             personalStats.warAttacks.toLocaleString();
 
-        const compactAttacks = panel.querySelector('.rw-compact-attacks');
-        if (compactAttacks) {
-            const attackCount = personalStats.warAttacks.toLocaleString();
-            compactAttacks.textContent = `${attackCount} attack${personalStats.warAttacks === 1 ? '' : 's'}`;
-        }
-
         summary.querySelector('.rw-all-attacks').textContent =
             personalStats.totalAttacks.toLocaleString();
 
@@ -2079,12 +2073,9 @@
                 </svg>
             </button>
             <header class="rw-header">
-                <div class="rw-header-main">
-                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.26</span> <span class="rw-count">0/0</span></div>
-                    <div class="rw-header-subline">
-                        <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
-                        <span class="rw-compact-attacks" title="Your current ranked-war attack count">0 attacks</span>
-                    </div>
+                <div>
+                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.25</span> <span class="rw-count">0/0</span></div>
+                    <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
                 </div>
                 <div class="rw-header-buttons">
                     <button class="rw-refresh" type="button" title="Refresh" aria-label="Refresh">
@@ -2637,11 +2628,7 @@
 
         .rw-title { font-weight: 700; color: #eee; letter-spacing: .4px; }
         .rw-count { color: #aaa; font-weight: 400; }
-        .rw-header-main { flex: 1 1 auto; min-width: 0; }
-        .rw-header-subline { display: flex; align-items: center; gap: 5px; min-width: 0; }
         .rw-opponent {
-            flex: 1 1 auto;
-            min-width: 0;
             max-width: 220px;
             color: #8ab4f8;
             overflow: hidden;
@@ -2650,14 +2637,6 @@
             text-decoration: none;
         }
         .rw-opponent:hover { text-decoration: underline; }
-        .rw-compact-attacks {
-            display: none;
-            flex: 0 0 auto;
-            color: #bbb;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-        #rw-target-panel.collapsed .rw-compact-attacks { display: inline; }
         .rw-header-buttons { display: flex; gap: 5px; }
 
         .rw-header button svg,
