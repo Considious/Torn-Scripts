@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.3
+// @version      1.4.2
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -12,7 +12,6 @@
 // @connect      weav3r.dev
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.0
 // @run-at       document-end
@@ -227,9 +226,9 @@
     raceCheckPending: true,
     raceCheckComplete: false,
     confirmedRaceActive: false,
-    alertSnapshot: persistedChecks.alertSnapshot,
-    alertSnapshotReady: persistedChecks.alertSnapshotReady,
-    readyAlertGroups: new Set(persistedChecks.readyAlertGroups),
+    alertSnapshot: [],
+    alertSnapshotReady: false,
+    readyAlertGroups: new Set(),
     checkCycleFailed: false,
     pageCheckPending: false,
     audioContext: null,
@@ -250,7 +249,6 @@
     resizing: null,
     chatShareArm: null,
   };
-  let dashboardNetworkLease = null;
 
   function loadSettings() {
     const saved = GM_getValue(STORAGE_KEY, {});
@@ -317,10 +315,6 @@
         lastCasinoUpdated: 0,
         lastJobAddictionUpdated: 0,
         lastClusterUpdated: 0,
-        lastUpdated: 0,
-        alertSnapshot: [],
-        alertSnapshotReady: false,
-        readyAlertGroups: [],
       };
     }
     const legacyFastUpdated = Number(cached.lastFastUpdated) || 0;
@@ -339,15 +333,10 @@
       lastCasinoUpdated: Number(cached.lastCasinoUpdated) || 0,
       lastJobAddictionUpdated: Number(cached.lastJobAddictionUpdated) || 0,
       lastClusterUpdated: Number(cached.lastClusterUpdated) || 0,
-      lastUpdated: Number(cached.lastUpdated) || Number(cached.savedAt) || 0,
-      alertSnapshot: Array.isArray(cached.alertSnapshot) ? cached.alertSnapshot : [],
-      alertSnapshotReady: cached.alertSnapshotReady === true,
-      readyAlertGroups: Array.isArray(cached.readyAlertGroups) ? cached.readyAlertGroups.filter(Boolean) : [],
     };
   }
 
   function saveCheckCache() {
-    if (dashboardNetworkLease && !ownsDashboardNetworkLease()) return;
     GM_setValue(CHECK_CACHE_KEY, {
       data: state.data,
       lastDailyUpdated: state.lastDailyUpdated,
@@ -363,33 +352,8 @@
       lastCasinoUpdated: state.lastCasinoUpdated,
       lastJobAddictionUpdated: state.lastJobAddictionUpdated,
       lastClusterUpdated: state.lastClusterUpdated,
-      lastUpdated: state.lastUpdated,
-      alertSnapshot: state.alertSnapshot,
-      alertSnapshotReady: state.alertSnapshotReady,
-      readyAlertGroups: [...state.readyAlertGroups],
       savedAt: Date.now(),
     });
-  }
-
-  function applyCheckCache(cached) {
-    state.data = cached.data;
-    state.lastDailyUpdated = cached.lastDailyUpdated;
-    state.lastMarketUpdated = cached.lastMarketUpdated;
-    state.lastBazaarUpdated = cached.lastBazaarUpdated;
-    state.lastEnergyUpdated = cached.lastEnergyUpdated;
-    state.lastNerveUpdated = cached.lastNerveUpdated;
-    state.lastCooldownsUpdated = cached.lastCooldownsUpdated;
-    state.lastEducationOcUpdated = cached.lastEducationOcUpdated;
-    state.lastRaceUpdated = cached.lastRaceUpdated;
-    state.nextRaceTravelCheckAt = cached.nextRaceTravelCheckAt;
-    state.lastMissionsUpdated = cached.lastMissionsUpdated;
-    state.lastCasinoUpdated = cached.lastCasinoUpdated;
-    state.lastJobAddictionUpdated = cached.lastJobAddictionUpdated;
-    state.lastClusterUpdated = cached.lastClusterUpdated;
-    state.lastUpdated = cached.lastUpdated;
-    state.alertSnapshot = cached.alertSnapshot;
-    state.alertSnapshotReady = cached.alertSnapshotReady;
-    state.readyAlertGroups = new Set(cached.readyAlertGroups);
   }
 
   function loadItemCatalogCache() {
@@ -459,20 +423,6 @@
     return state.windowFocused && TornLib.isPageActive();
   }
 
-  function ownsDashboardNetworkLease() {
-    return Boolean(dashboardNetworkLease?.isLeader());
-  }
-
-  function dashboardOwnerPauseError(message = 'ADHD Dashboard polling is owned by another Torn tab.') {
-    const error = new Error(message);
-    error.dashboardOwnerPause = true;
-    return error;
-  }
-
-  function isDashboardOwnerPause(error) {
-    return error?.dashboardOwnerPause === true;
-  }
-
   function rollingTornApiUsage() {
     return TornLib.getTornApiUsage({
       limit: state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT,
@@ -501,7 +451,7 @@
       }
       const task = state.apiQueues[priority].shift();
       try {
-        if (!ownsDashboardNetworkLease()) throw dashboardOwnerPauseError();
+        if (!visibleTornTab()) throw new Error('Paused because this Torn tab is not visible.');
         if (!state.settings.apiKey) throw new Error('Add a Torn API key in Settings.');
         const pausedUntil = Number(state.settings.apiPausedUntil) || 0;
         if (pausedUntil > Date.now()) {
@@ -534,18 +484,17 @@
   }
 
   function cancelQueuedApiCalls(message) {
-    const error = message instanceof Error ? message : new Error(message);
     Object.values(state.apiQueues).forEach((queue) => {
-      while (queue.length) queue.shift().reject(error);
+      while (queue.length) queue.shift().reject(new Error(message));
     });
   }
 
   function api(path, query = {}, { priority = 'normal' } = {}) {
-    if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
+    if (!visibleTornTab()) return Promise.reject(new Error('Paused because this Torn tab is not visible.'));
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
     return enqueueTornApiCall(priority, () => new Promise((resolve, reject) => {
-      if (!ownsDashboardNetworkLease()) {
-        reject(dashboardOwnerPauseError());
+      if (!visibleTornTab()) {
+        reject(new Error('Paused because this Torn tab is not visible.'));
         return;
       }
       if (!state.settings.apiKey) {
@@ -569,8 +518,8 @@
         },
         timeout: 20_000,
         onload(response) {
-          if (!ownsDashboardNetworkLease()) {
-            reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
+          if (!visibleTornTab()) {
+            reject(new Error('Response ignored because this Torn tab is no longer visible.'));
             return;
           }
           let body;
@@ -594,11 +543,11 @@
   }
 
   function apiV1(section, query = {}, { priority = 'normal' } = {}) {
-    if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
+    if (!visibleTornTab()) return Promise.reject(new Error('Paused because this Torn tab is not visible.'));
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
     return enqueueTornApiCall(priority, () => new Promise((resolve, reject) => {
-      if (!ownsDashboardNetworkLease()) {
-        reject(dashboardOwnerPauseError());
+      if (!visibleTornTab()) {
+        reject(new Error('Paused because this Torn tab is not visible.'));
         return;
       }
       if (!state.settings.apiKey) {
@@ -615,8 +564,8 @@
         headers: { Accept: 'application/json' },
         timeout: 20_000,
         onload(response) {
-          if (!ownsDashboardNetworkLease()) {
-            reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
+          if (!visibleTornTab()) {
+            reject(new Error('Response ignored because this Torn tab is no longer visible.'));
             return;
           }
           let body;
@@ -641,8 +590,8 @@
 
   function weav3rBazaars(itemId) {
     return new Promise((resolve, reject) => {
-      if (!ownsDashboardNetworkLease()) {
-        reject(dashboardOwnerPauseError());
+      if (!visibleTornTab()) {
+        reject(new Error('Paused because this Torn tab is not visible.'));
         return;
       }
       const url = `https://weav3r.dev/item/${encodeURIComponent(Math.trunc(Number(itemId)))}`;
@@ -652,8 +601,8 @@
         headers: { Accept: 'text/html' },
         timeout: 20_000,
         onload(response) {
-          if (!ownsDashboardNetworkLease()) {
-            reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
+          if (!visibleTornTab()) {
+            reject(new Error('Response ignored because this Torn tab is no longer visible.'));
             return;
           }
           if (response.status === 429) {
@@ -822,7 +771,7 @@
 
   async function refreshMarketWatches({ force = false } = {}) {
     const watches = activeMarketWatches();
-    if (state.marketPolling || !ownsDashboardNetworkLease() || state.settings.enabled.itemMarket === false || !watches.length) return false;
+    if (state.marketPolling || !visibleTornTab() || state.settings.enabled.itemMarket === false || !watches.length) return false;
     const now = Date.now();
     if (Number(state.settings.apiPausedUntil) > now) return false;
     const groups = new Map();
@@ -866,7 +815,6 @@
           group.watches.forEach((watch) => { state.data.market[watch.uid] = body; });
           delete state.errors[errorKey];
         } catch (error) {
-          if (isDashboardOwnerPause(error)) return;
           allOkay = false;
           state.errors[errorKey] = error?.message || (group.marketType === 'points' ? 'Torn Points Market check failed.' : 'Torn Item Market check failed.');
         }
@@ -908,7 +856,7 @@
 
   async function refreshBazaarWatches({ force = false } = {}) {
     const watches = activeBazaarWatches();
-    if (state.bazaarPolling || !ownsDashboardNetworkLease() || !state.settings.weav3rBazaarEnabled
+    if (state.bazaarPolling || !visibleTornTab() || !state.settings.weav3rBazaarEnabled
       || state.settings.enabled.itemMarket === false || !watches.length) return false;
     const now = Date.now();
     const refreshMs = bazaarRefreshMs(watches.length);
@@ -944,7 +892,6 @@
           state.bazaarCache[itemId] = result;
           delete state.errors[`bazaar-item:${itemId}`];
         } catch (error) {
-          if (isDashboardOwnerPause(error)) return;
           allOkay = false;
           state.errors[`bazaar-item:${itemId}`] = error?.message || 'TornW3B Bazaar check failed.';
           if (error?.rateLimited) {
@@ -1019,7 +966,7 @@
   }
 
   async function loadItemCatalog({ force = false } = {}) {
-    if (state.itemCatalogLoading || !ownsDashboardNetworkLease() || (!force && itemCatalogFresh())) return;
+    if (state.itemCatalogLoading || !visibleTornTab() || (!force && itemCatalogFresh())) return;
     if (!state.settings.apiKey) {
       state.errors.itemCatalog = 'Add a Torn API key to load the searchable item list.';
       render();
@@ -1048,7 +995,6 @@
       delete state.errors.itemCatalog;
       saveSettings();
     } catch (error) {
-      if (isDashboardOwnerPause(error)) return;
       state.errors.itemCatalog = error?.message || 'Could not load the Torn item catalog.';
     } finally {
       state.itemCatalogLoading = false;
@@ -1682,7 +1628,6 @@
       delete state.errors[errorKey];
       return true;
     } catch (error) {
-      if (isDashboardOwnerPause(error)) return false;
       state.errors[errorKey] = error?.message || 'Unknown API error.';
       return false;
     }
@@ -1720,31 +1665,29 @@
   }
 
   async function refresh({ includeDaily = false, force = false, domOnly = false } = {}) {
-    if (state.syncing) {
+    if (!visibleTornTab() || state.syncing) {
       render();
       return;
     }
     const snoozeExpired = releaseExpiredSnoozes();
-    if (visibleTornTab()) {
-      scrapeActivePage();
-      state.pageCheckPending = focusedRouteAwaitingLiveData();
-      const liveGroups = ['turtle'];
-      if (state.dom.bars?.energy) liveGroups.push('energyFull');
-      if (state.dom.bars?.nerve) liveGroups.push('nerveFull');
-      if (state.dom.cooldowns?.drug != null) liveGroups.push('drugCooldown');
-      if (state.dom.cooldowns?.medical != null) liveGroups.push('medicalCooldown');
-      if (state.dom.cooldowns?.booster != null) liveGroups.push('boosterCooldown');
-      if (state.dom.stockBenefitsSignalKnown) liveGroups.push('stockBenefits');
-      if (state.dom.educationActive) liveGroups.push('education');
-      if (state.dom.playerAddiction != null) liveGroups.push('playerAddiction');
-      if (state.dom.clusterRingSignalKnown && state.data.shoplifting) liveGroups.push('clusterRing');
-      const activeCrimeDefinition = crimeUniqueDefinition(state.dom.crimeUniqueSignal?.key);
-      if (state.dom.crimeUniqueSignal?.known && activeCrimeDefinition) liveGroups.push(activeCrimeDefinition.alertId);
-      if (state.raceCheckComplete && !state.raceCheckPending) liveGroups.push('raceTravel');
-      publishAlertGroups(liveGroups);
-    }
+    scrapeActivePage();
+    state.pageCheckPending = focusedRouteAwaitingLiveData();
+    const liveGroups = ['turtle'];
+    if (state.dom.bars?.energy) liveGroups.push('energyFull');
+    if (state.dom.bars?.nerve) liveGroups.push('nerveFull');
+    if (state.dom.cooldowns?.drug != null) liveGroups.push('drugCooldown');
+    if (state.dom.cooldowns?.medical != null) liveGroups.push('medicalCooldown');
+    if (state.dom.cooldowns?.booster != null) liveGroups.push('boosterCooldown');
+    if (state.dom.stockBenefitsSignalKnown) liveGroups.push('stockBenefits');
+    if (state.dom.educationActive) liveGroups.push('education');
+    if (state.dom.playerAddiction != null) liveGroups.push('playerAddiction');
+    if (state.dom.clusterRingSignalKnown && state.data.shoplifting) liveGroups.push('clusterRing');
+    const activeCrimeDefinition = crimeUniqueDefinition(state.dom.crimeUniqueSignal?.key);
+    if (state.dom.crimeUniqueSignal?.known && activeCrimeDefinition) liveGroups.push(activeCrimeDefinition.alertId);
+    if (state.raceCheckComplete && !state.raceCheckPending) liveGroups.push('raceTravel');
+    publishAlertGroups(liveGroups);
     const dayChanged = updateTornDayBoundary();
-    if (!ownsDashboardNetworkLease() || !state.settings.apiKey || domOnly || Number(state.settings.apiPausedUntil) > Date.now()) {
+    if (!state.settings.apiKey || domOnly || Number(state.settings.apiPausedUntil) > Date.now()) {
       render();
       return;
     }
@@ -1938,7 +1881,7 @@
         && (force || snoozeExpired || scheduledTctCheckDue(state.lastJobAddictionUpdated, 18, 15, now));
       const dailyTasks = [];
 
-      if (needsDaily) {
+      if (needsDaily && visibleTornTab()) {
         const needsRefills = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
         if (needsRefills) {
           dailyTasks.push((async () => {
@@ -2024,12 +1967,12 @@
           saveCheckCache();
         }));
       }
-      if (state.settings.enabled.itemMarket !== false && marketWatchesActive.length) {
+      if (state.settings.enabled.itemMarket !== false && marketWatchesActive.length && visibleTornTab()) {
         tasks.push(refreshMarketWatches({ force }));
       } else if (state.settings.enabled.itemMarket !== false && marketWatchesActive.length && state.data.market) {
         publishAlertGroups(['market']);
       }
-      if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeBazaarWatches().length) {
+      if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeBazaarWatches().length && visibleTornTab()) {
         tasks.push(refreshBazaarWatches({ force }));
       } else if (state.settings.weav3rBazaarEnabled && state.settings.enabled.itemMarket !== false && activeBazaarWatches().length) {
         state.data.bazaars ||= {};
@@ -2814,16 +2757,12 @@
   }
 
   function sourceSummary() {
+    if (!visibleTornTab()) return 'Paused while this tab is not visible.';
     const live = focusedTornPage();
-    const ownsNetwork = ownsDashboardNetworkLease();
     const usage = rollingTornApiUsage().length;
     const limit = state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT;
     const pauseSeconds = Math.max(0, Math.ceil((Number(state.settings.apiPausedUntil) - Date.now()) / 1000));
-    const apiMode = !dashboardNetworkLease
-      ? 'selecting the single Dashboard polling tab'
-      : !ownsNetwork
-        ? `${usage}/${limit} shared API calls - another Torn tab owns Dashboard polling`
-        : pauseSeconds > 0
+    const apiMode = pauseSeconds > 0
       ? `Torn API paused ${formatDuration(pauseSeconds)}`
       : `${state.settings.slowApiMode ? 'slow mode - ' : ''}${usage}/${limit} shared API calls in the last minute`;
     const mode = `${live ? 'Live page + API fallback' : 'API fallback - live scraping paused until Torn is focused'} - ${apiMode}`;
@@ -2958,7 +2897,7 @@
   }
 
   function pushBrowserNotifications(alerts) {
-    if (!browserNotificationsEnabled() || !ownsDashboardNetworkLease()) return;
+    if (!browserNotificationsEnabled() || !visibleTornTab()) return;
     const selected = alerts.slice(0, 3);
     selected.forEach((alert) => {
       try {
@@ -2992,7 +2931,7 @@
   }
 
   function maybeAlarm() {
-    if (!ownsDashboardNetworkLease() || !state.alertSnapshotReady) return;
+    if (!visibleTornTab() || !state.alertSnapshotReady) return;
     const active = publishedAlerts().filter(alertVisible);
     if (!active.length) return;
     const now = Date.now();
@@ -4178,58 +4117,6 @@
       state.windowResizeTimer = null;
       render();
     }, 120);
-  });
-
-  function handleDashboardNetworkOwnerChange(isOwner) {
-    if (!isOwner) {
-      if (state.apiQueueTimer && state.apiQueueTimer !== -1) window.clearTimeout(state.apiQueueTimer);
-      state.apiQueueTimer = null;
-      cancelQueuedApiCalls(dashboardOwnerPauseError());
-      state.syncing = false;
-      render();
-      return;
-    }
-    applyCheckCache(loadCheckCache());
-    scheduleMarketPoll(0);
-    scheduleBazaarPoll(0);
-    if (state.settings.settingsOpen && !itemCatalogFresh()) loadItemCatalog();
-    refresh();
-    render();
-  }
-
-  if (typeof GM_addValueChangeListener === 'function') {
-    GM_addValueChangeListener(CHECK_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote || ownsDashboardNetworkLease()) return;
-      applyCheckCache(loadCheckCache());
-      render();
-    });
-    GM_addValueChangeListener(STORAGE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote) return;
-      state.settings = loadSettings();
-      scheduleNextSnoozeExpiry();
-      scheduleMarketPoll(0);
-      scheduleBazaarPoll(0);
-      if (ownsDashboardNetworkLease()) refresh();
-      render({ force: true });
-    });
-    GM_addValueChangeListener(ITEM_CATALOG_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote) return;
-      state.itemCatalog = loadItemCatalogCache();
-      render({ force: true });
-    });
-    GM_addValueChangeListener(BAZAAR_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote || ownsDashboardNetworkLease()) return;
-      state.bazaarCache = loadBazaarCache();
-    });
-  }
-
-  window.addEventListener('beforeunload', () => {
-    dashboardNetworkLease?.destroy();
-  });
-
-  dashboardNetworkLease = TornLib.createTabLeaderLease('adhd-dashboard-network', {
-    isEligible: () => true,
-    onChange: handleDashboardNetworkOwnerChange,
   });
 
   render();
