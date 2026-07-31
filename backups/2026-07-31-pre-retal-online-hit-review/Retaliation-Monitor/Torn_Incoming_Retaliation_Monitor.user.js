@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Incoming Retaliation Monitor
 // @namespace    Considious [3853023]
-// @version      1.7.12
+// @version      1.7.11
 // @description  Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
@@ -28,10 +28,6 @@
     const LOOKBACK_SECONDS = 10 * 60;
     const RESOLVED_MEMORY_SECONDS = 24 * 60 * 60;
     const MAX_RESULTS = 100;
-    const PLAYER_PROFILE_CACHE_MS = 60_000;
-    const ENEMY_ROSTER_CACHE_MS = POLL_MS;
-    const OUTGOING_REVIEW_MAX_ENTRIES = 1000;
-    const OUTGOING_REVIEW_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
     const CHAT_COPY_AUTHORIZATION_MS = 30 * 1000;
     const CHAIN_SCRAPE_MS = 1_000;
     const CHAIN_BONUSES = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000];
@@ -44,16 +40,12 @@
         dismissed: 'retalMonitor.dismissed',
         manuallyCleared: 'retalMonitor.manuallyCleared',
         resolved: 'retalMonitor.resolved',
-        soundEnabled: 'retalMonitor.soundEnabled',
-        outgoingReviewEnabled: 'retalMonitor.outgoingReviewEnabled',
-        outgoingReviewEnabledAt: 'retalMonitor.outgoingReviewEnabledAt',
-        outgoingReviewLog: 'retalMonitor.outgoingReviewLog'
+        soundEnabled: 'retalMonitor.soundEnabled'
     };
 
     const activeRetals = new Map();
     const ffCache = new Map();
     const playerBasicCache = new Map();
-    const playerBasicFetchedAt = new Map();
 
     let factionId = Number(GM_getValue(KEYS.factionId, 0)) || 0;
     let apiLease = null;
@@ -73,8 +65,6 @@
     let chainDataSource = 'API';
     let pendingChatSend = null;
     let pendingChatSendTimer = null;
-    let showingOutgoingReview = false;
-    let enemyRosterCache = { factionId: 0, fetchedAt: 0, members: new Map() };
 
     GM_addStyle(`
         #trm-panel { position: fixed; left: 14px; top: 60px; width: 370px; max-height: 72vh; z-index: 999999; overflow: hidden; border: 1px solid #555; border-radius: 8px; background: #202020; color: #eee; box-shadow: 0 5px 20px rgba(0,0,0,.6); font: 13px Arial, sans-serif; }
@@ -83,7 +73,7 @@
         @keyframes trmPanelWarning { 50% { border-color: #ff3d3d; background: #4a1717; box-shadow: 0 0 22px rgba(255, 45, 45, .9); } }
         #trm-panel.trm-minimized { width: 46px; max-height: 46px; border-radius: 23px; overflow: visible; }
         #trm-panel.trm-minimized .trm-header { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border-bottom: 0; border-radius: 23px; }
-        #trm-panel.trm-minimized .trm-header-left, #trm-panel.trm-minimized .trm-header-center, #trm-panel.trm-minimized .trm-header-right, #trm-panel.trm-minimized .trm-title-wrap, #trm-panel.trm-minimized .trm-status, #trm-panel.trm-minimized #trm-sound, #trm-panel.trm-minimized #trm-refresh, #trm-panel.trm-minimized #trm-review, #trm-panel.trm-minimized #trm-settings, #trm-panel.trm-minimized #trm-collapse, #trm-panel.trm-minimized .trm-body { display: none; }
+        #trm-panel.trm-minimized .trm-header-left, #trm-panel.trm-minimized .trm-header-center, #trm-panel.trm-minimized .trm-header-right, #trm-panel.trm-minimized .trm-title-wrap, #trm-panel.trm-minimized .trm-status, #trm-panel.trm-minimized #trm-sound, #trm-panel.trm-minimized #trm-refresh, #trm-panel.trm-minimized #trm-settings, #trm-panel.trm-minimized #trm-collapse, #trm-panel.trm-minimized .trm-body { display: none; }
         .trm-launcher { display: none; position: relative; width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: #eee; cursor: pointer; font-size: 23px; }
         #trm-panel.trm-minimized .trm-launcher { display: flex; align-items: center; justify-content: center; position: relative; z-index: 5; flex: 0 0 44px; width: 44px; height: 44px; padding: 0; line-height: 1; pointer-events: auto; }
         .trm-bubble { position: absolute; top: -4px; right: -5px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; background: #d71934; color: #fff; font: 700 11px/19px Arial, sans-serif; text-align: center; }
@@ -102,8 +92,6 @@
         .trm-chain-time.trm-warning { color: #ff6b6b; }
         .trm-status { color: #aaa; font-size: 11px; }
         .trm-icon { border: 0; padding: 2px 4px; background: transparent; color: #ddd; cursor: pointer; font-size: 15px; }
-        .trm-review-button { min-width: 29px; font-size: 9px; font-weight: 700; letter-spacing: .3px; }
-        .trm-review-button.trm-active { color: #7bd98d; }
         .trm-body { max-height: calc(72vh - 58px); overflow-y: auto; padding: 8px; }
         .trm-empty, .trm-error, .trm-setup { padding: 11px; line-height: 1.45; color: #bbb; }
         .trm-error { color: #ff9a9a; }
@@ -134,22 +122,7 @@
         .trm-fields { display: grid; gap: 8px; }
         .trm-fields label { display: block; margin-bottom: 3px; color: #bbb; font-size: 12px; }
         .trm-fields input { width: 100%; padding: 7px; border: 1px solid #555; border-radius: 4px; background: #171717; color: #eee; }
-        .trm-fields .trm-check { display: flex; align-items: flex-start; gap: 7px; margin: 2px 0; color: #ddd; line-height: 1.35; }
-        .trm-fields .trm-check input { flex: 0 0 auto; width: auto; margin: 2px 0 0; padding: 0; }
         .trm-settings-actions { display: flex; gap: 6px; margin-top: 10px; }
-        .trm-review-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-        .trm-review-title { font-size: 14px; font-weight: 700; }
-        .trm-review-note { margin-bottom: 8px; color: #aaa; font-size: 11px; line-height: 1.4; }
-        .trm-review-summary { display: grid; gap: 5px; margin-bottom: 10px; }
-        .trm-review-person { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 7px; border: 1px solid #494949; border-radius: 4px; background: #292929; }
-        .trm-review-person strong { color: #eee; }
-        .trm-review-person span { color: #bbb; font-size: 11px; }
-        .trm-review-events { display: grid; gap: 5px; }
-        .trm-review-event { padding: 6px 7px; border-left: 3px solid #666; background: #292929; color: #bbb; font-size: 11px; line-height: 1.4; }
-        .trm-review-event.trm-observed-online { border-left-color: #54b96c; }
-        .trm-review-event a { color: #9fc8ff; text-decoration: none; }
-        .trm-review-event-time { color: #888; }
-        .trm-review-small-button { flex: 0 0 auto; padding: 4px 7px; }
     `);
 
     function makePanel() {
@@ -158,16 +131,15 @@
         panel = document.createElement('section');
         panel.id = 'trm-panel';
         if (GM_getValue(KEYS.minimized, false)) panel.classList.add('trm-minimized');
-        panel.innerHTML = `<div class="trm-header"><button class="trm-launcher" id="trm-launcher" title="Open war dashboard">🚨<span class="trm-bubble" id="trm-bubble" style="display:none">0</span></button><div class="trm-header-left"><div class="trm-title-wrap"><div class="trm-title">🚨 Faction<br>Retaliations</div><a class="trm-chain-link" id="trm-chain-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none"></a></div></div><div class="trm-header-center"><div class="trm-chain-stats" id="trm-chain-stats" style="display:none">Chain: <strong id="trm-chain-count">0 / 0</strong><br>Time remaining: <span class="trm-chain-time" id="trm-chain-time">--:--</span><span id="trm-chain-multiplier"></span><span class="trm-chain-source" id="trm-chain-source">API</span></div><button class="trm-icon" id="trm-sound" title="Chain alarm sound">🔇</button></div><div class="trm-header-right"><div class="trm-status" id="trm-status">Starting…</div><div class="trm-controls"><button class="trm-icon" id="trm-refresh" title="Refresh now">↻</button><button class="trm-icon trm-review-button" id="trm-review" title="Outgoing online-hit review">LOG</button><button class="trm-icon" id="trm-settings" title="Settings">⚙️</button><button class="trm-icon" id="trm-collapse" title="Minimize and pause">—</button></div></div></div><div class="trm-body" id="trm-body"></div>`;
+        panel.innerHTML = `<div class="trm-header"><button class="trm-launcher" id="trm-launcher" title="Open war dashboard">🚨<span class="trm-bubble" id="trm-bubble" style="display:none">0</span></button><div class="trm-header-left"><div class="trm-title-wrap"><div class="trm-title">🚨 Faction<br>Retaliations</div><a class="trm-chain-link" id="trm-chain-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none"></a></div></div><div class="trm-header-center"><div class="trm-chain-stats" id="trm-chain-stats" style="display:none">Chain: <strong id="trm-chain-count">0 / 0</strong><br>Time remaining: <span class="trm-chain-time" id="trm-chain-time">--:--</span><span id="trm-chain-multiplier"></span><span class="trm-chain-source" id="trm-chain-source">API</span></div><button class="trm-icon" id="trm-sound" title="Chain alarm sound">🔇</button></div><div class="trm-header-right"><div class="trm-status" id="trm-status">Starting…</div><div class="trm-controls"><button class="trm-icon" id="trm-refresh" title="Refresh now">↻</button><button class="trm-icon" id="trm-settings" title="Settings">⚙️</button><button class="trm-icon" id="trm-collapse" title="Minimize and pause">—</button></div></div></div><div class="trm-body" id="trm-body"></div>`;
         document.body.appendChild(panel);
-        updateChainLink(); updateChainDisplay(); updateSoundButton(); updateBubble(); updateOutgoingReviewButton(); bindPanelEvents(panel); return panel;
+        updateChainLink(); updateChainDisplay(); updateSoundButton(); updateBubble(); bindPanelEvents(panel); return panel;
     }
 
     function bindPanelEvents(panel) {
         panel.querySelector('#trm-sound').addEventListener('click', toggleSound);
         panel.querySelector('#trm-refresh').addEventListener('click', async () => { const tornKey = GM_getValue(KEYS.tornApiKey, ''); const usedLive = scrapeActiveTabChainWidget(); await refreshChainLinkFromApi(tornKey, !usedLive); await poll(true); });
-        panel.querySelector('#trm-review').addEventListener('click', () => { showingOutgoingReview = !showingOutgoingReview; render(); });
-        panel.querySelector('#trm-settings').addEventListener('click', () => { showingOutgoingReview = false; showSettings(); });
+        panel.querySelector('#trm-settings').addEventListener('click', () => showSettings());
         panel.querySelector('#trm-collapse').addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); minimizePanel(); });
         panel.querySelector('#trm-launcher').addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); restorePanel(); });
     }
@@ -176,9 +148,9 @@
 
     function showSettings(errorMessage = '') {
         const body = document.getElementById('trm-body'); if (!body) return;
-        const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, ''); const reviewEnabled = outgoingReviewEnabled();
-        body.innerHTML = `<div class="trm-setup">${errorMessage ? `<div class="trm-error">${escapeHtml(errorMessage)}</div>` : ''}<div class="trm-fields"><div><label for="trm-torn-key">Torn API key</label><input id="trm-torn-key" type="password" value="${escapeAttribute(tornKey)}" placeholder="Key with faction attacks access"></div><div><label for="trm-ff-key">FFScouter-registered Torn API key</label><input id="trm-ff-key" type="password" value="${escapeAttribute(ffKey)}" placeholder="The Torn key registered with FFScouter"></div><label class="trm-check"><input id="trm-outgoing-review-enabled" type="checkbox" ${reviewEnabled ? 'checked' : ''}><span>Log outgoing ranked-war hits and the enemy's observed Online, Idle, or Offline state. Adds at most one roster API call when unseen war hits are found.</span></label></div><div class="trm-settings-actions"><button class="trm-btn" id="trm-save">Save and start</button><button class="trm-btn" id="trm-clear">Clear</button></div></div>`;
-        document.getElementById('trm-save').addEventListener('click', () => { const wasEnabled = outgoingReviewEnabled(); const nextEnabled = document.getElementById('trm-outgoing-review-enabled').checked; GM_setValue(KEYS.tornApiKey, document.getElementById('trm-torn-key').value.trim()); GM_setValue(KEYS.ffApiKey, document.getElementById('trm-ff-key').value.trim()); GM_setValue(KEYS.outgoingReviewEnabled, nextEnabled); if (nextEnabled && !wasEnabled) GM_setValue(KEYS.outgoingReviewEnabledAt, unixNow()); if (!nextEnabled) GM_setValue(KEYS.outgoingReviewEnabledAt, 0); GM_setValue(KEYS.factionId, 0); factionId = 0; activeRetals.clear(); ffCache.clear(); playerBasicCache.clear(); playerBasicFetchedAt.clear(); enemyRosterCache = { factionId: 0, fetchedAt: 0, members: new Map() }; showingOutgoingReview = false; start(); });
+        const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, '');
+        body.innerHTML = `<div class="trm-setup">${errorMessage ? `<div class="trm-error">${escapeHtml(errorMessage)}</div>` : ''}<div class="trm-fields"><div><label for="trm-torn-key">Torn API key</label><input id="trm-torn-key" type="password" value="${escapeAttribute(tornKey)}" placeholder="Key with faction attacks access"></div><div><label for="trm-ff-key">FFScouter-registered Torn API key</label><input id="trm-ff-key" type="password" value="${escapeAttribute(ffKey)}" placeholder="The Torn key registered with FFScouter"></div></div><div class="trm-settings-actions"><button class="trm-btn" id="trm-save">Save and start</button><button class="trm-btn" id="trm-clear">Clear</button></div></div>`;
+        document.getElementById('trm-save').addEventListener('click', () => { GM_setValue(KEYS.tornApiKey, document.getElementById('trm-torn-key').value.trim()); GM_setValue(KEYS.ffApiKey, document.getElementById('trm-ff-key').value.trim()); GM_setValue(KEYS.factionId, 0); factionId = 0; activeRetals.clear(); ffCache.clear(); start(); });
         document.getElementById('trm-clear').addEventListener('click', () => { GM_setValue(KEYS.tornApiKey, ''); GM_setValue(KEYS.ffApiKey, ''); GM_setValue(KEYS.factionId, 0); factionId = 0; activeRetals.clear(); ffCache.clear(); setStatus('Setup required'); showSettings(); });
     }
 
@@ -194,7 +166,6 @@
             if (!runtimeShouldRun()) { setStatus('Paused • another Torn tab owns API polling'); updateBubble(); return; }
             if (!tornKey || !ffKey) { setStatus('Setup required'); showSettings(); return; }
             if (!factionId) { setStatus('Finding faction…'); factionId = await getOwnFactionId(tornKey); GM_setValue(KEYS.factionId, factionId); }
-            ensureOutgoingReviewStart();
             if (!runtimeShouldRun()) return;
             render(); const usedLive = scrapeActiveTabChainWidget(); await refreshChainLinkFromApi(tornKey, !usedLive); await poll(true);
             if (!runtimeShouldRun()) return;
@@ -212,7 +183,7 @@
         if (polling || !runtimeShouldRun()) return; const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, ''); if (!tornKey || !ffKey || !factionId) return;
         polling = true; setStatus(manual ? 'Refreshing…' : 'Checking…');
         try {
-            const now = unixNow(); const attacks = await getFactionAttacks(tornKey, now - LOOKBACK_SECONDS, now); removeTargetsAlreadyHit(attacks); await recordOutgoingWarHits(attacks, tornKey, now);
+            const now = unixNow(); const attacks = await getFactionAttacks(tornKey, now - LOOKBACK_SECONDS, now); removeTargetsAlreadyHit(attacks);
             if (!runtimeShouldRun()) return;
             const dismissed = new Set(getDismissed()); const manuallyCleared = getManuallyCleared(); const resolved = getResolved(); const additions = [];
             for (const attack of attacks) {
@@ -225,9 +196,8 @@
                 const defenderId = getPlayerId(attack.defender); const location = getAttackLocation(attack); const flags = getAttackFlags(attack);
                 additions.push({ attackId, incomingEnded: ended, expiresAt, attackerId, attackerName: getPlayerName(attack.attacker, attackerId), attackerFactionName: getFactionName(attack.attacker), attackerFactionTag: getFactionTag(attack.attacker), defenderId, defenderName: getPlayerName(attack.defender, defenderId), defenderStatus: getPlayerStatus(attack.defender), location, isAbroad: Boolean(location), isWar: flags.isWar, isRetal: flags.isRetal, profileUrl: `https://www.torn.com/profiles.php?XID=${attackerId}`, attackUrl: `https://www.torn.com/page.php?sid=attack&user2ID=${attackerId}`, ffData: ffCache.get(attackerId) || null });
             }
-            const profileNow = Date.now();
-            const playerIdsToFetch = [...new Set([...additions.map(item => item.attackerId), ...[...activeRetals.values()].map(item => item.attackerId)].filter(Boolean))].filter(playerId => !playerBasicCache.has(playerId) || profileNow - Number(playerBasicFetchedAt.get(playerId) || 0) >= PLAYER_PROFILE_CACHE_MS);
-            if (playerIdsToFetch.length) await Promise.all(playerIdsToFetch.map(async playerId => { try { const basic = await getUserBasic(tornKey, playerId); playerBasicCache.set(playerId, basic); playerBasicFetchedAt.set(playerId, Date.now()); } catch (error) { if (!error?.runtimePaused) console.warn(`[Retal Monitor] Basic profile lookup failed for ${playerId}:`, error); } }));
+            const playerIdsToFetch = [...new Set([...additions.map(item => item.attackerId), ...[...activeRetals.values()].map(item => item.attackerId)].filter(Boolean))];
+            if (playerIdsToFetch.length) await Promise.all(playerIdsToFetch.map(async playerId => { try { const basic = await getUserBasic(tornKey, playerId); playerBasicCache.set(playerId, basic); } catch (error) { if (!error?.runtimePaused) console.warn(`[Retal Monitor] Basic profile lookup failed for ${playerId}:`, error); } }));
             if (!runtimeShouldRun()) return;
             for (const [attackId, target] of activeRetals.entries()) { const basic = playerBasicCache.get(target.attackerId); if (basic && isPlayerHospitalized(basic)) { markResolved(attackId); activeRetals.delete(attackId); } }
             for (const item of additions) { const basic = playerBasicCache.get(item.attackerId); if (basic) { item.location = getPlayerLocation(basic) || item.location || ''; item.isAbroad = Boolean(item.location && item.location.toLowerCase() !== 'torn city'); item.attackerStatus = getPlayerStatus(basic) || item.attackerStatus || ''; } }
@@ -243,51 +213,8 @@
     function isSuccessfulAttack(attack) { const result = String(attack.result ?? attack.outcome ?? attack.attack_result ?? '').trim().toLowerCase(); return ['attacked','hospitalized','mugged'].includes(result); }
     function removeTargetsAlreadyHit(attacks) { if (!activeRetals.size) return; const outgoing = attacks.filter(attack => { const attackerFaction = getFactionId(attack.attacker); const defenderId = getPlayerId(attack.defender); const ended = Number(attack.ended ?? attack.ended_at ?? attack.timestamp_ended ?? 0); return attackerFaction === factionId && defenderId && ended && isSuccessfulAttack(attack); }); for (const [attackId, target] of activeRetals.entries()) { const wasHit = outgoing.some(attack => { const defenderId = getPlayerId(attack.defender); const ended = Number(attack.ended ?? attack.ended_at ?? attack.timestamp_ended ?? 0); return defenderId === target.attackerId && ended > target.incomingEnded; }); if (wasHit) { markResolved(attackId); activeRetals.delete(attackId); } } }
 
-    function outgoingReviewEnabled() { return Boolean(GM_getValue(KEYS.outgoingReviewEnabled, true)); }
-    function ensureOutgoingReviewStart() { if (outgoingReviewEnabled() && !Number(GM_getValue(KEYS.outgoingReviewEnabledAt, 0))) GM_setValue(KEYS.outgoingReviewEnabledAt, unixNow()); }
-    function getOutgoingReviewLog() { const cutoff = unixNow() - OUTGOING_REVIEW_MAX_AGE_SECONDS; const value = GM_getValue(KEYS.outgoingReviewLog, []); return (Array.isArray(value) ? value : []).filter(item => item && String(item.attackId || '') && Number(item.observedAt || 0) >= cutoff).slice(-OUTGOING_REVIEW_MAX_ENTRIES); }
-    function saveOutgoingReviewLog(items) { const cutoff = unixNow() - OUTGOING_REVIEW_MAX_AGE_SECONDS; const trimmed = items.filter(item => item && String(item.attackId || '') && Number(item.observedAt || 0) >= cutoff).sort((a,b) => Number(a.observedAt || 0) - Number(b.observedAt || 0)).slice(-OUTGOING_REVIEW_MAX_ENTRIES); GM_setValue(KEYS.outgoingReviewLog, trimmed); }
-    function getAttackEnded(attack) { return Number(attack?.ended ?? attack?.ended_at ?? attack?.timestamp_ended ?? attack?.started ?? attack?.started_at ?? 0); }
-    function isOutgoingRankedWarAttack(attack) { const attackerFaction = getFactionId(attack.attacker); const defenderFaction = getFactionId(attack.defender); return attackerFaction === factionId && defenderFaction && defenderFaction !== factionId && isSuccessfulAttack(attack) && getAttackFlags(attack).isWar; }
-    function readCachedWarOpponent(now = unixNow()) { try { const parsed = JSON.parse(localStorage.getItem('rw-target-panel:opponent')); const id = Number(parsed?.id || 0); const start = Number(parsed?.start || 0); const end = Number(parsed?.end || 0); if (!id || (start && start > now) || (end && end <= now)) return null; return { id, name: String(parsed?.name || `Faction ${id}`) }; } catch { return null; } }
-    function resolveReviewOpponent(attacks, now = unixNow()) { const factionIds = new Set(attacks.map(attack => getFactionId(attack.defender)).filter(Boolean)); const cached = readCachedWarOpponent(now); if (cached && factionIds.has(cached.id)) return cached; const newest = [...attacks].sort((a,b) => getAttackEnded(b) - getAttackEnded(a))[0]; const id = getFactionId(newest?.defender); return id ? { id, name: getFactionName(newest.defender) || `Faction ${id}` } : null; }
-    function normalizeOnlineStatus(member) { const value = String(member?.last_action?.status ?? member?.lastAction?.status ?? '').trim(); const lower = value.toLowerCase(); if (lower === 'online') return 'Online'; if (lower === 'idle') return 'Idle'; if (lower === 'offline') return 'Offline'; return value || 'Unknown'; }
-    async function getEnemyRoster(apiKey, opponent, minimumSnapshotAt = 0) { const now = Date.now(); if (enemyRosterCache.factionId === opponent.id && enemyRosterCache.fetchedAt >= minimumSnapshotAt * 1000 && now - enemyRosterCache.fetchedAt < ENEMY_ROSTER_CACHE_MS && enemyRosterCache.members.size) return enemyRosterCache.members; const data = await tornRequest(`https://api.torn.com/v2/faction/${encodeURIComponent(opponent.id)}/members`, apiKey); const members = data?.members ?? data?.faction?.members ?? []; if (!Array.isArray(members)) throw new Error('Torn returned no enemy faction member list.'); const byId = new Map(members.map(member => [Number(member?.id || member?.player_id || 0), member]).filter(([id]) => id)); enemyRosterCache = { factionId: opponent.id, fetchedAt: Date.now(), members: byId }; return byId; }
-    async function recordOutgoingWarHits(attacks, apiKey, now = unixNow()) {
-        if (!outgoingReviewEnabled()) return;
-        ensureOutgoingReviewStart();
-        const enabledAt = Number(GM_getValue(KEYS.outgoingReviewEnabledAt, now)) || now;
-        const log = getOutgoingReviewLog();
-        const seen = new Set(log.map(item => String(item.attackId)));
-        const unseen = attacks.filter(attack => { const attackId = String(attack?.id ?? attack?.attack_id ?? ''); return attackId && !seen.has(attackId) && getAttackEnded(attack) >= enabledAt && isOutgoingRankedWarAttack(attack); });
-        if (!unseen.length) return;
-        const opponent = resolveReviewOpponent(unseen, now); if (!opponent) return;
-        const qualifying = unseen.filter(attack => getFactionId(attack.defender) === opponent.id); if (!qualifying.length) return;
-        let roster;
-        try { roster = await getEnemyRoster(apiKey, opponent, Math.max(...qualifying.map(getAttackEnded))); }
-        catch (error) { if (!error?.runtimePaused) console.warn('[Retal Monitor] Enemy online-status snapshot failed:', error); return; }
-        if (!runtimeShouldRun()) return;
-        const observedAt = unixNow();
-        const additions = qualifying.map(attack => { const attackerId = getPlayerId(attack.attacker); const defenderId = getPlayerId(attack.defender); const status = normalizeOnlineStatus(roster.get(defenderId)); const ended = getAttackEnded(attack); return { attackId: String(attack.id ?? attack.attack_id), attackEnded: ended, observedAt, observedDelaySeconds: Math.max(0, observedAt - ended), attackerId, attackerName: getPlayerName(attack.attacker, attackerId), defenderId, defenderName: getPlayerName(attack.defender, defenderId), opponentFactionId: opponent.id, opponentFactionName: opponent.name, observedStatus: status, observedOnline: status === 'Online' }; });
-        saveOutgoingReviewLog([...log, ...additions]);
-    }
-
-    function updateOutgoingReviewButton() { const button = document.getElementById('trm-review'); if (!button) return; const log = getOutgoingReviewLog(); const onlineCount = log.filter(item => item.observedOnline).length; button.classList.toggle('trm-active', showingOutgoingReview); button.textContent = onlineCount ? `LOG ${onlineCount}` : 'LOG'; button.title = `${outgoingReviewEnabled() ? 'Outgoing online-hit review' : 'Outgoing online-hit logging is disabled'}${onlineCount ? ` • ${onlineCount} observed online` : ''}`; }
-    function renderOutgoingReview(body) {
-        const log = getOutgoingReviewLog().sort((a,b) => Number(b.attackEnded || 0) - Number(a.attackEnded || 0));
-        const onlineCount = log.filter(item => item.observedOnline).length;
-        const byAttacker = new Map();
-        for (const item of log) { const id = Number(item.attackerId || 0); if (!byAttacker.has(id)) byAttacker.set(id, { id, name: String(item.attackerName || `Player ${id}`), total: 0, online: 0, idle: 0, offline: 0, unknown: 0 }); const row = byAttacker.get(id); row.total += 1; const status = String(item.observedStatus || 'Unknown').toLowerCase(); if (status === 'online') row.online += 1; else if (status === 'idle') row.idle += 1; else if (status === 'offline') row.offline += 1; else row.unknown += 1; }
-        const summaries = [...byAttacker.values()].sort((a,b) => b.online - a.online || b.total - a.total || a.name.localeCompare(b.name));
-        const summaryHtml = summaries.map(row => `<div class="trm-review-person"><div><strong>${escapeHtml(row.name)}${row.id ? ` [${row.id}]` : ''}</strong><br><span>${row.online} observed Online • ${row.idle} Idle • ${row.offline} Offline${row.unknown ? ` • ${row.unknown} Unknown` : ''}</span></div><span>${row.total ? Math.round(row.online / row.total * 100) : 0}% online</span></div>`).join('');
-        const eventsHtml = log.slice(0, 100).map(item => { const delay = Number(item.observedDelaySeconds || 0); const delayText = delay < 60 ? `${delay}s` : `${Math.floor(delay / 60)}m ${delay % 60}s`; const attackTime = new Date(Number(item.attackEnded || 0) * 1000).toLocaleString(); return `<div class="trm-review-event ${item.observedOnline ? 'trm-observed-online' : ''}"><a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(item.attackerId)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.attackerName)} [${item.attackerId}]</a> attacked <a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(item.defenderId)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.defenderName)} [${item.defenderId}]</a><br>Observed: <strong class="${item.observedOnline ? 'trm-online' : 'trm-offline'}">${escapeHtml(item.observedStatus || 'Unknown')}</strong> • checked ${delayText} after attack<br><span class="trm-review-event-time">${escapeHtml(attackTime)} • ${escapeHtml(item.opponentFactionName || `Faction ${item.opponentFactionId}`)}</span></div>`; }).join('');
-        body.innerHTML = `<div class="trm-review-toolbar"><div class="trm-review-title">Outgoing war-hit review</div><button class="trm-btn trm-review-small-button" id="trm-review-back">Back</button></div><div class="trm-review-note">${outgoingReviewEnabled() ? 'Logging is enabled.' : 'Logging is disabled in Settings.'} ${onlineCount} of ${log.length} recorded outgoing war hits were observed Online. Status is sampled when the attack is detected, not historical proof of the exact attack second.</div>${summaryHtml ? `<div class="trm-review-summary">${summaryHtml}</div>` : '<div class="trm-empty">No outgoing ranked-war hits have been recorded yet.</div>'}${eventsHtml ? `<div class="trm-review-events">${eventsHtml}</div><div class="trm-settings-actions"><button class="trm-btn" id="trm-review-clear">Clear review log</button></div>` : ''}`;
-        document.getElementById('trm-review-back')?.addEventListener('click', () => { showingOutgoingReview = false; render(); });
-        document.getElementById('trm-review-clear')?.addEventListener('click', () => { if (!confirm('Clear the outgoing war-hit review log?')) return; saveOutgoingReviewLog([]); if (outgoingReviewEnabled()) GM_setValue(KEYS.outgoingReviewEnabledAt, unixNow()); render(); });
-    }
-
     function render() {
-        const body = document.getElementById('trm-body'); if (!body) return; cleanExpired(); updateBubble(); updateChainDisplay(); updateOutgoingReviewButton(); if (showingOutgoingReview) { renderOutgoingReview(body); return; }
+        const body = document.getElementById('trm-body'); if (!body) return; cleanExpired(); updateBubble(); updateChainDisplay();
         const items = [...activeRetals.values()].sort((a,b) => b.incomingEnded - a.incomingEnded);
         if (!items.length) { body.innerHTML = `<div class="trm-empty">No active incoming retaliation targets.</div>`; return; }
         body.innerHTML = '';
@@ -303,7 +230,7 @@
         updateChatSendButtons();
     }
 
-    function updateTimers() { cleanExpired(); updateBubble(); updateChainDisplay(); if (showingOutgoingReview) return; const visibleCards = document.querySelectorAll('.trm-card'); if (visibleCards.length !== activeRetals.size) { render(); return; } document.querySelectorAll('.trm-timer').forEach(node => node.textContent = formatCountdown(Number(node.dataset.expires))); }
+    function updateTimers() { cleanExpired(); updateBubble(); updateChainDisplay(); const visibleCards = document.querySelectorAll('.trm-card'); if (visibleCards.length !== activeRetals.size) { render(); return; } document.querySelectorAll('.trm-timer').forEach(node => node.textContent = formatCountdown(Number(node.dataset.expires))); }
     function cleanExpired() { const now = unixNow(); for (const [id,target] of activeRetals.entries()) if (target.expiresAt <= now) activeRetals.delete(id); }
     function dismiss(target) { const attackId = String(target.attackId); const list = getDismissed(); if (!list.includes(attackId)) { list.push(attackId); GM_setValue(KEYS.dismissed, list.slice(-200)); } const manuallyCleared = getManuallyCleared(); manuallyCleared[attackId] = unixNow() + RESOLVED_MEMORY_SECONDS; GM_setValue(KEYS.manuallyCleared, manuallyCleared); markResolved(attackId); activeRetals.delete(attackId); if (pendingChatSend?.attackId === attackId) clearPendingChatSend(); render(); }
     function getResolved() { const value = GM_getValue(KEYS.resolved, {}); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
@@ -364,7 +291,7 @@
     function isPlayerHospitalized(player){const source=player?.profile??player?.basic??player?.user??player;const state=String(source?.status?.state??source?.status?.description??source?.status?.details??source?.status??'').trim().toLowerCase();return state==='hospital'||state==='hospitalized'||state.includes('in hospital')||state.includes('hospitalized');}
     function getPlayerLocation(player){const source=player?.profile??player?.basic??player?.user??player;const raw=source?.status?.description??source?.status?.details??source?.location?.country??source?.location?.name??source?.location??source?.country??'';if(typeof raw==='object'&&raw)return String(raw.country??raw.name??raw.description??raw.details??'').trim();const value=String(raw||'').trim();if(!value)return'';const patterns=[/traveling to\s+(.+)$/i,/returning from\s+(.+)$/i,/traveling from\s+(.+)$/i,/in\s+(.+)$/i];for(const pattern of patterns){const match=value.match(pattern);if(match)return match[1].trim();}if(/^okay$/i.test(value))return'Torn City';if(/hospital|jail|fallen|federal|online|offline|idle/i.test(value))return'';return value;}
     function getAttackLocation(attack){const raw=attack?.location??attack?.country??attack?.attacker?.location?.country??attack?.attacker?.location?.name??attack?.attacker?.country??attack?.modifiers?.location??attack?.modifiers?.abroad??'';if(typeof raw==='object'&&raw)return String(raw.country??raw.name??raw.description??'').trim();const value=String(raw||'').trim();if(!value||value==='0'||value.toLowerCase()==='torn')return'';return value;}
-    function getAttackFlags(attack){const modifiers=attack?.modifiers??{},respect=attack?.respect??{},code=String(attack?.code??attack?.type??attack?.attack_type??'').toLowerCase();const retalValue=modifiers?.retaliation??modifiers?.retal??respect?.retaliation??respect?.retal??attack?.is_retaliation??attack?.isRetaliation??0;const explicitRankedWar=attack?.is_ranked_war??attack?.isRankedWar??false;const warValue=modifiers?.war??modifiers?.war_bonus??modifiers?.warBonus??respect?.war??respect?.war_bonus??attack?.is_war??attack?.isWar??0;const modifierIsActive=value=>{if(value===true)return true;const normalized=String(value??'').trim().toLowerCase();if(normalized==='true'||normalized==='yes')return true;const numeric=Number(value);return Number.isFinite(numeric)&&numeric>1;};return{isRetal:modifierIsActive(retalValue)||code.includes('retal'),isWar:Boolean(explicitRankedWar)||modifierIsActive(warValue)||code.includes('war')};}
+    function getAttackFlags(attack){const modifiers=attack?.modifiers??{},respect=attack?.respect??{},code=String(attack?.code??attack?.type??attack?.attack_type??'').toLowerCase();const retalValue=modifiers?.retaliation??modifiers?.retal??respect?.retaliation??respect?.retal??attack?.is_retaliation??attack?.isRetaliation??0;const warValue=modifiers?.war??modifiers?.war_bonus??modifiers?.warBonus??respect?.war??respect?.war_bonus??attack?.is_war??attack?.isWar??0;const modifierIsActive=value=>{if(value===true)return true;const normalized=String(value??'').trim().toLowerCase();if(normalized==='true'||normalized==='yes')return true;const numeric=Number(value);return Number.isFinite(numeric)&&numeric>1;};return{isRetal:modifierIsActive(retalValue)||code.includes('retal'),isWar:modifierIsActive(warValue)||code.includes('war')};}
     function getFactionId(side){return Number(side?.faction?.id??side?.faction_id??side?.factionId??0);}
     function getPlayerId(side){return Number(side?.id??side?.player_id??side?.user_id??0);}
     function getPlayerName(side,id){return String(side?.name??side?.player_name??side?.username??`Player ${id}`);}
