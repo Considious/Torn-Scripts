@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.1
+// @version      1.3.0
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,7 +26,7 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.1';
+  const VERSION = '1.3.0';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
   const TORN_API_MAX_LIMIT = 60;
@@ -47,9 +47,6 @@
     const leaseMs = Math.max(5_000, Number(options.leaseMs) || 15_000);
     const heartbeatMs = Math.max(1_000, Math.min(leaseMs / 2, Number(options.heartbeatMs) || 5_000));
     const isEligible = typeof options.isEligible === 'function' ? options.isEligible : () => true;
-    const isPreferred = typeof options.isPreferred === 'function'
-      ? options.isPreferred
-      : () => isPageActive();
     const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
     const key = `${TAB_LEADER_PREFIX}${String(name || 'default').trim() || 'default'}`;
     const ownerId = `${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}:${Math.random().toString(36).slice(2)}`;
@@ -64,11 +61,7 @@
         if (!parsed || typeof parsed !== 'object') return null;
         const expiresAt = Number(parsed.expiresAt);
         if (!parsed.owner || !Number.isFinite(expiresAt)) return null;
-        return {
-          owner: String(parsed.owner),
-          expiresAt,
-          preferred: Boolean(parsed.preferred),
-        };
+        return { owner: String(parsed.owner), expiresAt };
       } catch {
         return null;
       }
@@ -83,20 +76,8 @@
       });
     }
 
-    function preferredNow() {
-      try {
-        return Boolean(isPreferred());
-      } catch {
-        return false;
-      }
-    }
-
-    function writeOwnLease(now = Date.now(), preferred = preferredNow()) {
-      storage.setItem(key, JSON.stringify({
-        owner: ownerId,
-        expiresAt: now + leaseMs,
-        preferred,
-      }));
+    function writeOwnLease(now = Date.now()) {
+      storage.setItem(key, JSON.stringify({ owner: ownerId, expiresAt: now + leaseMs }));
       const confirmed = readLease();
       setLeader(Boolean(confirmed && confirmed.owner === ownerId && confirmed.expiresAt > now));
       return leader;
@@ -122,21 +103,13 @@
 
       const now = Date.now();
       const current = readLease();
-      const preferred = preferredNow();
-      const ownerCanBePreempted = Boolean(
-        current &&
-        current.owner !== ownerId &&
-        current.expiresAt > now &&
-        preferred &&
-        !current.preferred
-      );
-      if (current && current.owner !== ownerId && current.expiresAt > now && !ownerCanBePreempted) {
+      if (current && current.owner !== ownerId && current.expiresAt > now) {
         setLeader(false);
         return false;
       }
 
       try {
-        return writeOwnLease(now, preferred);
+        return writeOwnLease(now);
       } catch {
         setLeader(false);
         return false;
@@ -174,16 +147,8 @@
         setLeader(true);
       } else {
         setLeader(false);
-        if (
-          !current ||
-          current.expiresAt <= now ||
-          (preferredNow() && !current.preferred)
-        ) scheduleContendedRetry();
+        if (!current || current.expiresAt <= now) scheduleContendedRetry();
       }
-    }
-
-    function handlePriorityChange() {
-      refresh();
     }
 
     function destroy() {
@@ -193,15 +158,9 @@
       if (heartbeatTimer) global.clearInterval(heartbeatTimer);
       if (retryTimer) global.clearTimeout(retryTimer);
       global.removeEventListener('storage', handleStorage);
-      global.removeEventListener('focus', handlePriorityChange);
-      global.removeEventListener('blur', handlePriorityChange);
-      global.document?.removeEventListener?.('visibilitychange', handlePriorityChange);
     }
 
     global.addEventListener('storage', handleStorage);
-    global.addEventListener('focus', handlePriorityChange);
-    global.addEventListener('blur', handlePriorityChange);
-    global.document?.addEventListener?.('visibilitychange', handlePriorityChange);
     heartbeatTimer = global.setInterval(refresh, heartbeatMs);
     refresh();
 
