@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.3.4
-// @description  Privacy-conscious daily reminder dashboard powered by Torn API v2 and v1 city-shop stock.
+// @version      1.3.3
+// @description  Privacy-conscious daily reminder dashboard powered by Torn API v2.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,12 +32,6 @@
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
-  const CITY_SHOP_REFRESH_MS = 5 * 60_000;
-  const CITY_SHOP_TARGETS = [
-    { id: 180, name: 'Bottle of Beer', label: 'Beer' },
-    { id: 392, name: 'Pepper Spray', label: 'Pepper Spray' },
-    { id: 731, name: 'Empty Blood Bag', label: 'Empty Blood Bags' },
-  ];
   const BAZAAR_FAST_REFRESH_MS = 5_000;
   const BAZAAR_MEDIUM_REFRESH_MS = 30_000;
   const BAZAAR_SLOW_REFRESH_MS = 60_000;
@@ -160,7 +154,6 @@
     playerAddictionThreshold: 4,
     flashAlarm: false,
     soundAlarm: false,
-    muteSounds: false,
     alarmIntervalMinutes: 1,
     browserNotifications: false,
     notifyDesktop: true,
@@ -1909,10 +1902,6 @@
         publishAlertGroups(['bazaar']);
       }
       await Promise.all(tasks);
-      if (alertCheckDue('cityItem')) {
-        await refreshCityShopStockIfNeeded({ force });
-        publishAlertGroups(['cityItem']);
-      }
       state.lastUpdated = Date.now();
       saveCheckCache();
     } finally {
@@ -1945,63 +1934,6 @@
       return null;
     }
     return search(body);
-  }
-
-  function cityItemsRemainingToday() {
-    const cityNow = numberFromPersonalStats(state.data.cityItemsNow);
-    const cityAtReset = numberFromPersonalStats(state.data.cityItemsAtReset);
-    if (cityNow === null || cityAtReset === null) return null;
-    return Math.max(0, 100 - Math.max(0, cityNow - cityAtReset));
-  }
-
-  function cityShopTargetStock(body) {
-    const found = new Map();
-    const targetById = new Map(CITY_SHOP_TARGETS.map((target) => [target.id, target]));
-    const targetByName = new Map(CITY_SHOP_TARGETS.map((target) => [target.name.toLowerCase(), target]));
-    const visited = new Set();
-
-    function visit(value, key = '', depth = 0) {
-      if (!value || typeof value !== 'object' || depth > 10 || visited.has(value)) return;
-      visited.add(value);
-      const rawName = String(value.name ?? value.item_name ?? value.itemName ?? value.title ?? '').trim();
-      const rawId = Number(value.item_id ?? value.itemID ?? value.id ?? key);
-      const target = targetById.get(rawId) || targetByName.get(rawName.toLowerCase());
-      if (target) {
-        const stockValue = [value.stock, value.quantity, value.amount, value.available, value.in_stock]
-          .find((candidate) => candidate !== '' && candidate !== null && candidate !== undefined && Number.isFinite(Number(candidate)));
-        const stock = stockValue === undefined ? null : Math.max(0, Number(stockValue));
-        const previous = found.get(target.id);
-        if (!previous || previous.stock === null || stock !== null) found.set(target.id, { ...target, stock });
-      }
-      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
-    }
-
-    visit(body);
-    return CITY_SHOP_TARGETS.map((target) => found.get(target.id) || { ...target, stock: null });
-  }
-
-  function cityShopStockSummary() {
-    const response = state.data.cityShops;
-    if (!response?.__fetchedAt) return '';
-    const rows = cityShopTargetStock(response);
-    return rows.map((item) => {
-      if (item.stock === null) return `${item.label}: stock unavailable`;
-      return item.stock > 0 ? `${item.label}: ${item.stock.toLocaleString()} in stock` : `${item.label}: sold out`;
-    }).join(' · ');
-  }
-
-  async function refreshCityShopStockIfNeeded({ force = false } = {}) {
-    const remaining = cityItemsRemainingToday();
-    if (!(remaining > 0)) {
-      delete state.data.cityShops;
-      delete state.errors.cityShopStock;
-      return false;
-    }
-    const fetchedAt = Number(state.data.cityShops?.__fetchedAt) || 0;
-    if (!force && Date.now() - fetchedAt < CITY_SHOP_REFRESH_MS) return true;
-    return guardedRequest('cityShopStock', () => apiV1('torn', { selections: 'cityshops' }, { priority: 'low' }), (body) => {
-      state.data.cityShops = { ...body, __fetchedAt: Date.now() };
-    });
   }
 
   function refillUsedStatus(refills, type) {
@@ -2216,7 +2148,6 @@
     const cityNow = numberFromPersonalStats(state.data.cityItemsNow);
     const cityAtReset = numberFromPersonalStats(state.data.cityItemsAtReset);
     const boughtInCityToday = cityNow !== null && cityAtReset !== null ? Math.max(0, cityNow - cityAtReset) : null;
-    const cityStockSummary = cityShopStockSummary();
     const medicalThresholdSeconds = Number(state.settings.medicalThresholdHours || 3) * 3600;
     const boosterThresholdSeconds = Number(state.settings.boosterThresholdHours ?? 3) * 3600;
     const playerAddiction = playerAddictionPercent();
@@ -2286,7 +2217,7 @@
         id: 'cityItem',
         active: boughtInCityToday !== null && boughtInCityToday < 100,
         title: 'Buy 100 items from city shops',
-        detail: boughtInCityToday !== null ? `${boughtInCityToday} / 100 bought since today's Torn reset - ${100 - boughtInCityToday} remaining.${cityStockSummary ? ` ${cityStockSummary}.` : ' Checking Beer, Pepper Spray, and Empty Blood Bag stock.'}` : '',
+        detail: boughtInCityToday !== null ? `${boughtInCityToday} / 100 bought since today's Torn reset - ${100 - boughtInCityToday} remaining.` : '',
         links: [{ label: 'City', href: 'https://www.torn.com/city.php' }],
         tone: 'daily',
       },
@@ -2663,12 +2594,7 @@
     return `${mode} - waiting for the first refresh...`;
   }
 
-  function soundsMuted() {
-    return state.settings.muteSounds === true;
-  }
-
   function ensureAudioContext() {
-    if (soundsMuted()) return null;
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) return null;
     state.audioContext ||= new AudioContextClass();
@@ -2677,7 +2603,6 @@
   }
 
   function playAlarmSound() {
-    if (soundsMuted()) return;
     const context = ensureAudioContext();
     if (!context || context.state !== 'running') return;
     [0, 0.24].forEach((offset, index) => {
@@ -2695,7 +2620,6 @@
   }
 
   function playLandingSound() {
-    if (soundsMuted()) return;
     const context = ensureAudioContext();
     if (!context || context.state !== 'running') return;
     [1046, 784, 523].forEach((frequency, index) => {
@@ -2714,7 +2638,6 @@
   }
 
   function playTurtleSound() {
-    if (soundsMuted()) return;
     const context = ensureAudioContext();
     if (!context || context.state !== 'running') return;
     [0, 0.18, 0.46, 0.64].forEach((offset, index) => {
@@ -2783,7 +2706,6 @@
           body: alert.detail || 'Daily Dashboard reminder',
           tag: `tdd-${alert.id}`,
           renotify: true,
-          silent: soundsMuted(),
         });
         notification.onclick = () => {
           window.focus();
@@ -2800,7 +2722,6 @@
         new Notification(`Torn: ${alerts.length - selected.length} more reminders`, {
           body: 'Open the Daily Dashboard to review them.',
           tag: 'tdd-more-alerts',
-          silent: soundsMuted(),
         });
       } catch {
         // Some mobile browsers expose permission but require service-worker notifications.
@@ -2816,10 +2737,7 @@
     let historyChanged = false;
     let needsRender = false;
     const normal = active.filter((alert) => !['landing', 'turtle'].includes(alert.id));
-    const generalSoundEnabled = state.settings.soundAlarm && !soundsMuted();
-    const landingSoundEnabled = state.settings.landingSoundAlarm && !soundsMuted();
-    const turtleSoundEnabled = state.settings.turtleSoundAlarm && !soundsMuted();
-    if (normal.length && (state.settings.flashAlarm || generalSoundEnabled || browserNotificationsEnabled())) {
+    if (normal.length && (state.settings.flashAlarm || state.settings.soundAlarm || browserNotificationsEnabled())) {
       const interval = Math.max(1, Number(state.settings.alarmIntervalMinutes) || 1) * 60_000;
       const dueAlerts = normal.filter((alert) => now - (Number(state.settings.alarmHistory[alert.id]) || 0) >= interval);
       if (dueAlerts.length) {
@@ -2829,12 +2747,12 @@
           state.flashUntil = now + 6_000;
           needsRender = true;
         }
-        if (generalSoundEnabled) playAlarmSound();
+        if (state.settings.soundAlarm) playAlarmSound();
         pushBrowserNotifications(dueAlerts);
       }
     }
     const landing = active.find((alert) => alert.id === 'landing');
-    if (landing && (state.settings.landingFlashAlarm || landingSoundEnabled || browserNotificationsEnabled())) {
+    if (landing && (state.settings.landingFlashAlarm || state.settings.landingSoundAlarm || browserNotificationsEnabled())) {
       const interval = Math.max(1, Number(state.settings.landingAlarmIntervalMinutes) || 1) * 60_000;
       if (now - (Number(state.settings.alarmHistory.landing) || 0) >= interval) {
         state.settings.alarmHistory.landing = now;
@@ -2843,12 +2761,12 @@
           state.landingFlashUntil = now + 8_000;
           needsRender = true;
         }
-        if (landingSoundEnabled) playLandingSound();
+        if (state.settings.landingSoundAlarm) playLandingSound();
         pushBrowserNotifications([landing]);
       }
     }
     const turtle = active.find((alert) => alert.id === 'turtle');
-    if (turtle && (state.settings.turtleFlashAlarm || turtleSoundEnabled || browserNotificationsEnabled())) {
+    if (turtle && (state.settings.turtleFlashAlarm || state.settings.turtleSoundAlarm || browserNotificationsEnabled())) {
       const interval = Math.max(1, Number(state.settings.turtleAlarmIntervalMinutes) || 1) * 60_000;
       if (now - (Number(state.settings.alarmHistory.turtle) || 0) >= interval) {
         state.settings.alarmHistory.turtle = now;
@@ -2857,7 +2775,7 @@
           state.turtleFlashUntil = now + 9_000;
           needsRender = true;
         }
-        if (turtleSoundEnabled) playTurtleSound();
+        if (state.settings.turtleSoundAlarm) playTurtleSound();
         pushBrowserNotifications([turtle]);
       }
     }
@@ -3038,7 +2956,6 @@
           <summary>Alarm behavior</summary>
           <p>These options repeat for any active, unsnoozed reminder except Landing and Turtle, which have separate sounds and timing under Thresholds.</p>
           <div class="alarm-settings">
-            <label><input type="checkbox" data-field="mute-sounds" ${state.settings.muteSounds ? 'checked' : ''}> Mute all dashboard sounds</label>
             <label><input type="checkbox" data-field="flash-alarm" ${state.settings.flashAlarm ? 'checked' : ''}> Flash red</label>
             <label><input type="checkbox" data-field="sound-alarm" ${state.settings.soundAlarm ? 'checked' : ''}> Play the general alarm sound</label>
             <label>Repeat while unfinished
@@ -3278,7 +3195,6 @@
         <header class="header" data-drag-handle>
           <div class="title">Daily Dashboard <span class="count">${alerts.length}</span></div>
           <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
-          <button class="icon-button" data-action="toggle-mute" title="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-label="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-pressed="${state.settings.muteSounds ? 'true' : 'false'}">${state.settings.muteSounds ? '🔇' : '🔊'}</button>
           <button class="icon-button" data-action="settings" title="Settings" aria-label="Settings">⚙</button>
           <button class="icon-button" data-action="collapse" title="${collapsed ? 'Expand' : 'Minimize'}" aria-label="${collapsed ? 'Expand' : 'Minimize'}">${collapsed ? '▾' : '▴'}</button>
         </header>
@@ -3350,16 +3266,8 @@
     const button = event.target.closest('[data-action]');
     if (!button) return;
     const action = button.dataset.action;
-    if (!soundsMuted() && (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm)) ensureAudioContext();
-    if (action === 'toggle-mute') {
-      state.settings.muteSounds = !state.settings.muteSounds;
-      state.settings.alarmHistory = {};
-      if (state.settings.muteSounds) state.audioContext?.suspend?.().catch(() => {});
-      else ensureAudioContext();
-      saveSettings();
-      render();
-      return;
-    } else if (action === 'collapse') {
+    if (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm) ensureAudioContext();
+    if (action === 'collapse') {
       state.settings.collapsed = !state.settings.collapsed;
     } else if (action === 'settings') {
       state.settings.settingsOpen = !state.settings.settingsOpen;
@@ -3634,11 +3542,6 @@
       state.settings.jobAddictionThreshold = Number(event.target.value);
     } else if (event.target.matches('[data-field="player-addiction-threshold"]')) {
       state.settings.playerAddictionThreshold = Number(event.target.value);
-    } else if (event.target.matches('[data-field="mute-sounds"]')) {
-      state.settings.muteSounds = event.target.checked;
-      state.settings.alarmHistory = {};
-      if (state.settings.muteSounds) state.audioContext?.suspend?.().catch(() => {});
-      else ensureAudioContext();
     } else if (event.target.matches('[data-field="flash-alarm"]')) {
       state.settings.flashAlarm = event.target.checked;
       state.settings.alarmHistory = {};
@@ -3758,7 +3661,7 @@
   }, true);
 
   shadow.addEventListener('pointerdown', (event) => {
-    if (!soundsMuted() && (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm)) ensureAudioContext();
+    if (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm) ensureAudioContext();
     const panel = event.target.closest('.panel');
     if (panel) {
       const panelRect = panel.getBoundingClientRect();

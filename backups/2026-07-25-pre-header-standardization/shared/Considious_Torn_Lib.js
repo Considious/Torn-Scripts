@@ -1,30 +1,12 @@
-// ==UserScript==
-// @name         Core Lib
-// @namespace    Considious [3853023]
-// @version      1.1.1
-// @description  Core library of functions for Considious [3853023]'s family of scripts.
-// @author       Considious [3853023]
-// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
-// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
-// @match        https://www.torn.com/*
-// @connect      api.torn.com
-// @connect      twse.dev
-// @connect      ffscouter.com
-// @connect      raw.githubusercontent.com
-// @connect      docs.google.com
-// @connect      weav3r.dev
-// @grant        GM_xmlhttpRequest
-// @grant        GM_addStyle
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_registerMenuCommand
-// @run-at       document-end
-// ==/UserScript==
-
+/*
+ * Considious Torn Userscript Library v1.1.0
+ * Shared infrastructure for Considious Torn userscripts.
+ * Loaded through Tampermonkey/Greasemonkey @require.
+ */
 (function libInstaller(global){
 'use strict';
 if(global.ConsidiousTornLib)return;
-const VERSION='1.1.1';
+const VERSION='1.1.0';
 function isPageActive({requireFocus=true}={}){return document.visibilityState==='visible'&&(!requireFocus||document.hasFocus());}
 function errorMessage(value,fallback='Request failed'){if(value instanceof Error)return value.message;if(typeof value==='string'&&value.trim())return value.trim();if(value&&typeof value==='object'){const nested=value.error?.error??value.error?.message??value.error??value.message;if(nested!==undefined&&nested!==value)return errorMessage(nested,fallback);}return fallback;}
 function request(url,options={}){if(typeof GM_xmlhttpRequest!=='function')return Promise.reject(new Error('GM_xmlhttpRequest is unavailable. Add it to the userscript grants.'));return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:options.method||'GET',url,data:options.data,headers:options.headers||{},timeout:options.timeout||12_000,responseType:options.responseType,anonymous:options.anonymous,onload:resolve,onerror:()=>reject(new Error(options.networkErrorMessage||'Network request failed')),ontimeout:()=>reject(new Error(options.timeoutMessage||'Network request timed out')),onabort:()=>reject(new Error(options.abortMessage||'Network request was aborted'))}));}

@@ -1,11 +1,9 @@
 // ==UserScript==
-// @name         Considious Torn Ranked War Target Panel
-// @namespace    Considious [3853023]
-// @version      0.9.21
-// @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
-// @author       Considious [3853023]
-// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
-// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
+// @name         Torn Ranked War Target Panel (TWSE Companion)
+// @namespace    https://chatgpt.com/
+// @version      0.9.20
+// @description  Right-side ranked-war target panel using TWSE shared data with a legal Torn API fallback.
+// @author       RJ / ChatGPT prototype
 // @match        https://www.torn.com/*
 // @connect      api.torn.com
 // @connect      twse.dev

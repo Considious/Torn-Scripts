@@ -1,21 +1,21 @@
 // ==UserScript==
 // @name         Considious Torn Cracking Helper
 // @namespace    Considious [3853023]
-// @version      2.2.2
-// @description  Focus-only Cracking pattern helper with a local dictionary and opt-in password contributions.
+// @version      2.2.3
+// @description  Focus-only cracking pattern helper with a local dictionary and opt-in password contributions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Considious_Torn_Cracking_Helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Considious_Torn_Cracking_Helper.user.js
 // @match        https://www.torn.com/page.php?sid=crimes*
 // @match        https://www.torn.com/loader.php?sid=crimes*
 // @match        https://www.torn.com/load.php?sid=crimes*
-// @run-at       document-idle
+// @connect      raw.githubusercontent.com
+// @connect      docs.google.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
-// @connect      raw.githubusercontent.com
-// @connect      docs.google.com
+// @run-at       document-idle
 // ==/UserScript==
 
 (() => {

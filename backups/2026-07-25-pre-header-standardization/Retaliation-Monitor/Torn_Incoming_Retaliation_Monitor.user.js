@@ -1,20 +1,20 @@
 // ==UserScript==
-// @name         Considious Torn Incoming Retaliation Monitor
+// @name         Torn Incoming Retaliation Monitor
 // @namespace    Considious [3853023]
-// @version      1.7.8
+// @version      1.7.7
 // @description  Focused Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
 // @author       Considious [3853023]
+// @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
 // @match        https://www.torn.com/*
-// @connect      api.torn.com
-// @connect      ffscouter.com
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
-// @run-at       document-idle
+// @connect      api.torn.com
+// @connect      ffscouter.com
 // ==/UserScript==
 
 (function () {
