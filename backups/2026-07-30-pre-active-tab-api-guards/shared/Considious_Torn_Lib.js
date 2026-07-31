@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.0
+// @version      1.2.0
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,7 +26,7 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.2.0';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
   const TORN_API_MAX_LIMIT = 60;
@@ -34,144 +34,11 @@
   const TORN_API_LOCK_KEY = 'considious:torn-api-lock:v1';
   const TORN_API_LOCK_NAME = 'considious-torn-api-limiter-v1';
   const TORN_API_LOCK_LEASE_MS = 5_000;
-  const TAB_LEADER_PREFIX = 'considious:tab-leader:v1:';
   let memoryLedger = { events: [], cooldownUntil: 0 };
   let inProcessLimiterChain = Promise.resolve();
 
   function isPageActive({ requireFocus = true } = {}) {
     return document.visibilityState === 'visible' && (!requireFocus || document.hasFocus());
-  }
-
-  function createTabLeaderLease(name, options = {}) {
-    const storage = options.storage || global.localStorage;
-    const leaseMs = Math.max(5_000, Number(options.leaseMs) || 15_000);
-    const heartbeatMs = Math.max(1_000, Math.min(leaseMs / 2, Number(options.heartbeatMs) || 5_000));
-    const isEligible = typeof options.isEligible === 'function' ? options.isEligible : () => true;
-    const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
-    const key = `${TAB_LEADER_PREFIX}${String(name || 'default').trim() || 'default'}`;
-    const ownerId = `${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}:${Math.random().toString(36).slice(2)}`;
-    let leader = false;
-    let destroyed = false;
-    let heartbeatTimer = null;
-    let retryTimer = null;
-
-    function readLease() {
-      try {
-        const parsed = JSON.parse(storage.getItem(key));
-        if (!parsed || typeof parsed !== 'object') return null;
-        const expiresAt = Number(parsed.expiresAt);
-        if (!parsed.owner || !Number.isFinite(expiresAt)) return null;
-        return { owner: String(parsed.owner), expiresAt };
-      } catch {
-        return null;
-      }
-    }
-
-    function setLeader(next) {
-      const normalized = Boolean(next);
-      if (leader === normalized) return;
-      leader = normalized;
-      global.queueMicrotask(() => {
-        if (!destroyed) onChange(leader);
-      });
-    }
-
-    function writeOwnLease(now = Date.now()) {
-      storage.setItem(key, JSON.stringify({ owner: ownerId, expiresAt: now + leaseMs }));
-      const confirmed = readLease();
-      setLeader(Boolean(confirmed && confirmed.owner === ownerId && confirmed.expiresAt > now));
-      return leader;
-    }
-
-    function release() {
-      if (destroyed) return;
-      try {
-        const current = readLease();
-        if (current?.owner === ownerId) storage.removeItem(key);
-      } catch {
-        // Another tab will recover after the short lease expires.
-      }
-      setLeader(false);
-    }
-
-    function refresh() {
-      if (destroyed) return false;
-      if (!isEligible()) {
-        release();
-        return false;
-      }
-
-      const now = Date.now();
-      const current = readLease();
-      if (current && current.owner !== ownerId && current.expiresAt > now) {
-        setLeader(false);
-        return false;
-      }
-
-      try {
-        return writeOwnLease(now);
-      } catch {
-        setLeader(false);
-        return false;
-      }
-    }
-
-    function isLeader() {
-      if (destroyed || !isEligible()) {
-        setLeader(false);
-        return false;
-      }
-      const current = readLease();
-      const ownsCurrentLease = Boolean(
-        current &&
-        current.owner === ownerId &&
-        current.expiresAt > Date.now()
-      );
-      setLeader(ownsCurrentLease);
-      return ownsCurrentLease;
-    }
-
-    function scheduleContendedRetry() {
-      if (destroyed || retryTimer) return;
-      retryTimer = global.setTimeout(() => {
-        retryTimer = null;
-        refresh();
-      }, 25 + Math.floor(Math.random() * 225));
-    }
-
-    function handleStorage(event) {
-      if (event.storageArea !== storage || event.key !== key || destroyed) return;
-      const current = readLease();
-      const now = Date.now();
-      if (current?.owner === ownerId && current.expiresAt > now) {
-        setLeader(true);
-      } else {
-        setLeader(false);
-        if (!current || current.expiresAt <= now) scheduleContendedRetry();
-      }
-    }
-
-    function destroy() {
-      if (destroyed) return;
-      release();
-      destroyed = true;
-      if (heartbeatTimer) global.clearInterval(heartbeatTimer);
-      if (retryTimer) global.clearTimeout(retryTimer);
-      global.removeEventListener('storage', handleStorage);
-    }
-
-    global.addEventListener('storage', handleStorage);
-    heartbeatTimer = global.setInterval(refresh, heartbeatMs);
-    refresh();
-
-    return Object.freeze({
-      destroy,
-      isLeader,
-      ownerId,
-      refresh,
-      release,
-      storageKey: key,
-    });
   }
 
   function errorMessage(value, fallback = 'Request failed') {
@@ -647,7 +514,6 @@
       VERSION,
       TORN_API_DEFAULT_LIMIT,
       copyText,
-      createTabLeaderLease,
       elementVisible,
       errorMessage,
       escapeAttribute: escapeHtml,

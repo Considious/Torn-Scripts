@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.23
+// @version      0.9.22
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -13,7 +13,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.0
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
 // @run-at       document-end
 // ==/UserScript==
 
@@ -59,7 +59,6 @@
     };
 
     let settings = loadSettings();
-    let apiLease = null;
     let opponent = null;
     let members = [];
     let ffById = {};
@@ -135,11 +134,6 @@
     }
 
     function gmRequest(url, options = {}) {
-        if (!runtimeShouldRun()) {
-            const error = new Error('Ranked War Panel API work is paused because another Torn tab owns polling or the panel is in bubble mode.');
-            error.runtimePaused = true;
-            return Promise.reject(error);
-        }
         return TornLib.requestJson(url, {
             ...options,
             timeout: options.timeout || 15000,
@@ -322,8 +316,7 @@
                 'faction_id',
                 'id'
             ]) || ownFactionId;
-        } catch (error) {
-            if (error?.runtimePaused) throw error;
+        } catch {
             try {
                 const profile = await gmRequest(
                     `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(settings.apiKey)}` +
@@ -337,8 +330,7 @@
                     profile?.profile?.faction?.faction_id ??
                     ownFactionId
                 );
-            } catch (fallbackError) {
-                if (fallbackError?.runtimePaused) throw fallbackError;
+            } catch {
                 // Saved IDs and faction metadata can still identify the opponent.
             }
         }
@@ -397,10 +389,6 @@
 
     function isActivePage() {
         return TornLib.isPageActive();
-    }
-
-    function runtimeShouldRun() {
-        return !settings.bubbleMode && Boolean(apiLease?.isLeader());
     }
 
     function isVisibleRankedWarPage() {
@@ -1400,7 +1388,7 @@
     }
 
     async function refreshChainReportStats(force = false) {
-        if (!runtimeShouldRun() || !settings.apiKey || !chainState.id || !ownUserId) return;
+        if (!settings.apiKey || !chainState.id || !ownUserId) return;
 
         const now = Date.now();
         if (!force && now - lastChainReportCheck < CHAIN_REPORT_REFRESH_MS) return;
@@ -1452,7 +1440,6 @@
             personalStats.updatedAt = Date.now();
             personalStats.error = '';
         } catch (error) {
-            if (error?.runtimePaused) return;
             personalStats.error = `Chain report: ${error.message}`;
         }
     }
@@ -1468,7 +1455,7 @@
     }
 
     async function refreshChainApi(force = false) {
-        if (!runtimeShouldRun() || !settings.apiKey) return;
+        if (!settings.apiKey) return;
 
         const now = Date.now();
         if (!force && now - lastChainApiCheck < CHAIN_API_REFRESH_MS) return;
@@ -1481,7 +1468,6 @@
 
         try {
             const payload = await gmRequest(url);
-            if (!runtimeShouldRun()) return;
             if (payload?.error) {
                 throw new Error(payload.error.error || payload.error.message || 'Torn API error');
             }
@@ -1510,7 +1496,6 @@
             chainState.source = 'API';
             await refreshChainReportStats(force);
         } catch (error) {
-            if (error?.runtimePaused) return;
             chainState.apiError = error.message;
         }
 
@@ -1526,7 +1511,10 @@
     }
 
     function readVisibleChainBar() {
-        if (!runtimeShouldRun() || !isActivePage()) return;
+        if (!isActivePage()) {
+            refreshChainApi(false);
+            return;
+        }
 
         const anchor =
             document.querySelector('a[href*="#/war/chain"]') ||
@@ -1795,12 +1783,6 @@
     async function refreshTurtleStatus(force = false) {
         const realWarMode = settings.mode === 'non-termed';
 
-        if (!runtimeShouldRun()) {
-            stopTurtleAlarm();
-            renderWarSummary();
-            return;
-        }
-
         if (!realWarMode || !settings.turtleTimerEnabled || !settings.apiKey) {
             turtleStatusError = '';
             turtleHospitalUntil = 0;
@@ -1822,7 +1804,6 @@
                 `https://api.torn.com/v2/user/basic?key=${encodeURIComponent(settings.apiKey)}` +
                 `&comment=SLINKTurtleTimer`
             );
-            if (!runtimeShouldRun()) return;
 
             const status = basic?.status || {};
             const state = String(status?.state || '');
@@ -1843,7 +1824,6 @@
                 stopTurtleAlarm();
             }
         } catch (error) {
-            if (error?.runtimePaused) return;
             turtleStatusError = error.message;
         }
 
@@ -2269,8 +2249,6 @@
         panel.querySelector('.rw-bubble-toggle').addEventListener('click', () => {
             settings.bubbleMode = true;
             saveSettings();
-            apiLease?.refresh();
-            syncRuntimeState();
             render();
         });
 
@@ -2278,8 +2256,6 @@
             settings.bubbleMode = false;
             saveSettings();
             render();
-            apiLease?.refresh();
-            syncRuntimeState({ refresh: true });
         });
 
         panel.querySelector('.rw-collapse').addEventListener('click', () => {
@@ -2354,7 +2330,6 @@
     }
 
     async function hardRefresh() {
-        if (!runtimeShouldRun()) return;
         statusText = 'Hard refresh: rescanning Ranked Warâ€¦';
         render();
 
@@ -2379,7 +2354,6 @@
     }
 
     async function refreshData(forceNetwork = false) {
-        if (!runtimeShouldRun()) return;
         try {
             const now = Date.now();
             const visibleOpponent = scanVisibleRankedWarOpponent();
@@ -2403,11 +2377,9 @@
 
                 try {
                     const apiOpponent = await getCurrentOpponent();
-                    if (!runtimeShouldRun()) return;
                     switchOpponent(apiOpponent, 'Torn API');
                     lastWarCheck = now;
                 } catch (error) {
-                    if (error?.runtimePaused) return;
                     if (!opponent) throw error;
                     console.warn('[RW Target Panel] Opponent refresh failed; using current opponent:', error);
                     statusText = 'Using current ranked-war opponent';
@@ -2447,7 +2419,6 @@
                 render();
 
                 const factionResult = await fetchSharedMembers(opponent.id);
-                if (!runtimeShouldRun()) return;
 
                 if (factionResult.members.length) {
                     members = factionResult.members;
@@ -2467,7 +2438,6 @@
             }
 
             await refreshChainApi(forceNetwork);
-            if (!runtimeShouldRun()) return;
 
             if (
                 settings.ffApiKey &&
@@ -2476,7 +2446,6 @@
             ) {
                 lastFFCheck = now;
                 const freshFF = await fetchFFData(members);
-                if (!runtimeShouldRun()) return;
 
                 if (Object.keys(freshFF).length) {
                     ffById = { ...ffById, ...freshFF };
@@ -2486,7 +2455,6 @@
 
             render();
         } catch (error) {
-            if (error?.runtimePaused) return;
             if (members.length) {
                 statusText = `Using cached data â€” ${error.message}`;
             } else {
@@ -2948,8 +2916,6 @@
         settings.bubbleMode = !settings.bubbleMode;
         saveSettings();
         render();
-        apiLease?.refresh();
-        syncRuntimeState({ refresh: !settings.bubbleMode });
     });
 
     GM_registerMenuCommand('Ranked War Panel: Move to next corner', () => {
@@ -2983,6 +2949,7 @@
     }
 
     render();
+    refreshData(false);
 
     function stopOwnedTimers() {
         if (refreshTimer) clearInterval(refreshTimer);
@@ -2998,10 +2965,8 @@
 
     function startOwnedTimers() {
         stopOwnedTimers();
-        if (!runtimeShouldRun()) return;
 
         refreshTimer = setInterval(() => {
-            if (!runtimeShouldRun()) return;
             const cached = opponent ? useNewestLocalCache(opponent.id) : null;
 
             if (cached && cached.timestamp > lastDataTimestamp) {
@@ -3018,66 +2983,52 @@
         }, REFRESH_MS);
 
         personalAttackTimer = setInterval(() => {
-            if (!runtimeShouldRun()) return;
             refreshChainApi(false).then(() => renderWarSummary());
         }, PERSONAL_ATTACK_REFRESH_MS);
 
         chainTimer = setInterval(() => {
-            if (!runtimeShouldRun()) return;
-            readVisibleChainBar();
+            if (isActivePage()) {
+                readVisibleChainBar();
+            } else {
+                refreshChainApi(false);
+            }
             evaluateTurtleTimer();
         }, CHAIN_DOM_REFRESH_MS);
 
         turtleStatusTimer = setInterval(() => {
-            if (!runtimeShouldRun()) return;
             refreshTurtleStatus(false);
         }, TURTLE_STATUS_REFRESH_MS);
     }
 
-    function syncRuntimeState({ refresh = false } = {}) {
-        if (!runtimeShouldRun()) {
-            stopOwnedTimers();
-            updateChainAlert(false);
-            stopTurtleAlarm();
-            statusText = settings.bubbleMode
-                ? 'Paused in bubble mode'
-                : 'Paused • another Torn tab owns API polling';
-            render();
-            return;
-        }
+    startOwnedTimers();
 
-        const restarting = !refreshTimer;
-        if (restarting) startOwnedTimers();
+    if (isActivePage()) {
+        readVisibleChainBar();
+    } else {
+        refreshChainApi(false);
+    }
+
+    refreshTurtleStatus(true);
+
+    window.addEventListener('focus', () => {
         readVisibleChainBar();
         const visibleOpponent = scanVisibleRankedWarOpponent();
         if (visibleOpponent) switchOpponent(visibleOpponent, 'Visible Ranked War');
-        if (refresh || restarting) {
-            refreshData(false);
-            refreshTurtleStatus(false);
-        }
-    }
+        refreshData(false);
+    });
 
-    window.addEventListener('focus', syncRuntimeState);
-    window.addEventListener('blur', syncRuntimeState);
-    document.addEventListener('visibilitychange', syncRuntimeState);
-    window.addEventListener('storage', event => {
-        if (event.key === PREFIX + 'settings') {
-            settings = loadSettings();
-            applyPanelPosition();
-            render();
-            apiLease?.refresh();
-            syncRuntimeState({ refresh: !settings.bubbleMode });
+    document.addEventListener('visibilitychange', () => {
+        if (isActivePage()) {
+            readVisibleChainBar();
+            const visibleOpponent = scanVisibleRankedWarOpponent();
+            if (visibleOpponent) switchOpponent(visibleOpponent, 'Visible Ranked War');
+            refreshData(false);
+        } else {
+            refreshChainApi(false);
         }
     });
 
     window.addEventListener('beforeunload', () => {
         stopOwnedTimers();
-        apiLease?.destroy();
     });
-
-    apiLease = TornLib.createTabLeaderLease('ranked-war-target-panel', {
-        isEligible: () => !settings.bubbleMode,
-        onChange: isLeader => syncRuntimeState({ refresh: isLeader }),
-    });
-    syncRuntimeState({ refresh: true });
 })();

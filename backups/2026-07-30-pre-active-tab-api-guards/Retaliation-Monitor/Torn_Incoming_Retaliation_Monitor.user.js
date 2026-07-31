@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn Incoming Retaliation Monitor
 // @namespace    Considious [3853023]
-// @version      1.7.10
-// @description  Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
+// @version      1.7.9
+// @description  Focused Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
@@ -13,7 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.0
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -48,8 +48,6 @@
     const playerBasicCache = new Map();
 
     let factionId = Number(GM_getValue(KEYS.factionId, 0)) || 0;
-    let apiLease = null;
-    let starting = false;
     let polling = false;
     let pollTimer = null;
     let secondTimer = null;
@@ -157,34 +155,24 @@
     function stopRuntimeTimers() { if (pollTimer) clearInterval(pollTimer); if (secondTimer) clearInterval(secondTimer); if (chainTimer) clearInterval(chainTimer); pollTimer = null; secondTimer = null; chainTimer = null; }
 
     async function start() {
-        if (starting) return;
-        starting = true;
+        makePanel(); stopRuntimeTimers();
+        const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, '');
+        if (GM_getValue(KEYS.minimized, false)) { updateBubble(); return; }
+        if (!tornKey || !ffKey) { setStatus('Setup required'); showSettings(); return; }
         try {
-            makePanel(); stopRuntimeTimers();
-            const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, '');
-            if (GM_getValue(KEYS.minimized, false)) { updateBubble(); return; }
-            if (!runtimeShouldRun()) { setStatus('Paused • another Torn tab owns API polling'); updateBubble(); return; }
-            if (!tornKey || !ffKey) { setStatus('Setup required'); showSettings(); return; }
             if (!factionId) { setStatus('Finding faction…'); factionId = await getOwnFactionId(tornKey); GM_setValue(KEYS.factionId, factionId); }
-            if (!runtimeShouldRun()) return;
             render(); const usedLive = scrapeActiveTabChainWidget(); await refreshChainLinkFromApi(tornKey, !usedLive); await poll(true);
-            if (!runtimeShouldRun()) return;
             pollTimer = window.setInterval(() => poll(false), POLL_MS);
             secondTimer = window.setInterval(() => { updateTimers(); const updated = scrapeActiveTabChainWidget(); if (!updated && currentChainSeconds > 0) { currentChainSeconds = Math.max(0, currentChainSeconds - 1); updateChainDisplay(); } if (!updated && unixNow() % Math.round(POLL_MS / 1000) === 0) refreshChainLinkFromApi(tornKey, true); }, 1000);
             chainTimer = null;
-        } catch (error) {
-            if (runtimeShouldRun()) { console.error('[Retal Monitor]', error); setStatus('Setup error'); showSettings(error.message); }
-        } finally {
-            starting = false;
-        }
+        } catch (error) { console.error('[Retal Monitor]', error); setStatus('Setup error'); showSettings(error.message); }
     }
 
     async function poll(manual = false) {
-        if (polling || !runtimeShouldRun()) return; const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, ''); if (!tornKey || !ffKey || !factionId) return;
+        if (polling) return; const tornKey = GM_getValue(KEYS.tornApiKey, ''); const ffKey = GM_getValue(KEYS.ffApiKey, ''); if (!tornKey || !ffKey || !factionId) return;
         polling = true; setStatus(manual ? 'Refreshing…' : 'Checking…');
         try {
             const now = unixNow(); const attacks = await getFactionAttacks(tornKey, now - LOOKBACK_SECONDS, now); removeTargetsAlreadyHit(attacks);
-            if (!runtimeShouldRun()) return;
             const dismissed = new Set(getDismissed()); const manuallyCleared = getManuallyCleared(); const resolved = getResolved(); const additions = [];
             for (const attack of attacks) {
                 if (!isIncomingAttack(attack) || !isSuccessfulAttack(attack)) continue;
@@ -197,16 +185,14 @@
                 additions.push({ attackId, incomingEnded: ended, expiresAt, attackerId, attackerName: getPlayerName(attack.attacker, attackerId), attackerFactionName: getFactionName(attack.attacker), attackerFactionTag: getFactionTag(attack.attacker), defenderId, defenderName: getPlayerName(attack.defender, defenderId), defenderStatus: getPlayerStatus(attack.defender), location, isAbroad: Boolean(location), isWar: flags.isWar, isRetal: flags.isRetal, profileUrl: `https://www.torn.com/profiles.php?XID=${attackerId}`, attackUrl: `https://www.torn.com/page.php?sid=attack&user2ID=${attackerId}`, ffData: ffCache.get(attackerId) || null });
             }
             const playerIdsToFetch = [...new Set([...additions.map(item => item.attackerId), ...[...activeRetals.values()].map(item => item.attackerId)].filter(Boolean))];
-            if (playerIdsToFetch.length) await Promise.all(playerIdsToFetch.map(async playerId => { try { const basic = await getUserBasic(tornKey, playerId); playerBasicCache.set(playerId, basic); } catch (error) { if (!error?.runtimePaused) console.warn(`[Retal Monitor] Basic profile lookup failed for ${playerId}:`, error); } }));
-            if (!runtimeShouldRun()) return;
+            if (playerIdsToFetch.length) await Promise.all(playerIdsToFetch.map(async playerId => { try { const basic = await getUserBasic(tornKey, playerId); playerBasicCache.set(playerId, basic); } catch (error) { console.warn(`[Retal Monitor] Basic profile lookup failed for ${playerId}:`, error); } }));
             for (const [attackId, target] of activeRetals.entries()) { const basic = playerBasicCache.get(target.attackerId); if (basic && isPlayerHospitalized(basic)) { markResolved(attackId); activeRetals.delete(attackId); } }
             for (const item of additions) { const basic = playerBasicCache.get(item.attackerId); if (basic) { item.location = getPlayerLocation(basic) || item.location || ''; item.isAbroad = Boolean(item.location && item.location.toLowerCase() !== 'torn city'); item.attackerStatus = getPlayerStatus(basic) || item.attackerStatus || ''; } }
             const idsToFetch = [...new Set(additions.map(item => item.attackerId).filter(id => !ffCache.has(id)))];
-            if (idsToFetch.length) { try { const ffResults = await getFFScouterStats(ffKey, idsToFetch); for (const item of ffResults) { const id = Number(item.player_id ?? item.playerId ?? item.id ?? item.user_id ?? 0); if (id) ffCache.set(id, item); } } catch (error) { if (!error?.runtimePaused) console.warn('[Retal Monitor] FFScouter lookup failed:', error); } }
-            if (!runtimeShouldRun()) return;
+            if (idsToFetch.length) { try { const ffResults = await getFFScouterStats(ffKey, idsToFetch); for (const item of ffResults) { const id = Number(item.player_id ?? item.playerId ?? item.id ?? item.user_id ?? 0); if (id) ffCache.set(id, item); } } catch (error) { console.warn('[Retal Monitor] FFScouter lookup failed:', error); } }
             for (const item of additions) { item.ffData = ffCache.get(item.attackerId) || null; activeRetals.set(item.attackId, item); }
             cleanExpired(); trimDismissed(); trimManuallyCleared(); render(); setStatus(`API • ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
-        } catch (error) { if (error?.runtimePaused) return; console.error('[Retal Monitor]', error); setStatus('API error'); if (!activeRetals.size) { const body = document.getElementById('trm-body'); if (body) body.innerHTML = `<div class="trm-error">${escapeHtml(error.message)}</div>`; } } finally { polling = false; }
+        } catch (error) { console.error('[Retal Monitor]', error); setStatus('API error'); if (!activeRetals.size) { const body = document.getElementById('trm-body'); if (body) body.innerHTML = `<div class="trm-error">${escapeHtml(error.message)}</div>`; } } finally { polling = false; }
     }
 
     function isIncomingAttack(attack) { const defenderFaction = getFactionId(attack.defender); const attackerFaction = getFactionId(attack.attacker); return defenderFaction === factionId && attackerFaction !== factionId; }
@@ -260,10 +246,9 @@
     async function getOwnFactionId(apiKey){const data=await tornRequest('https://api.torn.com/v2/user/faction',apiKey);const id=Number(data.faction?.id??data.profile?.faction?.id??data.id??0);if(!id)throw new Error('Could not determine your faction ID. Check the Torn API key and its access.');return id;}
     function pageIsActiveTab(){return TornLib.isPageActive({requireFocus:false});}
     function pageHasFocus(){return TornLib.isPageActive();}
-    function runtimeShouldRun(){return !GM_getValue(KEYS.minimized,false)&&Boolean(apiLease?.isLeader());}
     function findChainWidget(){return document.querySelector('a[href*="factions.php?step=your#/war/chain"]')||document.querySelector('a[href*="#/war/chain"]')||document.querySelector('a[class*="chain-bar___"]');}
     function scrapeActiveTabChainWidget(){if(GM_getValue(KEYS.minimized,false)||!pageHasFocus())return false;const widget=findChainWidget();if(!widget)return false;const valueNode=widget.querySelector('p[class*="bar-value___"]');const timeNode=widget.querySelector('p[class*="bar-timeleft___"]');const multiplierNode=widget.querySelector('span[class*="value___"]');if(!valueNode||!timeNode)return false;const chainText=(valueNode.textContent||'').trim();const timeText=(timeNode.textContent||'').trim();const multiplierText=(multiplierNode?.textContent||'').trim();const chainMatch=chainText.match(/^([\d,.]+)\s*\/\s*([\d,.]+[kKmMbB]?)$/);const timeMatch=timeText.match(/^(\d{1,2}):(\d{2})$/);if(!chainMatch||!timeMatch)return false;currentChainCount=parseCompactNumber(chainMatch[1]);currentChainBonus=parseCompactNumber(chainMatch[2]);currentChainMultiplier=multiplierText;currentChainSeconds=Number(timeMatch[1])*60+Number(timeMatch[2]);chainDeadline=unixNow()+currentChainSeconds;chainDataSource='Live';updateChainDisplay();return true;}
-    async function refreshChainLinkFromApi(apiKey,forceChainData=false){if(!apiKey||!runtimeShouldRun())return;try{const data=await tornRequest('https://api.torn.com/v2/faction/chain',apiKey);if(!runtimeShouldRun())return;const chain=data.chain??data.faction?.chain??data;currentChainId=Number(chain?.id??chain?.chain_id??chain?.chainId??data.chain_id??0)||0;updateChainLink();if(forceChainData||!scrapeActiveTabChainWidget()){const now=unixNow();const rawTimeout=Number(chain?.timeout??chain?.time_left??chain?.timeLeft??0);currentChainCount=Number(chain?.current??chain?.hits??chain?.chain??0)||0;currentChainBonus=CHAIN_BONUSES.find(bonus=>bonus>currentChainCount)||0;if(rawTimeout>now){chainDeadline=rawTimeout;currentChainSeconds=rawTimeout-now;}else if(rawTimeout>0){chainDeadline=now+rawTimeout;currentChainSeconds=rawTimeout;}currentChainMultiplier='';chainDataSource='API';updateChainDisplay();}}catch(error){if(runtimeShouldRun())console.warn('[Retal Monitor] Chain link lookup failed:',error);}}
+    async function refreshChainLinkFromApi(apiKey,forceChainData=false){if(!apiKey||GM_getValue(KEYS.minimized,false))return;try{const data=await tornRequest('https://api.torn.com/v2/faction/chain',apiKey);const chain=data.chain??data.faction?.chain??data;currentChainId=Number(chain?.id??chain?.chain_id??chain?.chainId??data.chain_id??0)||0;updateChainLink();if(forceChainData||!scrapeActiveTabChainWidget()){const now=unixNow();const rawTimeout=Number(chain?.timeout??chain?.time_left??chain?.timeLeft??0);currentChainCount=Number(chain?.current??chain?.hits??chain?.chain??0)||0;currentChainBonus=CHAIN_BONUSES.find(bonus=>bonus>currentChainCount)||0;if(rawTimeout>now){chainDeadline=rawTimeout;currentChainSeconds=rawTimeout-now;}else if(rawTimeout>0){chainDeadline=now+rawTimeout;currentChainSeconds=rawTimeout;}currentChainMultiplier='';chainDataSource='API';updateChainDisplay();}}catch(error){console.warn('[Retal Monitor] Chain link lookup failed:',error);}}
     function updateChainLink(){const link=document.getElementById('trm-chain-link');if(!link)return;if(!currentChainId){link.style.display='none';link.removeAttribute('href');link.textContent='';return;}link.href='https://www.torn.com/war.php?step=chainreport&chainID='+encodeURIComponent(currentChainId);link.textContent=`View chain report #${currentChainId}`;link.style.display='inline-block';}
     function updateChainDisplay(){const panel=document.getElementById('trm-panel'),stats=document.getElementById('trm-chain-stats'),count=document.getElementById('trm-chain-count'),time=document.getElementById('trm-chain-time'),multiplier=document.getElementById('trm-chain-multiplier'),source=document.getElementById('trm-chain-source');if(!panel||!stats||!count||!time||!multiplier||!source)return;if(!currentChainCount&&!currentChainSeconds){stats.style.display='none';panel.classList.remove('trm-chain-warning');resetAlarmState();return;}stats.style.display='block';count.textContent=currentChainBonus?`${currentChainCount.toLocaleString()} / ${currentChainBonus.toLocaleString()}`:currentChainCount.toLocaleString();time.textContent=currentChainSeconds>0?formatDuration(currentChainSeconds):'--:--';multiplier.textContent=currentChainMultiplier?` • ${currentChainMultiplier}`:'';source.textContent=chainDataSource;source.title=chainDataSource==='Live'?'Scraped from the focused Torn page':'Loaded from the Torn API';const warning=currentChainCount>=50&&currentChainSeconds>0&&currentChainSeconds<90&&!GM_getValue(KEYS.minimized,false);time.classList.toggle('trm-warning',warning);panel.classList.toggle('trm-chain-warning',warning);handleChainAlarm(currentChainSeconds);}
     function updateSoundButton(){const button=document.getElementById('trm-sound');if(!button)return;const enabled=Boolean(GM_getValue(KEYS.soundEnabled,false));button.textContent=enabled?'🔊':'🔇';button.title=enabled?'Chain alarm sound is on':'Chain alarm sound is off';}
@@ -272,17 +257,16 @@
     function resetAlarmState(){lastAlarmThreshold=0;}
     function playAlarmTone(volume=.2){try{const AudioContextClass=window.AudioContext||window.webkitAudioContext;if(!AudioContextClass)return;const context=new AudioContextClass(),oscillator=context.createOscillator(),gain=context.createGain();oscillator.type='square';oscillator.frequency.setValueAtTime(760,context.currentTime);gain.gain.setValueAtTime(volume,context.currentTime);gain.gain.exponentialRampToValueAtTime(.001,context.currentTime+.18);oscillator.connect(gain);gain.connect(context.destination);oscillator.start();oscillator.stop(context.currentTime+.18);oscillator.addEventListener('ended',()=>context.close());}catch(error){console.warn('[Retal Monitor] Could not play alarm:',error);}}
     function updateBubble(){const bubble=document.getElementById('trm-bubble');if(!bubble)return;const count=activeRetals.size;bubble.textContent=String(count);bubble.style.display=count?'block':'none';}
-    function minimizePanel(){const panel=document.getElementById('trm-panel');if(!panel)return;panel.classList.add('trm-minimized');panel.classList.remove('trm-chain-warning');GM_setValue(KEYS.minimized,true);apiLease?.refresh();resetAlarmState();stopRuntimeTimers();updateBubble();}
-    function restorePanel(){const panel=document.getElementById('trm-panel');if(!panel)return;panel.classList.remove('trm-minimized');GM_setValue(KEYS.minimized,false);apiLease?.refresh();scrapeActiveTabChainWidget();syncRuntimeState();}
+    function minimizePanel(){const panel=document.getElementById('trm-panel');if(!panel)return;panel.classList.add('trm-minimized');panel.classList.remove('trm-chain-warning');GM_setValue(KEYS.minimized,true);resetAlarmState();stopRuntimeTimers();updateBubble();}
+    function restorePanel(){const panel=document.getElementById('trm-panel');if(!panel)return;panel.classList.remove('trm-minimized');GM_setValue(KEYS.minimized,false);scrapeActiveTabChainWidget();start();}
     function parseCompactNumber(value){const normalized=String(value).trim().replace(/,/g,'').toLowerCase();const match=normalized.match(/^([\d.]+)\s*([kmb])?$/);if(!match)return Number(normalized)||0;const multipliers={k:1_000,m:1_000_000,b:1_000_000_000};return Math.round(Number(match[1])*(multipliers[match[2]]||1));}
     function formatDuration(totalSeconds){return TornLib.formatDuration(totalSeconds);}
 
     async function getUserBasic(apiKey,playerId){const data=await tornRequest(`https://api.torn.com/v2/user/${encodeURIComponent(playerId)}/profile`,apiKey);return data?.profile??data?.basic??data?.user??data;}
     async function getFactionAttacks(apiKey,from,to){const url='https://api.torn.com/v2/faction/attacks'+`?from=${encodeURIComponent(from)}`+`&to=${encodeURIComponent(to)}`+`&limit=${MAX_RESULTS}`+'&sort=desc';const data=await tornRequest(url,apiKey);const attacks=data.attacks??data.faction?.attacks??[];if(!Array.isArray(attacks))throw new Error('Torn returned no attacks list. The key may need faction attacks access.');return attacks;}
     async function getFFScouterStats(apiKey,playerIds){if(!playerIds.length)return[];const targets=playerIds.join(',');const url='https://ffscouter.com/api/v1/get-stats'+`?key=${encodeURIComponent(apiKey)}`+`&targets=${encodeURIComponent(targets)}`;const data=await requestJson(url);if(Array.isArray(data))return data;if(Array.isArray(data.results))return data.results;if(Array.isArray(data.data))return data.data;throw new Error(data.error?.message??data.error??'FFScouter returned an unexpected response.');}
-    function pausedRequestError(){const error=new Error('Retaliation Monitor API work is paused because another Torn tab owns polling or the panel is minimized.');error.runtimePaused=true;return error;}
-    function tornRequest(url,apiKey){if(!runtimeShouldRun())return Promise.reject(pausedRequestError());return TornLib.tornRequest(url,apiKey,{timeout:12_000,tornScript:'Retaliation Monitor',invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.'});}
-    function requestJson(url,headers={}){if(!runtimeShouldRun())return Promise.reject(pausedRequestError());return TornLib.requestJson(url,{headers,timeout:12_000,invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.',httpErrorMessage:(response,data)=>TornLib.errorMessage(data,`API request failed with status ${response.status}.`)});}
+    function tornRequest(url,apiKey){return TornLib.tornRequest(url,apiKey,{timeout:12_000,tornScript:'Retaliation Monitor',invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.'});}
+    function requestJson(url,headers={}){return TornLib.requestJson(url,{headers,timeout:12_000,invalidJsonMessage:'The API returned invalid JSON.',networkErrorMessage:'Network error while contacting the API.',timeoutMessage:'The API request timed out.',httpErrorMessage:(response,data)=>TornLib.errorMessage(data,`API request failed with status ${response.status}.`)});}
 
     function getFactionName(side){return String(side?.faction?.name??side?.faction_name??side?.factionName??'').trim();}
     function getFactionTag(side){return String(side?.faction?.tag??side?.faction_tag??side?.factionTag??side?.faction?.short_name??'').trim();}
@@ -303,29 +287,6 @@
     function escapeHtml(value){return TornLib.escapeHtml(value);}
     function escapeAttribute(value){return TornLib.escapeAttribute(value);}
 
-    function syncRuntimeState(){
-        const panel=makePanel();
-        const minimized=GM_getValue(KEYS.minimized,false);
-        panel.classList.toggle('trm-minimized',minimized);
-        if(!runtimeShouldRun()){
-            stopRuntimeTimers();
-            panel.classList.remove('trm-chain-warning');
-            resetAlarmState();
-            if(!minimized)setStatus('Paused • another Torn tab owns API polling');
-            updateBubble();
-            return;
-        }
-        scrapeActiveTabChainWidget();
-        if(!pollTimer&&!starting)void start();
-    }
-    document.addEventListener('visibilitychange',syncRuntimeState);
-    window.addEventListener('focus',syncRuntimeState);
-    window.addEventListener('blur',syncRuntimeState);
-    window.addEventListener('beforeunload',()=>{stopRuntimeTimers();apiLease?.destroy();});
-    makePanel();
-    apiLease=TornLib.createTabLeaderLease('incoming-retaliation-monitor',{
-        isEligible:()=>!GM_getValue(KEYS.minimized,false),
-        onChange:isLeader=>syncRuntimeState(isLeader),
-    });
-    syncRuntimeState();
+    async function refreshChainForFocusState(){if(GM_getValue(KEYS.minimized,false))return;const tornKey=GM_getValue(KEYS.tornApiKey,'');if(pageHasFocus()&&scrapeActiveTabChainWidget())return;if(tornKey)await refreshChainLinkFromApi(tornKey,true);const panel=document.getElementById('trm-panel');if(!pageHasFocus()&&panel){panel.classList.remove('trm-chain-warning');resetAlarmState();}}
+    document.addEventListener('visibilitychange',refreshChainForFocusState);window.addEventListener('focus',refreshChainForFocusState);window.addEventListener('blur',refreshChainForFocusState);makePanel();start();
 })();
