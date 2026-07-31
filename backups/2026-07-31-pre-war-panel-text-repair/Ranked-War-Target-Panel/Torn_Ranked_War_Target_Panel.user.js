@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.24
+// @version      0.9.23
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -94,7 +94,7 @@
     let chainTimer = null;
     let turtleStatusTimer = null;
     let panel = null;
-    let statusText = 'Starting…';
+    let statusText = 'Startingâ€¦';
     let chainAlertAudioContext = null;
     let lastChainAlarmAt = 0;
     let chainAlarmSequenceActive = false;
@@ -528,7 +528,7 @@
         lastFFCheck = 0;
         pendingChatSend = null;
 
-        statusText = `${source}: loading ${opponent.name}…`;
+        statusText = `${source}: loading ${opponent.name}â€¦`;
         render();
         return true;
     }
@@ -636,8 +636,8 @@
                 return {
                     members: cached.members,
                     source: error.status === 404
-                        ? 'Cached TWSE data — server returned 404'
-                        : 'Cached TWSE data — shared feed unavailable',
+                        ? 'Cached TWSE data â€” server returned 404'
+                        : 'Cached TWSE data â€” shared feed unavailable',
                     sharedAvailable: false,
                     cachedTimestamp: cached.timestamp,
                     timestamp: cached.timestamp
@@ -848,9 +848,9 @@
     }
 
     function statusEmoji(member) {
-        if (member.activity === 'Online') return '🟢 ';
-        if (member.activity === 'Idle') return '🟡 ';
-        if (member.activity === 'Offline') return '⚪ ';
+        if (member.activity === 'Online') return 'ðŸŸ¢ ';
+        if (member.activity === 'Idle') return 'ðŸŸ¡ ';
+        if (member.activity === 'Offline') return 'âšª ';
         return '';
     }
 
@@ -876,7 +876,7 @@
         let message = `${statusEmoji(member)}${linkedName} - ${details.join(' - ')}`;
 
         if (shouldHospitalize(member)) {
-            message = `🚨 PLEASE HOSPITALIZE — PLAYER IS ONLINE 🚨<br>${message}`;
+            message = `ðŸš¨ PLEASE HOSPITALIZE â€” PLAYER IS ONLINE ðŸš¨<br>${message}`;
         }
 
         return message;
@@ -1122,7 +1122,7 @@
         const frozenMessage = authorization.message;
         const original = button.textContent;
         button.disabled = true;
-        button.textContent = '…';
+        button.textContent = 'â€¦';
 
         try {
             let { container, composer } = await waitForFactionChat(250);
@@ -1160,7 +1160,7 @@
             }
 
             sendButton.click();
-            button.textContent = '✓';
+            button.textContent = 'âœ“';
 
             // One Copy authorizes exactly one Send.
             clearPendingChatSend();
@@ -1740,7 +1740,7 @@
             const mins = Math.floor(remaining / 60);
             const secs = remaining % 60;
             messageNode.textContent =
-                `Hospital ends in ${mins}:${String(secs).padStart(2, '0')} — re-up before release.`;
+                `Hospital ends in ${mins}:${String(secs).padStart(2, '0')} â€” re-up before release.`;
             box.hidden = false;
             box.classList.add('rw-turtle-danger');
             return;
@@ -1757,7 +1757,7 @@
             const mins = Math.floor(alertIn / 60);
             const secs = alertIn % 60;
             messageNode.textContent =
-                `Hospitalized — Turtle alarm in ${mins}:${String(secs).padStart(2, '0')}.`;
+                `Hospitalized â€” Turtle alarm in ${mins}:${String(secs).padStart(2, '0')}.`;
             box.hidden = false;
             return;
         }
@@ -1859,7 +1859,7 @@
 
         const chainActive = chainState.current > 0;
         const chainText = chainActive
-            ? `${chainState.current.toLocaleString()}${chainState.target ? `/${chainState.target.toLocaleString()}` : ''}${chainState.timeLeft ? ` • ${chainState.timeLeft}` : ''}`
+            ? `${chainState.current.toLocaleString()}${chainState.target ? `/${chainState.target.toLocaleString()}` : ''}${chainState.timeLeft ? ` â€¢ ${chainState.timeLeft}` : ''}`
             : 'No active chain';
 
         summary.querySelector('.rw-war-hits').textContent =
@@ -1984,11 +1984,11 @@
                     </a>
                     <span class="rw-ff">FF ${Number.isFinite(ff) ? ff.toFixed(2) : '?'}</span>
                     <span class="rw-share-buttons">
-                        <button class="rw-copy" title="Copy formatted target callout">📄</button>
+                        <button class="rw-copy" title="Copy formatted target callout">ðŸ“„</button>
                         <button class="rw-chat-send"
                                 data-target-id="${member.id}"
                                 disabled
-                                title="Press Copy first. Send remains available for 30 seconds.">💬</button>
+                                title="Press Copy first. Send remains available for 30 seconds.">ðŸ’¬</button>
                     </span>
                 </div>
                 <div class="rw-member-line rw-member-secondary">
@@ -2039,16 +2039,16 @@
         panel = document.createElement('section');
         panel.id = 'rw-target-panel';
         panel.innerHTML = `
-            <button class="rw-bubble" title="Open war target panel">☠</button>
+            <button class="rw-bubble" title="Open war target panel">â˜ </button>
             <header class="rw-header">
                 <div>
-                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.24</span> <span class="rw-count">0/0</span></div>
+                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.19</span> <span class="rw-count">0/0</span></div>
                     <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
                 </div>
                 <div class="rw-header-buttons">
-                    <button class="rw-refresh" title="Refresh">↻</button>
-                    <button class="rw-bubble-toggle" title="Minimize entire panel">☠</button>
-                    <button class="rw-collapse" title="Collapse controls and summary">—</button>
+                    <button class="rw-refresh" title="Refresh">â†»</button>
+                    <button class="rw-bubble-toggle" title="Minimize entire panel">â˜ </button>
+                    <button class="rw-collapse" title="Collapse controls and summary">â€”</button>
                 </div>
             </header>
 
@@ -2106,7 +2106,7 @@
                             <label class="rw-check"
                                    title="In Real War mode, check your hospital status once per minute and warn before release">
                                 <input class="rw-turtle-enabled" type="checkbox">
-                                Enable 🐢 Turtle Timer in Real War
+                                Enable ðŸ¢ Turtle Timer in Real War
                             </label>
                             <label class="rw-turtle-minutes-label">
                                 Warn before release
@@ -2133,7 +2133,7 @@
                         <strong class="rw-all-attacks">0</strong>
                         <span>Attacks</span>
                     </div>
-                    <div class="rw-tier-goals">T2 100 • T3 140 • T4 170</div>
+                    <div class="rw-tier-goals">T2 100 â€¢ T3 140 â€¢ T4 170</div>
                     <div class="rw-chain-row">
                         <span>Chain: <strong class="rw-chain-value">No active chain</strong>
                             <small class="rw-chain-source">Waiting</small>
@@ -2143,21 +2143,21 @@
                     </div>
                     <div class="rw-stats-age">Waiting for attack stats</div>
                     <div class="rw-turtle-status" hidden>
-                        <div class="rw-turtle-title">🐢 TURTLE TIME</div>
+                        <div class="rw-turtle-title">ðŸ¢ TURTLE TIME</div>
                         <div class="rw-turtle-message">Re-up before leaving the hospital.</div>
                         <button class="rw-turtle-ack" type="button">Acknowledge</button>
                     </div>
                 </div>
 
                 <div class="rw-twse-warning" hidden>
-                    ⚠ TWSE data is more than 5 minutes old.
+                    âš  TWSE data is more than 5 minutes old.
                     <a target="_blank"
                        href="https://www.torn.com/factions.php?step=your&type=1#/war/rankreport">
                         Visit the war page
                     </a>
                     to refresh live target information.
                 </div>
-                <div class="rw-status">Starting…</div>
+                <div class="rw-status">Startingâ€¦</div>
                 <div class="rw-list-controls">
                     <button class="rw-target-toggle" title="Hide or show the player target list">
                         Minimize target list
@@ -2238,7 +2238,7 @@
         });
         panel.querySelector('.rw-test-turtle').addEventListener('click', () => {
             unlockTurtleAudio();
-            showTurtleAlert('Test alarm — this is the Turtle Timer sound.');
+            showTurtleAlert('Test alarm â€” this is the Turtle Timer sound.');
             startTurtleAlarm(true);
         });
         panel.querySelector('.rw-turtle-ack').addEventListener('click', () => {
@@ -2355,7 +2355,7 @@
 
     async function hardRefresh() {
         if (!runtimeShouldRun()) return;
-        statusText = 'Hard refresh: rescanning Ranked War…';
+        statusText = 'Hard refresh: rescanning Ranked Warâ€¦';
         render();
 
         lastWarCheck = 0;
@@ -2397,8 +2397,8 @@
                 }
 
                 statusText = opponent
-                    ? 'Confirming ranked-war opponent…'
-                    : 'Finding active ranked war…';
+                    ? 'Confirming ranked-war opponentâ€¦'
+                    : 'Finding active ranked warâ€¦';
                 render();
 
                 try {
@@ -2430,7 +2430,7 @@
                     Math.floor((Date.now() - localCache.timestamp) / 1000)
                 );
 
-                statusText = `${localCache.source} • ${ageSeconds}s old`;
+                statusText = `${localCache.source} â€¢ ${ageSeconds}s old`;
                 render();
             }
 
@@ -2442,8 +2442,8 @@
             if (shouldCheckNetwork) {
                 lastNetworkCheck = now;
                 statusText = members.length
-                    ? 'Checking for newer shared data…'
-                    : 'Loading TWSE shared data…';
+                    ? 'Checking for newer shared dataâ€¦'
+                    : 'Loading TWSE shared dataâ€¦';
                 render();
 
                 const factionResult = await fetchSharedMembers(opponent.id);
@@ -2462,7 +2462,7 @@
                         0,
                         Math.floor((Date.now() - lastDataTimestamp) / 1000)
                     );
-                    statusText = `${factionResult.source} • ${ageSeconds}s old`;
+                    statusText = `${factionResult.source} â€¢ ${ageSeconds}s old`;
                 }
             }
 
@@ -2488,7 +2488,7 @@
         } catch (error) {
             if (error?.runtimePaused) return;
             if (members.length) {
-                statusText = `Using cached data — ${error.message}`;
+                statusText = `Using cached data â€” ${error.message}`;
             } else {
                 statusText = error.message;
             }
@@ -2978,7 +2978,7 @@
             members = localCache.members;
             ffById = localCache.ffById || {};
             lastDataTimestamp = localCache.timestamp;
-            statusText = `${localCache.source} • loaded immediately`;
+            statusText = `${localCache.source} â€¢ loaded immediately`;
         }
     }
 
@@ -3008,7 +3008,7 @@
                 members = cached.members;
                 ffById = { ...ffById, ...(cached.ffById || {}) };
                 lastDataTimestamp = cached.timestamp;
-                statusText = `${cached.source} • updated`;
+                statusText = `${cached.source} â€¢ updated`;
                 render();
             }
 
