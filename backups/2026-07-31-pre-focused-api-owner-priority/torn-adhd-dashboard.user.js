@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.4
+// @version      1.4.3
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -14,7 +14,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.1
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.0
 // @run-at       document-end
 // ==/UserScript==
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.27
+// @version      0.9.26
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -13,7 +13,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.1
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.0
 // @run-at       document-end
 // ==/UserScript==
 
@@ -2080,7 +2080,7 @@
             </button>
             <header class="rw-header">
                 <div class="rw-header-main">
-                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.27</span> <span class="rw-count">0/0</span></div>
+                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.26</span> <span class="rw-count">0/0</span></div>
                     <div class="rw-header-subline">
                         <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
                         <span class="rw-compact-attacks" title="Your current ranked-war attack count">0 attacks</span>
