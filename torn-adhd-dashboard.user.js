@@ -3647,9 +3647,9 @@
         state.lastMarketUpdated = 0;
         state.lastBazaarUpdated = 0;
         state.lastEnergyUpdated = 0;
-      state.lastNerveUpdated = 0;
-      state.lastCooldownsUpdated = 0;
-      state.lastEducationOcUpdated = 0;
+        state.lastNerveUpdated = 0;
+        state.lastCooldownsUpdated = 0;
+        state.lastEducationOcUpdated = 0;
         state.lastRaceUpdated = 0;
         state.nextRaceTravelCheckAt = 0;
         state.lastMissionsUpdated = 0;
