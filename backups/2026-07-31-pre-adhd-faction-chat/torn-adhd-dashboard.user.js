@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.2
+// @version      1.4.1
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -13,7 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.0
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
 // @run-at       document-end
 // ==/UserScript==
 
@@ -248,6 +248,7 @@
     windowFocused: document.hasFocus(),
     resizing: null,
     chatShareArm: null,
+    lastChatInput: null,
   };
 
   function loadSettings() {
@@ -2593,146 +2594,109 @@
     }
   }
 
-  function findFactionChatContainer() {
-    const factionWindows = [...document.querySelectorAll('[id^="faction-"]')];
-    const exactWindow = factionWindows.find((node) => node.querySelector(
-      'textarea[placeholder="Type your message here..."], textarea[class*="textarea"]'
-    ));
-    if (exactWindow) return exactWindow;
-
-    return [...document.querySelectorAll('div, section')].find((node) => {
-      const title = node.querySelector('button span, header span');
-      const composer = node.querySelector(
-        'textarea[placeholder*="message" i], [contenteditable="true"]'
-      );
-      return composer && String(title?.textContent || '').trim().toLowerCase() === 'faction';
-    }) || null;
+  function visibleChatElement(element) {
+    if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
-  function findFactionChatLauncher() {
-    return [...document.querySelectorAll('button, a, [role="button"]')].find((node) => {
-      const label = [
-        node.getAttribute?.('aria-label'),
-        node.getAttribute?.('title'),
-        node.textContent,
-      ].filter(Boolean).join(' ').trim().toLowerCase();
-      return label === 'faction'
-        || label.includes('faction chat')
-        || label.includes('open faction');
-    }) || null;
+  function tornChatInput(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const editable = element.matches('textarea, input[type="text"], [contenteditable="true"]');
+    if (!editable || element.matches(':disabled, [readonly]')) return false;
+    return Boolean(element.closest('#chatRoot, [id^="chatRoot"], [class*="chat-box"], [class*="chatBox"], [data-chat-id], [data-chat]'));
   }
 
-  function findFactionChatComposer(container) {
-    if (!container) return null;
-    return container.querySelector(
-      'textarea[placeholder="Type your message here..."], '
-      + 'textarea[class*="textarea"], '
-      + 'textarea, '
-      + '[contenteditable="true"]'
-    );
+  function visibleTornChatInputs() {
+    const selector = [
+      '#chatRoot textarea',
+      '#chatRoot input[type="text"]',
+      '#chatRoot [contenteditable="true"]',
+      '[id^="chatRoot"] textarea',
+      '[id^="chatRoot"] input[type="text"]',
+      '[id^="chatRoot"] [contenteditable="true"]',
+      '[class*="chat-box"] textarea',
+      '[class*="chatBox"] textarea',
+    ].join(',');
+    return [...new Set(document.querySelectorAll(selector))]
+      .filter((element) => tornChatInput(element) && visibleChatElement(element));
   }
 
-  function setFactionChatComposerContent(composer, text) {
-    composer.focus();
-    if (composer.matches('textarea, input')) {
-      const prototype = composer.tagName === 'TEXTAREA'
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-      if (setter) setter.call(composer, text);
-      else composer.value = text;
-    } else {
-      composer.innerHTML = '';
-      try {
-        document.execCommand('insertHTML', false, text);
-      } catch {
-        composer.innerHTML = text;
+  function chatSendButton(input, { includeDisabled = false } = {}) {
+    let container = input?.parentElement;
+    while (container && container !== document.documentElement) {
+      const candidates = [...container.querySelectorAll('button, [role="button"]')]
+        .filter((button) => visibleChatElement(button) && (includeDisabled || !button.matches(':disabled, [aria-disabled="true"]')))
+        .map((button) => {
+          const signature = [
+            button.textContent,
+            button.getAttribute('aria-label'),
+            button.getAttribute('title'),
+            button.getAttribute('data-testid'),
+            button.className,
+          ].join(' ').toLowerCase();
+          let score = /\bsend\b/.test(signature) ? 20 : 0;
+          if (button.matches('button[type="submit"]')) score += 10;
+          return { button, score };
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score);
+      if (candidates.length && (candidates.length === 1 || candidates[0].score > candidates[1].score)) {
+        return candidates[0].button;
       }
-    }
-
-    try {
-      composer.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        composed: true,
-        inputType: 'insertText',
-        data: text,
-      }));
-    } catch {
-      composer.dispatchEvent(new Event('input', {
-        bubbles: true,
-        composed: true,
-      }));
-    }
-    composer.dispatchEvent(new Event('change', {
-      bubbles: true,
-      composed: true,
-    }));
-  }
-
-  function findFactionChatSendButton(container, composer) {
-    const composerRow = composer?.parentElement;
-    const siblingButton = composerRow?.querySelector('button');
-    if (siblingButton) return siblingButton;
-
-    const scope = container || composer?.closest('[id^="faction-"]');
-    if (!scope) return null;
-    return [...scope.querySelectorAll('button, [role="button"]')].find((button) => {
-      const label = [
-        button.getAttribute('aria-label'),
-        button.getAttribute('title'),
-        button.textContent,
-      ].filter(Boolean).join(' ').trim().toLowerCase();
-      const containsSendIcon = Boolean(button.querySelector('svg[viewBox="0 0 18 18"]'));
-      return button.type === 'submit'
-        || label === 'send'
-        || label.includes('send message')
-        || containsSendIcon;
-    }) || null;
-  }
-
-  async function waitForFactionChat(timeoutMs = 2500) {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const container = findFactionChatContainer();
-      const composer = findFactionChatComposer(container);
-      if (container && composer) return { container, composer };
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return { container: null, composer: null };
-  }
-
-  async function waitForFactionChatSendButton(container, composer, timeoutMs = 1500) {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const button = findFactionChatSendButton(container, composer);
-      if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true') {
-        return button;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (container.matches('#chatRoot, [id^="chatRoot"]')) break;
+      container = container.parentElement;
     }
     return null;
   }
 
+  function setChatInputValue(input, text) {
+    input.focus();
+    if (input.isContentEditable) {
+      input.textContent = text;
+    } else {
+      const prototype = input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (setter) setter.call(input, text);
+      else input.value = text;
+    }
+    try {
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+    } catch {
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
   async function sendListingToTornChat(text) {
-    if (!focusedTornPage()) return { ok: false, label: 'Focus Torn first' };
-
-    let { container, composer } = await waitForFactionChat(250);
-    if (!container || !composer) {
-      const launcher = findFactionChatLauncher();
-      if (!launcher) return { ok: false, label: 'Faction Chat not found' };
-      launcher.click();
-      ({ container, composer } = await waitForFactionChat());
+    if (!focusedTornPage()) {
+      return { ok: false, label: 'Focus Torn first' };
     }
-    if (!container || !composer) {
-      return { ok: false, label: 'Faction message box not found' };
+    const savedInput = tornChatInput(state.lastChatInput) && visibleChatElement(state.lastChatInput)
+      ? state.lastChatInput
+      : null;
+    const inputs = savedInput ? [savedInput] : visibleTornChatInputs();
+    if (!inputs.length) return { ok: false, label: 'Open a chat first' };
+    if (inputs.length > 1) return { ok: false, label: 'Pick a chat first' };
+    const input = inputs[0];
+    if (!chatSendButton(input, { includeDisabled: true })) {
+      return { ok: false, label: 'Chat send not found' };
     }
-
-    setFactionChatComposerContent(composer, text);
-    const sendButton = await waitForFactionChatSendButton(container, composer);
-    if (!sendButton) return { ok: false, label: 'Faction send not ready' };
+    setChatInputValue(input, text);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
     if (!focusedTornPage()) return { ok: false, label: 'Focus Torn first' };
+    const sendButton = chatSendButton(input);
+    if (!sendButton) return { ok: false, label: 'Chat send not ready' };
     sendButton.click();
-    return { ok: true, label: 'Sent to Faction' };
+    return { ok: true, label: 'Sent' };
   }
 
   function chatShareArmed(alertId) {
@@ -2740,6 +2704,10 @@
     if (!arm || arm.alertId !== alertId || arm.expiresAt <= Date.now()) return false;
     return true;
   }
+
+  document.addEventListener('focusin', (event) => {
+    if (focusedTornPage() && tornChatInput(event.target)) state.lastChatInput = event.target;
+  }, true);
 
   function applyPosition() {
     const pos = state.settings.position;
@@ -3439,7 +3407,7 @@
                     ${(alert.links || [{ label: 'Open', href: alert.href }]).filter((link) => link?.href).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
                     ${alert.shareText ? `
                       <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the 1.2-style listing details and link">Copy</button>
-                      <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing directly to Faction Chat' : 'Copy this listing first to unlock Faction Chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to Faction</button>
+                      <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing to the selected Torn chat' : 'Copy this listing first to unlock chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to chat</button>
                     ` : ''}
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="3600000" title="Snooze 1 hour">1h</button>
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="${TORN_DAY_MS}" title="Snooze 1 day">1d</button>
@@ -3540,15 +3508,15 @@
             const armed = sendButton.dataset.alertId === arm.alertId;
             sendButton.disabled = !armed;
             sendButton.title = armed
-              ? 'Send the copied listing directly to Faction Chat'
-              : 'Copy this listing first to unlock Faction Chat sending';
+              ? 'Send the copied listing to the selected Torn chat'
+              : 'Copy this listing first to unlock chat sending';
           });
           window.setTimeout(() => {
             if (state.chatShareArm !== arm || arm.expiresAt > Date.now()) return;
             state.chatShareArm = null;
             shadow.querySelectorAll('[data-action="send-chat"]').forEach((sendButton) => {
               sendButton.disabled = true;
-              sendButton.title = 'Copy this listing first to unlock Faction Chat sending';
+              sendButton.title = 'Copy this listing first to unlock chat sending';
             });
           }, 120_100);
         }
@@ -3558,7 +3526,7 @@
     } else if (action === 'send-chat') {
       if (!chatShareArmed(button.dataset.alertId)) {
         button.disabled = true;
-        button.title = 'Copy this listing first to unlock Faction Chat sending';
+        button.title = 'Copy this listing first to unlock chat sending';
         return;
       }
       const arm = state.chatShareArm;
@@ -3572,7 +3540,7 @@
           state.chatShareArm = null;
           shadow.querySelectorAll('[data-action="send-chat"]').forEach((sendButton) => {
             sendButton.disabled = true;
-            sendButton.title = 'Copy this listing first to unlock Faction Chat sending';
+            sendButton.title = 'Copy this listing first to unlock chat sending';
           });
         } else {
           button.disabled = !chatShareArmed(button.dataset.alertId);
