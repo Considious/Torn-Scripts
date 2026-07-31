@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.1
+// @version      1.4.0
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -31,11 +31,6 @@
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
-  const NERVE_REFRESH_MS = 5 * 60_000;
-  const ENERGY_REFRESH_MS = 10 * 60_000;
-  const COOLDOWN_REFRESH_MS = 10 * 60_000;
-  const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
-  const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
   const CITY_SHOP_TARGETS = [
     { id: 180, name: 'Bottle of Beer', label: 'Beer' },
@@ -192,10 +187,7 @@
     apiCalls: 0,
     lastMarketUpdated: persistedChecks.lastMarketUpdated,
     lastBazaarUpdated: persistedChecks.lastBazaarUpdated,
-    lastEnergyUpdated: persistedChecks.lastEnergyUpdated,
-    lastNerveUpdated: persistedChecks.lastNerveUpdated,
-    lastCooldownsUpdated: persistedChecks.lastCooldownsUpdated,
-    lastEducationOcUpdated: persistedChecks.lastEducationOcUpdated,
+    lastFastUpdated: persistedChecks.lastFastUpdated,
     lastRaceUpdated: persistedChecks.lastRaceUpdated,
     nextRaceTravelCheckAt: persistedChecks.nextRaceTravelCheckAt,
     lastMissionsUpdated: persistedChecks.lastMissionsUpdated,
@@ -301,33 +293,14 @@
   function loadCheckCache() {
     const cached = GM_getValue(CHECK_CACHE_KEY, {});
     if (!cached || typeof cached !== 'object' || Array.isArray(cached)) {
-      return {
-        data: {},
-        lastDailyUpdated: 0,
-        lastMarketUpdated: 0,
-        lastBazaarUpdated: 0,
-        lastEnergyUpdated: 0,
-        lastNerveUpdated: 0,
-        lastCooldownsUpdated: 0,
-        lastEducationOcUpdated: 0,
-        lastRaceUpdated: 0,
-        nextRaceTravelCheckAt: 0,
-        lastMissionsUpdated: 0,
-        lastCasinoUpdated: 0,
-        lastJobAddictionUpdated: 0,
-        lastClusterUpdated: 0,
-      };
+      return { data: {}, lastDailyUpdated: 0, lastMarketUpdated: 0, lastBazaarUpdated: 0, lastFastUpdated: 0, lastRaceUpdated: 0, nextRaceTravelCheckAt: 0, lastMissionsUpdated: 0, lastCasinoUpdated: 0, lastJobAddictionUpdated: 0, lastClusterUpdated: 0 };
     }
-    const legacyFastUpdated = Number(cached.lastFastUpdated) || 0;
     return {
       data: cached.data && typeof cached.data === 'object' && !Array.isArray(cached.data) ? cached.data : {},
       lastDailyUpdated: Number(cached.lastDailyUpdated) || 0,
       lastMarketUpdated: Number(cached.lastMarketUpdated) || 0,
       lastBazaarUpdated: Number(cached.lastBazaarUpdated) || 0,
-      lastEnergyUpdated: Number(cached.lastEnergyUpdated) || legacyFastUpdated,
-      lastNerveUpdated: Number(cached.lastNerveUpdated) || legacyFastUpdated,
-      lastCooldownsUpdated: Number(cached.lastCooldownsUpdated) || legacyFastUpdated,
-      lastEducationOcUpdated: Number(cached.lastEducationOcUpdated) || 0,
+      lastFastUpdated: Number(cached.lastFastUpdated) || 0,
       lastRaceUpdated: Number(cached.lastRaceUpdated) || 0,
       nextRaceTravelCheckAt: Number(cached.nextRaceTravelCheckAt) || 0,
       lastMissionsUpdated: Number(cached.lastMissionsUpdated) || 0,
@@ -343,10 +316,7 @@
       lastDailyUpdated: state.lastDailyUpdated,
       lastMarketUpdated: state.lastMarketUpdated,
       lastBazaarUpdated: state.lastBazaarUpdated,
-      lastEnergyUpdated: state.lastEnergyUpdated,
-      lastNerveUpdated: state.lastNerveUpdated,
-      lastCooldownsUpdated: state.lastCooldownsUpdated,
-      lastEducationOcUpdated: state.lastEducationOcUpdated,
+      lastFastUpdated: state.lastFastUpdated,
       lastRaceUpdated: state.lastRaceUpdated,
       nextRaceTravelCheckAt: state.nextRaceTravelCheckAt,
       lastMissionsUpdated: state.lastMissionsUpdated,
@@ -709,7 +679,7 @@
     return transitions.length ? Math.min(...transitions) + 5_000 : Date.now() + fallbackMs;
   }
 
-  function clusterFallbackRefreshMs() {
+  function coreFallbackRefreshMs() {
     return state.settings.slowApiMode ? 5 * 60_000 : CORE_REFRESH_MS;
   }
 
@@ -1634,23 +1604,23 @@
     }
   }
 
-  function fastSelectionsNeeded({ energyDue = false, nerveDue = false, cooldownsDue = false } = {}) {
+  function fastSelectionsNeeded(requireFresh = false) {
     const selections = [];
     const apiBars = state.data.bars?.bars;
     const apiCooldowns = state.data.cooldowns?.cooldowns;
     const drugRemaining = apiCooldownRemaining('drug');
     const boosterRemaining = apiCooldownRemaining('booster');
-    if ((alertCheckDue('energyFull') && !state.dom.bars?.energy && (energyDue || !apiBars?.energy))
-      || (alertCheckDue('nerveFull') && !state.dom.bars?.nerve && (nerveDue || !apiBars?.nerve))) selections.push('bars');
+    if ((alertCheckDue('energyFull') && !state.dom.bars?.energy && (requireFresh || !apiBars?.energy))
+      || (alertCheckDue('nerveFull') && !state.dom.bars?.nerve && (requireFresh || !apiBars?.nerve))) selections.push('bars');
     if ((alertCheckDue('drugCooldown') && state.dom.cooldowns?.drug == null
-      && (apiCooldowns?.drug == null || (cooldownsDue && drugRemaining === 0)))
-      || (alertCheckDue('medicalCooldown') && state.dom.cooldowns?.medical == null && (cooldownsDue || apiCooldowns?.medical == null))
+      && (apiCooldowns?.drug == null || (requireFresh && drugRemaining === 0)))
+      || (alertCheckDue('medicalCooldown') && state.dom.cooldowns?.medical == null && (requireFresh || apiCooldowns?.medical == null))
       || (alertCheckDue('boosterCooldown') && state.dom.cooldowns?.booster == null
-        && (apiCooldowns?.booster == null || (cooldownsDue && boosterRemaining === 0)))) selections.push('cooldowns');
+        && (apiCooldowns?.booster == null || (requireFresh && boosterRemaining === 0)))) selections.push('cooldowns');
     return selections;
   }
 
-  function educationOcSelectionsNeeded() {
+  function slowSelectionsNeeded() {
     const selections = new Set();
     if (alertCheckDue('education') && !state.dom.educationActive) selections.add('education');
     if (alertCheckDue('organizedCrime')) { selections.add('organizedcrime'); selections.add('profile'); }
@@ -1700,22 +1670,13 @@
     const tasks = [];
     try {
       tasks.push((async () => {
-        const fastDue = {
-          energyDue: force || snoozeExpired || now - state.lastEnergyUpdated >= ENERGY_REFRESH_MS,
-          nerveDue: force || snoozeExpired || now - state.lastNerveUpdated >= NERVE_REFRESH_MS,
-          cooldownsDue: force || snoozeExpired || now - state.lastCooldownsUpdated >= COOLDOWN_REFRESH_MS,
-        };
+        const fastDue = force || snoozeExpired || now - state.lastFastUpdated >= coreFallbackRefreshMs();
         const fastSelections = fastSelectionsNeeded(fastDue);
         const okay = !fastSelections.length
           || await guardedRequest('fastFallback', () => api('user', { selections: fastSelections.join(',') }, { priority: 'low' }), absorbGeneric);
         if (!fastSelections.length) delete state.errors.fastFallback;
         if (!okay) return;
-        const updatedAt = Date.now();
-        if (fastSelections.includes('bars')) {
-          if (fastDue.energyDue) state.lastEnergyUpdated = updatedAt;
-          if (fastDue.nerveDue) state.lastNerveUpdated = updatedAt;
-        }
-        if (fastSelections.includes('cooldowns') && fastDue.cooldownsDue) state.lastCooldownsUpdated = updatedAt;
+        if (fastSelections.length) state.lastFastUpdated = Date.now();
         const groups = [];
         const apiBars = state.data.bars?.bars;
         const apiCooldowns = state.data.cooldowns?.cooldowns;
@@ -1758,7 +1719,7 @@
             state.raceCheckPending = false;
             state.raceCheckComplete = true;
             state.lastRaceUpdated = Date.now();
-            state.nextRaceTravelCheckAt = nextActiveRaceTransitionAt(state.data.races?.races, RACE_TRAVEL_REFRESH_MS);
+            state.nextRaceTravelCheckAt = nextActiveRaceTransitionAt(state.data.races?.races);
             delete state.errors.races;
             delete state.errors.raceFallback;
             publishAlertGroups(['raceTravel']);
@@ -1817,10 +1778,10 @@
             const apiActiveRace = (state.data.races?.races || []).some(raceRecordActive);
             const remainingTravel = state.dom.travelSeconds ?? apiTravelRemaining();
             state.nextRaceTravelCheckAt = apiActiveRace
-              ? nextActiveRaceTransitionAt(state.data.races?.races, RACE_TRAVEL_REFRESH_MS)
+              ? nextActiveRaceTransitionAt(state.data.races?.races)
               : Number(remainingTravel) > 0
                 ? Date.now() + Number(remainingTravel) * 1000
-                : Date.now() + RACE_TRAVEL_REFRESH_MS;
+                : Date.now() + coreFallbackRefreshMs();
             publishAlertGroups(['raceTravel']);
           }
         })());
@@ -1828,36 +1789,12 @@
 
       tasks.push(refreshCrimeUniqueProgress(now, { force }));
 
-      const educationOcDue = force || snoozeExpired || now - state.lastEducationOcUpdated >= EDUCATION_OC_REFRESH_MS;
-      if (educationOcDue) {
-        const selections = educationOcSelectionsNeeded();
-        if (selections.length) {
-          tasks.push((async () => {
-            const okay = await guardedRequest('educationOcFallback', () => api('user', {
-              selections: selections.join(','),
-              limit: 20,
-              sort: 'desc',
-            }, { priority: 'low' }), absorbGeneric);
-            if (!okay) return;
-            state.lastEducationOcUpdated = Date.now();
-            const groups = [];
-            if (state.settings.enabled.education && Object.hasOwn(state.data.education || {}, 'education')) groups.push('education');
-            if (state.settings.enabled.organizedCrime
-              && Object.hasOwn(state.data.organizedCrime || {}, 'organizedCrime')
-              && Object.hasOwn(state.data.profile || {}, 'profile')) groups.push('organizedCrime');
-            publishAlertGroups(groups);
-          })());
-        } else {
-          delete state.errors.educationOcFallback;
-        }
-      }
-
       if (alertCheckDue('clusterRing')) {
         tasks.push((async () => {
           if (!state.data.shoplifting && state.crimeProgressPromise) await state.crimeProgressPromise;
           const cachedStatusKnown = state.dom.clusterRingSignalKnown
             || Array.isArray(state.data.shopliftingStatus?.shoplifting?.jewelry_store);
-          if (!force && !snoozeExpired && cachedStatusKnown && state.data.shoplifting && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
+          if (!force && !snoozeExpired && cachedStatusKnown && state.data.shoplifting && now - state.lastClusterUpdated < coreFallbackRefreshMs()) {
             publishAlertGroups(['clusterRing']);
             return;
           }
@@ -1883,6 +1820,19 @@
       const dailyTasks = [];
 
       if (needsDaily && visibleTornTab()) {
+        const slowSelections = slowSelectionsNeeded();
+        if (slowSelections.length) {
+          dailyTasks.push((async () => {
+            const okay = await guardedRequest('dailyFallback', () => api('user', { selections: slowSelections.join(','), limit: 20, sort: 'desc' }), absorbGeneric);
+            if (!okay) return;
+            const groups = [];
+            if (state.settings.enabled.education && Object.hasOwn(state.data.education || {}, 'education')) groups.push('education');
+            if (state.settings.enabled.organizedCrime
+              && Object.hasOwn(state.data.organizedCrime || {}, 'organizedCrime')
+              && Object.hasOwn(state.data.profile || {}, 'profile')) groups.push('organizedCrime');
+            publishAlertGroups(groups);
+          })());
+        }
         const needsRefills = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
         if (needsRefills) {
           dailyTasks.push((async () => {
@@ -1949,8 +1899,8 @@
 
       const cachedDailyGroups = [];
       if (!missionsDue && state.settings.enabled.missions && Object.hasOwn(state.data.missions || {}, 'missions')) cachedDailyGroups.push('missions');
-      if (!educationOcDue && state.settings.enabled.education && (state.dom.educationActive || Object.hasOwn(state.data.education || {}, 'education'))) cachedDailyGroups.push('education');
-      if (!educationOcDue && state.settings.enabled.organizedCrime
+      if (!needsDaily && state.settings.enabled.education && (state.dom.educationActive || Object.hasOwn(state.data.education || {}, 'education'))) cachedDailyGroups.push('education');
+      if (!needsDaily && state.settings.enabled.organizedCrime
         && Object.hasOwn(state.data.organizedCrime || {}, 'organizedCrime')
         && Object.hasOwn(state.data.profile || {}, 'profile')) cachedDailyGroups.push('organizedCrime');
       if (!casinoDue && state.settings.enabled.casinoTokens && state.data.casino?.casino
@@ -3061,12 +3011,11 @@
             </select>
           </label>
           <label class="field compact-field">
-            <span>Other slow-data refresh</span>
+            <span>Slow-data refresh</span>
             <select data-field="api-refresh-minutes">
               ${[5, 10, 15, 30].map((minutes) => `<option value="${minutes}" ${Number(state.settings.apiDailyRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} minutes</option>`).join('')}
             </select>
           </label>
-          <p><small>Fixed API fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Related selections are combined whenever they are due together.</small></p>
           <label class="field compact-field">
             <span>Job addiction (points)</span>
             <input type="number" min="0" max="100" step="1" data-field="job-addiction-threshold" value="${escapeHtml(state.settings.jobAddictionThreshold)}">
@@ -3626,10 +3575,7 @@
       state.lastDailyUpdated = 0;
       state.lastMarketUpdated = 0;
       state.lastBazaarUpdated = 0;
-      state.lastEnergyUpdated = 0;
-      state.lastNerveUpdated = 0;
-      state.lastCooldownsUpdated = 0;
-      state.lastEducationOcUpdated = 0;
+      state.lastFastUpdated = 0;
       state.lastRaceUpdated = 0;
       state.nextRaceTravelCheckAt = 0;
       state.lastMissionsUpdated = 0;
@@ -3646,10 +3592,7 @@
         state.lastDailyUpdated = 0;
         state.lastMarketUpdated = 0;
         state.lastBazaarUpdated = 0;
-        state.lastEnergyUpdated = 0;
-        state.lastNerveUpdated = 0;
-        state.lastCooldownsUpdated = 0;
-        state.lastEducationOcUpdated = 0;
+        state.lastFastUpdated = 0;
         state.lastRaceUpdated = 0;
         state.nextRaceTravelCheckAt = 0;
         state.lastMissionsUpdated = 0;
