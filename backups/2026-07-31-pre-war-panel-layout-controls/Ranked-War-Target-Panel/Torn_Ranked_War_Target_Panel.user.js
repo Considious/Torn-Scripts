@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.25
+// @version      0.9.24
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -54,8 +54,6 @@
         targetsCollapsed: false,
         bubbleMode: false,
         collapsed: false,
-        panelPosition: null,
-        panelSize: { width: 240, height: null },
         panelTop: 90,
         panelBottom: 20
     };
@@ -96,8 +94,6 @@
     let chainTimer = null;
     let turtleStatusTimer = null;
     let panel = null;
-    let panelDragController = null;
-    let panelResizeController = null;
     let statusText = 'Starting…';
     let chainAlertAudioContext = null;
     let lastChainAlarmAt = 0;
@@ -1913,20 +1909,10 @@
     function render() {
         if (!panel) createPanel();
 
-        applyPanelSize();
         applyPanelPosition();
         panel.classList.toggle('collapsed', settings.collapsed);
         panel.classList.toggle('targets-collapsed', settings.targetsCollapsed);
         panel.classList.toggle('bubble-mode', settings.bubbleMode);
-
-        const detailsToggle = panel.querySelector('.rw-collapse');
-        if (detailsToggle) {
-            detailsToggle.title = settings.collapsed
-                ? 'Show controls and war summary'
-                : 'Show target list only';
-            detailsToggle.setAttribute('aria-label', detailsToggle.title);
-            detailsToggle.setAttribute('aria-pressed', String(settings.collapsed));
-        }
 
         const list = panel.querySelector('.rw-list');
         const heading = panel.querySelector('.rw-opponent');
@@ -2034,18 +2020,6 @@
     function applyPanelPosition() {
         if (!panel) return;
 
-        const free = settings.panelPosition;
-        const hasFreePosition = Number.isFinite(free?.left) && Number.isFinite(free?.top);
-        panel.classList.toggle('rw-free-position', hasFreePosition);
-        panel.classList.toggle('rw-resize-left', !hasFreePosition && settings.corner.endsWith('right'));
-        panel.classList.toggle('rw-resize-top', !hasFreePosition && settings.corner.startsWith('bottom'));
-
-        if (panel.classList.contains('rw-dragging') || panel.classList.contains('rw-resizing')) return;
-        if (hasFreePosition) {
-            panelDragController?.applyPosition(free);
-            return;
-        }
-
         const isLeft = settings.corner.endsWith('left');
         const isBottom = settings.corner.startsWith('bottom');
 
@@ -2065,45 +2039,21 @@
         panel = document.createElement('section');
         panel.id = 'rw-target-panel';
         panel.innerHTML = `
-            <button class="rw-bubble" type="button" title="Open war target panel" aria-label="Open war target panel">
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <circle cx="8" cy="8" r="5.5"></circle>
-                    <circle cx="8" cy="8" r="1.5"></circle>
-                    <path d="M8 1v3M8 12v3M1 8h3M12 8h3"></path>
-                </svg>
-            </button>
+            <button class="rw-bubble" title="Open war target panel">☠</button>
             <header class="rw-header">
                 <div>
-                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.25</span> <span class="rw-count">0/0</span></div>
+                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.24</span> <span class="rw-count">0/0</span></div>
                     <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
                 </div>
                 <div class="rw-header-buttons">
-                    <button class="rw-refresh" type="button" title="Refresh" aria-label="Refresh">
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                            <path d="M13.2 5.5A5.5 5.5 0 1 0 13 11"></path>
-                            <path d="M13 1.5v4H9"></path>
-                        </svg>
-                    </button>
-                    <button class="rw-bubble-toggle" type="button" title="Minimize entire panel" aria-label="Minimize entire panel">
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                            <circle cx="8" cy="8" r="5.5"></circle>
-                            <circle cx="8" cy="8" r="1.5"></circle>
-                        </svg>
-                    </button>
-                    <button class="rw-collapse" type="button" title="Show target list only" aria-label="Show target list only">
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                            <path d="M3 4h10M3 8h10M3 12h10"></path>
-                            <circle cx="5" cy="4" r="1"></circle>
-                            <circle cx="11" cy="8" r="1"></circle>
-                            <circle cx="6" cy="12" r="1"></circle>
-                        </svg>
-                    </button>
+                    <button class="rw-refresh" title="Refresh">↻</button>
+                    <button class="rw-bubble-toggle" title="Minimize entire panel">☠</button>
+                    <button class="rw-collapse" title="Collapse controls and summary">—</button>
                 </div>
             </header>
 
             <div class="rw-body">
-                <div class="rw-dashboard-section">
-                  <div class="rw-controls">
+                <div class="rw-controls">
                     <label>Mode
                         <select class="rw-mode">
                             <option value="termed">Termed</option>
@@ -2208,15 +2158,13 @@
                     to refresh live target information.
                 </div>
                 <div class="rw-status">Starting…</div>
-                  <div class="rw-list-controls">
+                <div class="rw-list-controls">
                     <button class="rw-target-toggle" title="Hide or show the player target list">
                         Minimize target list
                     </button>
-                  </div>
                 </div>
                 <div class="rw-list"></div>
             </div>
-            <div class="rw-resize-handle" role="separator" aria-label="Resize War Panel" title="Drag to resize"></div>
         `;
 
         document.body.appendChild(panel);
@@ -2300,7 +2248,6 @@
         });
         corner.addEventListener('change', () => {
             settings.corner = corner.value;
-            settings.panelPosition = null;
             saveSettings();
             applyPanelPosition();
         });
@@ -2341,18 +2288,7 @@
             render();
         });
 
-        panelDragController = TornLib.makePanelDraggable(panel, {
-            handle: panel.querySelector('.rw-header'),
-            storageKey: PREFIX + 'free-position',
-            draggingClass: 'rw-dragging',
-            getValue: () => settings.panelPosition,
-            setValue: (_key, position) => {
-                settings.panelPosition = position;
-                saveSettings();
-                applyPanelPosition();
-            }
-        });
-        panelResizeController = makePanelResizable(panel, panel.querySelector('.rw-resize-handle'));
+        makeDraggable(panel, panel.querySelector('.rw-header'));
 
         document.addEventListener('pointerdown', () => {
             unlockChainAlertAudio();
@@ -2370,79 +2306,51 @@
         render();
     }
 
-    function makePanelResizable(element, handle) {
-        let resize = null;
-        const margin = 4;
+    function makeDraggable(element, handle) {
+        let dragging = false;
+        let startY = 0;
+        let startEdge = 0;
 
-        const finish = event => {
-            if (!resize || event.pointerId !== resize.pointerId) return;
-            resize = null;
-            element.classList.remove('rw-resizing');
-            document.body.style.userSelect = '';
-            panelDragController?.clampToViewport();
-            saveSettings();
-        };
+        handle.addEventListener('mousedown', event => {
+            if (event.target.closest('button, select, input, summary')) return;
 
-        handle.addEventListener('pointerdown', event => {
-            if (event.button !== 0 || settings.bubbleMode) return;
+            dragging = true;
+            startY = event.clientY;
+
             const rect = element.getBoundingClientRect();
-            resize = {
-                pointerId: event.pointerId,
-                startX: event.clientX,
-                startY: event.clientY,
-                startLeft: rect.left,
-                startTop: rect.top,
-                startRight: rect.right,
-                startBottom: rect.bottom,
-                startWidth: rect.width,
-                startHeight: rect.height,
-                fromLeft: element.classList.contains('rw-resize-left'),
-                fromTop: element.classList.contains('rw-resize-top'),
-                free: element.classList.contains('rw-free-position')
-            };
-            element.classList.add('rw-resizing');
-            handle.setPointerCapture(event.pointerId);
+            startEdge = settings.corner.startsWith('bottom')
+                ? window.innerHeight - rect.bottom
+                : rect.top;
+
             document.body.style.userSelect = 'none';
-            event.preventDefault();
         });
 
-        handle.addEventListener('pointermove', event => {
-            if (!resize || event.pointerId !== resize.pointerId) return;
-            const dx = event.clientX - resize.startX;
-            const dy = event.clientY - resize.startY;
-            const maximumWidth = resize.free
-                ? (resize.fromLeft ? resize.startRight - margin : innerWidth - resize.startLeft - margin)
-                : innerWidth - margin * 2;
-            const maximumHeight = resize.free
-                ? (resize.fromTop ? resize.startBottom - margin : innerHeight - resize.startTop - margin)
-                : innerHeight - margin * 2;
-            const width = Math.max(210, Math.min(maximumWidth, resize.startWidth + (resize.fromLeft ? -dx : dx)));
-            const height = Math.max(100, Math.min(maximumHeight, resize.startHeight + (resize.fromTop ? -dy : dy)));
+        window.addEventListener('mousemove', event => {
+            if (!dragging) return;
 
-            settings.panelSize = { width: Math.round(width), height: Math.round(height) };
-            element.style.width = `${width}px`;
-            element.style.height = `${height}px`;
+            const deltaY = event.clientY - startY;
 
-            if (resize.free) {
-                const left = resize.fromLeft ? resize.startRight - width : resize.startLeft;
-                const top = resize.fromTop ? resize.startBottom - height : resize.startTop;
-                settings.panelPosition = { left: Math.round(left), top: Math.round(top) };
-                element.style.left = `${left}px`;
-                element.style.top = `${top}px`;
-                element.style.right = 'auto';
-                element.style.bottom = 'auto';
+            if (settings.corner.startsWith('bottom')) {
+                settings.panelBottom = Math.max(
+                    5,
+                    Math.min(window.innerHeight - 60, startEdge - deltaY)
+                );
+            } else {
+                settings.panelTop = Math.max(
+                    5,
+                    Math.min(window.innerHeight - 60, startEdge + deltaY)
+                );
             }
+
+            applyPanelPosition();
         });
 
-        handle.addEventListener('pointerup', finish);
-        handle.addEventListener('pointercancel', finish);
-
-        return {
-            destroy() {
-                resize = null;
-                document.body.style.userSelect = '';
-            }
-        };
+        window.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            document.body.style.userSelect = '';
+            saveSettings();
+        });
     }
 
     async function hardRefresh() {
@@ -2594,10 +2502,7 @@
             right: 10px;
             top: 90px;
             width: 240px;
-            min-width: 210px;
-            min-height: 100px;
-            max-width: calc(100vw - 8px);
-            max-height: calc(100vh - 8px);
+            max-height: calc(100vh - 110px);
             z-index: 999999;
             display: flex;
             flex-direction: column;
@@ -2638,28 +2543,6 @@
         }
         .rw-opponent:hover { text-decoration: underline; }
         .rw-header-buttons { display: flex; gap: 5px; }
-
-        .rw-header button svg,
-        .rw-bubble svg {
-            display: block;
-            width: 13px;
-            height: 13px;
-            margin: auto;
-            overflow: visible;
-            fill: none;
-            stroke: currentColor;
-            stroke-width: 1.6;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            pointer-events: none;
-        }
-
-        .rw-header button svg circle[r="1"],
-        .rw-header button svg circle[r="1.5"],
-        .rw-bubble svg circle[r="1.5"] {
-            fill: currentColor;
-            stroke: none;
-        }
 
         .rw-header button,
         .rw-share-buttons {
@@ -2728,20 +2611,8 @@
             background: rgba(255, 255, 255, .22);
             border-color: rgba(255, 255, 255, .7);
         }
-        .rw-header button[aria-pressed="true"] {
-            background: rgba(138, 180, 248, .28);
-            border-color: #8ab4f8;
-            color: #d7e7ff !important;
-        }
-        .rw-body {
-            min-height: 0;
-            flex: 1 1 auto;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .rw-dashboard-section { flex: 0 0 auto; min-height: 0; }
-        #rw-target-panel.collapsed .rw-dashboard-section { display: none; }
+        .rw-body { min-height: 0; display: flex; flex-direction: column; }
+        .collapsed .rw-body { display: none; }
 
         #rw-target-panel.targets-collapsed .rw-list {
             display: none;
@@ -2809,51 +2680,8 @@
         }
 
         #rw-target-panel.bubble-mode .rw-header,
-        #rw-target-panel.bubble-mode .rw-body,
-        #rw-target-panel.bubble-mode .rw-resize-handle {
+        #rw-target-panel.bubble-mode .rw-body {
             display: none !important;
-        }
-
-        .rw-resize-handle {
-            position: absolute;
-            right: 1px;
-            bottom: 1px;
-            width: 12px;
-            height: 12px;
-            z-index: 3;
-            cursor: nwse-resize;
-            touch-action: none;
-            opacity: .7;
-            background:
-                linear-gradient(135deg, transparent 0 48%, #aaa 49% 56%, transparent 57% 67%, #777 68% 75%, transparent 76%);
-        }
-
-        #rw-target-panel.rw-resize-left .rw-resize-handle {
-            left: 1px;
-            right: auto;
-            transform: scaleX(-1);
-            cursor: nesw-resize;
-        }
-
-        #rw-target-panel.rw-resize-top .rw-resize-handle {
-            top: 1px;
-            bottom: auto;
-            transform: scaleY(-1);
-            cursor: nesw-resize;
-        }
-
-        #rw-target-panel.rw-resize-left.rw-resize-top .rw-resize-handle {
-            transform: scale(-1);
-            cursor: nwse-resize;
-        }
-
-        #rw-target-panel.rw-free-position .rw-resize-handle {
-            left: auto;
-            right: 1px;
-            top: auto;
-            bottom: 1px;
-            transform: none;
-            cursor: nwse-resize;
         }
 
 
@@ -3050,7 +2878,7 @@
             border-bottom: 1px solid #444;
         }
 
-        .rw-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 2px; }
+        .rw-list { overflow-y: auto; padding: 2px; }
         .rw-member {
             padding: 2px 3px;
             margin-bottom: 1px;
@@ -3128,7 +2956,6 @@
         const corners = ['top-right', 'top-left', 'bottom-left', 'bottom-right'];
         const currentIndex = Math.max(0, corners.indexOf(settings.corner));
         settings.corner = corners[(currentIndex + 1) % corners.length];
-        settings.panelPosition = null;
         saveSettings();
         applyPanelPosition();
         render();
@@ -3230,22 +3057,12 @@
         }
     }
 
-    function applyPanelSize() {
-        if (!panel) return;
-        if (panel.classList.contains('rw-resizing')) return;
-        const width = Number(settings.panelSize?.width);
-        const height = Number(settings.panelSize?.height);
-        panel.style.width = Number.isFinite(width) && width >= 210 ? `${width}px` : '240px';
-        panel.style.height = Number.isFinite(height) && height >= 100 ? `${height}px` : 'auto';
-    }
-
     window.addEventListener('focus', syncRuntimeState);
     window.addEventListener('blur', syncRuntimeState);
     document.addEventListener('visibilitychange', syncRuntimeState);
     window.addEventListener('storage', event => {
         if (event.key === PREFIX + 'settings') {
             settings = loadSettings();
-            applyPanelSize();
             applyPanelPosition();
             render();
             apiLease?.refresh();
@@ -3255,8 +3072,6 @@
 
     window.addEventListener('beforeunload', () => {
         stopOwnedTimers();
-        panelDragController?.destroy();
-        panelResizeController?.destroy();
         apiLease?.destroy();
     });
 
