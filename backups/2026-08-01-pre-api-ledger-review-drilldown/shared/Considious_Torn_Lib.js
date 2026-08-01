@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.2
+// @version      1.3.1
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,37 +26,17 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.2';
+  const VERSION = '1.3.1';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
   const TORN_API_MAX_LIMIT = 60;
   const TORN_API_LEDGER_KEY = 'considious:torn-api-ledger:v1';
-  const TORN_API_LOG_KEY = 'considious:torn-api-request-log:v1';
-  const TORN_API_LOG_WINDOW_MS = 15 * 60_000;
-  const TORN_API_LOG_MAX_ENTRIES = 1000;
   const TORN_API_LOCK_KEY = 'considious:torn-api-lock:v1';
   const TORN_API_LOCK_NAME = 'considious-torn-api-limiter-v1';
   const TORN_API_LOCK_LEASE_MS = 5_000;
   const TAB_LEADER_PREFIX = 'considious:tab-leader:v1:';
-  const TAB_SESSION_KEY = 'considious:torn-tab-session:v1';
   let memoryLedger = { events: [], cooldownUntil: 0 };
-  let memoryApiLog = [];
   let inProcessLimiterChain = Promise.resolve();
-
-  function getTabSessionId() {
-    try {
-      const storage = global.sessionStorage;
-      const existing = String(storage?.getItem(TAB_SESSION_KEY) || '');
-      if (existing) return existing.slice(0, 80);
-      const created = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      storage?.setItem(TAB_SESSION_KEY, created);
-      return created;
-    } catch {
-      return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    }
-  }
-
-  const TAB_SESSION_ID = getTabSessionId();
 
   function isPageActive({ requireFocus = true } = {}) {
     return document.visibilityState === 'visible' && (!requireFocus || document.hasFocus());
@@ -270,12 +250,8 @@
         if (!Number.isFinite(at)) return null;
         return {
           at,
-          id: String(event.id || '').slice(0, 120),
           script: String(event.script || 'Unknown').slice(0, 80),
           priority: String(event.priority || 'normal').slice(0, 20),
-          method: String(event.method || 'GET').slice(0, 12),
-          endpoint: String(event.endpoint || 'Unknown endpoint').slice(0, 240),
-          tabId: String(event.tabId || '').slice(0, 80),
         };
       })
       .filter((event) => event && event.at > now - TORN_API_WINDOW_MS)
@@ -306,72 +282,6 @@
     } catch {
       return false;
     }
-  }
-
-  function sanitizeTornApiEndpoint(url) {
-    try {
-      const parsed = new URL(String(url), global.location?.href || 'https://www.torn.com/');
-      const queryNames = [...new Set([...parsed.searchParams.keys()]
-        .filter((name) => String(name).toLowerCase() !== 'key'))]
-        .sort();
-      return `${parsed.pathname || '/'}${queryNames.length ? `?${queryNames.join('&')}` : ''}`.slice(0, 240);
-    } catch {
-      return 'Unknown endpoint';
-    }
-  }
-
-  function normalizeTornApiLog(value, now = Date.now(), windowMs = TORN_API_LOG_WINDOW_MS) {
-    const cutoff = now - Math.max(TORN_API_WINDOW_MS, Math.min(TORN_API_LOG_WINDOW_MS, Number(windowMs) || TORN_API_LOG_WINDOW_MS));
-    return (Array.isArray(value) ? value : [])
-      .map((event) => {
-        if (!event || typeof event !== 'object') return null;
-        const at = Number(event.at);
-        if (!Number.isFinite(at) || at <= cutoff) return null;
-        return {
-          id: String(event.id || '').slice(0, 120),
-          at,
-          finishedAt: Math.max(0, Number(event.finishedAt) || 0),
-          durationMs: Math.max(0, Number(event.durationMs) || 0),
-          script: String(event.script || 'Unknown').slice(0, 80),
-          priority: String(event.priority || 'normal').slice(0, 20),
-          method: String(event.method || 'GET').slice(0, 12),
-          endpoint: String(event.endpoint || 'Unknown endpoint').slice(0, 240),
-          tabId: String(event.tabId || '').slice(0, 80),
-          result: String(event.result || 'Pending').slice(0, 80),
-          status: Math.max(0, Number(event.status) || 0),
-        };
-      })
-      .filter(Boolean)
-      .sort((left, right) => left.at - right.at)
-      .slice(-TORN_API_LOG_MAX_ENTRIES);
-  }
-
-  function readTornApiLog(now = Date.now(), windowMs = TORN_API_LOG_WINDOW_MS) {
-    const storage = tornStorage();
-    if (!storage) return normalizeTornApiLog(memoryApiLog, now, windowMs);
-    try {
-      return normalizeTornApiLog(JSON.parse(storage.getItem(TORN_API_LOG_KEY) || '[]'), now, windowMs);
-    } catch {
-      return normalizeTornApiLog(memoryApiLog, now, windowMs);
-    }
-  }
-
-  function writeTornApiLog(events) {
-    memoryApiLog = normalizeTornApiLog(events);
-    const storage = tornStorage();
-    if (!storage) return false;
-    try {
-      storage.setItem(TORN_API_LOG_KEY, JSON.stringify(memoryApiLog));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function appendTornApiLog(event) {
-    const events = readTornApiLog();
-    events.push(event);
-    writeTornApiLog(events);
   }
 
   async function withInProcessLimiterLock(task) {
@@ -447,8 +357,6 @@
     const limit = normalizedTornLimit(options.limit);
     const script = String(options.script || 'Core Lib consumer').slice(0, 80);
     const priority = String(options.priority || 'normal').slice(0, 20);
-    const method = String(options.method || 'GET').toUpperCase().slice(0, 12);
-    const endpoint = sanitizeTornApiEndpoint(options.url || options.endpoint || '');
     const shouldWait = options.wait !== false;
     const maxWaitMs = Math.max(0, Number(options.maxWaitMs ?? 65_000) || 0);
     const deadline = Date.now() + maxWaitMs;
@@ -466,22 +374,15 @@
           };
         }
         if (ledger.events.length < limit) {
-          const id = `${now}:${Math.random().toString(36).slice(2, 10)}`;
-          const event = { id, at: now, script, priority, method, endpoint, tabId: TAB_SESSION_ID };
-          ledger.events.push(event);
+          ledger.events.push({ at: now, script, priority });
           writeTornApiLedger(ledger);
-          appendTornApiLog({ ...event, result: 'Pending', status: 0, finishedAt: 0, durationMs: 0 });
           return {
             reserved: true,
-            id,
             at: now,
             usage: ledger.events.length,
             limit,
             script,
             priority,
-            method,
-            endpoint,
-            tabId: TAB_SESSION_ID,
           };
         }
         const releaseIndex = Math.max(0, ledger.events.length - limit);
@@ -507,23 +408,6 @@
     }
   }
 
-  async function finishTornApiLog(reservation, outcome = {}) {
-    const id = String(reservation?.id || '');
-    if (!id) return false;
-    return withTornApiLock(() => {
-      const now = Date.now();
-      const events = readTornApiLog(now);
-      const event = events.find((item) => item.id === id);
-      if (!event) return false;
-      event.finishedAt = now;
-      event.durationMs = Math.max(0, now - Number(event.at || now));
-      event.status = Math.max(0, Number(outcome.status) || 0);
-      event.result = String(outcome.result || (event.status ? `HTTP ${event.status}` : 'Completed')).slice(0, 80);
-      writeTornApiLog(events);
-      return true;
-    });
-  }
-
   async function noteTornApiRateLimit(options = {}) {
     const retryAfterMs = Math.max(5_000, Number(options.retryAfterMs) || 60_000);
     return withTornApiLock(() => {
@@ -540,10 +424,8 @@
     const limit = normalizedTornLimit(options.limit);
     const ledger = readTornApiLedger(now);
     const byScript = {};
-    const byEndpoint = {};
     ledger.events.forEach((event) => {
       byScript[event.script] = (byScript[event.script] || 0) + 1;
-      byEndpoint[event.endpoint] = (byEndpoint[event.endpoint] || 0) + 1;
     });
     return {
       count: ledger.events.length,
@@ -552,38 +434,8 @@
       cooldownUntil: ledger.cooldownUntil,
       events: ledger.events.map((event) => ({ ...event })),
       byScript,
-      byEndpoint,
       windowMs: TORN_API_WINDOW_MS,
     };
-  }
-
-  function getTornApiLog(options = {}) {
-    const windowMs = Math.max(TORN_API_WINDOW_MS, Math.min(TORN_API_LOG_WINDOW_MS, Number(options.windowMs) || TORN_API_LOG_WINDOW_MS));
-    const events = readTornApiLog(Date.now(), windowMs);
-    const byScript = {};
-    const byEndpoint = {};
-    const byScriptEndpoint = {};
-    events.forEach((event) => {
-      byScript[event.script] = (byScript[event.script] || 0) + 1;
-      byEndpoint[event.endpoint] = (byEndpoint[event.endpoint] || 0) + 1;
-      const key = `${event.script} :: ${event.method} ${event.endpoint}`;
-      byScriptEndpoint[key] = (byScriptEndpoint[key] || 0) + 1;
-    });
-    return {
-      events: events.map((event) => ({ ...event })),
-      byScript,
-      byEndpoint,
-      byScriptEndpoint,
-      windowMs,
-      tabId: TAB_SESSION_ID,
-    };
-  }
-
-  async function resetTornApiLog() {
-    return withTornApiLock(() => {
-      writeTornApiLog([]);
-      return true;
-    });
   }
 
   async function resetTornApiLedger() {
@@ -605,38 +457,29 @@
     if (typeof GM_xmlhttpRequest !== 'function') {
       throw new Error('GM_xmlhttpRequest is unavailable. Add it to the userscript grants.');
     }
-    const tornApiRequest = isTornApiUrl(url);
-    let reservation = options.tornReservation || null;
     if (isTornApiUrl(url) && options.rateLimit !== false) {
-      reservation = await reserveTornApiSlot({
+      const reservation = await reserveTornApiSlot({
         limit: options.tornLimit,
         script: options.tornScript,
         priority: options.tornPriority,
-        method: options.method || 'GET',
-        url,
         wait: options.tornWait,
         maxWaitMs: options.tornMaxWaitMs,
       });
       if (typeof options.onTornReserved === 'function') options.onTornReserved(reservation);
     }
-    return new Promise((resolve, reject) => {
-      const finish = (result, status = 0) => {
-        if (tornApiRequest && reservation) void finishTornApiLog(reservation, { result, status });
-      };
-      GM_xmlhttpRequest({
-        method: options.method || 'GET',
-        url,
-        data: options.data,
-        headers: options.headers || {},
-        timeout: options.timeout || 12_000,
-        responseType: options.responseType,
-        anonymous: options.anonymous,
-        onload: (response) => { finish(`HTTP ${Number(response.status) || 0}`, response.status); resolve(response); },
-        onerror: () => { finish('Network error'); reject(new Error(options.networkErrorMessage || 'Network request failed')); },
-        ontimeout: () => { finish('Timed out'); reject(new Error(options.timeoutMessage || 'Network request timed out')); },
-        onabort: () => { finish('Aborted'); reject(new Error(options.abortMessage || 'Network request was aborted')); },
-      });
-    });
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method: options.method || 'GET',
+      url,
+      data: options.data,
+      headers: options.headers || {},
+      timeout: options.timeout || 12_000,
+      responseType: options.responseType,
+      anonymous: options.anonymous,
+      onload: resolve,
+      onerror: () => reject(new Error(options.networkErrorMessage || 'Network request failed')),
+      ontimeout: () => reject(new Error(options.timeoutMessage || 'Network request timed out')),
+      onabort: () => reject(new Error(options.abortMessage || 'Network request was aborted')),
+    }));
   }
 
   async function requestText(url, options = {}) {
@@ -852,8 +695,6 @@
       escapeHtml,
       formatDuration,
       formatHumanDuration,
-      finishTornApiLog,
-      getTornApiLog,
       getTornApiUsage,
       isPageActive,
       isTornApiUrl,
@@ -864,9 +705,7 @@
       requestJson,
       requestText,
       reserveTornApiSlot,
-      resetTornApiLog,
       resetTornApiLedger,
-      sanitizeTornApiEndpoint,
       shortNumber,
       tornRequest,
       unixNow,

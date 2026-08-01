@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Incoming Retaliation Monitor
 // @namespace    Considious [3853023]
-// @version      1.7.13
+// @version      1.7.12
 // @description  Torn faction retaliation and chain dashboard with FFScouter estimates, alerts, attack shortcuts, and two-step faction chat sharing.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Retaliation-Monitor/Torn_Incoming_Retaliation_Monitor.user.js
@@ -13,7 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.2
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.1
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -74,7 +74,6 @@
     let pendingChatSend = null;
     let pendingChatSendTimer = null;
     let showingOutgoingReview = false;
-    let outgoingReviewAttackerId = 0;
     let enemyRosterCache = { factionId: 0, fetchedAt: 0, members: new Map() };
 
     GM_addStyle(`
@@ -142,8 +141,7 @@
         .trm-review-title { font-size: 14px; font-weight: 700; }
         .trm-review-note { margin-bottom: 8px; color: #aaa; font-size: 11px; line-height: 1.4; }
         .trm-review-summary { display: grid; gap: 5px; margin-bottom: 10px; }
-        .trm-review-person { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; padding: 6px 7px; border: 1px solid #494949; border-radius: 4px; background: #292929; color: #eee; font: inherit; text-align: left; cursor: pointer; }
-        .trm-review-person:hover, .trm-review-person.trm-selected { border-color: #7aaee8; background: #303b47; }
+        .trm-review-person { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 7px; border: 1px solid #494949; border-radius: 4px; background: #292929; }
         .trm-review-person strong { color: #eee; }
         .trm-review-person span { color: #bbb; font-size: 11px; }
         .trm-review-events { display: grid; gap: 5px; }
@@ -168,8 +166,8 @@
     function bindPanelEvents(panel) {
         panel.querySelector('#trm-sound').addEventListener('click', toggleSound);
         panel.querySelector('#trm-refresh').addEventListener('click', async () => { const tornKey = GM_getValue(KEYS.tornApiKey, ''); const usedLive = scrapeActiveTabChainWidget(); await refreshChainLinkFromApi(tornKey, !usedLive); await poll(true); });
-        panel.querySelector('#trm-review').addEventListener('click', () => { showingOutgoingReview = !showingOutgoingReview; if (!showingOutgoingReview) outgoingReviewAttackerId = 0; render(); });
-        panel.querySelector('#trm-settings').addEventListener('click', () => { showingOutgoingReview = false; outgoingReviewAttackerId = 0; showSettings(); });
+        panel.querySelector('#trm-review').addEventListener('click', () => { showingOutgoingReview = !showingOutgoingReview; render(); });
+        panel.querySelector('#trm-settings').addEventListener('click', () => { showingOutgoingReview = false; showSettings(); });
         panel.querySelector('#trm-collapse').addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); minimizePanel(); });
         panel.querySelector('#trm-launcher').addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); restorePanel(); });
     }
@@ -275,25 +273,16 @@
     }
 
     function updateOutgoingReviewButton() { const button = document.getElementById('trm-review'); if (!button) return; const log = getOutgoingReviewLog(); const onlineCount = log.filter(item => item.observedOnline).length; button.classList.toggle('trm-active', showingOutgoingReview); button.textContent = onlineCount ? `LOG ${onlineCount}` : 'LOG'; button.title = `${outgoingReviewEnabled() ? 'Outgoing online-hit review' : 'Outgoing online-hit logging is disabled'}${onlineCount ? ` • ${onlineCount} observed online` : ''}`; }
-    function reviewCsvCell(value) { const text = String(value ?? ''); return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text; }
-    function exportOutgoingReviewCsv(items, attackerName = '') { const headers = ['attack_id','attack_time','our_attacker_id','our_attacker_name','enemy_defender_id','enemy_defender_name','enemy_faction_id','enemy_faction_name','observed_status','observed_online','status_checked_at','observation_delay_seconds']; const rows = items.map(item => [item.attackId,new Date(Number(item.attackEnded || 0) * 1000).toISOString(),item.attackerId,item.attackerName,item.defenderId,item.defenderName,item.opponentFactionId,item.opponentFactionName,item.observedStatus,item.observedOnline ? 'yes' : 'no',new Date(Number(item.observedAt || 0) * 1000).toISOString(),item.observedDelaySeconds]); const csv = [headers,...rows].map(row => row.map(reviewCsvCell).join(',')).join('\r\n'); const safeName = String(attackerName || 'all').replace(/[^a-z0-9_-]+/gi,'-').replace(/^-+|-+$/g,'') || 'all'; const blob = new Blob([csv],{type:'text/csv;charset=utf-8'}); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href=url; link.download=`torn-outgoing-war-hits-${safeName}-${new Date().toISOString().slice(0,10)}.csv`; document.body.appendChild(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000); }
     function renderOutgoingReview(body) {
         const log = getOutgoingReviewLog().sort((a,b) => Number(b.attackEnded || 0) - Number(a.attackEnded || 0));
         const onlineCount = log.filter(item => item.observedOnline).length;
         const byAttacker = new Map();
         for (const item of log) { const id = Number(item.attackerId || 0); if (!byAttacker.has(id)) byAttacker.set(id, { id, name: String(item.attackerName || `Player ${id}`), total: 0, online: 0, idle: 0, offline: 0, unknown: 0 }); const row = byAttacker.get(id); row.total += 1; const status = String(item.observedStatus || 'Unknown').toLowerCase(); if (status === 'online') row.online += 1; else if (status === 'idle') row.idle += 1; else if (status === 'offline') row.offline += 1; else row.unknown += 1; }
         const summaries = [...byAttacker.values()].sort((a,b) => b.online - a.online || b.total - a.total || a.name.localeCompare(b.name));
-        const selected = summaries.find(row => row.id === outgoingReviewAttackerId) || null;
-        if (outgoingReviewAttackerId && !selected) outgoingReviewAttackerId = 0;
-        const visibleLog = selected ? log.filter(item => Number(item.attackerId || 0) === selected.id) : log.slice(0,100);
-        const summaryHtml = summaries.map(row => `<button type="button" class="trm-review-person ${selected?.id === row.id ? 'trm-selected' : ''}" data-review-attacker="${row.id}"><span><strong>${escapeHtml(row.name)}${row.id ? ` [${row.id}]` : ''}</strong><br><span>${row.online} observed Online • ${row.idle} Idle • ${row.offline} Offline${row.unknown ? ` • ${row.unknown} Unknown` : ''}</span></span><span>${row.total ? Math.round(row.online / row.total * 100) : 0}% online<br>${row.total} attacks</span></button>`).join('');
-        const eventsHtml = visibleLog.map(item => { const delay = Number(item.observedDelaySeconds || 0); const delayText = delay < 60 ? `${delay}s` : `${Math.floor(delay / 60)}m ${delay % 60}s`; const attackTime = new Date(Number(item.attackEnded || 0) * 1000).toLocaleString(); return `<div class="trm-review-event ${item.observedOnline ? 'trm-observed-online' : ''}"><a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(item.attackerId)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.attackerName)} [${item.attackerId}]</a> attacked <a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(item.defenderId)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.defenderName)} [${item.defenderId}]</a><br>Observed: <strong class="${item.observedOnline ? 'trm-online' : 'trm-offline'}">${escapeHtml(item.observedStatus || 'Unknown')}</strong> • checked ${delayText} after attack<br><span class="trm-review-event-time">${escapeHtml(attackTime)} • ${escapeHtml(item.opponentFactionName || `Faction ${item.opponentFactionId}`)} • attack ${escapeHtml(item.attackId)}</span></div>`; }).join('');
-        const title = selected ? `${selected.name}'s outgoing attacks` : 'Outgoing war-hit review';
-        const note = selected ? `Showing all ${visibleLog.length} recorded attacks by this member. This includes the target and sampled target status so med-out patterns can be reviewed in context.` : `${outgoingReviewEnabled() ? 'Logging is enabled.' : 'Logging is disabled in Settings.'} ${onlineCount} of ${log.length} recorded outgoing war hits were observed Online. Click a member to see every recorded attack. Status is sampled when the attack is detected, not historical proof of the exact attack second.`;
-        body.innerHTML = `<div class="trm-review-toolbar"><div class="trm-review-title">${escapeHtml(title)}</div><button class="trm-btn trm-review-small-button" id="trm-review-back">${selected ? 'All attackers' : 'Back'}</button></div><div class="trm-review-note">${escapeHtml(note)}</div>${!selected && summaryHtml ? `<div class="trm-review-summary">${summaryHtml}</div>` : !log.length ? '<div class="trm-empty">No outgoing ranked-war hits have been recorded yet.</div>' : ''}${eventsHtml ? `<div class="trm-review-events">${eventsHtml}</div><div class="trm-settings-actions"><button class="trm-btn" id="trm-review-export">Export ${selected ? 'this member' : 'all'} CSV</button><button class="trm-btn" id="trm-review-clear">Clear review log</button></div>` : ''}`;
-        document.querySelectorAll('[data-review-attacker]').forEach(button => button.addEventListener('click', () => { outgoingReviewAttackerId = Number(button.dataset.reviewAttacker || 0); render(); }));
-        document.getElementById('trm-review-back')?.addEventListener('click', () => { if (selected) outgoingReviewAttackerId = 0; else showingOutgoingReview = false; render(); });
-        document.getElementById('trm-review-export')?.addEventListener('click', () => exportOutgoingReviewCsv(selected ? log.filter(item => Number(item.attackerId || 0) === selected.id) : log, selected?.name || 'all'));
+        const summaryHtml = summaries.map(row => `<div class="trm-review-person"><div><strong>${escapeHtml(row.name)}${row.id ? ` [${row.id}]` : ''}</strong><br><span>${row.online} observed Online • ${row.idle} Idle • ${row.offline} Offline${row.unknown ? ` • ${row.unknown} Unknown` : ''}</span></div><span>${row.total ? Math.round(row.online / row.total * 100) : 0}% online</span></div>`).join('');
+        const eventsHtml = log.slice(0, 100).map(item => { const delay = Number(item.observedDelaySeconds || 0); const delayText = delay < 60 ? `${delay}s` : `${Math.floor(delay / 60)}m ${delay % 60}s`; const attackTime = new Date(Number(item.attackEnded || 0) * 1000).toLocaleString(); return `<div class="trm-review-event ${item.observedOnline ? 'trm-observed-online' : ''}"><a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(item.attackerId)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.attackerName)} [${item.attackerId}]</a> attacked <a href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(item.defenderId)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.defenderName)} [${item.defenderId}]</a><br>Observed: <strong class="${item.observedOnline ? 'trm-online' : 'trm-offline'}">${escapeHtml(item.observedStatus || 'Unknown')}</strong> • checked ${delayText} after attack<br><span class="trm-review-event-time">${escapeHtml(attackTime)} • ${escapeHtml(item.opponentFactionName || `Faction ${item.opponentFactionId}`)}</span></div>`; }).join('');
+        body.innerHTML = `<div class="trm-review-toolbar"><div class="trm-review-title">Outgoing war-hit review</div><button class="trm-btn trm-review-small-button" id="trm-review-back">Back</button></div><div class="trm-review-note">${outgoingReviewEnabled() ? 'Logging is enabled.' : 'Logging is disabled in Settings.'} ${onlineCount} of ${log.length} recorded outgoing war hits were observed Online. Status is sampled when the attack is detected, not historical proof of the exact attack second.</div>${summaryHtml ? `<div class="trm-review-summary">${summaryHtml}</div>` : '<div class="trm-empty">No outgoing ranked-war hits have been recorded yet.</div>'}${eventsHtml ? `<div class="trm-review-events">${eventsHtml}</div><div class="trm-settings-actions"><button class="trm-btn" id="trm-review-clear">Clear review log</button></div>` : ''}`;
+        document.getElementById('trm-review-back')?.addEventListener('click', () => { showingOutgoingReview = false; render(); });
         document.getElementById('trm-review-clear')?.addEventListener('click', () => { if (!confirm('Clear the outgoing war-hit review log?')) return; saveOutgoingReviewLog([]); if (outgoingReviewEnabled()) GM_setValue(KEYS.outgoingReviewEnabledAt, unixNow()); render(); });
     }
 
