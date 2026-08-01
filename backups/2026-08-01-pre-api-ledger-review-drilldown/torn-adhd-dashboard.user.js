@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.5
+// @version      1.4.4
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -14,7 +14,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.2
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.1
 // @run-at       document-end
 // ==/UserScript==
 
@@ -479,18 +479,6 @@
     }).events;
   }
 
-  function tornApiDiagnostics() {
-    return typeof TornLib.getTornApiLog === 'function'
-      ? TornLib.getTornApiLog({ windowMs: 15 * 60_000 })
-      : { events: [], byScript: {}, byEndpoint: {}, byScriptEndpoint: {}, windowMs: 15 * 60_000 };
-  }
-
-  function finishQueuedTornApiCall(reservation, result, status = 0) {
-    if (typeof TornLib.finishTornApiLog === 'function') {
-      void TornLib.finishTornApiLog(reservation, { result, status });
-    }
-  }
-
   function apiPriorityLimit(priority) {
     if (state.settings.slowApiMode) {
       if (priority === 'high') return API_SLOW_LIMIT;
@@ -519,17 +507,15 @@
         if (pausedUntil > Date.now()) {
           throw new Error(`Torn API paused for ${formatDuration(Math.ceil((pausedUntil - Date.now()) / 1000))}.`);
         }
-        task.reservation = await TornLib.reserveTornApiSlot({
+        await TornLib.reserveTornApiSlot({
           limit: apiPriorityLimit(priority),
           script: 'ADHD Dashboard',
           priority,
-          method: task.method || 'GET',
-          url: task.url,
           wait: true,
           maxWaitMs: 65_000,
         });
         state.apiCalls += 1;
-        task.resolve(await task.start(task.reservation));
+        task.resolve(await task.start());
       } catch (error) {
         if (Number(error?.retryAfterMs) > 0) state.apiLimiterUntil = Date.now() + Number(error.retryAfterMs);
         task.reject(error);
@@ -539,17 +525,10 @@
     };
     state.apiQueueTimer = window.setTimeout(runNext, 0);
   }
-  function enqueueTornApiCall(priority, start, requestMeta = {}) {
+  function enqueueTornApiCall(priority, start) {
     return new Promise((resolve, reject) => {
       state.apiQueues[priority] ||= [];
-      state.apiQueues[priority].push({
-        start,
-        resolve,
-        reject,
-        method: String(requestMeta.method || 'GET'),
-        url: String(requestMeta.url || ''),
-        reservation: null,
-      });
+      state.apiQueues[priority].push({ start, resolve, reject });
       processApiQueue();
     });
   }
@@ -564,21 +543,22 @@
   function api(path, query = {}, { priority = 'normal' } = {}) {
     if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
-    const url = new URL(`${API_ROOT}/${path.replace(/^\/+/, '')}`);
-    Object.entries({ ...query, comment: 'DailyDashboard' }).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
-    });
-    return enqueueTornApiCall(priority, (reservation) => new Promise((resolve, reject) => {
+    return enqueueTornApiCall(priority, () => new Promise((resolve, reject) => {
       if (!ownsDashboardNetworkLease()) {
-        finishQueuedTornApiCall(reservation, 'Cancelled before request');
         reject(dashboardOwnerPauseError());
         return;
       }
       if (!state.settings.apiKey) {
-        finishQueuedTornApiCall(reservation, 'Cancelled before request');
         reject(new Error('Add a Torn API key in Settings.'));
         return;
       }
+
+      const url = new URL(`${API_ROOT}/${path.replace(/^\/+/, '')}`);
+      Object.entries({ ...query, comment: 'DailyDashboard' }).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          url.searchParams.set(key, String(value));
+        }
+      });
 
       GM_xmlhttpRequest({
         method: 'GET',
@@ -589,7 +569,6 @@
         },
         timeout: 20_000,
         onload(response) {
-          finishQueuedTornApiCall(reservation, `HTTP ${Number(response.status) || 0}`, response.status);
           if (!ownsDashboardNetworkLease()) {
             reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
             return;
@@ -608,37 +587,34 @@
           }
           resolve(body);
         },
-        onerror: () => { finishQueuedTornApiCall(reservation, 'Network error'); reject(new Error('Could not reach the Torn API.')); },
-        ontimeout: () => { finishQueuedTornApiCall(reservation, 'Timed out'); reject(new Error('The Torn API request timed out.')); },
+        onerror: () => reject(new Error('Could not reach the Torn API.')),
+        ontimeout: () => reject(new Error('The Torn API request timed out.')),
       });
-    }), { method: 'GET', url: url.toString() });
+    }));
   }
 
   function apiV1(section, query = {}, { priority = 'normal' } = {}) {
     if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
-    const url = new URL(`${API_V1_ROOT}/${String(section).replace(/^\/+|\/+$/g, '')}/`);
-    Object.entries({ ...query, key: state.settings.apiKey, comment: 'DailyDashboard' }).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
-    });
-    return enqueueTornApiCall(priority, (reservation) => new Promise((resolve, reject) => {
+    return enqueueTornApiCall(priority, () => new Promise((resolve, reject) => {
       if (!ownsDashboardNetworkLease()) {
-        finishQueuedTornApiCall(reservation, 'Cancelled before request');
         reject(dashboardOwnerPauseError());
         return;
       }
       if (!state.settings.apiKey) {
-        finishQueuedTornApiCall(reservation, 'Cancelled before request');
         reject(new Error('Add a Torn API key in Settings.'));
         return;
       }
+      const url = new URL(`${API_V1_ROOT}/${String(section).replace(/^\/+|\/+$/g, '')}/`);
+      Object.entries({ ...query, key: state.settings.apiKey, comment: 'DailyDashboard' }).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+      });
       GM_xmlhttpRequest({
         method: 'GET',
         url: url.toString(),
         headers: { Accept: 'application/json' },
         timeout: 20_000,
         onload(response) {
-          finishQueuedTornApiCall(reservation, `HTTP ${Number(response.status) || 0}`, response.status);
           if (!ownsDashboardNetworkLease()) {
             reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
             return;
@@ -657,10 +633,10 @@
           }
           resolve(body);
         },
-        onerror: () => { finishQueuedTornApiCall(reservation, 'Network error'); reject(new Error('Could not reach the Torn API.')); },
-        ontimeout: () => { finishQueuedTornApiCall(reservation, 'Timed out'); reject(new Error('The Torn API request timed out.')); },
+        onerror: () => reject(new Error('Could not reach the Torn API.')),
+        ontimeout: () => reject(new Error('The Torn API request timed out.')),
       });
-    }), { method: 'GET', url: url.toString() });
+    }));
   }
 
   function weav3rBazaars(itemId) {
@@ -3082,60 +3058,6 @@
     }
   }
 
-  function csvCell(value) {
-    const text = String(value ?? '');
-    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-  }
-
-  function downloadTextFile(filename, content, type = 'text/plain;charset=utf-8') {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-  }
-
-  function exportApiLedgerCsv() {
-    const events = tornApiDiagnostics().events;
-    const headers = ['requested_at', 'script', 'method', 'endpoint', 'priority', 'result', 'http_status', 'duration_ms', 'tab_session'];
-    const rows = events.map((event) => [
-      new Date(Number(event.at) || 0).toISOString(),
-      event.script,
-      event.method,
-      event.endpoint,
-      event.priority,
-      event.result,
-      event.status || '',
-      event.durationMs || '',
-      event.tabId,
-    ]);
-    const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
-    downloadTextFile(`torn-api-ledger-${new Date().toISOString().replaceAll(':', '-')}.csv`, csv, 'text/csv;charset=utf-8');
-  }
-
-  function apiLedgerMarkup() {
-    const diagnostics = tornApiDiagnostics();
-    const events = diagnostics.events;
-    const minuteUsage = TornLib.getTornApiUsage({ limit: state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT });
-    const minuteGroups = {};
-    minuteUsage.events.forEach((event) => {
-      const label = `${event.script} :: ${event.method || 'GET'} ${event.endpoint || 'Unknown endpoint'}`;
-      minuteGroups[label] = (minuteGroups[label] || 0) + 1;
-    });
-    const groups = Object.entries(minuteGroups).sort((left, right) => right[1] - left[1]);
-    const groupRows = groups.map(([label, count]) => `<li><strong>${count}×</strong> <code>${escapeHtml(label)}</code></li>`).join('');
-    const recentRows = [...events].reverse().slice(0, 100).map((event) => {
-      const time = new Date(Number(event.at) || 0).toLocaleTimeString();
-      const tab = String(event.tabId || '').slice(-6) || 'legacy';
-      return `<li><strong>${escapeHtml(time)}</strong> ${escapeHtml(event.script)} · <code>${escapeHtml(event.method)} ${escapeHtml(event.endpoint)}</code> · ${escapeHtml(event.result || 'Pending')} · tab ${escapeHtml(tab)}</li>`;
-    }).join('');
-    return `<details class="api-ledger-details"><summary>API request ledger · ${minuteUsage.count} last minute · ${events.length} retained for 15 minutes</summary><p>Counts shared-limiter reservations from these userscripts. Completed entries correspond to network attempts; a “Cancelled before request” entry consumed a safety slot without contacting Torn. Endpoint query values and API keys are never stored. Different tab suffixes reveal duplicate-tab activity.</p>${groupRows ? `<strong>Last minute by script and endpoint</strong><ol class="api-ledger-list">${groupRows}</ol>` : '<p>No shared reservations in the last minute. New entries appear after the updated scripts reload.</p>'}${recentRows ? `<details class="api-ledger-recent"><summary>Most recent 100 reservations</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, direct Torn requests made by old script versions, or non-Torn services such as TornW3B.</small></details>`;
-  }
-
   function settingsMarkup() {
     const exclusion = iconSelfExclusion();
     const errors = Object.entries(state.errors)
@@ -3207,7 +3129,6 @@
           <button data-action="pause-api">Pause</button>
           ${Number(state.settings.apiPausedUntil) > Date.now() ? `<button data-action="resume-api">Resume now (${formatDuration(Math.ceil((Number(state.settings.apiPausedUntil) - Date.now()) / 1000))})</button>` : ''}
           <small>Core Lib coordinates Torn API requests made by this dashboard, Ranked War Panel, and Retaliation Monitor on this browser profile and Torn origin. External apps, extensions, other devices, and TornW3B cannot be counted.</small>
-          ${apiLedgerMarkup()}
         </div>
         <details class="settings-group" data-settings-section="alerts" ${sectionOpen('alerts')}>
           <summary>Alert toggles</summary>
@@ -3492,12 +3413,6 @@
         .api-controls strong, .api-controls small { flex-basis: 100%; }
         .api-controls label { display: flex; align-items: center; gap: 5px; }
         .api-controls select { padding: 3px 5px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #f1f4f6; background: #111418; }
-        .api-ledger-details { flex-basis: 100%; min-width: 0; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; background: rgba(0,0,0,.18); }
-        .api-ledger-details > summary, .api-ledger-recent > summary { cursor: pointer; color: #eef2f5; font-weight: 700; }
-        .api-ledger-details p { margin: 7px 0; color: #aeb8c1; font-size: 11px; line-height: 1.4; }
-        .api-ledger-list { max-height: 180px; margin: 6px 0 9px; padding-left: 22px; overflow: auto; color: #cbd2d8; font-size: 10px; line-height: 1.45; }
-        .api-ledger-list code { color: #a9d0ff; overflow-wrap: anywhere; }
-        .api-ledger-recent { margin: 7px 0; }
         .subtle { color: #b8c1c9; background: #292e34; }
         .settings-group { margin: 10px 0 0; overflow: hidden; border: 1px solid rgba(255,255,255,.11); border-radius: 8px; color: #d6dde3; background: #23282e; font-size: 12px; }
         .settings-group > summary { padding: 9px 10px; cursor: pointer; color: #eef2f5; background: #2a3037; font-size: 13px; font-weight: 750; user-select: none; }
@@ -3666,14 +3581,6 @@
       saveSettings();
       scheduleMarketPoll(0);
       refresh();
-      return;
-    } else if (action === 'export-api-ledger') {
-      exportApiLedgerCsv();
-      return;
-    } else if (action === 'clear-api-ledger') {
-      if (typeof TornLib.resetTornApiLog === 'function') {
-        TornLib.resetTornApiLog().then(render).catch((error) => console.warn('[ADHD Dashboard] Could not clear API ledger:', error));
-      }
       return;
     } else if (action === 'request-notification-permission') {
       requestBrowserNotifications();
