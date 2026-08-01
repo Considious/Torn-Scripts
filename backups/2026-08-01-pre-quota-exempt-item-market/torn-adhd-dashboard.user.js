@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.6
+// @version      1.4.5
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -14,7 +14,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.3
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.2
 // @run-at       document-end
 // ==/UserScript==
 
@@ -38,8 +38,6 @@
   const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
-  const ITEM_MARKET_CACHE_REFRESH_MS = 10_000;
-  const POINTS_MARKET_REFRESH_MS = 30_000;
   const CITY_SHOP_TARGETS = [
     { id: 180, name: 'Bottle of Beer', label: 'Beer' },
     { id: 392, name: 'Pepper Spray', label: 'Pepper Spray' },
@@ -193,7 +191,6 @@
     dom: {},
     errors: {},
     apiCalls: 0,
-    cachedMarketCalls: 0,
     lastMarketUpdated: persistedChecks.lastMarketUpdated,
     lastBazaarUpdated: persistedChecks.lastBazaarUpdated,
     lastEnergyUpdated: persistedChecks.lastEnergyUpdated,
@@ -488,14 +485,9 @@
       : { events: [], byScript: {}, byEndpoint: {}, byScriptEndpoint: {}, windowMs: 15 * 60_000 };
   }
 
-  function finishQueuedTornApiCall(reservation, result, status = 0, apiError = null) {
+  function finishQueuedTornApiCall(reservation, result, status = 0) {
     if (typeof TornLib.finishTornApiLog === 'function') {
-      void TornLib.finishTornApiLog(reservation, {
-        result,
-        status,
-        apiErrorCode: apiError?.code,
-        apiErrorMessage: apiError?.error || apiError?.message || '',
-      });
+      void TornLib.finishTornApiLog(reservation, { result, status });
     }
   }
 
@@ -519,14 +511,12 @@
         state.apiQueueTimer = null;
         return;
       }
-      const queue = state.apiQueues[priority];
-      const quotaExemptIndex = queue.findIndex((item) => item.quotaExempt);
-      const task = quotaExemptIndex >= 0 ? queue.splice(quotaExemptIndex, 1)[0] : queue.shift();
+      const task = state.apiQueues[priority].shift();
       try {
         if (!ownsDashboardNetworkLease()) throw dashboardOwnerPauseError();
         if (!state.settings.apiKey) throw new Error('Add a Torn API key in Settings.');
         const pausedUntil = Number(state.settings.apiPausedUntil) || 0;
-        if (!task.quotaExempt && pausedUntil > Date.now()) {
+        if (pausedUntil > Date.now()) {
           throw new Error(`Torn API paused for ${formatDuration(Math.ceil((pausedUntil - Date.now()) / 1000))}.`);
         }
         task.reservation = await TornLib.reserveTornApiSlot({
@@ -535,13 +525,10 @@
           priority,
           method: task.method || 'GET',
           url: task.url,
-          quotaExempt: task.quotaExempt,
-          quotaClass: task.quotaClass,
-          wait: task.waitForQuota,
-          maxWaitMs: task.maxWaitMs,
+          wait: true,
+          maxWaitMs: 65_000,
         });
-        if (task.quotaExempt) state.cachedMarketCalls += 1;
-        else state.apiCalls += 1;
+        state.apiCalls += 1;
         task.resolve(await task.start(task.reservation));
       } catch (error) {
         if (Number(error?.retryAfterMs) > 0) state.apiLimiterUntil = Date.now() + Number(error.retryAfterMs);
@@ -561,10 +548,6 @@
         reject,
         method: String(requestMeta.method || 'GET'),
         url: String(requestMeta.url || ''),
-        quotaExempt: requestMeta.quotaExempt === true,
-        quotaClass: String(requestMeta.quotaClass || (requestMeta.quotaExempt ? 'globally-cached-itemmarket' : 'quota')),
-        waitForQuota: requestMeta.waitForQuota !== false,
-        maxWaitMs: Math.max(0, Number(requestMeta.maxWaitMs ?? 65_000) || 0),
         reservation: null,
       });
       processApiQueue();
@@ -578,7 +561,7 @@
     });
   }
 
-  function api(path, query = {}, { priority = 'normal', quotaExempt = false, quotaClass = '', waitForQuota = true, maxWaitMs = 65_000 } = {}) {
+  function api(path, query = {}, { priority = 'normal' } = {}) {
     if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
     const url = new URL(`${API_ROOT}/${path.replace(/^\/+/, '')}`);
@@ -618,7 +601,6 @@
             reject(new Error(`Torn API returned invalid JSON (${response.status}).`));
             return;
           }
-          if (body?.error) finishQueuedTornApiCall(reservation, `Torn error ${Number(body.error.code) || 0}`, response.status, body.error);
           if (Number(body?.error?.code) === 5) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
             reject(new Error(body?.error?.error || `Torn API request failed (${response.status}).`));
@@ -629,7 +611,7 @@
         onerror: () => { finishQueuedTornApiCall(reservation, 'Network error'); reject(new Error('Could not reach the Torn API.')); },
         ontimeout: () => { finishQueuedTornApiCall(reservation, 'Timed out'); reject(new Error('The Torn API request timed out.')); },
       });
-    }), { method: 'GET', url: url.toString(), quotaExempt, quotaClass, waitForQuota, maxWaitMs });
+    }), { method: 'GET', url: url.toString() });
   }
 
   function apiV1(section, query = {}, { priority = 'normal' } = {}) {
@@ -668,7 +650,6 @@
             reject(new Error(`Torn API returned invalid JSON (${response.status}).`));
             return;
           }
-          if (body?.error) finishQueuedTornApiCall(reservation, `Torn error ${Number(body.error.code) || 0}`, response.status, body.error);
           if (Number(body?.error?.code) === 5) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
             reject(new Error(body?.error?.error || `Torn API request failed (${response.status}).`));
@@ -806,10 +787,8 @@
     return state.settings.slowApiMode ? 5 * 60_000 : CORE_REFRESH_MS;
   }
 
-  function marketRefreshMs(marketType = 'points') {
-    if (state.settings.marketRefreshMode === 'cache-aligned') {
-      return marketType === 'item' ? ITEM_MARKET_CACHE_REFRESH_MS : POINTS_MARKET_REFRESH_MS;
-    }
+  function marketRefreshMs() {
+    if (state.settings.marketRefreshMode === 'cache-aligned') return 30_000;
     return Math.max(1, Number(state.settings.marketRefreshMinutes) || 2) * 60_000;
   }
 
@@ -859,16 +838,17 @@
     });
   }
 
-  function marketResultNextCheckAt(result, marketType = 'item') {
+  function marketResultNextCheckAt(result) {
     const stored = Number(result?.__nextCheckAt) || 0;
     if (stored > 0) return stored;
-    return (Number(result?.__fetchedAt) || 0) + marketRefreshMs(marketType);
+    return (Number(result?.__fetchedAt) || 0) + marketRefreshMs();
   }
 
   async function refreshMarketWatches({ force = false } = {}) {
     const watches = activeMarketWatches();
     if (state.marketPolling || !ownsDashboardNetworkLease() || state.settings.enabled.itemMarket === false || !watches.length) return false;
     const now = Date.now();
+    if (Number(state.settings.apiPausedUntil) > now) return false;
     const groups = new Map();
     watches.forEach((watch) => {
       const marketType = watchMarketType(watch);
@@ -879,10 +859,9 @@
     });
     const dueGroups = [...groups.values()].filter((group) => {
       if (force) return true;
-      if (group.marketType === 'points' && Number(state.settings.apiPausedUntil) > now) return false;
       const previous = state.data.market?.[group.watches[0].uid];
-      return !previous || now >= Math.max(state.marketRetryAt, marketResultNextCheckAt(previous, group.marketType));
-    }).sort((left, right) => (left.marketType === 'item' ? 0 : 1) - (right.marketType === 'item' ? 0 : 1));
+      return !previous || now >= Math.max(state.marketRetryAt, marketResultNextCheckAt(previous));
+    });
     if (!dueGroups.length) {
       if (!state.readyAlertGroups.has('market') && state.data.market) publishAlertGroups(['market']);
       return false;
@@ -896,12 +875,16 @@
         const errorKey = group.marketType === 'points' ? 'market-points' : `market-item:${group.itemId}`;
         try {
           const body = group.marketType === 'points'
-            ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high', waitForQuota: false, maxWaitMs: 0 })
-            : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: 'high', quotaExempt: true, quotaClass: 'globally-cached-itemmarket' });
+            ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high' })
+            : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: 'high' });
           const fetchedAt = Date.now();
+          const payload = group.marketType === 'points' ? body?.pointsmarket : body?.itemmarket;
+          const cacheTimestamp = Number(payload?.cache_timestamp) * 1000;
+          const cacheDelay = Math.max(1, Number(payload?.cache_delay) || 30) * 1000;
           body.__fetchedAt = fetchedAt;
-          body.__marketType = group.marketType;
-          body.__nextCheckAt = fetchedAt + marketRefreshMs(group.marketType);
+          body.__nextCheckAt = state.settings.marketRefreshMode === 'cache-aligned'
+            ? (cacheTimestamp > 0 ? Math.max(fetchedAt + 5_000, cacheTimestamp + cacheDelay + 250) : fetchedAt + cacheDelay)
+            : fetchedAt + marketRefreshMs();
           if (marketResultSignature(previous, group.marketType) !== marketResultSignature(body, group.marketType)) changed = true;
           state.data.market ||= {};
           group.watches.forEach((watch) => { state.data.market[watch.uid] = body; });
@@ -913,7 +896,11 @@
         }
       }));
       state.lastMarketUpdated = Date.now();
-      state.marketRetryAt = allOkay ? 0 : Date.now() + 5_000;
+      state.marketRetryAt = allOkay ? 0 : Math.max(
+        Date.now() + 5_000,
+        Number(state.settings.apiPausedUntil) || 0,
+        Number(state.apiLimiterUntil) || 0,
+      );
       saveCheckCache();
       if (changed || !state.readyAlertGroups.has('market')) publishAlertGroups(['market']);
       return allOkay;
@@ -927,15 +914,9 @@
       state.marketTimer = null;
       await refreshMarketWatches();
       const watches = activeMarketWatches();
-      const dueTimes = watches.map((watch) => {
-        const marketType = watchMarketType(watch);
-        const nextCheckAt = marketResultNextCheckAt(state.data.market?.[watch.uid], marketType);
-        return marketType === 'points'
-          ? Math.max(nextCheckAt, Number(state.settings.apiPausedUntil) || 0)
-          : nextCheckAt;
-      }).filter((value) => value > 0);
-      const nextDue = dueTimes.length ? Math.min(...dueTimes) : Date.now() + marketRefreshMs('points');
-      const blockedUntil = state.marketRetryAt;
+      const dueTimes = watches.map((watch) => marketResultNextCheckAt(state.data.market?.[watch.uid])).filter((value) => value > 0);
+      const nextDue = dueTimes.length ? Math.min(...dueTimes) : Date.now() + marketRefreshMs();
+      const blockedUntil = Math.max(Number(state.settings.apiPausedUntil) || 0, Number(state.apiLimiterUntil) || 0, state.marketRetryAt);
       scheduleMarketPoll(Math.max(1_000, nextDue - Date.now(), blockedUntil - Date.now()));
     }, Math.max(0, Number(delayMs) || 0));
   }
@@ -2882,7 +2863,7 @@
     if (failures && !state.lastUpdated) return `${mode} - ${failures} API source${failures === 1 ? '' : 's'} failed. Open Settings for details.`;
     if (state.lastUpdated) {
       const age = Math.max(0, Math.floor((Date.now() - state.lastUpdated) / 60_000));
-      const calls = `${state.apiCalls} quota-counted Torn API call${state.apiCalls === 1 ? '' : 's'}${state.cachedMarketCalls ? ` + ${state.cachedMarketCalls} globally cached Item Market request${state.cachedMarketCalls === 1 ? '' : 's'}` : ''}${state.bazaarCalls ? ` + ${state.bazaarCalls} TornW3B check${state.bazaarCalls === 1 ? '' : 's'}` : ''} this page load`;
+      const calls = `${state.apiCalls} Torn API call${state.apiCalls === 1 ? '' : 's'}${state.bazaarCalls ? ` + ${state.bazaarCalls} TornW3B check${state.bazaarCalls === 1 ? '' : 's'}` : ''} this page load`;
       const updated = `updated ${age ? `${age}m ago` : 'just now'} - ${calls}`;
       return failures ? `${mode} - ${updated} - ${failures} source warning${failures === 1 ? '' : 's'}` : `${mode} - ${updated}`;
     }
@@ -3120,19 +3101,15 @@
 
   function exportApiLedgerCsv() {
     const events = tornApiDiagnostics().events;
-    const headers = ['requested_at', 'script', 'method', 'endpoint', 'request_class', 'counts_toward_local_quota', 'priority', 'result', 'http_status', 'torn_error_code', 'torn_error_message', 'duration_ms', 'tab_session'];
+    const headers = ['requested_at', 'script', 'method', 'endpoint', 'priority', 'result', 'http_status', 'duration_ms', 'tab_session'];
     const rows = events.map((event) => [
       new Date(Number(event.at) || 0).toISOString(),
       event.script,
       event.method,
       event.endpoint,
-      event.quotaClass || (event.quotaExempt ? 'globally-cached' : 'quota'),
-      event.quotaExempt ? 'no' : 'yes',
       event.priority,
       event.result,
       event.status || '',
-      event.apiErrorCode || '',
-      event.apiErrorMessage || '',
       event.durationMs || '',
       event.tabId,
     ]);
@@ -3144,30 +3121,19 @@
     const diagnostics = tornApiDiagnostics();
     const events = diagnostics.events;
     const minuteUsage = TornLib.getTornApiUsage({ limit: state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT });
-    const minuteEvents = events.filter((event) => Number(event.at) > Date.now() - 60_000);
-    const quotaEvents = minuteEvents.filter((event) => !event.quotaExempt);
-    const cachedItemEvents = minuteEvents.filter((event) => event.quotaExempt && event.quotaClass === 'globally-cached-itemmarket');
-    const legacyUnattributed = Math.max(0, minuteUsage.count - quotaEvents.length);
-    const groupedRows = (source) => {
-      const groups = {};
-      source.forEach((event) => {
-        const label = `${event.script} :: ${event.method || 'GET'} ${event.endpoint || 'Unknown endpoint'}`;
-        groups[label] = (groups[label] || 0) + 1;
-      });
-      return Object.entries(groups).sort((left, right) => right[1] - left[1]).map(([label, count]) => `<li><strong>${count}×</strong> <code>${escapeHtml(label)}</code></li>`).join('');
-    };
-    const quotaRows = groupedRows(quotaEvents);
-    const cachedRows = groupedRows(cachedItemEvents);
+    const minuteGroups = {};
+    minuteUsage.events.forEach((event) => {
+      const label = `${event.script} :: ${event.method || 'GET'} ${event.endpoint || 'Unknown endpoint'}`;
+      minuteGroups[label] = (minuteGroups[label] || 0) + 1;
+    });
+    const groups = Object.entries(minuteGroups).sort((left, right) => right[1] - left[1]);
+    const groupRows = groups.map(([label, count]) => `<li><strong>${count}×</strong> <code>${escapeHtml(label)}</code></li>`).join('');
     const recentRows = [...events].reverse().slice(0, 100).map((event) => {
       const time = new Date(Number(event.at) || 0).toLocaleTimeString();
       const tab = String(event.tabId || '').slice(-6) || 'legacy';
-      const requestClass = event.quotaExempt ? 'cached / quota-exempt' : 'quota';
-      const error = event.apiErrorCode ? ` · Torn error ${event.apiErrorCode}: ${event.apiErrorMessage || 'Unknown error'}` : '';
-      return `<li><strong>${escapeHtml(time)}</strong> ${escapeHtml(event.script)} · <code>${escapeHtml(event.method)} ${escapeHtml(event.endpoint)}</code> · ${escapeHtml(requestClass)} · ${escapeHtml(event.result || 'Pending')}${escapeHtml(error)} · tab ${escapeHtml(tab)}</li>`;
+      return `<li><strong>${escapeHtml(time)}</strong> ${escapeHtml(event.script)} · <code>${escapeHtml(event.method)} ${escapeHtml(event.endpoint)}</code> · ${escapeHtml(event.result || 'Pending')} · tab ${escapeHtml(tab)}</li>`;
     }).join('');
-    const mainOpen = state.settings.settingsSections?.apiLedger ? 'open' : '';
-    const recentOpen = state.settings.settingsSections?.apiLedgerRecent ? 'open' : '';
-    return `<details class="api-ledger-details" data-settings-section="apiLedger" ${mainOpen}><summary>API request ledger · ${minuteUsage.count} quota reservations · ${cachedItemEvents.length} cached Item Market requests last minute</summary><p>The quota counter excludes globally cached Item Market requests. Item Market network attempts remain visible separately. Endpoint query values and API keys are never stored. The detailed endpoint breakdown comes from the diagnostic log so older Core instances cannot erase its metadata.</p>${quotaRows ? `<strong>Quota-counted requests in the last minute</strong><ol class="api-ledger-list">${quotaRows}</ol>` : '<p>No detailed quota-counted requests in the last minute.</p>'}${legacyUnattributed ? `<p><strong>${legacyUnattributed} legacy/unattributed limiter reservation${legacyUnattributed === 1 ? '' : 's'}</strong> are included in the quota total but were written without detailed metadata.</p>` : ''}${cachedRows ? `<strong>Globally cached Item Market requests in the last minute</strong><ol class="api-ledger-list">${cachedRows}</ol>` : '<p>No cached Item Market requests in the last minute.</p>'}${recentRows ? `<details class="api-ledger-recent" data-settings-section="apiLedgerRecent" ${recentOpen}><summary>Most recent 100 requests</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, or non-Torn services such as TornW3B.</small></details>`;
+    return `<details class="api-ledger-details"><summary>API request ledger · ${minuteUsage.count} last minute · ${events.length} retained for 15 minutes</summary><p>Counts shared-limiter reservations from these userscripts. Completed entries correspond to network attempts; a “Cancelled before request” entry consumed a safety slot without contacting Torn. Endpoint query values and API keys are never stored. Different tab suffixes reveal duplicate-tab activity.</p>${groupRows ? `<strong>Last minute by script and endpoint</strong><ol class="api-ledger-list">${groupRows}</ol>` : '<p>No shared reservations in the last minute. New entries appear after the updated scripts reload.</p>'}${recentRows ? `<details class="api-ledger-recent"><summary>Most recent 100 reservations</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, direct Torn requests made by old script versions, or non-Torn services such as TornW3B.</small></details>`;
   }
 
   function settingsMarkup() {
@@ -3383,7 +3349,7 @@
             <button data-action="add-market-watch" ${state.settings.marketWatches.length >= 10 ? 'disabled' : ''}>${state.settings.marketWatches.length >= 10 ? '10 watch limit' : 'Add watch'}</button>
             <label>Torn market polling
               <select data-field="market-refresh-minutes">
-                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Fast - cached items 10s / points 30s</option>
+                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Fast - align to Torn's 30s cache</option>
                 ${[1, 2, 5, 10].map((minutes) => `<option value="${minutes}" ${state.settings.marketRefreshMode !== 'cache-aligned' && Number(state.settings.marketRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} min</option>`).join('')}
               </select>
             </label>

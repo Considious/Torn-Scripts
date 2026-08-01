@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.3
+// @version      1.3.2
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,7 +26,7 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.3';
+  const VERSION = '1.3.2';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
   const TORN_API_MAX_LIMIT = 60;
@@ -337,12 +337,8 @@
           method: String(event.method || 'GET').slice(0, 12),
           endpoint: String(event.endpoint || 'Unknown endpoint').slice(0, 240),
           tabId: String(event.tabId || '').slice(0, 80),
-          quotaExempt: Boolean(event.quotaExempt),
-          quotaClass: String(event.quotaClass || (event.quotaExempt ? 'globally-cached' : 'quota')).slice(0, 40),
           result: String(event.result || 'Pending').slice(0, 80),
           status: Math.max(0, Number(event.status) || 0),
-          apiErrorCode: Math.max(0, Number(event.apiErrorCode) || 0),
-          apiErrorMessage: String(event.apiErrorMessage || '').slice(0, 160),
         };
       })
       .filter(Boolean)
@@ -453,35 +449,9 @@
     const priority = String(options.priority || 'normal').slice(0, 20);
     const method = String(options.method || 'GET').toUpperCase().slice(0, 12);
     const endpoint = sanitizeTornApiEndpoint(options.url || options.endpoint || '');
-    const quotaExempt = options.quotaExempt === true;
-    const quotaClass = String(options.quotaClass || (quotaExempt ? 'globally-cached' : 'quota')).slice(0, 40);
     const shouldWait = options.wait !== false;
     const maxWaitMs = Math.max(0, Number(options.maxWaitMs ?? 65_000) || 0);
     const deadline = Date.now() + maxWaitMs;
-
-    if (quotaExempt) {
-      return withTornApiLock(() => {
-        const now = Date.now();
-        const ledger = readTornApiLedger(now);
-        const id = `${now}:${Math.random().toString(36).slice(2, 10)}`;
-        const event = { id, at: now, script, priority, method, endpoint, tabId: TAB_SESSION_ID, quotaExempt, quotaClass };
-        appendTornApiLog({ ...event, result: 'Pending', status: 0, finishedAt: 0, durationMs: 0 });
-        return {
-          reserved: true,
-          id,
-          at: now,
-          usage: ledger.events.length,
-          limit,
-          script,
-          priority,
-          method,
-          endpoint,
-          tabId: TAB_SESSION_ID,
-          quotaExempt,
-          quotaClass,
-        };
-      });
-    }
 
     while (true) {
       const result = await withTornApiLock(() => {
@@ -497,7 +467,7 @@
         }
         if (ledger.events.length < limit) {
           const id = `${now}:${Math.random().toString(36).slice(2, 10)}`;
-          const event = { id, at: now, script, priority, method, endpoint, tabId: TAB_SESSION_ID, quotaExempt: false, quotaClass };
+          const event = { id, at: now, script, priority, method, endpoint, tabId: TAB_SESSION_ID };
           ledger.events.push(event);
           writeTornApiLedger(ledger);
           appendTornApiLog({ ...event, result: 'Pending', status: 0, finishedAt: 0, durationMs: 0 });
@@ -512,8 +482,6 @@
             method,
             endpoint,
             tabId: TAB_SESSION_ID,
-            quotaExempt: false,
-            quotaClass,
           };
         }
         const releaseIndex = Math.max(0, ledger.events.length - limit);
@@ -551,8 +519,6 @@
       event.durationMs = Math.max(0, now - Number(event.at || now));
       event.status = Math.max(0, Number(outcome.status) || 0);
       event.result = String(outcome.result || (event.status ? `HTTP ${event.status}` : 'Completed')).slice(0, 80);
-      event.apiErrorCode = Math.max(0, Number(outcome.apiErrorCode) || 0);
-      event.apiErrorMessage = String(outcome.apiErrorMessage || '').slice(0, 160);
       writeTornApiLog(events);
       return true;
     });
@@ -597,20 +563,17 @@
     const byScript = {};
     const byEndpoint = {};
     const byScriptEndpoint = {};
-    const byQuotaClass = {};
     events.forEach((event) => {
       byScript[event.script] = (byScript[event.script] || 0) + 1;
       byEndpoint[event.endpoint] = (byEndpoint[event.endpoint] || 0) + 1;
       const key = `${event.script} :: ${event.method} ${event.endpoint}`;
       byScriptEndpoint[key] = (byScriptEndpoint[key] || 0) + 1;
-      byQuotaClass[event.quotaClass] = (byQuotaClass[event.quotaClass] || 0) + 1;
     });
     return {
       events: events.map((event) => ({ ...event })),
       byScript,
       byEndpoint,
       byScriptEndpoint,
-      byQuotaClass,
       windowMs,
       tabId: TAB_SESSION_ID,
     };
@@ -651,8 +614,6 @@
         priority: options.tornPriority,
         method: options.method || 'GET',
         url,
-        quotaExempt: options.tornQuotaExempt,
-        quotaClass: options.tornQuotaClass,
         wait: options.tornWait,
         maxWaitMs: options.tornMaxWaitMs,
       });
@@ -670,7 +631,7 @@
         timeout: options.timeout || 12_000,
         responseType: options.responseType,
         anonymous: options.anonymous,
-        onload: (response) => { response.__tornReservation = reservation; finish(`HTTP ${Number(response.status) || 0}`, response.status); resolve(response); },
+        onload: (response) => { finish(`HTTP ${Number(response.status) || 0}`, response.status); resolve(response); },
         onerror: () => { finish('Network error'); reject(new Error(options.networkErrorMessage || 'Network request failed')); },
         ontimeout: () => { finish('Timed out'); reject(new Error(options.timeoutMessage || 'Network request timed out')); },
         onabort: () => { finish('Aborted'); reject(new Error(options.abortMessage || 'Network request was aborted')); },
@@ -700,15 +661,6 @@
       && (response.status === 429 || Number(data?.error?.code) === 5);
     if (apiRateLimited) {
       await noteTornApiRateLimit({ retryAfterMs: options.tornRateLimitCooldownMs });
-    }
-    const tornReservation = options.tornReservation || response.__tornReservation;
-    if (isTornApiUrl(url) && tornReservation && data?.error) {
-      void finishTornApiLog(tornReservation, {
-        status: response.status,
-        result: `Torn error ${Number(data.error.code) || 0}`,
-        apiErrorCode: data.error.code,
-        apiErrorMessage: errorMessage(data.error),
-      });
     }
     if (response.status < 200 || response.status >= 300) {
       const message = options.httpErrorMessage?.(response, data) || errorMessage(data, `HTTP ${response.status}`);
