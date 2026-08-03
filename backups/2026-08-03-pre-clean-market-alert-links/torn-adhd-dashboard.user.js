@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.10
+// @version      1.4.9
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -3225,30 +3225,8 @@
     render({ force: true });
   }
 
-  function alertNavigationLinks(alert) {
-    return (alert.links || [{ label: 'Open', href: alert.href }]).filter((link) => link?.href);
-  }
-
   function primaryAlertLink(alert) {
-    return alertNavigationLinks(alert)[0]?.href || '';
-  }
-
-  function usesLinkedAlertTitle(alert) {
-    const id = String(alert?.id || '');
-    return id.startsWith('market:') || id.startsWith('bazaar:');
-  }
-
-  function alertTitleMarkup(alert) {
-    const title = escapeHtml(alert.title);
-    const href = usesLinkedAlertTitle(alert) ? primaryAlertLink(alert) : '';
-    return href
-      ? `<a class="alert-title-link" data-tdd-nav href="${escapeHtml(href)}">${title}</a>`
-      : title;
-  }
-
-  function alertActionLinks(alert) {
-    const links = alertNavigationLinks(alert);
-    return usesLinkedAlertTitle(alert) ? links.slice(1) : links;
+    return (alert.links || [{ href: alert.href }]).find((link) => link?.href)?.href || '';
   }
 
   function pushBrowserNotifications(alerts) {
@@ -3803,8 +3781,6 @@
         .turtle .tone { background: #ff9a3d; }
         .alert-copy { min-width: 0; }
         .alert-title { color: #f5f7f9; font-weight: 700; }
-        .alert-title-link { color: inherit; text-decoration: underline; text-decoration-color: rgba(143,208,255,.55); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-        .alert-title-link:hover, .alert-title-link:focus-visible { color: #8fd0ff; text-decoration-color: currentColor; }
         .alert-detail { margin-top: 2px; overflow: hidden; color: #aeb7c1; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
         .alert-actions { display: flex; align-items: center; gap: 4px; }
         .alert-actions a, .alert-actions button { min-width: 29px; height: 25px; padding: 3px 6px; text-align: center; text-decoration: none; }
@@ -3932,11 +3908,11 @@
                 <article class="alert ${escapeHtml(alert.tone)} ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:') ? 'market-listing-alert' : ''}">
                   <span class="tone" aria-hidden="true"></span>
                   <div class="alert-copy">
-                    <div class="alert-title">${alertTitleMarkup(alert)}</div>
+                    <div class="alert-title">${escapeHtml(alert.title)}</div>
                     <div class="alert-detail" title="${escapeHtml(alert.detail)}">${escapeHtml(alert.detail)}</div>
                   </div>
                   <div class="alert-actions">
-                    ${alertActionLinks(alert).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
+                    ${(alert.links || [{ label: 'Open', href: alert.href }]).filter((link) => link?.href).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
                     ${alert.shareText ? `
                       <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the 1.2-style listing details and link">Copy</button>
                       <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing directly to Faction Chat' : 'Copy this listing first to unlock Faction Chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to Faction</button>
