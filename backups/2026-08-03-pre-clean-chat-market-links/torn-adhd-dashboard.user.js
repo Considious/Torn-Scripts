@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.11
+// @version      1.4.10
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -2519,7 +2519,7 @@
           title: 'Points Market is below your target',
           detail: cheapest ? `Points Market listing - $${cheapest.price.toLocaleString()} per point${cheapest.amount > 0 ? ` x ${cheapest.amount.toLocaleString()} points` : ''} - target $${threshold.toLocaleString()}` : '',
           links: [{ label: 'Open Points Market', href }],
-          shareText: cheapest ? `Points Market | $${cheapest.price.toLocaleString()} per point${cheapest.amount > 0 ? ` x ${cheapest.amount.toLocaleString()} points` : ''} | target $${threshold.toLocaleString()} | ${chatAnchor(href, 'Open Points Market')}` : '',
+          shareText: cheapest ? `Points Market | $${cheapest.price.toLocaleString()} per point${cheapest.amount > 0 ? ` x ${cheapest.amount.toLocaleString()} points` : ''} | target $${threshold.toLocaleString()} | ${href}` : '',
           tone: 'urgent',
         };
       }
@@ -2535,7 +2535,7 @@
         title: `Item Market: ${name} is below your target`,
         detail: cheapest ? `Item Market listing - $${Number(cheapest.price).toLocaleString()}${Number(cheapest.amount) > 1 ? ` x ${Number(cheapest.amount).toLocaleString()}` : ''} - target $${threshold.toLocaleString()}` : '',
         links: [{ label: 'Open Item Market', href }],
-        shareText: cheapest ? `Item Market | ${escapeHtml(name)} | $${Number(cheapest.price).toLocaleString()}${Number(cheapest.amount) > 0 ? ` x ${Number(cheapest.amount).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${chatAnchor(href, 'Open Item Market')}` : '',
+        shareText: cheapest ? `Item Market | ${name} | $${Number(cheapest.price).toLocaleString()}${Number(cheapest.amount) > 0 ? ` x ${Number(cheapest.amount).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${href}` : '',
         tone: 'urgent',
       };
     });
@@ -2574,7 +2574,7 @@
               { label: `${listing.sellerName}'s Bazaar`, href: listing.href },
               { label: 'W3B', href: result?.sourceUrl || `https://weav3r.dev/item/${itemId}` },
             ],
-            shareText: `Bazaar | ${escapeHtml(name)} | $${Number(listing.price).toLocaleString()}${Number(listing.quantity) > 0 ? ` x ${Number(listing.quantity).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${chatAnchor(listing.href, `${listing.sellerName}'s Bazaar`)}`,
+            shareText: `Bazaar | ${name} | ${listing.sellerName} [${listing.sellerId}] | $${Number(listing.price).toLocaleString()}${Number(listing.quantity) > 0 ? ` x ${Number(listing.quantity).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${listing.href}`,
             tone: 'urgent',
             noDisable: true,
           };
@@ -2910,10 +2910,6 @@
 
   function escapeHtml(value) {
     return TornLib.escapeHtml(value ?? '');
-  }
-
-  function chatAnchor(href, label) {
-    return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
   }
 
   async function copyAlertText(value) {
@@ -3942,7 +3938,7 @@
                   <div class="alert-actions">
                     ${alertActionLinks(alert).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
                     ${alert.shareText ? `
-                      <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the compact listing and HTML link">Copy</button>
+                      <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the 1.2-style listing details and link">Copy</button>
                       <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing directly to Faction Chat' : 'Copy this listing first to unlock Faction Chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to Faction</button>
                     ` : ''}
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="3600000" title="Snooze 1 hour">1h</button>
