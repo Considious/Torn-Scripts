@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.13
+// @version      1.4.12
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -39,8 +39,6 @@
   const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
-  const API_TRANSITION_SETTLE_MS = 5_000;
-  const TORN_RESET_SETTLE_MS = 15_000;
   const ITEM_MARKET_CACHE_REFRESH_MS = 20_000;
   const POINTS_MARKET_REFRESH_MS = 30_000;
   const MARKET_WATCH_LIMIT = 50;
@@ -218,7 +216,6 @@
     lastCasinoUpdated: persistedChecks.lastCasinoUpdated,
     lastJobAddictionUpdated: persistedChecks.lastJobAddictionUpdated,
     lastClusterUpdated: persistedChecks.lastClusterUpdated,
-    nextApiChecks: persistedChecks.nextApiChecks,
     syncing: false,
     lastUpdated: 0,
     lastDailyUpdated: persistedChecks.lastDailyUpdated,
@@ -343,7 +340,6 @@
         lastCasinoUpdated: 0,
         lastJobAddictionUpdated: 0,
         lastClusterUpdated: 0,
-        nextApiChecks: {},
         lastUpdated: 0,
         alertSnapshot: [],
         alertSnapshotReady: false,
@@ -366,9 +362,6 @@
       lastCasinoUpdated: Number(cached.lastCasinoUpdated) || 0,
       lastJobAddictionUpdated: Number(cached.lastJobAddictionUpdated) || 0,
       lastClusterUpdated: Number(cached.lastClusterUpdated) || 0,
-      nextApiChecks: cached.nextApiChecks && typeof cached.nextApiChecks === 'object' && !Array.isArray(cached.nextApiChecks)
-        ? Object.fromEntries(Object.entries(cached.nextApiChecks).map(([key, value]) => [key, Number(value) || 0]))
-        : {},
       lastUpdated: Number(cached.lastUpdated) || Number(cached.savedAt) || 0,
       alertSnapshot: Array.isArray(cached.alertSnapshot) ? cached.alertSnapshot : [],
       alertSnapshotReady: cached.alertSnapshotReady === true,
@@ -393,7 +386,6 @@
       lastCasinoUpdated: state.lastCasinoUpdated,
       lastJobAddictionUpdated: state.lastJobAddictionUpdated,
       lastClusterUpdated: state.lastClusterUpdated,
-      nextApiChecks: state.nextApiChecks,
       lastUpdated: state.lastUpdated,
       alertSnapshot: state.alertSnapshot,
       alertSnapshotReady: state.alertSnapshotReady,
@@ -417,7 +409,6 @@
     state.lastCasinoUpdated = cached.lastCasinoUpdated;
     state.lastJobAddictionUpdated = cached.lastJobAddictionUpdated;
     state.lastClusterUpdated = cached.lastClusterUpdated;
-    state.nextApiChecks = cached.nextApiChecks;
     state.lastUpdated = cached.lastUpdated;
     state.alertSnapshot = cached.alertSnapshot;
     state.alertSnapshotReady = cached.alertSnapshotReady;
@@ -475,12 +466,12 @@
     const expired = Object.entries(state.settings.snoozedUntil)
       .filter(([, until]) => Number(until) > 0 && Number(until) <= now)
       .map(([id]) => id);
-    if (!expired.length) return [];
+    if (!expired.length) return false;
     expired.forEach((id) => delete state.settings.snoozedUntil[id]);
     saveSnoozeLedger({ replace: true });
     saveSettings();
     scheduleNextSnoozeExpiry();
-    return expired;
+    return true;
   }
 
   function visibleTornTab() {
@@ -807,67 +798,6 @@
   function dailyRefreshMs() {
     const normal = Math.max(5, Number(state.settings.apiDailyRefreshMinutes) || 10) * 60_000;
     return state.settings.slowApiMode ? normal * 3 : normal;
-  }
-
-  function nextTornResetAtMs(now = Date.now()) {
-    const date = new Date(now);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) + TORN_RESET_SETTLE_MS;
-  }
-
-  function apiCheckDueAt(key, lastUpdated, fallbackMs, now = Date.now()) {
-    const scheduled = Number(state.nextApiChecks?.[key]) || 0;
-    if (scheduled > 0) return now >= scheduled;
-    return now - (Number(lastUpdated) || 0) >= Math.max(1_000, Number(fallbackMs) || 0);
-  }
-
-  function deferApiCheck(key, nextAt) {
-    state.nextApiChecks ||= {};
-    const value = Number(nextAt);
-    state.nextApiChecks[key] = Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
-  }
-
-  function barNextApiCheckAt(bar, fetchedAt, fallbackMs) {
-    const current = Number(bar?.current);
-    const maximum = Number(bar?.maximum);
-    const fullTime = Number(bar?.full_time);
-    if (Number.isFinite(current) && Number.isFinite(maximum) && current < maximum && Number.isFinite(fullTime) && fullTime > 0) {
-      const transitionAt = fullTime > 7 * 24 * 60 * 60
-        ? fullTime * 1000
-        : fetchedAt + fullTime * 1000;
-      if (transitionAt > fetchedAt) return transitionAt + API_TRANSITION_SETTLE_MS;
-    }
-    return fetchedAt + fallbackMs;
-  }
-
-  function cooldownNextApiCheckAt(seconds, fetchedAt) {
-    const remaining = Number(seconds);
-    if (Number.isFinite(remaining) && remaining > 0) {
-      return fetchedAt + remaining * 1000 + API_TRANSITION_SETTLE_MS;
-    }
-    return fetchedAt + COOLDOWN_REFRESH_MS;
-  }
-
-  function educationNextApiCheckAt(education, fetchedAt) {
-    const until = Number(education?.current?.until) * 1000;
-    if (until > fetchedAt) return until + API_TRANSITION_SETTLE_MS;
-    return fetchedAt + EDUCATION_OC_REFRESH_MS;
-  }
-
-  function organizedCrimeNextApiCheckAt(organizedCrime, fetchedAt) {
-    if (!organizedCrime || typeof organizedCrime !== 'object' || Number(organizedCrime.code) > 0) {
-      return fetchedAt + EDUCATION_OC_REFRESH_MS;
-    }
-    const readyAt = Number(organizedCrime.ready_at) * 1000;
-    if (readyAt > fetchedAt) return readyAt + API_TRANSITION_SETTLE_MS;
-    return fetchedAt + EDUCATION_OC_REFRESH_MS;
-  }
-
-  function enabledRefillsComplete() {
-    const refills = state.data.refills?.refills;
-    const statuses = [];
-    if (alertCheckDue('energyRefill')) statuses.push(refillUsedStatus(refills, 'energy'));
-    if (alertCheckDue('nerveRefill')) statuses.push(refillUsedStatus(refills, 'nerve'));
-    return statuses.length > 0 && statuses.every((used) => used === true);
   }
 
   function countdownRemainingSeconds(seconds, fetchedAt) {
@@ -1406,7 +1336,6 @@
     delete state.data.cityItemsNow;
     delete state.data.cityItemsAtReset;
     delete state.data.refills;
-    ['refills', 'cityItems', 'playerAddiction'].forEach((key) => delete state.nextApiChecks[key]);
     invalidateAlertGroups(['cityItem', 'refills']);
     ['cityItem', 'stockBenefits', 'energyRefill', 'nerveRefill'].forEach((id) => delete state.settings.alarmHistory[id]);
     saveSettings();
@@ -2030,23 +1959,22 @@
     const selections = [];
     const apiBars = state.data.bars?.bars;
     const apiCooldowns = state.data.cooldowns?.cooldowns;
+    const drugRemaining = apiCooldownRemaining('drug');
+    const boosterRemaining = apiCooldownRemaining('booster');
     if ((alertCheckDue('energyFull') && !state.dom.bars?.energy && (energyDue || !apiBars?.energy))
       || (alertCheckDue('nerveFull') && !state.dom.bars?.nerve && (nerveDue || !apiBars?.nerve))) selections.push('bars');
-    if ((alertCheckDue('drugCooldown') && state.dom.cooldowns?.drug == null && (cooldownsDue || apiCooldowns?.drug == null))
+    if ((alertCheckDue('drugCooldown') && state.dom.cooldowns?.drug == null
+      && (apiCooldowns?.drug == null || (cooldownsDue && drugRemaining === 0)))
       || (alertCheckDue('medicalCooldown') && state.dom.cooldowns?.medical == null && (cooldownsDue || apiCooldowns?.medical == null))
-      || (alertCheckDue('boosterCooldown') && state.dom.cooldowns?.booster == null && (cooldownsDue || apiCooldowns?.booster == null))) selections.push('cooldowns');
+      || (alertCheckDue('boosterCooldown') && state.dom.cooldowns?.booster == null
+        && (apiCooldowns?.booster == null || (cooldownsDue && boosterRemaining === 0)))) selections.push('cooldowns');
     return selections;
   }
 
-  function clusterRingAlreadyAchieved() {
-    return (state.data.shoplifting?.crimes?.uniques || []).some((unique) =>
-      (unique?.rewards?.items || []).some((item) => Number(item?.id ?? item?.item_id) === 1465));
-  }
-
-  function educationOcSelectionsNeeded({ educationDue = false, organizedCrimeDue = false } = {}) {
+  function educationOcSelectionsNeeded() {
     const selections = new Set();
-    if (educationDue && alertCheckDue('education') && !state.dom.educationActive) selections.add('education');
-    if (organizedCrimeDue && alertCheckDue('organizedCrime')) { selections.add('organizedcrime'); selections.add('profile'); }
+    if (alertCheckDue('education') && !state.dom.educationActive) selections.add('education');
+    if (alertCheckDue('organizedCrime')) { selections.add('organizedcrime'); selections.add('profile'); }
     return [...selections];
   }
 
@@ -2063,8 +1991,7 @@
       render();
       return;
     }
-    const expiredSnoozes = new Set(releaseExpiredSnoozes());
-    const snoozeExpiredFor = (...ids) => ids.some((id) => expiredSnoozes.has(id));
+    const snoozeExpired = releaseExpiredSnoozes();
     if (visibleTornTab()) {
       scrapeActivePage();
       state.pageCheckPending = focusedRouteAwaitingLiveData();
@@ -2089,18 +2016,7 @@
       return;
     }
     const now = Date.now();
-    const dailySnoozeExpired = snoozeExpiredFor('energyRefill', 'nerveRefill', 'cityItem', 'playerAddiction');
-    const dailyInterval = dailyRefreshMs();
-    const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
-    const refillsDue = refillsEnabled && (force || dayChanged || snoozeExpiredFor('energyRefill', 'nerveRefill')
-      || apiCheckDueAt('refills', state.lastDailyUpdated, dailyInterval, now));
-    const cityItemsDue = alertCheckDue('cityItem') && (force || dayChanged || snoozeExpiredFor('cityItem')
-      || apiCheckDueAt('cityItems', state.lastDailyUpdated, dailyInterval, now));
-    const playerAddictionDue = alertCheckDue('playerAddiction') && state.dom.playerAddiction == null
-      && (force || dayChanged || snoozeExpiredFor('playerAddiction')
-        || apiCheckDueAt('playerAddiction', state.lastDailyUpdated, dailyInterval, now));
-    const needsDaily = force || includeDaily || dayChanged || dailySnoozeExpired
-      || refillsDue || cityItemsDue || playerAddictionDue;
+    const needsDaily = force || includeDaily || dayChanged || snoozeExpired || now - state.lastDailyUpdated >= dailyRefreshMs();
     const marketWatchesActive = activeMarketWatches();
     state.syncing = true;
     render();
@@ -2108,10 +2024,9 @@
     try {
       tasks.push((async () => {
         const fastDue = {
-          energyDue: force || snoozeExpiredFor('energyFull') || apiCheckDueAt('energy', state.lastEnergyUpdated, ENERGY_REFRESH_MS, now),
-          nerveDue: force || snoozeExpiredFor('nerveFull') || apiCheckDueAt('nerve', state.lastNerveUpdated, NERVE_REFRESH_MS, now),
-          cooldownsDue: force || snoozeExpiredFor('drugCooldown', 'medicalCooldown', 'boosterCooldown')
-            || apiCheckDueAt('cooldowns', state.lastCooldownsUpdated, COOLDOWN_REFRESH_MS, now),
+          energyDue: force || snoozeExpired || now - state.lastEnergyUpdated >= ENERGY_REFRESH_MS,
+          nerveDue: force || snoozeExpired || now - state.lastNerveUpdated >= NERVE_REFRESH_MS,
+          cooldownsDue: force || snoozeExpired || now - state.lastCooldownsUpdated >= COOLDOWN_REFRESH_MS,
         };
         const fastSelections = fastSelectionsNeeded(fastDue);
         const okay = !fastSelections.length
@@ -2122,20 +2037,8 @@
         if (fastSelections.includes('bars')) {
           if (fastDue.energyDue) state.lastEnergyUpdated = updatedAt;
           if (fastDue.nerveDue) state.lastNerveUpdated = updatedAt;
-          const bars = state.data.bars?.bars;
-          if (bars?.energy) deferApiCheck('energy', barNextApiCheckAt(bars.energy, updatedAt, ENERGY_REFRESH_MS));
-          if (bars?.nerve) deferApiCheck('nerve', barNextApiCheckAt(bars.nerve, updatedAt, NERVE_REFRESH_MS));
         }
-        if (fastSelections.includes('cooldowns') && fastDue.cooldownsDue) {
-          state.lastCooldownsUpdated = updatedAt;
-          const apiCooldowns = state.data.cooldowns?.cooldowns;
-          const nextChecks = [
-            state.settings.enabled.drugCooldown !== false ? cooldownNextApiCheckAt(apiCooldowns?.drug, updatedAt) : 0,
-            state.settings.enabled.medicalCooldown !== false ? cooldownNextApiCheckAt(apiCooldowns?.medical, updatedAt) : 0,
-            state.settings.enabled.boosterCooldown !== false ? cooldownNextApiCheckAt(apiCooldowns?.booster, updatedAt) : 0,
-          ].filter((value) => value > updatedAt);
-          deferApiCheck('cooldowns', nextChecks.length ? Math.min(...nextChecks) : updatedAt + COOLDOWN_REFRESH_MS);
-        }
+        if (fastSelections.includes('cooldowns') && fastDue.cooldownsDue) state.lastCooldownsUpdated = updatedAt;
         const groups = [];
         const apiBars = state.data.bars?.bars;
         const apiCooldowns = state.data.cooldowns?.cooldowns;
@@ -2158,7 +2061,6 @@
 
       const raceReminderDue = alertCheckDue('raceOrFly');
       const landingReminderDue = alertCheckDue('landing');
-      const raceSnoozeExpired = snoozeExpiredFor('raceOrFly', 'landing');
       if (raceReminderDue || landingReminderDue) {
         tasks.push((async () => {
           const liveRaceKnown = Boolean(state.confirmedRaceActive || state.dom.raceActive);
@@ -2198,7 +2100,7 @@
             return;
           }
 
-          if (!force && !raceSnoozeExpired && cachedCategoryComplete && now < Number(state.nextRaceTravelCheckAt || 0)) {
+          if (!force && !snoozeExpired && cachedCategoryComplete && now < Number(state.nextRaceTravelCheckAt || 0)) {
             state.raceCheckPending = false;
             state.raceCheckComplete = true;
             publishAlertGroups(['raceTravel']);
@@ -2249,13 +2151,9 @@
 
       tasks.push(refreshCrimeUniqueProgress(now, { force }));
 
-      const educationDue = alertCheckDue('education')
-        && (force || snoozeExpiredFor('education') || apiCheckDueAt('education', state.lastEducationOcUpdated, EDUCATION_OC_REFRESH_MS, now));
-      const organizedCrimeDue = alertCheckDue('organizedCrime')
-        && (force || snoozeExpiredFor('organizedCrime') || apiCheckDueAt('organizedCrime', state.lastEducationOcUpdated, EDUCATION_OC_REFRESH_MS, now));
-      const educationOcDue = educationDue || organizedCrimeDue;
+      const educationOcDue = force || snoozeExpired || now - state.lastEducationOcUpdated >= EDUCATION_OC_REFRESH_MS;
       if (educationOcDue) {
-        const selections = educationOcSelectionsNeeded({ educationDue, organizedCrimeDue });
+        const selections = educationOcSelectionsNeeded();
         if (selections.length) {
           tasks.push((async () => {
             const okay = await guardedRequest('educationOcFallback', () => api('user', {
@@ -2264,14 +2162,7 @@
               sort: 'desc',
             }, { priority: 'low' }), absorbGeneric);
             if (!okay) return;
-            const updatedAt = Date.now();
-            state.lastEducationOcUpdated = updatedAt;
-            if (selections.includes('education')) {
-              deferApiCheck('education', educationNextApiCheckAt(state.data.education?.education, updatedAt));
-            }
-            if (selections.includes('organizedcrime')) {
-              deferApiCheck('organizedCrime', organizedCrimeNextApiCheckAt(state.data.organizedCrime?.organizedCrime, updatedAt));
-            }
+            state.lastEducationOcUpdated = Date.now();
             const groups = [];
             if (state.settings.enabled.education && Object.hasOwn(state.data.education || {}, 'education')) groups.push('education');
             if (state.settings.enabled.organizedCrime
@@ -2280,7 +2171,6 @@
             publishAlertGroups(groups);
           })());
         } else {
-          if (educationDue && state.dom.educationActive) deferApiCheck('education', now + EDUCATION_OC_REFRESH_MS);
           delete state.errors.educationOcFallback;
         }
       }
@@ -2288,15 +2178,9 @@
       if (alertCheckDue('clusterRing')) {
         tasks.push((async () => {
           if (!state.data.shoplifting && state.crimeProgressPromise) await state.crimeProgressPromise;
-          if (clusterRingAlreadyAchieved()) {
-            delete state.errors.clusterRingStatus;
-            state.lastClusterUpdated = now;
-            publishAlertGroups(['clusterRing']);
-            return;
-          }
           const cachedStatusKnown = state.dom.clusterRingSignalKnown
             || Array.isArray(state.data.shopliftingStatus?.shoplifting?.jewelry_store);
-          if (!force && !snoozeExpiredFor('clusterRing') && cachedStatusKnown && state.data.shoplifting && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
+          if (!force && !snoozeExpired && cachedStatusKnown && state.data.shoplifting && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
             publishAlertGroups(['clusterRing']);
             return;
           }
@@ -2314,42 +2198,34 @@
       }
 
       const missionsDue = alertCheckDue('missions')
-        && (force || snoozeExpiredFor('missions') || scheduledTctCheckDue(state.lastMissionsUpdated, 0, 15, now));
+        && (force || snoozeExpired || scheduledTctCheckDue(state.lastMissionsUpdated, 0, 15, now));
       const casinoDue = alertCheckDue('casinoTokens')
-        && (force || snoozeExpiredFor('casinoTokens') || scheduledTctCheckDue(state.lastCasinoUpdated, 0, 15, now));
+        && (force || snoozeExpired || scheduledTctCheckDue(state.lastCasinoUpdated, 0, 15, now));
       const jobAddictionDue = alertCheckDue('jobAddiction')
-        && (force || snoozeExpiredFor('jobAddiction') || scheduledTctCheckDue(state.lastJobAddictionUpdated, 18, 15, now));
+        && (force || snoozeExpired || scheduledTctCheckDue(state.lastJobAddictionUpdated, 18, 15, now));
       const dailyTasks = [];
 
       if (needsDaily) {
-        if (refillsDue) {
+        const needsRefills = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
+        if (needsRefills) {
           dailyTasks.push((async () => {
             const okay = await guardedRequest('legacyDaily', () => apiV1('user', { selections: 'refills' }), (body) => { state.data.refills = { ...body, __fetchedAt: Date.now() }; });
-            if (!okay) return;
-            deferApiCheck('refills', enabledRefillsComplete() ? nextTornResetAtMs() : Date.now() + dailyInterval);
-            publishAlertGroups(['refills']);
+            if (okay) publishAlertGroups(['refills']);
           })());
         }
-        if (playerAddictionDue) {
+        if (alertCheckDue('playerAddiction') && state.dom.playerAddiction == null) {
           dailyTasks.push((async () => {
             const okay = await guardedRequest('playerAddiction', () => api('user/battlestats'), (body) => { state.data.battlestats = body; });
-            if (!okay) return;
-            deferApiCheck('playerAddiction', Date.now() + dailyInterval);
-            publishAlertGroups(['playerAddiction']);
+            if (okay) publishAlertGroups(['playerAddiction']);
           })());
         }
-        if (cityItemsDue) {
+        if (alertCheckDue('cityItem')) {
           dailyTasks.push((async () => {
-            const baselineKnown = numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
             const results = await Promise.all([
               guardedRequest('cityItemsNow', () => api('user/personalstats', { cat: 'trading' }), (body) => { state.data.cityItemsNow = body; }),
-              baselineKnown
-                ? Promise.resolve(true)
-                : guardedRequest('cityItemsAtReset', () => api('user/personalstats', { stat: 'cityitemsbought', timestamp: state.tornDayStart }), (body) => { state.data.cityItemsAtReset = body; }),
+              guardedRequest('cityItemsAtReset', () => api('user/personalstats', { stat: 'cityitemsbought', timestamp: state.tornDayStart }), (body) => { state.data.cityItemsAtReset = body; }),
             ]);
-            if (!results.every(Boolean)) return;
-            deferApiCheck('cityItems', cityItemsRemainingToday() === 0 ? nextTornResetAtMs() : Date.now() + dailyInterval);
-            publishAlertGroups(['cityItem']);
+            if (results.every(Boolean)) publishAlertGroups(['cityItem']);
           })());
         }
       }
@@ -2402,9 +2278,9 @@
         && Object.hasOwn(state.data.profile || {}, 'profile')) cachedDailyGroups.push('organizedCrime');
       if (!casinoDue && state.settings.enabled.casinoTokens && state.data.casino?.casino
         && (state.dom.selfExcluded || Array.isArray(state.data.icons?.icons))) cachedDailyGroups.push('casinoTokens');
-      if (!refillsDue && (state.settings.enabled.energyRefill || state.settings.enabled.nerveRefill) && state.data.refills?.refills) cachedDailyGroups.push('refills');
-      if (!cityItemsDue && state.settings.enabled.cityItem && state.data.cityItemsNow && state.data.cityItemsAtReset) cachedDailyGroups.push('cityItem');
-      if (!playerAddictionDue && state.settings.enabled.playerAddiction && (state.dom.playerAddiction != null || state.data.battlestats?.battlestats)) cachedDailyGroups.push('playerAddiction');
+      if (!needsDaily && (state.settings.enabled.energyRefill || state.settings.enabled.nerveRefill) && state.data.refills?.refills) cachedDailyGroups.push('refills');
+      if (!needsDaily && state.settings.enabled.cityItem && state.data.cityItemsNow && state.data.cityItemsAtReset) cachedDailyGroups.push('cityItem');
+      if (!needsDaily && state.settings.enabled.playerAddiction && (state.dom.playerAddiction != null || state.data.battlestats?.battlestats)) cachedDailyGroups.push('playerAddiction');
       if (!jobAddictionDue && state.settings.enabled.jobAddiction && state.data.job?.job
         && (state.data.job.job.type !== 'company' || state.data.companyEmployees?.employees)) cachedDailyGroups.push('jobAddiction');
       publishAlertGroups(cachedDailyGroups);
@@ -2731,7 +2607,8 @@
     const apiActiveRace = races.some(raceRecordActive);
     const activeRace = Boolean(state.confirmedRaceActive || state.dom.raceActive) || apiActiveRace;
     const racewayUnlocked = Boolean(state.dom.racePageLoaded) || cars.length > 0 || races.length > 0;
-    const clusterRingAchieved = clusterRingAlreadyAchieved();
+    const clusterRingAchieved = (state.data.shoplifting?.crimes?.uniques || []).some((unique) =>
+      (unique?.rewards?.items || []).some((item) => Number(item?.id ?? item?.item_id) === 1465));
     const jewelrySecurity = state.data.shopliftingStatus?.shoplifting?.jewelry_store;
     const apiClusterRingSecurityReady = Array.isArray(jewelrySecurity)
       && Boolean(jewelrySecurity[0]?.disabled)
@@ -3664,7 +3541,7 @@
               ${[5, 10, 15, 30].map((minutes) => `<option value="${minutes}" ${Number(state.settings.apiDailyRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} minutes</option>`).join('')}
             </select>
           </label>
-          <p><small>Fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Successful responses postpone the next call until their returned full-time, cooldown, education, OC, travel, race, or Torn-reset transition. Related selections are combined whenever they are due together.</small></p>
+          <p><small>Fixed API fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Related selections are combined whenever they are due together.</small></p>
           <label class="field compact-field">
             <span>Job addiction (points)</span>
             <input type="number" min="0" max="100" step="1" data-field="job-addiction-threshold" value="${escapeHtml(state.settings.jobAddictionThreshold)}">
@@ -4309,7 +4186,6 @@
       state.lastCasinoUpdated = 0;
       state.lastJobAddictionUpdated = 0;
       state.lastClusterUpdated = 0;
-      state.nextApiChecks = {};
       saveCheckCache();
     } else if (action === 'save-key') {
       const input = shadow.querySelector('[data-field="api-key"]');
@@ -4330,7 +4206,6 @@
         state.lastCasinoUpdated = 0;
         state.lastJobAddictionUpdated = 0;
         state.lastClusterUpdated = 0;
-        state.nextApiChecks = {};
         invalidateAlertSnapshot();
         saveCheckCache();
       }
