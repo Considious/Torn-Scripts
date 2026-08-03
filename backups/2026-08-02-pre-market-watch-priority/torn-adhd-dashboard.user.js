@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.7
+// @version      1.4.6
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -28,7 +28,6 @@
   const SNOOZE_STORAGE_KEY = 'tdd-snoozes-v1';
   const ITEM_CATALOG_KEY = 'tdd-item-catalog-v1';
   const BAZAAR_CACHE_KEY = 'tdd-weav3r-bazaar-cache-v1';
-  const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
@@ -40,18 +39,15 @@
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
   const ITEM_MARKET_CACHE_REFRESH_MS = 10_000;
-  const ITEM_MARKET_CACHE_SETTLE_MS = 500;
   const POINTS_MARKET_REFRESH_MS = 30_000;
-  const MARKET_WATCH_LIMIT = 50;
-  const MARKET_PRIORITY_CYCLES = Object.freeze({ high: 1, normal: 2, low: 4 });
-  const WEAV3R_PRIORITY_REFRESH_MS = Object.freeze({ high: 30_000, normal: 60_000, low: 120_000 });
-  const WEAV3R_CATEGORY_CACHE_MAX_AGE_MS = 60 * 60_000;
-  const WEAV3R_CATEGORY_MAX_PAGES = 6;
   const CITY_SHOP_TARGETS = [
     { id: 180, name: 'Bottle of Beer', label: 'Beer' },
     { id: 392, name: 'Pepper Spray', label: 'Pepper Spray' },
     { id: 731, name: 'Empty Blood Bag', label: 'Empty Blood Bags' },
   ];
+  const BAZAAR_FAST_REFRESH_MS = 5_000;
+  const BAZAAR_MEDIUM_REFRESH_MS = 30_000;
+  const BAZAAR_SLOW_REFRESH_MS = 60_000;
   const API_HARD_LIMIT = 60;
   const API_SLOW_LIMIT = 30;
   const TORN_DAY_MS = 24 * 60 * 60 * 1000;
@@ -162,12 +158,10 @@
     marketRefreshMinutes: 2,
     marketRefreshMode: 'cache-aligned',
     weav3rBazaarEnabled: false,
+    bazaarRefreshMinutes: 1,
     slowApiMode: false,
     apiPausedUntil: 0,
     marketCatalogCategory: 'All',
-    pawnShopCategory: 'Other',
-    pawnShopMarginPercent: 0,
-    pawnShopPriority: 'high',
     jobAddictionThreshold: 5,
     playerAddictionThreshold: 4,
     flashAlarm: false,
@@ -222,13 +216,7 @@
     alarmTimer: null,
     itemCatalog: loadItemCatalogCache(),
     bazaarCache: loadBazaarCache(),
-    weav3rCategoryCache: loadWeav3rCategoryCache(),
     itemCatalogLoading: false,
-    pawnShopCandidates: [],
-    pawnShopCandidateSelection: new Set(),
-    pawnShopCandidatesLoading: false,
-    pawnShopCandidatesLoadedAt: 0,
-    pawnShopStatus: '',
     marketPolling: false,
     marketRetryAt: 0,
     bazaarCalls: 0,
@@ -285,11 +273,7 @@
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
       marketWatches: Array.isArray(saved?.marketWatches)
-        ? saved.marketWatches.map((watch) => ({
-          ...watch,
-          marketType: watch?.marketType === 'points' ? 'points' : 'item',
-          priority: normalizedMarketPriority(watch?.priority),
-        }))
+        ? saved.marketWatches.map((watch) => ({ ...watch, marketType: watch?.marketType === 'points' ? 'points' : 'item' }))
         : [],
     };
   }
@@ -476,14 +460,6 @@
 
   function focusedTornPage() {
     return state.windowFocused && TornLib.isPageActive();
-  }
-
-  function loadWeav3rCategoryCache() {
-    const cached = GM_getValue(WEAV3R_CATEGORY_CACHE_KEY, {});
-    if (!cached || typeof cached !== 'object' || Array.isArray(cached)) return {};
-    return Object.fromEntries(Object.entries(cached).filter(([, result]) => (
-      Number(result?.fetchedAt) > Date.now() - 7 * TORN_DAY_MS && Array.isArray(result?.items)
-    )));
   }
 
   function ownsDashboardNetworkLease() {
@@ -725,7 +701,7 @@
           }
           if (response.status === 429) {
             const retryAfter = String(response.responseHeaders || '').match(/^retry-after:\s*(\d+)/im);
-            const error = new Error('TornW3B rate limit reached (429). Bazaar polling is temporarily backed off.');
+            const error = new Error('TornW3B rate limit reached (429). Fast Bazaar polling is temporarily backed off.');
             error.rateLimited = true;
             error.retryAfterMs = Math.max(0, Number(retryAfter?.[1]) || 0) * 1000;
             reject(error);
@@ -837,55 +813,10 @@
     return Math.max(1, Number(state.settings.marketRefreshMinutes) || 2) * 60_000;
   }
 
-  function normalizedMarketPriority(value) {
-    return Object.hasOwn(MARKET_PRIORITY_CYCLES, value) ? value : 'normal';
-  }
-
-  function marketPriorityRank(value) {
-    return { high: 0, normal: 1, low: 2 }[normalizedMarketPriority(value)];
-  }
-
-  function itemMarketCheapestPrice(result) {
-    const prices = (Array.isArray(result?.itemmarket?.listings) ? result.itemmarket.listings : [])
-      .map((listing) => Number(listing?.price))
-      .filter((price) => Number.isFinite(price) && price > 0);
-    return prices.length ? Math.min(...prices) : null;
-  }
-
-  function watchMarketPriority(watch, result = null) {
-    if (watchMarketType(watch) !== 'item') return 'normal';
-    const cheapest = itemMarketCheapestPrice(result);
-    const threshold = Number(watch?.maxPrice);
-    if (cheapest !== null && threshold > 0 && cheapest <= threshold) return 'high';
-    return normalizedMarketPriority(watch?.priority);
-  }
-
-  function groupMarketPriority(watches, result = null) {
-    return (Array.isArray(watches) ? watches : []).reduce((best, watch) => {
-      const priority = watchMarketPriority(watch, result);
-      return marketPriorityRank(priority) < marketPriorityRank(best) ? priority : best;
-    }, 'low');
-  }
-
-  function itemMarketNextCheckAt(result, priority = 'normal') {
-    const fetchedAt = Number(result?.__fetchedAt) || 0;
-    if (!fetchedAt) return 0;
-    const cycles = MARKET_PRIORITY_CYCLES[normalizedMarketPriority(priority)];
-    if (state.settings.marketRefreshMode !== 'cache-aligned') {
-      return fetchedAt + marketRefreshMs('item') * cycles;
-    }
-    const cachedAt = Number(result?.itemmarket?.cache_timestamp) * 1000;
-    const cacheDelayMs = Math.max(1, Number(result?.itemmarket?.cache_delay) || 30) * 1000;
-    const plausibleTimestamp = cachedAt > 0 && cachedAt <= fetchedAt + cacheDelayMs;
-    if (plausibleTimestamp) {
-      const nextEligibleAt = cachedAt + cacheDelayMs * cycles + ITEM_MARKET_CACHE_SETTLE_MS;
-      if (nextEligibleAt > fetchedAt + ITEM_MARKET_CACHE_SETTLE_MS) return nextEligibleAt;
-    }
-    return fetchedAt + ITEM_MARKET_CACHE_REFRESH_MS * cycles;
-  }
-
-  function weav3rRefreshMsForPriority(priority = 'normal') {
-    return WEAV3R_PRIORITY_REFRESH_MS[normalizedMarketPriority(priority)];
+  function bazaarRefreshMs(watchCount = 0) {
+    if (watchCount <= 2) return BAZAAR_FAST_REFRESH_MS;
+    if (watchCount <= 5) return BAZAAR_MEDIUM_REFRESH_MS;
+    return BAZAAR_SLOW_REFRESH_MS;
   }
 
   function watchMarketType(watch) {
@@ -928,8 +859,7 @@
     });
   }
 
-  function marketResultNextCheckAt(result, marketType = 'item', priority = 'normal') {
-    if (marketType === 'item') return itemMarketNextCheckAt(result, priority);
+  function marketResultNextCheckAt(result, marketType = 'item') {
     const stored = Number(result?.__nextCheckAt) || 0;
     if (stored > 0) return stored;
     return (Number(result?.__fetchedAt) || 0) + marketRefreshMs(marketType);
@@ -947,21 +877,12 @@
       if (!groups.has(key)) groups.set(key, { marketType, itemId, watches: [] });
       groups.get(key).watches.push(watch);
     });
-    const dueGroups = [...groups.values()].map((group) => {
-      const previous = state.data.market?.[group.watches[0].uid];
-      group.priority = group.marketType === 'item' ? groupMarketPriority(group.watches, previous) : 'normal';
-      group.nextCheckAt = marketResultNextCheckAt(previous, group.marketType, group.priority);
-      return group;
-    }).filter((group) => {
+    const dueGroups = [...groups.values()].filter((group) => {
       if (force) return true;
       if (group.marketType === 'points' && Number(state.settings.apiPausedUntil) > now) return false;
       const previous = state.data.market?.[group.watches[0].uid];
-      return !previous || now >= Math.max(state.marketRetryAt, group.nextCheckAt);
-    }).sort((left, right) => (
-      ((left.marketType === 'item' ? 0 : 1) - (right.marketType === 'item' ? 0 : 1))
-      || (marketPriorityRank(left.priority) - marketPriorityRank(right.priority))
-      || (left.nextCheckAt - right.nextCheckAt)
-    ));
+      return !previous || now >= Math.max(state.marketRetryAt, marketResultNextCheckAt(previous, group.marketType));
+    }).sort((left, right) => (left.marketType === 'item' ? 0 : 1) - (right.marketType === 'item' ? 0 : 1));
     if (!dueGroups.length) {
       if (!state.readyAlertGroups.has('market') && state.data.market) publishAlertGroups(['market']);
       return false;
@@ -970,34 +891,27 @@
     let changed = false;
     let allOkay = true;
     try {
-      for (let index = 0; index < dueGroups.length; index += 5) {
-        const batch = dueGroups.slice(index, index + 5);
-        await Promise.all(batch.map(async (group) => {
-          const previous = state.data.market?.[group.watches[0].uid];
-          const errorKey = group.marketType === 'points' ? 'market-points' : `market-item:${group.itemId}`;
-          try {
-            const body = group.marketType === 'points'
-              ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high', waitForQuota: false, maxWaitMs: 0 })
-              : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: 'high', quotaExempt: true, quotaClass: 'globally-cached-itemmarket' });
-            const fetchedAt = Date.now();
-            body.__fetchedAt = fetchedAt;
-            body.__marketType = group.marketType;
-            const nextPriority = group.marketType === 'item' ? groupMarketPriority(group.watches, body) : 'normal';
-            body.__nextCheckAt = group.marketType === 'item'
-              ? itemMarketNextCheckAt(body, nextPriority)
-              : fetchedAt + marketRefreshMs(group.marketType);
-            if (marketResultSignature(previous, group.marketType) !== marketResultSignature(body, group.marketType)) changed = true;
-            state.data.market ||= {};
-            group.watches.forEach((watch) => { state.data.market[watch.uid] = body; });
-            delete state.errors[errorKey];
-          } catch (error) {
-            if (isDashboardOwnerPause(error)) return;
-            allOkay = false;
-            state.errors[errorKey] = error?.message || (group.marketType === 'points' ? 'Torn Points Market check failed.' : 'Torn Item Market check failed.');
-          }
-        }));
-        if (index + 5 < dueGroups.length) await new Promise((resolve) => window.setTimeout(resolve, 100));
-      }
+      await Promise.all(dueGroups.map(async (group) => {
+        const previous = state.data.market?.[group.watches[0].uid];
+        const errorKey = group.marketType === 'points' ? 'market-points' : `market-item:${group.itemId}`;
+        try {
+          const body = group.marketType === 'points'
+            ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high', waitForQuota: false, maxWaitMs: 0 })
+            : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: 'high', quotaExempt: true, quotaClass: 'globally-cached-itemmarket' });
+          const fetchedAt = Date.now();
+          body.__fetchedAt = fetchedAt;
+          body.__marketType = group.marketType;
+          body.__nextCheckAt = fetchedAt + marketRefreshMs(group.marketType);
+          if (marketResultSignature(previous, group.marketType) !== marketResultSignature(body, group.marketType)) changed = true;
+          state.data.market ||= {};
+          group.watches.forEach((watch) => { state.data.market[watch.uid] = body; });
+          delete state.errors[errorKey];
+        } catch (error) {
+          if (isDashboardOwnerPause(error)) return;
+          allOkay = false;
+          state.errors[errorKey] = error?.message || (group.marketType === 'points' ? 'Torn Points Market check failed.' : 'Torn Item Market check failed.');
+        }
+      }));
       state.lastMarketUpdated = Date.now();
       state.marketRetryAt = allOkay ? 0 : Date.now() + 5_000;
       saveCheckCache();
@@ -1015,8 +929,7 @@
       const watches = activeMarketWatches();
       const dueTimes = watches.map((watch) => {
         const marketType = watchMarketType(watch);
-        const result = state.data.market?.[watch.uid];
-        const nextCheckAt = marketResultNextCheckAt(result, marketType, watchMarketPriority(watch, result));
+        const nextCheckAt = marketResultNextCheckAt(state.data.market?.[watch.uid], marketType);
         return marketType === 'points'
           ? Math.max(nextCheckAt, Number(state.settings.apiPausedUntil) || 0)
           : nextCheckAt;
@@ -1036,44 +949,13 @@
     ]));
   }
 
-  function bazaarWatchNextCheckAt(watch) {
-    const itemId = Math.trunc(Number(watch?.itemId));
-    const fetchedAt = Number(state.bazaarCache[itemId]?.fetchedAt) || 0;
-    if (!fetchedAt) return 0;
-    const marketResult = state.data.market?.[watch.uid];
-    return fetchedAt + weav3rRefreshMsForPriority(watchMarketPriority(watch, marketResult));
-  }
-
   async function refreshBazaarWatches({ force = false } = {}) {
     const watches = activeBazaarWatches();
     if (state.bazaarPolling || !ownsDashboardNetworkLease() || !state.settings.weav3rBazaarEnabled
       || state.settings.enabled.itemMarket === false || !watches.length) return false;
     const now = Date.now();
-    if (!force && now < state.bazaarBackoffUntil) {
-      if (!state.readyAlertGroups.has('bazaar')) {
-        state.data.bazaars ||= {};
-        watches.forEach((watch) => {
-          const cached = state.bazaarCache[Math.trunc(Number(watch.itemId))];
-          if (cached) state.data.bazaars[watch.uid] = cached;
-        });
-        publishAlertGroups(['bazaar']);
-      }
-      return false;
-    }
-    const groups = new Map();
-    watches.forEach((watch) => {
-      const itemId = Math.trunc(Number(watch.itemId));
-      if (!groups.has(itemId)) groups.set(itemId, []);
-      groups.get(itemId).push(watch);
-    });
-    const dueGroups = [...groups.entries()].map(([itemId, itemWatches]) => {
-      const marketResult = state.data.market?.[itemWatches[0].uid];
-      const priority = groupMarketPriority(itemWatches, marketResult);
-      const fetchedAt = Number(state.bazaarCache[itemId]?.fetchedAt) || 0;
-      return { itemId, itemWatches, priority, nextCheckAt: fetchedAt ? fetchedAt + weav3rRefreshMsForPriority(priority) : 0 };
-    }).filter((group) => force || !group.nextCheckAt || now >= group.nextCheckAt)
-      .sort((left, right) => marketPriorityRank(left.priority) - marketPriorityRank(right.priority) || left.nextCheckAt - right.nextCheckAt);
-    if (!dueGroups.length) {
+    const refreshMs = bazaarRefreshMs(watches.length);
+    if (!force && (now < state.bazaarBackoffUntil || now - state.lastBazaarUpdated < refreshMs)) {
       if (!state.readyAlertGroups.has('bazaar')) {
         state.data.bazaars ||= {};
         watches.forEach((watch) => {
@@ -1085,42 +967,43 @@
       return false;
     }
     state.bazaarPolling = true;
+    const groups = new Map();
+    watches.forEach((watch) => {
+      const itemId = Math.trunc(Number(watch.itemId));
+      if (!groups.has(itemId)) groups.set(itemId, []);
+      groups.get(itemId).push(watch);
+    });
     let changed = false;
     let allOkay = true;
     let rateLimited = false;
     try {
-      for (let index = 0; index < dueGroups.length; index += 2) {
-        const batch = dueGroups.slice(index, index + 2);
-        await Promise.all(batch.map(async ({ itemId, itemWatches }) => {
-          try {
-            const result = await weav3rBazaars(itemId);
-            const previous = state.bazaarCache[itemId];
-            if (bazaarResultSignature(previous) !== bazaarResultSignature(result)) changed = true;
-            state.data.bazaars ||= {};
-            itemWatches.forEach((watch) => { state.data.bazaars[watch.uid] = result; });
-            state.bazaarCache[itemId] = result;
-            delete state.errors[`bazaar-item:${itemId}`];
-          } catch (error) {
-            if (isDashboardOwnerPause(error)) return;
-            allOkay = false;
-            state.errors[`bazaar-item:${itemId}`] = error?.message || 'TornW3B Bazaar check failed.';
-            if (error?.rateLimited) {
-              rateLimited = true;
-              state.bazaarRateLimitStrikes += 1;
-              const exponentialDelay = Math.min(5 * 60_000, 30_000 * (2 ** (state.bazaarRateLimitStrikes - 1)));
-              state.bazaarBackoffUntil = Date.now() + Math.max(Number(error.retryAfterMs) || 0, exponentialDelay);
-            }
+      await Promise.all([...groups.entries()].map(async ([itemId, itemWatches]) => {
+        try {
+          const result = await weav3rBazaars(itemId);
+          const previous = state.bazaarCache[itemId];
+          if (bazaarResultSignature(previous) !== bazaarResultSignature(result)) changed = true;
+          state.data.bazaars ||= {};
+          itemWatches.forEach((watch) => { state.data.bazaars[watch.uid] = result; });
+          state.bazaarCache[itemId] = result;
+          delete state.errors[`bazaar-item:${itemId}`];
+        } catch (error) {
+          if (isDashboardOwnerPause(error)) return;
+          allOkay = false;
+          state.errors[`bazaar-item:${itemId}`] = error?.message || 'TornW3B Bazaar check failed.';
+          if (error?.rateLimited) {
+            rateLimited = true;
+            state.bazaarRateLimitStrikes += 1;
+            const exponentialDelay = Math.min(5 * 60_000, 30_000 * (2 ** (state.bazaarRateLimitStrikes - 1)));
+            state.bazaarBackoffUntil = Date.now() + Math.max(Number(error.retryAfterMs) || 0, exponentialDelay);
           }
-        }));
-        if (rateLimited) break;
-        if (index + 2 < dueGroups.length) await new Promise((resolve) => window.setTimeout(resolve, 150));
-      }
+        }
+      }));
       state.lastBazaarUpdated = Date.now();
       if (allOkay) {
         state.bazaarRateLimitStrikes = 0;
         state.bazaarBackoffUntil = 0;
       } else if (!rateLimited) {
-        state.bazaarBackoffUntil = Date.now() + 30_000;
+        state.bazaarBackoffUntil = Date.now() + refreshMs;
       }
       GM_setValue(BAZAAR_CACHE_KEY, state.bazaarCache);
       saveCheckCache();
@@ -1137,10 +1020,9 @@
       state.bazaarTimer = null;
       await refreshBazaarWatches();
       const watches = activeBazaarWatches();
-      const dueTimes = watches.map(bazaarWatchNextCheckAt).filter((value) => value > 0);
-      const nextDue = dueTimes.length ? Math.min(...dueTimes) : Date.now() + weav3rRefreshMsForPriority('normal');
+      const normalDelay = bazaarRefreshMs(watches.length);
       const backoffDelay = Math.max(0, state.bazaarBackoffUntil - Date.now());
-      scheduleBazaarPoll(Math.max(1_000, backoffDelay, nextDue - Date.now()));
+      scheduleBazaarPoll(Math.max(1_000, backoffDelay || normalDelay));
     }, Math.max(0, Number(delayMs) || 0));
   }
 
@@ -1166,8 +1048,6 @@
     watch.searchText = item.name;
     watch.catalogType = item.type;
     watch.marketEstimate = item.marketPrice;
-    watch.pawnSellPrice = item.sellPrice;
-    watch.vendorName = item.vendorName;
     if (previousItemId !== item.id) {
       if (state.data.market) delete state.data.market[watch.uid];
       if (state.data.bazaars) delete state.data.bazaars[watch.uid];
@@ -1199,10 +1079,6 @@
           name: String(item.name),
           type: String(item.type),
           marketPrice: Math.max(0, Math.trunc(Number(item.value?.market_price) || 0)),
-          buyPrice: Math.max(0, Math.trunc(Number(item.value?.buy_price) || 0)),
-          sellPrice: Math.max(0, Math.trunc(Number(item.value?.sell_price) || 0)),
-          vendorName: String(item.value?.vendor?.name || ''),
-          vendorCountry: String(item.value?.vendor?.country || ''),
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
       if (!items.length) throw new Error('Torn returned an empty item catalog.');
@@ -1221,91 +1097,6 @@
       state.itemCatalogLoading = false;
       render();
     }
-  }
-
-  function pawnShopWatchCapacity() {
-    return Math.max(0, MARKET_WATCH_LIMIT - state.settings.marketWatches.length);
-  }
-
-  function pawnShopThreshold(sellPrice) {
-    const margin = Math.min(99, Math.max(0, Number(state.settings.pawnShopMarginPercent) || 0));
-    return Math.max(1, Math.floor(Number(sellPrice) * (1 - margin / 100)));
-  }
-
-  async function loadPawnShopCandidates({ force = false } = {}) {
-    if (state.pawnShopCandidatesLoading) return;
-    state.pawnShopCandidatesLoading = true;
-    state.pawnShopStatus = '';
-    delete state.errors.pawnShopBuilder;
-    render();
-    try {
-      const catalogHasSellPrices = state.itemCatalog.items.some((item) => Object.hasOwn(item, 'sellPrice'));
-      if (force || !catalogHasSellPrices || !itemCatalogFresh()) await loadItemCatalog({ force: true });
-      if (!state.itemCatalog.items.length) throw new Error('Load the Torn item catalog first.');
-      const category = MARKET_ITEM_TYPE_SET.has(state.settings.pawnShopCategory) ? state.settings.pawnShopCategory : 'Other';
-      let weav3rItems = [];
-      if (state.settings.weav3rBazaarEnabled) {
-        try {
-          weav3rItems = await loadWeav3rCategoryStats(category, { force });
-        } catch (error) {
-          state.errors.pawnShopTornW3B = error?.message || 'TornW3B category enrichment failed.';
-        }
-      }
-      const weav3rById = new Map(weav3rItems.map((item) => [item.id, item]));
-      state.pawnShopCandidates = state.itemCatalog.items
-        .filter((item) => item.type === category && Number(item.sellPrice) > 0)
-        .map((item) => ({ ...item, ...(weav3rById.get(item.id) || {}), sellPrice: item.sellPrice, buyPrice: item.buyPrice, vendorName: item.vendorName, vendorCountry: item.vendorCountry }))
-        .sort((left, right) => Number(right.sellPrice) - Number(left.sellPrice) || left.name.localeCompare(right.name));
-      state.pawnShopCandidatesLoadedAt = Date.now();
-      const validIds = new Set(state.pawnShopCandidates.map((item) => item.id));
-      state.pawnShopCandidateSelection = new Set([...state.pawnShopCandidateSelection].filter((id) => validIds.has(id)));
-      state.pawnShopStatus = `${state.pawnShopCandidates.length} ${category} items have a Torn sell-back value${state.settings.weav3rBazaarEnabled ? `; ${weav3rItems.length} enriched by TornW3B` : ''}.`;
-    } catch (error) {
-      if (!isDashboardOwnerPause(error)) state.errors.pawnShopBuilder = error?.message || 'Could not build Pawn Shop candidates.';
-    } finally {
-      state.pawnShopCandidatesLoading = false;
-      render();
-    }
-  }
-
-  function selectTopPawnShopCandidates() {
-    const tracked = new Set(state.settings.marketWatches.filter((watch) => watchMarketType(watch) === 'item').map((watch) => Math.trunc(Number(watch.itemId))));
-    const capacity = pawnShopWatchCapacity();
-    state.pawnShopCandidateSelection = new Set(state.pawnShopCandidates.filter((item) => !tracked.has(item.id)).slice(0, capacity).map((item) => item.id));
-    state.pawnShopStatus = `${state.pawnShopCandidateSelection.size} candidate${state.pawnShopCandidateSelection.size === 1 ? '' : 's'} selected.`;
-  }
-
-  function addSelectedPawnShopWatches() {
-    const tracked = new Set(state.settings.marketWatches.filter((watch) => watchMarketType(watch) === 'item').map((watch) => Math.trunc(Number(watch.itemId))));
-    const selected = state.pawnShopCandidates.filter((item) => state.pawnShopCandidateSelection.has(item.id) && !tracked.has(item.id));
-    const addable = selected.slice(0, pawnShopWatchCapacity());
-    const priority = normalizedMarketPriority(state.settings.pawnShopPriority);
-    addable.forEach((item, index) => {
-      const uid = `${Date.now() + index}-${Math.random().toString(36).slice(2, 7)}`;
-      state.settings.marketWatches.push({
-        uid,
-        marketType: 'item',
-        itemId: item.id,
-        label: item.name,
-        searchText: item.name,
-        maxPrice: pawnShopThreshold(item.sellPrice),
-        priority,
-        catalogType: item.type,
-        marketEstimate: item.marketPrice,
-        pawnSellPrice: item.sellPrice,
-        pawnShopCategory: state.settings.pawnShopCategory,
-        enabled: true,
-      });
-      state.settings.enabled[`market:${uid}`] = true;
-    });
-    state.pawnShopCandidateSelection = new Set();
-    state.pawnShopStatus = addable.length
-      ? `Added ${addable.length} Pawn Shop watch${addable.length === 1 ? '' : 'es'} at ${Number(state.settings.pawnShopMarginPercent) || 0}% minimum margin.`
-      : 'No new candidates were added.';
-    state.lastMarketUpdated = 0;
-    state.lastBazaarUpdated = 0;
-    scheduleMarketPoll(0);
-    scheduleBazaarPoll(0);
   }
 
   function tornDayStartSeconds() {
@@ -3396,10 +3187,9 @@
       const type = selected?.type || watch.catalogType || '';
       const itemId = Math.trunc(Number(watch.itemId));
       const estimate = Number(selected?.marketPrice ?? watch.marketEstimate) || 0;
-      const pawnSellPrice = Number(selected?.sellPrice ?? watch.pawnSellPrice) || 0;
       const itemMeta = isPoints
         ? 'Alert when the cheapest listing reaches your maximum price per point'
-        : itemId > 0 ? `${type ? `${type} · ` : ''}ID ${itemId}${estimate ? ` · Torn value ~$${estimate.toLocaleString()}` : ''}${pawnSellPrice ? ` · sell-back $${pawnSellPrice.toLocaleString()}` : ''}` : 'Choose an item from the search results';
+        : itemId > 0 ? `${type ? `${type} · ` : ''}ID ${itemId}${estimate ? ` · Torn value ~$${estimate.toLocaleString()}` : ''}` : 'Choose an item from the search results';
       return `
       <div class="market-watch" data-market-watch="${escapeHtml(watch.uid)}">
         <input type="checkbox" data-watch-field="enabled" data-watch-uid="${escapeHtml(watch.uid)}" ${watch.enabled !== false && state.settings.enabled[`market:${watch.uid}`] !== false ? 'checked' : ''} title="Enable this watch">
@@ -3414,28 +3204,11 @@
           <small>${escapeHtml(itemMeta)}</small>
         </label>
         <input type="number" min="1" step="1" data-watch-field="maxPrice" data-watch-uid="${escapeHtml(watch.uid)}" value="${escapeHtml(watch.maxPrice || '')}" placeholder="${isPoints ? 'Max $ / point' : 'Max price'}" aria-label="${isPoints ? 'Maximum price per point' : 'Maximum item price'}">
-        <select class="market-priority-select" data-watch-field="priority" data-watch-uid="${escapeHtml(watch.uid)}" aria-label="Watch priority" title="High checks each cache turnover; Normal every second; Low every fourth" ${isPoints ? 'disabled' : ''}>
-          ${['high', 'normal', 'low'].map((priority) => `<option value="${priority}" ${normalizedMarketPriority(watch.priority) === priority ? 'selected' : ''}>${priority[0].toUpperCase()}${priority.slice(1)}</option>`).join('')}
-        </select>
         <button data-action="remove-market-watch" data-watch-uid="${escapeHtml(watch.uid)}" title="Remove watch">x</button>
       </div>
     `;
     }).join('');
     const sectionOpen = (name) => state.settings.settingsSections?.[name] ? 'open' : '';
-    const pawnTrackedIds = new Set(state.settings.marketWatches.filter((watch) => watchMarketType(watch) === 'item').map((watch) => Math.trunc(Number(watch.itemId))));
-    const pawnCapacity = pawnShopWatchCapacity();
-    const pawnRows = state.pawnShopCandidates.map((item) => {
-      const tracked = pawnTrackedIds.has(item.id);
-      const checked = state.pawnShopCandidateSelection.has(item.id);
-      const weav3r = Number(item.bazaarCount) > 0
-        ? `${Number(item.bazaarCount).toLocaleString()} bazaar${Number(item.bazaarCount) === 1 ? '' : 's'}${Number(item.bazaarAvgPrice) ? ` · avg $${Number(item.bazaarAvgPrice).toLocaleString()}` : ''}`
-        : 'No TornW3B bazaar summary';
-      return `<label class="pawn-candidate ${tracked ? 'tracked' : ''}">
-        <input type="checkbox" data-pawn-candidate-id="${item.id}" ${checked ? 'checked' : ''} ${tracked ? 'disabled' : ''}>
-        <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(`${item.type} · ID ${item.id}${tracked ? ' · already watched' : ''}`)}</small></span>
-        <span class="pawn-values"><strong>Sell $${Number(item.sellPrice).toLocaleString()}</strong><small>${escapeHtml(weav3r)}</small></span>
-      </label>`;
-    }).join('');
     const crimeProgressRows = CRIME_UNIQUE_DEFINITIONS.map((definition) => {
       const response = state.data.crimeUniques?.[definition.key]
         || (definition.key === 'shoplifting' ? state.data.shoplifting : null);
@@ -3604,50 +3377,22 @@
             <button data-action="refresh-item-catalog" ${state.itemCatalogLoading || !state.settings.apiKey ? 'disabled' : ''}>${state.itemCatalog.items.length ? 'Refresh list' : 'Load items'}</button>
           </div>
           <datalist id="tdd-market-items">${catalogOptions}</datalist>
-          <div class="market-head"><span></span><span>Market / item</span><span>Max price</span><span>Priority</span><span></span></div>
+          <div class="market-head"><span></span><span>Market / item</span><span>Max price</span><span></span></div>
           ${marketRows || '<div class="market-empty">No watched items yet.</div>'}
           <div class="market-controls">
-            <button data-action="add-market-watch" ${state.settings.marketWatches.length >= MARKET_WATCH_LIMIT ? 'disabled' : ''}>${state.settings.marketWatches.length >= MARKET_WATCH_LIMIT ? `${MARKET_WATCH_LIMIT} watch limit` : `Add watch (${state.settings.marketWatches.length}/${MARKET_WATCH_LIMIT})`}</button>
+            <button data-action="add-market-watch" ${state.settings.marketWatches.length >= 10 ? 'disabled' : ''}>${state.settings.marketWatches.length >= 10 ? '10 watch limit' : 'Add watch'}</button>
             <label>Torn market polling
               <select data-field="market-refresh-minutes">
-                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Cache-aware priorities / points 30s</option>
+                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Fast - cached items 10s / points 30s</option>
                 ${[1, 2, 5, 10].map((minutes) => `<option value="${minutes}" ${state.settings.marketRefreshMode !== 'cache-aligned' && Number(state.settings.marketRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} min</option>`).join('')}
               </select>
             </label>
           </div>
-          <p class="priority-note"><strong>Priority:</strong> High checks after every Item Market cache turnover, Normal every second, and Low every fourth. A watch at or below its alert price temporarily becomes High. Ten-second checks are only the fallback when Torn's cache timing is missing or stale.</p>
           <div class="bazaar-controls">
             <label><input type="checkbox" data-field="weav3r-bazaar-enabled" ${state.settings.weav3rBazaarEnabled ? 'checked' : ''}> Check TornW3B bazaars</label>
-            <span>High 30s · Normal 60s · Low 120s; batched with rate-limit backoff</span>
+            <span>Every 5 sec for 1â€“2 watches; slows automatically for more</span>
           </div>
           <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
-          <details class="pawn-shop-builder" data-settings-section="pawnShopBuilder" ${sectionOpen('pawnShopBuilder')}>
-            <summary>Pawn Shop / vendor-profit watch builder</summary>
-            <p>Build up to ${MARKET_WATCH_LIMIT} watches from Torn's vendor sell-back values. TornW3B category statistics are added when its checkbox above is enabled; actionable seller alerts still use each selected item's TornW3B page.</p>
-            <div class="pawn-builder-controls">
-              <label>Category
-                <select data-field="pawn-shop-category">
-                  ${MARKET_ITEM_TYPES.slice(1).map(([value, label]) => `<option value="${escapeHtml(value)}" ${state.settings.pawnShopCategory === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
-                </select>
-              </label>
-              <label>Minimum profit margin
-                <span><input type="number" min="0" max="99" step="1" data-field="pawn-shop-margin" value="${escapeHtml(state.settings.pawnShopMarginPercent)}">%</span>
-              </label>
-              <label>New-watch priority
-                <select data-field="pawn-shop-priority">
-                  ${['high', 'normal', 'low'].map((priority) => `<option value="${priority}" ${normalizedMarketPriority(state.settings.pawnShopPriority) === priority ? 'selected' : ''}>${priority[0].toUpperCase()}${priority.slice(1)}</option>`).join('')}
-                </select>
-              </label>
-            </div>
-            <div class="settings-actions pawn-actions">
-              <button data-action="load-pawn-shop-candidates" ${state.pawnShopCandidatesLoading || !state.settings.apiKey ? 'disabled' : ''}>${state.pawnShopCandidatesLoading ? 'Loading...' : state.pawnShopCandidates.length ? 'Refresh candidates' : 'Load candidates'}</button>
-              <button data-action="select-top-pawn-shop" class="subtle" ${!state.pawnShopCandidates.length || !pawnCapacity ? 'disabled' : ''}>Select top ${pawnCapacity}</button>
-              <button data-action="clear-pawn-shop-selection" class="subtle" ${!state.pawnShopCandidateSelection.size ? 'disabled' : ''}>Clear selection</button>
-              <button data-action="add-pawn-shop-watches" ${!state.pawnShopCandidateSelection.size || !pawnCapacity ? 'disabled' : ''}>Add selected (${state.pawnShopCandidateSelection.size})</button>
-            </div>
-            <p class="pawn-status">${escapeHtml(state.pawnShopStatus || `${pawnCapacity} watch slots available.`)}</p>
-            ${pawnRows ? `<div class="pawn-candidate-list">${pawnRows}</div>` : '<div class="market-empty">Load a category to review vendor-profit candidates.</div>'}
-          </details>
         </div>
         <p class="privacy"><strong>Privacy rule:</strong> Torn page content is read only while this tab is visible and the Torn browser window is focused. When visible but unfocused, scraped signals are discarded and Torn API fallback is used. Hidden tabs are paused.</p>
         ${exclusion ? `<p class="exclusion">Casino reminder paused by “${escapeHtml(exclusion.title)}”${exclusion.untilMs ? ` until ${new Date(exclusion.untilMs).toLocaleString()}` : ''}.</p>` : ''}
@@ -3815,7 +3560,7 @@
         .crime-toggles label { display: flex; align-items: center; gap: 5px; }
         .crime-unique-settings ul { margin: 5px 0; padding-left: 18px; }
         .crime-unique-settings small { color: #98a2aa; }
-        .alarm-settings select, .landing-alarm-settings select, .turtle-alarm-settings select, .market-controls select, .catalog-controls select, .bazaar-controls select, .pawn-builder-controls select, .pawn-builder-controls input { padding: 3px 5px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #f1f4f6; background: #111418; }
+        .alarm-settings select, .landing-alarm-settings select, .turtle-alarm-settings select, .market-controls select, .catalog-controls select, .bazaar-controls select { padding: 3px 5px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #f1f4f6; background: #111418; }
         .market-settings { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.1); }
         .section-title { color: #eef2f5; font-weight: 750; }
         .market-settings > p { margin: 3px 0 9px; color: #929da7; font-size: 11px; }
@@ -3823,7 +3568,7 @@
         .catalog-controls label { display: flex; align-items: center; gap: 5px; }
         .catalog-controls span { flex: 1; text-align: right; }
         .catalog-controls button { padding: 4px 7px; }
-        .market-head, .market-watch { display: grid; grid-template-columns: 22px minmax(170px,1fr) 105px 84px 28px; gap: 5px; align-items: center; }
+        .market-head, .market-watch { display: grid; grid-template-columns: 22px minmax(170px,1fr) 105px 28px; gap: 5px; align-items: center; }
         .market-head { margin-bottom: 3px; color: #87919a; font-size: 10px; }
         .market-watch { margin-bottom: 5px; }
         .market-watch input[type="text"], .market-watch input[type="number"], .market-watch select { min-width: 0; width: 100%; padding: 5px 6px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; color: #eef2f5; background: #111418; }
@@ -3835,32 +3580,14 @@
         .market-empty { padding: 6px 0; color: #8f99a2; font-size: 11px; }
         .market-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: #aeb7c1; font-size: 11px; }
         .market-controls button { padding: 5px 9px; }
-        .priority-note { margin: 7px 0 0; color: #98a4ae; font-size: 10px; line-height: 1.4; }
         .bazaar-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; padding: 8px; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; color: #cbd2d8; background: #272c32; font-size: 11px; }
         .bazaar-controls label { display: flex; align-items: center; gap: 5px; }
         .market-settings .third-party-note { margin-top: 6px; color: #89949e; }
-        .pawn-shop-builder { margin-top: 10px; padding: 8px; border: 1px solid rgba(101,214,155,.22); border-radius: 7px; color: #cbd2d8; background: #202a26; }
-        .pawn-shop-builder > summary { cursor: pointer; color: #dff7ea; font-weight: 750; }
-        .pawn-shop-builder > p { margin: 7px 0; color: #9ba9a2; font-size: 10px; line-height: 1.4; }
-        .pawn-builder-controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; margin: 9px 0; }
-        .pawn-builder-controls label { display: grid; gap: 3px; color: #aeb8b2; font-size: 10px; }
-        .pawn-builder-controls label > span { display: flex; align-items: center; gap: 3px; }
-        .pawn-builder-controls input { min-width: 0; width: 100%; }
-        .pawn-actions { margin-bottom: 7px; }
-        .pawn-status { color: #b9cec2 !important; }
-        .pawn-candidate-list { max-height: 320px; overflow: auto; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; background: rgba(0,0,0,.13); }
-        .pawn-candidate { display: grid; grid-template-columns: 20px minmax(150px,1fr) minmax(135px,.8fr); gap: 6px; align-items: center; padding: 6px 7px; border-bottom: 1px solid rgba(255,255,255,.07); cursor: pointer; }
-        .pawn-candidate:last-child { border-bottom: 0; }
-        .pawn-candidate.tracked { opacity: .55; cursor: default; }
-        .pawn-candidate span { min-width: 0; }
-        .pawn-candidate strong, .pawn-candidate small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .pawn-candidate small { margin-top: 2px; color: #86948c; font-size: 9px; }
-        .pawn-values { text-align: right; }
         .privacy, .exclusion { margin: 12px 0 0; padding: 8px; border-radius: 7px; color: #aeb8c1; background: #272c32; font-size: 11px; }
         .exclusion { color: #d7c994; }
         details { margin-top: 10px; color: #dbb184; font-size: 11px; }
         details ul { margin: 6px 0 0; padding-left: 18px; }
-        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
+        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(120px,1fr) 90px 28px; } }
       </style>
       <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
@@ -4072,21 +3799,11 @@
       removeSnoozesWhere((id) => id === 'turtle');
       delete state.errors.turtleTimer;
     } else if (action === 'add-market-watch') {
-      if (state.settings.marketWatches.length >= MARKET_WATCH_LIMIT) return;
+      if (state.settings.marketWatches.length >= 10) return;
       const uid = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      state.settings.marketWatches.push({ uid, marketType: 'item', itemId: '', label: '', searchText: '', maxPrice: '', priority: 'normal', enabled: true });
+      state.settings.marketWatches.push({ uid, marketType: 'item', itemId: '', label: '', searchText: '', maxPrice: '', enabled: true });
       state.settings.enabled[`market:${uid}`] = true;
       if (!itemCatalogFresh()) loadItemCatalog();
-    } else if (action === 'load-pawn-shop-candidates') {
-      loadPawnShopCandidates({ force: state.pawnShopCandidates.length > 0 });
-      return;
-    } else if (action === 'select-top-pawn-shop') {
-      selectTopPawnShopCandidates();
-    } else if (action === 'clear-pawn-shop-selection') {
-      state.pawnShopCandidateSelection = new Set();
-      state.pawnShopStatus = 'Selection cleared.';
-    } else if (action === 'add-pawn-shop-watches') {
-      addSelectedPawnShopWatches();
     } else if (action === 'refresh-item-catalog') {
       loadItemCatalog({ force: true });
       return;
@@ -4245,15 +3962,6 @@
       scheduleBazaarPoll(0);
     } else if (event.target.matches('[data-field="market-catalog-category"]')) {
       state.settings.marketCatalogCategory = event.target.value;
-    } else if (event.target.matches('[data-field="pawn-shop-category"]')) {
-      state.settings.pawnShopCategory = MARKET_ITEM_TYPE_SET.has(event.target.value) ? event.target.value : 'Other';
-      state.pawnShopCandidates = [];
-      state.pawnShopCandidateSelection = new Set();
-      state.pawnShopStatus = 'Category changed. Load candidates to rebuild the list.';
-    } else if (event.target.matches('[data-field="pawn-shop-margin"]')) {
-      state.settings.pawnShopMarginPercent = Math.min(99, Math.max(0, Number(event.target.value) || 0));
-    } else if (event.target.matches('[data-field="pawn-shop-priority"]')) {
-      state.settings.pawnShopPriority = normalizedMarketPriority(event.target.value);
     } else if (event.target.matches('[data-field="job-addiction-threshold"]')) {
       state.settings.jobAddictionThreshold = Number(event.target.value);
     } else if (event.target.matches('[data-field="player-addiction-threshold"]')) {
@@ -4308,14 +4016,6 @@
     } else if (event.target.matches('[data-field="turtle-alarm-minutes"]')) {
       state.settings.turtleAlarmIntervalMinutes = Number(event.target.value);
       delete state.settings.alarmHistory.turtle;
-    } else if (event.target.matches('[data-pawn-candidate-id]')) {
-      const itemId = Math.trunc(Number(event.target.dataset.pawnCandidateId));
-      if (event.target.checked) {
-        if (state.pawnShopCandidateSelection.size < pawnShopWatchCapacity()) state.pawnShopCandidateSelection.add(itemId);
-      } else {
-        state.pawnShopCandidateSelection.delete(itemId);
-      }
-      state.pawnShopStatus = `${state.pawnShopCandidateSelection.size} candidate${state.pawnShopCandidateSelection.size === 1 ? '' : 's'} selected.`;
     } else if (event.target.matches('[data-watch-field]')) {
       const watch = state.settings.marketWatches.find((item) => item.uid === event.target.dataset.watchUid);
       if (!watch) return;
@@ -4333,10 +4033,7 @@
           watch.searchText = '';
           watch.catalogType = '';
           watch.marketEstimate = 0;
-          watch.priority = 'normal';
         }
-      } else if (field === 'priority') {
-        watch.priority = normalizedMarketPriority(event.target.value);
       } else {
         watch[field] = event.target.value;
       }
@@ -4376,7 +4073,7 @@
     if (match) {
       selectCatalogItem(watch, match);
       const meta = input.closest('[data-market-watch]')?.querySelector('.market-item-search small');
-      if (meta) meta.textContent = `${match.type} - ID ${match.id}${Number(match.marketPrice) ? ` - Torn value ~$${Number(match.marketPrice).toLocaleString()}` : ''}${Number(match.sellPrice) ? ` - sell-back $${Number(match.sellPrice).toLocaleString()}` : ''}`;
+      if (meta) meta.textContent = `${match.type} - ID ${match.id}${Number(match.marketPrice) ? ` - Torn value ~$${Number(match.marketPrice).toLocaleString()}` : ''}`;
       saveSettings();
       return;
     }
@@ -4651,81 +4348,6 @@
       if (!remote || ownsDashboardNetworkLease()) return;
       state.bazaarCache = loadBazaarCache();
     });
-    GM_addValueChangeListener(WEAV3R_CATEGORY_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote || ownsDashboardNetworkLease()) return;
-      state.weav3rCategoryCache = loadWeav3rCategoryCache();
-    });
-  }
-
-  function weav3rCategoryPage(category, pageNumber) {
-    return new Promise((resolve, reject) => {
-      if (!ownsDashboardNetworkLease()) {
-        reject(dashboardOwnerPauseError());
-        return;
-      }
-      const url = `https://weav3r.dev/api/categories/items?cat=${encodeURIComponent(category)}&page=${Math.max(1, Math.trunc(Number(pageNumber) || 1))}&sort=marketPrice&dir=desc`;
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url,
-        headers: { Accept: 'application/json' },
-        timeout: 20_000,
-        onload(response) {
-          if (!ownsDashboardNetworkLease()) {
-            reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
-            return;
-          }
-          if (response.status === 429) {
-            const retryAfter = String(response.responseHeaders || '').match(/^retry-after:\s*(\d+)/im);
-            const error = new Error('TornW3B category rate limit reached (429). Try loading the category again later.');
-            error.rateLimited = true;
-            error.retryAfterMs = Math.max(0, Number(retryAfter?.[1]) || 0) * 1000;
-            reject(error);
-            return;
-          }
-          if (response.status < 200 || response.status >= 300) {
-            reject(new Error(`TornW3B category request failed (${response.status}).`));
-            return;
-          }
-          try {
-            const rows = JSON.parse(response.responseText);
-            if (!Array.isArray(rows)) throw new Error('unexpected response format');
-            resolve(rows.map((item) => ({
-              id: Math.trunc(Number(item?.id)),
-              name: String(item?.name || ''),
-              type: String(item?.type || category),
-              marketPrice: Math.max(0, Math.trunc(Number(item?.marketPrice) || 0)),
-              bazaarAvgPrice: Math.max(0, Math.trunc(Number(item?.bazaarAvgPrice) || 0)),
-              bazaarCount: Math.max(0, Math.trunc(Number(item?.bazaarCount) || 0)),
-              circulation: Math.max(0, Math.trunc(Number(item?.circulation) || 0)),
-            })).filter((item) => item.id > 0 && item.name));
-          } catch (error) {
-            reject(new Error(`Could not read TornW3B category data: ${error?.message || 'unknown format'}`));
-          }
-        },
-        onerror: () => reject(new Error('Could not reach TornW3B for category data.')),
-        ontimeout: () => reject(new Error('The TornW3B category request timed out.')),
-      });
-      state.bazaarCalls += 1;
-    });
-  }
-
-  async function loadWeav3rCategoryStats(category, { force = false } = {}) {
-    const normalizedCategory = MARKET_ITEM_TYPE_SET.has(category) ? category : 'Other';
-    const cached = state.weav3rCategoryCache[normalizedCategory];
-    if (!force && Number(cached?.fetchedAt) > Date.now() - WEAV3R_CATEGORY_CACHE_MAX_AGE_MS && Array.isArray(cached?.items)) {
-      return cached.items;
-    }
-    const items = [];
-    for (let page = 1; page <= WEAV3R_CATEGORY_MAX_PAGES; page += 1) {
-      const rows = await weav3rCategoryPage(normalizedCategory, page);
-      items.push(...rows);
-      if (rows.length < 50) break;
-      await new Promise((resolve) => window.setTimeout(resolve, 150));
-    }
-    const uniqueItems = [...new Map(items.map((item) => [item.id, item])).values()];
-    state.weav3rCategoryCache[normalizedCategory] = { fetchedAt: Date.now(), items: uniqueItems };
-    GM_setValue(WEAV3R_CATEGORY_CACHE_KEY, state.weav3rCategoryCache);
-    return uniqueItems;
   }
 
   window.addEventListener('beforeunload', () => {
