@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.9
+// @version      1.4.8
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -75,12 +75,6 @@
     ['Other', 'Misc'],
   ];
   const MARKET_ITEM_TYPE_SET = new Set(MARKET_ITEM_TYPES.slice(1).map(([type]) => type));
-  const TRAVEL_CONTRABAND_NAMES = new Set([
-    'Obsidian Point', 'Bearer Bond', 'Insulin', 'Bear Gall', 'Quartz Point', 'Shark Fin', 'Turtle Shell', 'Basalt Point',
-    'Chert Point', 'Patagonian Fossil', 'Meteorite Fragment', 'Chalcedony Point', 'Ephedrine Powder', 'Safrole Oil',
-    'Ergotamine Ampoule', 'Counterfeit Manga', 'Whale Meat', 'Tiger Bone Powder', 'Pangolin Scales', 'Ambergris Lump',
-    'Natural Pearls', 'Uncut Diamonds', 'Quartzite Point',
-  ]);
   const PICKPOCKET_COLORS = {
     ideal: '#40ab24', easy: '#82c370', tooEasy: '#a4d497', tooHard: '#fa8e8e', uncategorized: '#da85ff',
   };
@@ -171,6 +165,7 @@
     slowApiMode: false,
     apiPausedUntil: 0,
     marketCatalogCategory: 'All',
+    pawnShopCategory: 'Other',
     pawnShopMarginPercent: 0,
     pawnShopPriority: 'high',
     jobAddictionThreshold: 5,
@@ -711,17 +706,6 @@
     }), { method: 'GET', url: url.toString() });
   }
 
-  function highlightedBazaarHref(sellerId, itemId, price, lastUpdatedAt = 0) {
-    const url = new URL('https://www.torn.com/bazaar.php');
-    url.searchParams.set('userId', String(Math.trunc(Number(sellerId))));
-    url.searchParams.set('itemId', String(Math.trunc(Number(itemId))));
-    url.searchParams.set('price', String(Math.trunc(Number(price))));
-    url.searchParams.set('highlight', '1');
-    if (Number(lastUpdatedAt) > 0) url.searchParams.set('v', String(Math.trunc(Number(lastUpdatedAt) / 1000)));
-    url.hash = '/';
-    return url.toString();
-  }
-
   function weav3rBazaars(itemId) {
     return new Promise((resolve, reject) => {
       if (!ownsDashboardNetworkLease()) {
@@ -769,14 +753,13 @@
               const priceMatch = String(cells[2]?.textContent || '').match(/\$\s*([\d,]+)/);
               const price = Number(String(priceMatch?.[1] || '').replaceAll(',', ''));
               if (!sellerId || !Number.isFinite(price) || price <= 0) return null;
-              const lastUpdatedAt = freshnessBySeller.get(sellerId) || null;
               return {
                 sellerId,
                 sellerName,
                 quantity: Number.isFinite(quantity) ? quantity : 0,
                 price,
-                href: highlightedBazaarHref(sellerId, itemId, price, lastUpdatedAt),
-                lastUpdatedAt,
+                href: `https://www.torn.com/bazaar.php?userId=${sellerId}`,
+                lastUpdatedAt: freshnessBySeller.get(sellerId) || null,
               };
             }).filter(Boolean);
             resolve({ listings, sourceUrl: url, fetchedAt: Date.now() });
@@ -1259,27 +1242,24 @@
       const catalogHasSellPrices = state.itemCatalog.items.some((item) => Object.hasOwn(item, 'sellPrice'));
       if (force || !catalogHasSellPrices || !itemCatalogFresh()) await loadItemCatalog({ force: true });
       if (!state.itemCatalog.items.length) throw new Error('Load the Torn item catalog first.');
-      const tornCandidates = state.itemCatalog.items
-        .filter((item) => TRAVEL_CONTRABAND_NAMES.has(item.name) && Number(item.sellPrice) > 0);
+      const category = MARKET_ITEM_TYPE_SET.has(state.settings.pawnShopCategory) ? state.settings.pawnShopCategory : 'Other';
       let weav3rItems = [];
       if (state.settings.weav3rBazaarEnabled) {
         try {
-          const categories = [...new Set(tornCandidates.map((item) => item.type))];
-          for (const category of categories) {
-            weav3rItems.push(...await loadWeav3rCategoryStats(category, { force }));
-          }
+          weav3rItems = await loadWeav3rCategoryStats(category, { force });
         } catch (error) {
           state.errors.pawnShopTornW3B = error?.message || 'TornW3B category enrichment failed.';
         }
       }
       const weav3rById = new Map(weav3rItems.map((item) => [item.id, item]));
-      state.pawnShopCandidates = tornCandidates
+      state.pawnShopCandidates = state.itemCatalog.items
+        .filter((item) => item.type === category && Number(item.sellPrice) > 0)
         .map((item) => ({ ...item, ...(weav3rById.get(item.id) || {}), sellPrice: item.sellPrice, buyPrice: item.buyPrice, vendorName: item.vendorName, vendorCountry: item.vendorCountry }))
         .sort((left, right) => Number(right.sellPrice) - Number(left.sellPrice) || left.name.localeCompare(right.name));
       state.pawnShopCandidatesLoadedAt = Date.now();
       const validIds = new Set(state.pawnShopCandidates.map((item) => item.id));
       state.pawnShopCandidateSelection = new Set([...state.pawnShopCandidateSelection].filter((id) => validIds.has(id)));
-      state.pawnShopStatus = `${state.pawnShopCandidates.length} official travel-contraband items currently have a Torn city-shop sell-back value${state.settings.weav3rBazaarEnabled ? `; ${state.pawnShopCandidates.filter((item) => weav3rById.has(item.id)).length} enriched by TornW3B` : ''}.`;
+      state.pawnShopStatus = `${state.pawnShopCandidates.length} ${category} items have a Torn sell-back value${state.settings.weav3rBazaarEnabled ? `; ${weav3rItems.length} enriched by TornW3B` : ''}.`;
     } catch (error) {
       if (!isDashboardOwnerPause(error)) state.errors.pawnShopBuilder = error?.message || 'Could not build Pawn Shop candidates.';
     } finally {
@@ -1313,7 +1293,7 @@
         catalogType: item.type,
         marketEstimate: item.marketPrice,
         pawnSellPrice: item.sellPrice,
-        pawnShopCategory: 'Travel Contraband',
+        pawnShopCategory: state.settings.pawnShopCategory,
         enabled: true,
       });
       state.settings.enabled[`market:${uid}`] = true;
@@ -3450,10 +3430,9 @@
       const weav3r = Number(item.bazaarCount) > 0
         ? `${Number(item.bazaarCount).toLocaleString()} bazaar${Number(item.bazaarCount) === 1 ? '' : 's'}${Number(item.bazaarAvgPrice) ? ` · avg $${Number(item.bazaarAvgPrice).toLocaleString()}` : ''}`
         : 'No TornW3B bazaar summary';
-      const vendor = [item.vendorName, item.vendorCountry].filter(Boolean).join(' · ');
       return `<label class="pawn-candidate ${tracked ? 'tracked' : ''}">
         <input type="checkbox" data-pawn-candidate-id="${item.id}" ${checked ? 'checked' : ''} ${tracked ? 'disabled' : ''}>
-        <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(`${item.type} · ID ${item.id}${vendor ? ` · ${vendor}` : ''}${tracked ? ' · already watched' : ''}`)}</small></span>
+        <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(`${item.type} · ID ${item.id}${tracked ? ' · already watched' : ''}`)}</small></span>
         <span class="pawn-values"><strong>Sell $${Number(item.sellPrice).toLocaleString()}</strong><small>${escapeHtml(weav3r)}</small></span>
       </label>`;
     }).join('');
@@ -3643,9 +3622,14 @@
           </div>
           <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
           <details class="pawn-shop-builder" data-settings-section="pawnShopBuilder" ${sectionOpen('pawnShopBuilder')}>
-            <summary>Travel contraband / city-shop profit builder</summary>
-            <p>Build up to ${MARKET_WATCH_LIMIT} watches from Torn's official 23 travel-contraband items, limited to goods that currently have a city-shop sell-back value. This includes Insulin, Bear Gall, Shark Fin, Turtle Shell, Pangolin Scales, Tiger Bone Powder, and the other recent imports. TornW3B statistics are added when its checkbox above is enabled.</p>
+            <summary>Pawn Shop / vendor-profit watch builder</summary>
+            <p>Build up to ${MARKET_WATCH_LIMIT} watches from Torn's vendor sell-back values. TornW3B category statistics are added when its checkbox above is enabled; actionable seller alerts still use each selected item's TornW3B page.</p>
             <div class="pawn-builder-controls">
+              <label>Category
+                <select data-field="pawn-shop-category">
+                  ${MARKET_ITEM_TYPES.slice(1).map(([value, label]) => `<option value="${escapeHtml(value)}" ${state.settings.pawnShopCategory === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+                </select>
+              </label>
               <label>Minimum profit margin
                 <span><input type="number" min="0" max="99" step="1" data-field="pawn-shop-margin" value="${escapeHtml(state.settings.pawnShopMarginPercent)}">%</span>
               </label>
@@ -3662,7 +3646,7 @@
               <button data-action="add-pawn-shop-watches" ${!state.pawnShopCandidateSelection.size || !pawnCapacity ? 'disabled' : ''}>Add selected (${state.pawnShopCandidateSelection.size})</button>
             </div>
             <p class="pawn-status">${escapeHtml(state.pawnShopStatus || `${pawnCapacity} watch slots available.`)}</p>
-            ${pawnRows ? `<div class="pawn-candidate-list">${pawnRows}</div>` : '<div class="market-empty">Load the current travel-contraband list to review city-shop profit candidates.</div>'}
+            ${pawnRows ? `<div class="pawn-candidate-list">${pawnRows}</div>` : '<div class="market-empty">Load a category to review vendor-profit candidates.</div>'}
           </details>
         </div>
         <p class="privacy"><strong>Privacy rule:</strong> Torn page content is read only while this tab is visible and the Torn browser window is focused. When visible but unfocused, scraped signals are discarded and Torn API fallback is used. Hidden tabs are paused.</p>
@@ -3865,7 +3849,7 @@
         .pawn-shop-builder { margin-top: 10px; padding: 8px; border: 1px solid rgba(101,214,155,.22); border-radius: 7px; color: #cbd2d8; background: #202a26; }
         .pawn-shop-builder > summary { cursor: pointer; color: #dff7ea; font-weight: 750; }
         .pawn-shop-builder > p { margin: 7px 0; color: #9ba9a2; font-size: 10px; line-height: 1.4; }
-        .pawn-builder-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 9px 0; }
+        .pawn-builder-controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; margin: 9px 0; }
         .pawn-builder-controls label { display: grid; gap: 3px; color: #aeb8b2; font-size: 10px; }
         .pawn-builder-controls label > span { display: flex; align-items: center; gap: 3px; }
         .pawn-builder-controls input { min-width: 0; width: 100%; }
@@ -4269,6 +4253,11 @@
       scheduleBazaarPoll(0);
     } else if (event.target.matches('[data-field="market-catalog-category"]')) {
       state.settings.marketCatalogCategory = event.target.value;
+    } else if (event.target.matches('[data-field="pawn-shop-category"]')) {
+      state.settings.pawnShopCategory = MARKET_ITEM_TYPE_SET.has(event.target.value) ? event.target.value : 'Other';
+      state.pawnShopCandidates = [];
+      state.pawnShopCandidateSelection = new Set();
+      state.pawnShopStatus = 'Category changed. Load candidates to rebuild the list.';
     } else if (event.target.matches('[data-field="pawn-shop-margin"]')) {
       state.settings.pawnShopMarginPercent = Math.min(99, Math.max(0, Number(event.target.value) || 0));
     } else if (event.target.matches('[data-field="pawn-shop-priority"]')) {
