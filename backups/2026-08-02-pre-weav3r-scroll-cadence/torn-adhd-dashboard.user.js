@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.8
+// @version      1.4.7
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -44,7 +44,7 @@
   const POINTS_MARKET_REFRESH_MS = 30_000;
   const MARKET_WATCH_LIMIT = 50;
   const MARKET_PRIORITY_CYCLES = Object.freeze({ high: 1, normal: 2, low: 4 });
-  const WEAV3R_PRIORITY_REFRESH_MS = Object.freeze({ high: 10_000, normal: 30_000, low: 60_000 });
+  const WEAV3R_PRIORITY_REFRESH_MS = Object.freeze({ high: 30_000, normal: 60_000, low: 120_000 });
   const WEAV3R_CATEGORY_CACHE_MAX_AGE_MS = 60 * 60_000;
   const WEAV3R_CATEGORY_MAX_PAGES = 6;
   const CITY_SHOP_TARGETS = [
@@ -1089,8 +1089,8 @@
     let allOkay = true;
     let rateLimited = false;
     try {
-      for (let index = 0; index < dueGroups.length; index += 4) {
-        const batch = dueGroups.slice(index, index + 4);
+      for (let index = 0; index < dueGroups.length; index += 2) {
+        const batch = dueGroups.slice(index, index + 2);
         await Promise.all(batch.map(async ({ itemId, itemWatches }) => {
           try {
             const result = await weav3rBazaars(itemId);
@@ -1113,7 +1113,7 @@
           }
         }));
         if (rateLimited) break;
-        if (index + 4 < dueGroups.length) await new Promise((resolve) => window.setTimeout(resolve, 100));
+        if (index + 2 < dueGroups.length) await new Promise((resolve) => window.setTimeout(resolve, 150));
       }
       state.lastBazaarUpdated = Date.now();
       if (allOkay) {
@@ -3618,7 +3618,7 @@
           <p class="priority-note"><strong>Priority:</strong> High checks after every Item Market cache turnover, Normal every second, and Low every fourth. A watch at or below its alert price temporarily becomes High. Ten-second checks are only the fallback when Torn's cache timing is missing or stale.</p>
           <div class="bazaar-controls">
             <label><input type="checkbox" data-field="weav3r-bazaar-enabled" ${state.settings.weav3rBazaarEnabled ? 'checked' : ''}> Check TornW3B bazaars</label>
-            <span>High 10s · Normal 30s · Low 60s; four at a time with rate-limit backoff</span>
+            <span>High 30s · Normal 60s · Low 120s; batched with rate-limit backoff</span>
           </div>
           <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
           <details class="pawn-shop-builder" data-settings-section="pawnShopBuilder" ${sectionOpen('pawnShopBuilder')}>
@@ -3679,11 +3679,10 @@
     }
     state.renderPending = false;
     const previousBody = shadow.querySelector('.body');
-    const previousPawnList = shadow.querySelector('.pawn-candidate-list');
     const previousScrollTop = previousBody?.scrollTop || 0;
     const previousScrollLeft = previousBody?.scrollLeft || 0;
-    const previousPawnScrollTop = previousPawnList?.scrollTop || 0;
-    const previousPawnScrollLeft = previousPawnList?.scrollLeft || 0;
+    const previousPageX = window.scrollX;
+    const previousPageY = window.scrollY;
     applyPosition();
     const allAlerts = publishedAlerts();
     const alerts = allAlerts.filter(alertVisible);
@@ -3719,7 +3718,7 @@
 
     shadow.innerHTML = `
       <style>
-        :host { all: initial; color-scheme: dark; overflow-anchor: none; }
+        :host { all: initial; color-scheme: dark; }
         * { box-sizing: border-box; }
         .panel { width: min(500px, var(--panel-max-width)); min-width: var(--panel-min-width); min-height: var(--panel-min-height); max-width: var(--panel-max-width); max-height: var(--panel-max-height); display: flex; flex-direction: column; overflow: hidden; resize: both; color: #edf1f5; background: rgba(22, 25, 29, .97); border: 1px solid rgba(255,255,255,.14); border-radius: 0 0 12px 12px; box-shadow: 0 12px 35px rgba(0,0,0,.45); font: 13px/1.35 system-ui, -apple-system, Segoe UI, sans-serif; backdrop-filter: blur(12px); }
         .panel.collapsed { min-height: 39px; height: auto !important; resize: horizontal; }
@@ -3747,7 +3746,7 @@
         button:hover { background: #414955; }
         button:disabled { cursor: not-allowed; opacity: .55; }
         .icon-button { width: 28px; height: 26px; padding: 0; font-size: 15px; }
-        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; overflow-anchor: none; }
+        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; }
         .panel.user-sized .body { flex: 1 1 auto; max-height: none; }
         .status { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px; color: #aeb7c1; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; }
         .status span { flex: 1; }
@@ -3770,12 +3769,6 @@
         .alert-actions a, .alert-actions button { min-width: 29px; height: 25px; padding: 3px 6px; text-align: center; text-decoration: none; }
         .alert-actions a { border: 1px solid rgba(255,255,255,.14); border-radius: 7px; color: #fff; background: #3e6b8f; font: 700 11px/17px system-ui, sans-serif; }
         .alert-actions button { color: #c9d0d7; font-size: 10px; }
-        .market-listing-alert { min-height: 78px; grid-template-columns: 8px minmax(0,1fr); grid-template-rows: auto auto; align-items: stretch; }
-        .market-listing-alert .tone { grid-row: 1 / span 2; height: auto; min-height: 58px; align-self: stretch; }
-        .market-listing-alert .alert-copy { align-self: start; }
-        .market-listing-alert .alert-title { overflow-wrap: anywhere; }
-        .market-listing-alert .alert-detail { display: -webkit-box; overflow: hidden; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-        .market-listing-alert .alert-actions { grid-column: 2; flex-wrap: wrap; justify-content: flex-start; align-self: end; }
         .settings { padding: 12px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1d2126; }
         .field { display: grid; gap: 5px; margin-bottom: 10px; color: #d9dfe4; }
         .field small { color: #8f9aa5; font-weight: 400; }
@@ -3855,7 +3848,7 @@
         .pawn-builder-controls input { min-width: 0; width: 100%; }
         .pawn-actions { margin-bottom: 7px; }
         .pawn-status { color: #b9cec2 !important; }
-        .pawn-candidate-list { max-height: 320px; overflow: auto; overflow-anchor: none; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; background: rgba(0,0,0,.13); }
+        .pawn-candidate-list { max-height: 320px; overflow: auto; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; background: rgba(0,0,0,.13); }
         .pawn-candidate { display: grid; grid-template-columns: 20px minmax(150px,1fr) minmax(135px,.8fr); gap: 6px; align-items: center; padding: 6px 7px; border-bottom: 1px solid rgba(255,255,255,.07); cursor: pointer; }
         .pawn-candidate:last-child { border-bottom: 0; }
         .pawn-candidate.tracked { opacity: .55; cursor: default; }
@@ -3889,7 +3882,7 @@
             </div>
             <div class="alerts">
               ${alerts.length ? alerts.map((alert) => `
-                <article class="alert ${escapeHtml(alert.tone)} ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:') ? 'market-listing-alert' : ''}">
+                <article class="alert ${escapeHtml(alert.tone)}">
                   <span class="tone" aria-hidden="true"></span>
                   <div class="alert-copy">
                     <div class="alert-title">${escapeHtml(alert.title)}</div>
@@ -3918,13 +3911,12 @@
         nextBody.scrollTop = previousScrollTop;
         nextBody.scrollLeft = previousScrollLeft;
       }
-      const nextPawnList = shadow.querySelector('.pawn-candidate-list');
-      if (nextPawnList) {
-        nextPawnList.scrollTop = previousPawnScrollTop;
-        nextPawnList.scrollLeft = previousPawnScrollLeft;
-      }
+      if (window.scrollX !== previousPageX || window.scrollY !== previousPageY) window.scrollTo(previousPageX, previousPageY);
     };
     restoreScroll();
+    requestAnimationFrame(restoreScroll);
+    window.setTimeout(restoreScroll, 50);
+    window.setTimeout(restoreScroll, 200);
   }
 
   function setSnooze(id, duration) {
@@ -4320,21 +4312,10 @@
       const itemId = Math.trunc(Number(event.target.dataset.pawnCandidateId));
       if (event.target.checked) {
         if (state.pawnShopCandidateSelection.size < pawnShopWatchCapacity()) state.pawnShopCandidateSelection.add(itemId);
-        else event.target.checked = false;
       } else {
         state.pawnShopCandidateSelection.delete(itemId);
       }
       state.pawnShopStatus = `${state.pawnShopCandidateSelection.size} candidate${state.pawnShopCandidateSelection.size === 1 ? '' : 's'} selected.`;
-      const status = shadow.querySelector('.pawn-status');
-      if (status) status.textContent = state.pawnShopStatus;
-      const addButton = shadow.querySelector('[data-action="add-pawn-shop-watches"]');
-      if (addButton) {
-        addButton.textContent = `Add selected (${state.pawnShopCandidateSelection.size})`;
-        addButton.disabled = !state.pawnShopCandidateSelection.size || !pawnShopWatchCapacity();
-      }
-      const clearButton = shadow.querySelector('[data-action="clear-pawn-shop-selection"]');
-      if (clearButton) clearButton.disabled = !state.pawnShopCandidateSelection.size;
-      return;
     } else if (event.target.matches('[data-watch-field]')) {
       const watch = state.settings.marketWatches.find((item) => item.uid === event.target.dataset.watchUid);
       if (!watch) return;
