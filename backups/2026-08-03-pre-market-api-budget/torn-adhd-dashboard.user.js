@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.12
+// @version      1.4.11
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -39,7 +39,8 @@
   const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
-  const ITEM_MARKET_CACHE_REFRESH_MS = 20_000;
+  const ITEM_MARKET_CACHE_REFRESH_MS = 10_000;
+  const ITEM_MARKET_CACHE_SETTLE_MS = 500;
   const POINTS_MARKET_REFRESH_MS = 30_000;
   const MARKET_WATCH_LIMIT = 50;
   const MARKET_PRIORITY_CYCLES = Object.freeze({ high: 1, normal: 2, low: 4 });
@@ -548,12 +549,13 @@
         return;
       }
       const queue = state.apiQueues[priority];
-      const task = queue.shift();
+      const quotaExemptIndex = queue.findIndex((item) => item.quotaExempt);
+      const task = quotaExemptIndex >= 0 ? queue.splice(quotaExemptIndex, 1)[0] : queue.shift();
       try {
         if (!ownsDashboardNetworkLease()) throw dashboardOwnerPauseError();
         if (!state.settings.apiKey) throw new Error('Add a Torn API key in Settings.');
         const pausedUntil = Number(state.settings.apiPausedUntil) || 0;
-        if (pausedUntil > Date.now()) {
+        if (!task.quotaExempt && pausedUntil > Date.now()) {
           throw new Error(`Torn API paused for ${formatDuration(Math.ceil((pausedUntil - Date.now()) / 1000))}.`);
         }
         task.reservation = await TornLib.reserveTornApiSlot({
@@ -646,15 +648,9 @@
             return;
           }
           if (body?.error) finishQueuedTornApiCall(reservation, `Torn error ${Number(body.error.code) || 0}`, response.status, body.error);
-          const serverRateLimited = Number(response.status) === 429 || Number(body?.error?.code) === 5;
-          if (serverRateLimited) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
+          if (Number(body?.error?.code) === 5) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
-            const error = new Error(body?.error?.error || `Torn API request failed (${response.status}).`);
-            if (serverRateLimited) {
-              error.code = 'TORN_API_SERVER_RATE_LIMIT';
-              error.retryAfterMs = 60_000;
-            }
-            reject(error);
+            reject(new Error(body?.error?.error || `Torn API request failed (${response.status}).`));
             return;
           }
           resolve(body);
@@ -895,6 +891,13 @@
     if (state.settings.marketRefreshMode !== 'cache-aligned') {
       return fetchedAt + marketRefreshMs('item') * cycles;
     }
+    const cachedAt = Number(result?.itemmarket?.cache_timestamp) * 1000;
+    const cacheDelayMs = Math.max(1, Number(result?.itemmarket?.cache_delay) || 30) * 1000;
+    const plausibleTimestamp = cachedAt > 0 && cachedAt <= fetchedAt + cacheDelayMs;
+    if (plausibleTimestamp) {
+      const nextEligibleAt = cachedAt + cacheDelayMs * cycles + ITEM_MARKET_CACHE_SETTLE_MS;
+      if (nextEligibleAt > fetchedAt + ITEM_MARKET_CACHE_SETTLE_MS) return nextEligibleAt;
+    }
     return fetchedAt + ITEM_MARKET_CACHE_REFRESH_MS * cycles;
   }
 
@@ -967,8 +970,8 @@
       group.nextCheckAt = marketResultNextCheckAt(previous, group.marketType, group.priority);
       return group;
     }).filter((group) => {
-      if (Number(state.settings.apiPausedUntil) > now || Number(state.apiLimiterUntil) > now) return false;
       if (force) return true;
+      if (group.marketType === 'points' && Number(state.settings.apiPausedUntil) > now) return false;
       const previous = state.data.market?.[group.watches[0].uid];
       return !previous || now >= Math.max(state.marketRetryAt, group.nextCheckAt);
     }).sort((left, right) => (
@@ -992,7 +995,7 @@
           try {
             const body = group.marketType === 'points'
               ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high', waitForQuota: false, maxWaitMs: 0 })
-              : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: group.priority, quotaClass: 'itemmarket', waitForQuota: false, maxWaitMs: 0 });
+              : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: 'high', quotaExempt: true, quotaClass: 'globally-cached-itemmarket' });
             const fetchedAt = Date.now();
             body.__fetchedAt = fetchedAt;
             body.__marketType = group.marketType;
@@ -1013,7 +1016,7 @@
         if (index + 5 < dueGroups.length) await new Promise((resolve) => window.setTimeout(resolve, 100));
       }
       state.lastMarketUpdated = Date.now();
-      state.marketRetryAt = allOkay ? 0 : Math.max(Date.now() + 5_000, Number(state.apiLimiterUntil) || 0);
+      state.marketRetryAt = allOkay ? 0 : Date.now() + 5_000;
       saveCheckCache();
       if (changed || !state.readyAlertGroups.has('market')) publishAlertGroups(['market']);
       return allOkay;
@@ -1031,7 +1034,9 @@
         const marketType = watchMarketType(watch);
         const result = state.data.market?.[watch.uid];
         const nextCheckAt = marketResultNextCheckAt(result, marketType, watchMarketPriority(watch, result));
-        return Math.max(nextCheckAt, Number(state.settings.apiPausedUntil) || 0, Number(state.apiLimiterUntil) || 0);
+        return marketType === 'points'
+          ? Math.max(nextCheckAt, Number(state.settings.apiPausedUntil) || 0)
+          : nextCheckAt;
       }).filter((value) => value > 0);
       const nextDue = dueTimes.length ? Math.min(...dueTimes) : Date.now() + marketRefreshMs('points');
       const blockedUntil = state.marketRetryAt;
@@ -3417,7 +3422,7 @@
     }).join('');
     const mainOpen = state.settings.settingsSections?.apiLedger ? 'open' : '';
     const recentOpen = state.settings.settingsSections?.apiLedgerRecent ? 'open' : '';
-    return `<details class="api-ledger-details" data-settings-section="apiLedger" ${mainOpen}><summary>API request ledger · ${minuteUsage.count} quota reservations last minute</summary><p>Every Dashboard Torn API request, including Item Market checks, reserves a slot in Core's shared limiter. Item Market calls are counted conservatively because the response does not reliably prove that Torn served a quota-free cache hit. Endpoint query values and API keys are never stored. The detailed endpoint breakdown comes from the diagnostic log so older Core instances cannot erase its metadata.</p>${quotaRows ? `<strong>Quota-counted requests in the last minute</strong><ol class="api-ledger-list">${quotaRows}</ol>` : '<p>No detailed quota-counted requests in the last minute.</p>'}${legacyUnattributed ? `<p><strong>${legacyUnattributed} legacy/unattributed limiter reservation${legacyUnattributed === 1 ? '' : 's'}</strong> are included in the quota total but were written without detailed metadata.</p>` : ''}${cachedRows ? `<strong>Legacy quota-exempt Item Market requests still in the 15-minute log</strong><ol class="api-ledger-list">${cachedRows}</ol>` : ''}${recentRows ? `<details class="api-ledger-recent" data-settings-section="apiLedgerRecent" ${recentOpen}><summary>Most recent 100 requests</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, or non-Torn services such as TornW3B.</small></details>`;
+    return `<details class="api-ledger-details" data-settings-section="apiLedger" ${mainOpen}><summary>API request ledger · ${minuteUsage.count} quota reservations · ${cachedItemEvents.length} cached Item Market requests last minute</summary><p>The quota counter excludes globally cached Item Market requests. Item Market network attempts remain visible separately. Endpoint query values and API keys are never stored. The detailed endpoint breakdown comes from the diagnostic log so older Core instances cannot erase its metadata.</p>${quotaRows ? `<strong>Quota-counted requests in the last minute</strong><ol class="api-ledger-list">${quotaRows}</ol>` : '<p>No detailed quota-counted requests in the last minute.</p>'}${legacyUnattributed ? `<p><strong>${legacyUnattributed} legacy/unattributed limiter reservation${legacyUnattributed === 1 ? '' : 's'}</strong> are included in the quota total but were written without detailed metadata.</p>` : ''}${cachedRows ? `<strong>Globally cached Item Market requests in the last minute</strong><ol class="api-ledger-list">${cachedRows}</ol>` : '<p>No cached Item Market requests in the last minute.</p>'}${recentRows ? `<details class="api-ledger-recent" data-settings-section="apiLedgerRecent" ${recentOpen}><summary>Most recent 100 requests</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, or non-Torn services such as TornW3B.</small></details>`;
   }
 
   function settingsMarkup() {
@@ -3455,7 +3460,7 @@
           <small>${escapeHtml(itemMeta)}</small>
         </label>
         <input type="number" min="1" step="1" data-watch-field="maxPrice" data-watch-uid="${escapeHtml(watch.uid)}" value="${escapeHtml(watch.maxPrice || '')}" placeholder="${isPoints ? 'Max $ / point' : 'Max price'}" aria-label="${isPoints ? 'Maximum price per point' : 'Maximum item price'}">
-        <select class="market-priority-select" data-watch-field="priority" data-watch-uid="${escapeHtml(watch.uid)}" aria-label="Watch priority" title="High every 20s up to 60/min; Normal every 40s below 50/min; Low every 80s below 40/min" ${isPoints ? 'disabled' : ''}>
+        <select class="market-priority-select" data-watch-field="priority" data-watch-uid="${escapeHtml(watch.uid)}" aria-label="Watch priority" title="High checks each cache turnover; Normal every second; Low every fourth" ${isPoints ? 'disabled' : ''}>
           ${['high', 'normal', 'low'].map((priority) => `<option value="${priority}" ${normalizedMarketPriority(watch.priority) === priority ? 'selected' : ''}>${priority[0].toUpperCase()}${priority.slice(1)}</option>`).join('')}
         </select>
         <button data-action="remove-market-watch" data-watch-uid="${escapeHtml(watch.uid)}" title="Remove watch">x</button>
@@ -3652,12 +3657,12 @@
             <button data-action="add-market-watch" ${state.settings.marketWatches.length >= MARKET_WATCH_LIMIT ? 'disabled' : ''}>${state.settings.marketWatches.length >= MARKET_WATCH_LIMIT ? `${MARKET_WATCH_LIMIT} watch limit` : `Add watch (${state.settings.marketWatches.length}/${MARKET_WATCH_LIMIT})`}</button>
             <label>Torn market polling
               <select data-field="market-refresh-minutes">
-                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Priority scheduler / points 30s</option>
+                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Cache-aware priorities / points 30s</option>
                 ${[1, 2, 5, 10].map((minutes) => `<option value="${minutes}" ${state.settings.marketRefreshMode !== 'cache-aligned' && Number(state.settings.marketRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} min</option>`).join('')}
               </select>
             </label>
           </div>
-          <p class="priority-note"><strong>Priority:</strong> High is eligible every 20 seconds and can use slots up to the firm 60/minute limit. Normal is eligible every 40 seconds only while usage is below 50/minute. Low is eligible every 80 seconds only while usage is below 40/minute. A watch at or below its alert price temporarily becomes High. Every Torn Item Market check counts in Core's shared API ledger.</p>
+          <p class="priority-note"><strong>Priority:</strong> High checks after every Item Market cache turnover, Normal every second, and Low every fourth. A watch at or below its alert price temporarily becomes High. Ten-second checks are only the fallback when Torn's cache timing is missing or stale.</p>
           <div class="bazaar-controls">
             <label><input type="checkbox" data-field="weav3r-bazaar-enabled" ${state.settings.weav3rBazaarEnabled ? 'checked' : ''}> Check TornW3B bazaars</label>
             <span>High 10s · Normal 30s · Low 60s; four at a time with rate-limit backoff</span>
