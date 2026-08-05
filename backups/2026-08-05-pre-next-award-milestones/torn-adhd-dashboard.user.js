@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.16
+// @version      1.4.15
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -2595,64 +2595,10 @@
     return awardCatalogRows().find((award) => awardKey(award.kind, award.id) === key) || null;
   }
 
-  function awardRequirementText(award) {
-    return String(award?.description || award?.name || '')
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/&(?:nbsp|#160);/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function awardRequirementNumbers(award) {
-    const matches = awardRequirementText(award).match(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi) || [];
-    const multipliers = { k: 1e3, thousand: 1e3, m: 1e6, mil: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9, t: 1e12, trillion: 1e12 };
-    return matches.map((match) => {
-      const clean = match.toLowerCase().replace(/[$,\s]/g, '').replace(/(?:st|nd|rd|th)$/i, '');
-      const unit = clean.match(/(thousand|million|billion|trillion|mil|bn|[kmbt])$/i)?.[1]?.toLowerCase() || '';
-      const numericText = unit ? clean.slice(0, -unit.length) : clean;
-      return Math.max(0, Number(numericText) * (multipliers[unit] || 1));
-    }).filter(Number.isFinite);
-  }
-
-  function awardProgressionFamily(award) {
-    const numbers = awardRequirementNumbers(award);
-    if (!numbers.length) return '';
-    const normalizedRequirement = awardRequirementText(award)
-      .toLowerCase()
-      .replace(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi, '#')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return `${award.kind}|${award?.type?.id ?? award?.type?.title ?? ''}|${normalizedRequirement}`;
-  }
-
-  function isEarlierAwardRequirement(candidate, later) {
-    const candidateNumbers = awardRequirementNumbers(candidate);
-    const laterNumbers = awardRequirementNumbers(later);
-    return candidateNumbers.length > 0
-      && candidateNumbers.length === laterNumbers.length
-      && candidateNumbers.every((value, index) => value <= laterNumbers[index])
-      && candidateNumbers.some((value, index) => value < laterNumbers[index]);
-  }
-
-  function collapseAwardProgressions(rows) {
-    const families = new Map();
-    rows.forEach((award) => {
-      const family = awardProgressionFamily(award) || `unique:${awardKey(award.kind, award.id)}`;
-      if (!families.has(family)) families.set(family, []);
-      families.get(family).push(award);
-    });
-    return rows.filter((award) => {
-      const key = awardKey(award.kind, award.id);
-      if (state.settings.trackedAwards.includes(key)) return true;
-      const family = awardProgressionFamily(award) || `unique:${key}`;
-      return !families.get(family).some((candidate) => candidate !== award && isEarlierAwardRequirement(candidate, award));
-    });
-  }
-
-  function uncompletedAwards({ collapseProgressions = true } = {}) {
+  function uncompletedAwards() {
     const filter = state.settings.awardTypeFilter;
-    const rows = awardCatalogRows().filter((award) => !award.completed && (filter === 'all' || award.kind === filter));
-    return (collapseProgressions ? collapseAwardProgressions(rows) : rows)
+    return awardCatalogRows()
+      .filter((award) => !award.completed && (filter === 'all' || award.kind === filter))
       .sort((left, right) => {
         const leftTracked = state.settings.trackedAwards.includes(awardKey(left.kind, left.id));
         const rightTracked = state.settings.trackedAwards.includes(awardKey(right.kind, right.id));
@@ -2730,8 +2676,6 @@
   function awardsMarkup() {
     const allRows = awardCatalogRows();
     const incomplete = uncompletedAwards();
-    const allIncomplete = uncompletedAwards({ collapseProgressions: false });
-    const hiddenMilestones = Math.max(0, allIncomplete.length - incomplete.length);
     const meritInfo = state.awards.merits;
     const refreshed = Number(state.awards.playerFetchedAt) > 0 ? new Date(state.awards.playerFetchedAt).toLocaleString() : 'never';
     const trackedFull = state.settings.trackedAwards.length >= TRACKED_AWARD_LIMIT;
@@ -2744,13 +2688,13 @@
     }
     return `<section class="awards-view">
       <div class="awards-summary">
-        <div><strong>${incomplete.length.toLocaleString()}</strong><span>next goals shown</span></div>
+        <div><strong>${incomplete.length.toLocaleString()}</strong><span>uncompleted shown</span></div>
         <div><strong>${Number(meritInfo?.available || 0).toLocaleString()}</strong><span>unspent merits</span></div>
         <div><strong>${state.settings.trackedAwards.length}/${TRACKED_AWARD_LIMIT}</strong><span>tracked</span></div>
       </div>
       <div class="awards-controls">
         <label>Show <select data-field="award-type-filter"><option value="all" ${state.settings.awardTypeFilter === 'all' ? 'selected' : ''}>All awards</option><option value="medal" ${state.settings.awardTypeFilter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${state.settings.awardTypeFilter === 'honor' ? 'selected' : ''}>Honors</option></select></label>
-        <span>Updated ${escapeHtml(refreshed)}${hiddenMilestones ? ` · ${hiddenMilestones.toLocaleString()} later milestone${hiddenMilestones === 1 ? '' : 's'} hidden` : ''}</span>
+        <span>Updated ${escapeHtml(refreshed)}</span>
         <button data-action="refresh-awards" ${state.awardsLoading ? 'disabled' : ''}>${state.awardsLoading ? 'Refreshing…' : 'Refresh awards'}</button>
       </div>
       ${state.awards.error ? `<div class="awards-error">${escapeHtml(state.awards.error)}</div>` : ''}
