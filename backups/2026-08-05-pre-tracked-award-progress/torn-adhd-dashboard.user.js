@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.18
+// @version      1.4.17
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -559,8 +559,6 @@
         merits: null,
         userId: 0,
         finishingHits: {},
-        personalStats: {},
-        profile: {},
         error: '',
       };
     }
@@ -575,12 +573,6 @@
       userId: Math.max(0, Math.trunc(Number(cached.userId) || 0)),
       finishingHits: cached.finishingHits && typeof cached.finishingHits === 'object' && !Array.isArray(cached.finishingHits)
         ? cached.finishingHits
-        : {},
-      personalStats: cached.personalStats && typeof cached.personalStats === 'object' && !Array.isArray(cached.personalStats)
-        ? cached.personalStats
-        : {},
-      profile: cached.profile && typeof cached.profile === 'object' && !Array.isArray(cached.profile)
-        ? cached.profile
         : {},
       error: String(cached.error || ''),
     };
@@ -2571,51 +2563,6 @@
     return search(body);
   }
 
-  function numericPersonalStats(body) {
-    const result = {};
-    const visited = new Set();
-    const normalizePart = (part) => String(part || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-    function visit(value, path = [], depth = 0) {
-      if (value == null || depth > 12) return;
-      if (Array.isArray(value)) {
-        value.forEach((entry, index) => {
-          if (entry && typeof entry === 'object' && entry.name != null && Number.isFinite(Number(entry.value))) {
-            result[normalizePart(entry.name)] = Number(entry.value);
-          } else {
-            visit(entry, [...path, String(index)], depth + 1);
-          }
-        });
-        return;
-      }
-      if (typeof value === 'object') {
-        if (visited.has(value)) return;
-        visited.add(value);
-        Object.entries(value).forEach(([key, child]) => visit(child, [...path, normalizePart(key)], depth + 1));
-        return;
-      }
-      if ((typeof value === 'number' || (typeof value === 'string' && value.trim())) && Number.isFinite(Number(value)) && path.length) {
-        result[path.join('.')] = Number(value);
-      }
-    }
-    visit(body?.personalstats);
-    return result;
-  }
-
-  function awardProfileFromBody(body) {
-    const profile = body?.profile && typeof body.profile === 'object' ? body.profile : {};
-    return {
-      id: Math.max(0, Math.trunc(Number(profile.id) || 0)),
-      level: Math.max(0, Math.trunc(Number(profile.level) || 0)),
-      age: Math.max(0, Math.trunc(Number(profile.age) || 0)),
-      awards: Math.max(0, Math.trunc(Number(profile.awards) || 0)),
-      forumPosts: Math.max(0, Math.trunc(Number(profile.forum_posts) || 0)),
-      friends: Math.max(0, Math.trunc(Number(profile.friends) || 0)),
-      enemies: Math.max(0, Math.trunc(Number(profile.enemies) || 0)),
-      karma: Number.isFinite(Number(profile.karma)) ? Number(profile.karma) : 0,
-      daysMarried: Math.max(0, Math.trunc(Number(profile.spouse?.days_married) || 0)),
-    };
-  }
-
   function finishingHitsFromPersonalStats(body) {
     const direct = body?.personalstats?.finishing_hits;
     if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
@@ -2626,13 +2573,9 @@
       shotguns: 'shotgunhits', pistols: 'pistolhits', temporary: 'temphits', piercing: 'piercinghits',
       slashing: 'slashinghits', clubbing: 'clubbinghits', mechanical: 'mechanicalhits', hand_to_hand: 'h2hhits',
     };
-    const numericStats = numericPersonalStats(body);
     const rows = Array.isArray(body?.personalstats) ? body.personalstats : [];
     const byName = new Map(rows.map((row) => [String(row?.name || ''), Number(row?.value) || 0]));
-    return Object.fromEntries(Object.entries(legacyNames).map(([key, legacyName]) => [
-      key,
-      Math.max(0, Math.trunc(Number(numericStats[`finishing_hits.${key}`] ?? numericStats[legacyName] ?? byName.get(legacyName)) || 0)),
-    ]));
+    return Object.fromEntries(Object.entries(legacyNames).map(([key, legacyName]) => [key, Math.max(0, Math.trunc(byName.get(legacyName) || 0))]));
   }
 
   function awardKey(kind, id) {
@@ -2814,253 +2757,6 @@
     return { rows, rawTotal, cappedTotal, remaining, targetTotal: rows.length * FINISHER_TARGET };
   }
 
-  function awardStatValue(...paths) {
-    for (const path of paths.flat()) {
-      const value = state.awards.personalStats?.[path];
-      if (Number.isFinite(Number(value))) return Number(value);
-    }
-    return null;
-  }
-
-  function awardObjectiveProgress(award) {
-    const text = normalizedAwardRequirementText(award);
-    const numbers = awardRequirementNumbers(award);
-    const target = numbers[0];
-    const result = (current, label, customTarget = target) => (
-      Number.isFinite(Number(current)) && Number.isFinite(Number(customTarget)) && Number(customTarget) > 0
-        ? { rows: [{ current: Math.max(0, Number(current)), target: Number(customTarget), label }] }
-        : null
-    );
-    const statResult = (path, label, transform = (value) => value, customTarget = target) => {
-      const current = awardStatValue(path);
-      return current === null ? null : result(transform(current), label, customTarget);
-    };
-
-    if (/\b(?:live|living|citizen|been)\b.*\btorn\b.*\b(?:year|day)/i.test(text)) {
-      const years = /\byear\b/.test(text);
-      return result(state.awards.profile?.age, 'days in Torn', years ? target * 365 : target);
-    }
-    if (/\b(?:stay|stayed|same spouse|married)\b.*\bmarried\b|\bmarriage\b/i.test(text)) {
-      return result(state.awards.profile?.daysMarried, 'days married');
-    }
-    if (/\breach\s+(?:level\s+)?\d|\battain\s+level\b/i.test(text) && /\blevel\b/i.test(text)) {
-      return result(state.awards.profile?.level, 'level');
-    }
-    if (/\b(?:total )?awards?\b/i.test(text) && /\b(?:achieve|reach|earn|obtain)\b/i.test(text)) {
-      return statResult('other.awards', 'awards', (value) => value, target)
-        || result(state.awards.profile?.awards, 'awards');
-    }
-    if (/\btime played\b/i.test(text)) {
-      const seconds = awardStatValue('other.activity.time');
-      return seconds === null ? null : result(seconds / 3600, 'hours played');
-    }
-    if (/\bonline (?:each|every) day|\bactive streak\b/i.test(text)) {
-      return statResult('other.activity.streak.current', 'current daily streak');
-    }
-    if (/\bforum posts?\b/i.test(text)) return result(state.awards.profile?.forumPosts, 'forum posts');
-    if (/\bkarma\b/i.test(text)) return result(state.awards.profile?.karma, 'karma');
-    if (/\bfriends?\b/i.test(text) && /\b(?:have|make|reach)\b/i.test(text)) return result(state.awards.profile?.friends, 'friends');
-    if (/\benemies\b/i.test(text) && /\b(?:have|make|reach)\b/i.test(text)) return result(state.awards.profile?.enemies, 'enemies');
-
-    const finisherWeapon = Object.entries({
-      heavy_artillery: /heavy artillery/,
-      machine_guns: /machine guns?/,
-      rifles: /rifles?/,
-      sub_machine_guns: /(?:sub[ -]?machine guns?|smgs?)/,
-      shotguns: /shotguns?/,
-      pistols: /pistols?/,
-      temporary: /temporary (?:items?|weapons?)/,
-      piercing: /piercing weapons?/,
-      slashing: /slashing weapons?/,
-      clubbing: /clubbing weapons?/,
-      mechanical: /mechanical weapons?/,
-      hand_to_hand: /(?:hand[ -]to[ -]hand|unarmed|fists?)/,
-    }).find(([, pattern]) => pattern.test(text));
-    if (/finishing hits?/i.test(text) && finisherWeapon) {
-      return result(state.awards.finishingHits?.[finisherWeapon[0]], `${FINISHER_LABELS[finisherWeapon[0]]} finishing hits`);
-    }
-
-    if (/\bwin\b.*\battacks?\b.*\band\b.*\bdefends?\b/i.test(text) && numbers.length >= 2) {
-      const attacks = awardStatValue('attacking.attacks.won');
-      const defends = awardStatValue('attacking.defends.won');
-      if (attacks !== null && defends !== null) {
-        return { rows: [
-          { current: attacks, target: numbers[0], label: 'attacks won' },
-          { current: defends, target: numbers[1], label: 'defends won' },
-        ] };
-      }
-    }
-    if (/\bwin\b.*\bstealth(?:ed)? attacks?\b/i.test(text)) return statResult('attacking.attacks.stealth', 'stealthed attacks won');
-    if (/\bwin\b.*\battacks?\b/i.test(text)) return statResult('attacking.attacks.won', 'attacks won');
-    if (/\b(?:lose|lost)\b.*\battacks?\b/i.test(text)) return statResult('attacking.attacks.lost', 'attacks lost');
-    if (/\bassist(?:ed)?\b.*\battacks?\b/i.test(text)) return statResult('attacking.attacks.assist', 'attack assists');
-    if (/\bstalemates?\b/i.test(text)) return statResult('attacking.attacks.stalemate', 'attack stalemates');
-    if (/\bwin\b.*\bdefends?\b/i.test(text)) return statResult('attacking.defends.won', 'defends won');
-    if (/\b(?:lose|lost)\b.*\bdefends?\b/i.test(text)) return statResult('attacking.defends.lost', 'defends lost');
-    if (/\benemies? escape\b|\bfoes? escape\b/i.test(text)) return statResult('attacking.escapes.foes', 'enemies escaped');
-    if (/\b(?:escape|run away)\b.*\b(?:foes?|opponents?|attacks?)\b/i.test(text)) return statResult('attacking.escapes.player', 'successful escapes');
-    if (/\bkill streak\b/i.test(text)) return statResult('attacking.killstreak.best', 'best kill streak');
-    if (/\bcritical hits?\b/i.test(text)) return statResult('attacking.hits.critical', 'critical hits');
-    if (/\bone[ -]hit kills?\b/i.test(text)) return statResult('attacking.hits.one_hit_kills', 'one-hit kills');
-    if (/\b(?:total damage|damage in total)\b/i.test(text)) return statResult('attacking.damage.total', 'total damage');
-    if (/\bdamage\b.*\b(?:single hit|one hit)\b|\b(?:single hit|one hit)\b.*\bdamage\b/i.test(text)) return statResult('attacking.damage.best', 'best single-hit damage');
-    if (/\bunarmored\b.*\b(?:attacks?|defends?|wins?)\b/i.test(text)) return statResult('attacking.unarmored_wins', 'unarmored wins');
-    if (/\bfire\b.*\brounds?\b/i.test(text)) return statResult('attacking.ammunition.total', 'rounds fired');
-    if (/\btracer rounds?\b/i.test(text)) return statResult('attacking.ammunition.tracer', 'tracer rounds used');
-    if (/\bincendiary rounds?\b/i.test(text)) return statResult('attacking.ammunition.incendiary', 'incendiary rounds used');
-    if (/\bpiercing rounds?\b/i.test(text)) return statResult('attacking.ammunition.piercing', 'piercing rounds used');
-    if (/\bhollow(?:[ -]point)? rounds?\b/i.test(text)) return statResult('attacking.ammunition.hollow_point', 'hollow-point rounds used');
-    if (/\b(?:earn|gain)\b.*\bfaction respect\b|\brespect\b.*\bfor (?:your )?faction\b/i.test(text)) return statResult('attacking.faction.respect', 'faction respect earned');
-    if (/\bretaliation hits?\b|\bperform\b.*\bretaliations?\b/i.test(text)) return statResult('attacking.faction.retaliations', 'retaliation hits');
-    if (/\branked war hits?\b/i.test(text)) return statResult('attacking.faction.ranked_war_hits', 'ranked war hits');
-    if (/\braid hits?\b/i.test(text)) return statResult('attacking.faction.raid_hits', 'raid hits');
-    if (/\bcollect\b.*\bbounties?\b/i.test(text)) return statResult('bounties.collected.amount', 'bounties collected');
-    if (/\b(?:earn|make)\b.*\bbount(?:y|ies)\b/i.test(text)) return statResult('bounties.collected.value', 'bounty earnings');
-    if (/\b(?:money mugged|mugged in total|from mugging)\b/i.test(text)) return statResult('attacking.networth.money_mugged', 'money mugged');
-    if (/\b(?:single|largest) mug(?:ging)?\b/i.test(text)) return statResult('attacking.networth.largest_mug', 'largest mug');
-
-    if (/\bbust\b.*\bpeople|\bpeople busted\b/i.test(text)) return statResult('jail.busts.success', 'successful busts');
-    if (/\bfailed busts?\b/i.test(text)) return statResult('jail.busts.fails', 'failed busts');
-    if (/\b(?:bail|buy)\b.*\b(?:people|players?)\b.*\bjail\b/i.test(text)) return statResult('jail.bails.amount', 'people bailed');
-    if (/\bmedical items?\b/i.test(text)) return statResult('hospital.medical_items_used', 'medical items used');
-    if (/\bwithdraw\b.*\bblood\b/i.test(text)) return statResult('hospital.blood_withdrawn', 'blood bags withdrawn');
-    if (/\brevive\b.*\b(?:people|players?|times?)\b|\bperform\b.*\brevives?\b/i.test(text)) return statResult('hospital.reviving.revives', 'revives performed');
-    if (/\brevive skill\b/i.test(text)) return statResult('hospital.reviving.skill', 'revive skill');
-
-    const crimeSkill = Object.entries({
-      search_for_cash: /search for cash/,
-      bootlegging: /bootlegging/,
-      graffiti: /graffiti/,
-      shoplifting: /shoplifting/,
-      pickpocketing: /pickpocketing/,
-      card_skimming: /card skimming/,
-      burglary: /burglary/,
-      hustling: /hustling/,
-      disposal: /disposal/,
-      cracking: /cracking/,
-      forgery: /forgery/,
-      scamming: /scamming/,
-      arson: /arson/,
-    }).find(([, pattern]) => pattern.test(text));
-    if (/\bskill(?: level)?\b/i.test(text) && crimeSkill) return statResult(`crimes.skills.${crimeSkill[0]}`, `${awardCategoryLabel(crimeSkill[0])} skill`);
-    if (/\borganized crimes?\b/i.test(text)) return statResult(['crimes.offenses.organized_crimes', 'crimes.organized_crimes'], 'organized crimes');
-    if (/\btotal crimes?\b|\bcriminal offenses?\b/i.test(text)) return statResult(['crimes.offenses.total', 'crimes.total'], 'criminal offenses');
-    const crimeType = Object.entries({
-      vandalism: /vandalism/,
-      fraud: /fraud/,
-      theft: /\bthefts?\b/,
-      counterfeiting: /counterfeit/,
-      illicit_services: /illicit services?/,
-      cybercrime: /cybercrime/,
-      extortion: /extortion/,
-      illegal_production: /illegal production/,
-      sell_illegal_goods: /selling illegal (?:goods|products)/,
-      auto_theft: /auto theft/,
-      drug_deals: /drug deals?/,
-      computer: /computer crimes?/,
-      murder: /murders?/,
-      other: /["']?other["']? crimes?/,
-    }).find(([, pattern]) => pattern.test(text));
-    if (/\bcrimes?\b/i.test(text) && crimeType) {
-      return statResult([`crimes.offenses.${crimeType[0]}`, `crimes.${crimeType[0]}`], `${awardCategoryLabel(crimeType[0])} crimes`);
-    }
-
-    if (/\bmails?\b.*\b(?:send|sent)\b|\b(?:send|sent)\b.*\bmails?\b/i.test(text)) return statResult('communication.mails_sent.total', 'mail sent');
-    if (/\bclassified ads?\b/i.test(text)) return statResult('communication.classified_ads', 'classified ads');
-    if (/\bpersonal ads?\b/i.test(text)) return statResult('communication.personals', 'personal ads');
-
-    if (/\bfind\b.*\bitems?\b.*\bcity\b/i.test(text)) return statResult('items.found.city', 'items found in the city');
-    if (/\bfind\b.*\bitems?\b.*\bdump\b/i.test(text)) return statResult('items.found.dump', 'items found in the dump');
-    if (/\b(?:trash|trashed|dump)\b.*\bitems?\b/i.test(text)) return statResult('items.trashed', 'items trashed');
-    if (/\bread\b.*\bbooks?\b/i.test(text)) return statResult('items.used.books', 'books read');
-    if (/\b(?:use|used)\b.*\bboosters?\b/i.test(text)) return statResult('items.used.boosters', 'boosters used');
-    if (/\b(?:eat|use|used)\b.*\bcandy\b/i.test(text)) return statResult('items.used.candy', 'candy used');
-    if (/\b(?:drink|use|used)\b.*\balcohol\b/i.test(text)) return statResult('items.used.alcohol', 'alcohol used');
-    if (/\b(?:drink|use|used)\b.*\benergy drinks?\b/i.test(text)) return statResult('items.used.energy_drinks', 'energy drinks used');
-    if (/\b(?:use|used)\b.*\bstat enhancers?\b/i.test(text)) return statResult('items.used.stat_enhancers', 'stat enhancers used');
-    if (/\bcode\b.*\bviruses?\b/i.test(text)) return statResult('items.viruses_coded', 'viruses coded');
-
-    const destination = Object.entries({
-      argentina: /argentina/,
-      canada: /canada/,
-      cayman_islands: /cayman/,
-      china: /china/,
-      hawaii: /hawaii/,
-      japan: /japan/,
-      mexico: /mexico/,
-      united_arab_emirates: /(?:dubai|united arab emirates|uae)/,
-      united_kingdom: /(?:england|united kingdom|\buk\b)/,
-      south_africa: /south africa/,
-      switzerland: /switzerland/,
-    }).find(([, pattern]) => pattern.test(text));
-    if (/\btravel\b/i.test(text) && destination) return statResult(`travel.${destination[0]}`, `trips to ${awardCategoryLabel(destination[0])}`);
-    if (/\btravel\b.*\btimes?\b/i.test(text)) return statResult('travel.total', 'trips completed');
-    if (/\b(?:import|buy|purchase)\b.*\bitems?\b.*\babroad\b/i.test(text)) return statResult('travel.items_bought', 'items bought abroad');
-    if (/\b(?:defeat|win)\b.*\b(?:people|players?|attacks?)\b.*\babroad\b/i.test(text)) return statResult('travel.attacks_won', 'attacks won abroad');
-    if (/\b(?:spend|spent)\b.*\b(?:days?|hours?)\b.*\b(?:air|travel)/i.test(text)) {
-      const seconds = awardStatValue('travel.time_spent');
-      const targetInDays = /\bday\b/.test(text);
-      return seconds === null ? null : result(seconds / (targetInDays ? 86400 : 3600), targetInDays ? 'days in the air' : 'hours in the air');
-    }
-    if (/\bhunting skill\b/i.test(text)) return statResult('travel.hunting.skill', 'hunting skill');
-
-    const drug = ['cannabis', 'ecstasy', 'ketamine', 'lsd', 'opium', 'pcp', 'shrooms', 'speed', 'vicodin', 'xanax'].find((name) => new RegExp(`\\b${name}\\b`, 'i').test(text));
-    if (/\b(?:use|used|take|taken)\b/i.test(text) && drug) return statResult(`drugs.${drug}`, `${drug} used`);
-    if (/\b(?:use|used|take|taken)\b.*\bdrugs?\b/i.test(text)) return statResult('drugs.total', 'drugs used');
-    if (/\boverdoses?\b/i.test(text)) return statResult('drugs.overdoses', 'overdoses');
-    if (/\brehab(?:ilitation)?s?\b/i.test(text)) return statResult('drugs.rehabilitations.amount', 'rehabilitations');
-
-    if (/\bmission contracts?\b/i.test(text)) return statResult('missions.contracts.total', 'mission contracts');
-    if (/\bduke contracts?\b/i.test(text)) return statResult('missions.contracts.duke', 'Duke contracts');
-    if (/\bmission credits?\b/i.test(text)) return statResult('missions.credits', 'mission credits');
-    if (/\bcomplete\b.*\bmissions?\b/i.test(text)) return statResult('missions.missions', 'missions completed');
-    if (/\bracing points?\b/i.test(text)) return statResult('racing.points', 'racing points');
-    if (/\bdriver skill\b|\bracing skill\b/i.test(text)) return statResult('racing.skill', 'racing skill');
-    if (/\bwin\b.*\braces?\b/i.test(text)) return statResult('racing.races.won', 'races won');
-    if (/\benter\b.*\braces?\b/i.test(text)) return statResult('racing.races.entered', 'races entered');
-
-    if (/\benergy refills?\b/i.test(text)) return statResult('other.refills.energy', 'energy refills used');
-    if (/\bnerve refills?\b/i.test(text)) return statResult('other.refills.nerve', 'nerve refills used');
-    if (/\b(?:casino|token) refills?\b/i.test(text)) return statResult('other.refills.token', 'casino refills used');
-    if (/\bjob points?\b.*\bused\b|\buse\b.*\bjob points?\b/i.test(text)) return statResult('jobs.job_points_used', 'job points used');
-    if (/\btrains? received\b/i.test(text)) return statResult('jobs.trains_received', 'job trains received');
-    if (/\bmerits? bought\b|\bbuy\b.*\bmerits?\b/i.test(text)) return statResult('other.merits_bought', 'merits bought');
-    if (/\bdonator days?\b/i.test(text)) return statResult('other.donator_days', 'donator days');
-    if (/\branked war wins?\b/i.test(text)) return statResult('other.ranked_war_wins', 'ranked war wins');
-    if (/\bnet\s*worth\b/i.test(text)) return statResult('networth.total', 'networth');
-    if (/\bauctions?\b/i.test(text) && /\bwin\b/i.test(text)) return statResult('trading.items.auctions.won', 'auctions won');
-    if (/\bpoints?\b.*\b(?:sell|sold)\b|\b(?:sell|sold)\b.*\bpoints?\b/i.test(text)) return statResult('trading.points.sold', 'points sold');
-    if (/\bcustomers?\b.*\bbazaar\b|\bbazaar\b.*\bcustomers?\b/i.test(text)) return statResult('trading.bazaar.customers', 'bazaar customers');
-
-    const battleStat = ['strength', 'defense', 'speed', 'dexterity'].find((name) => new RegExp(`\\b${name}\\b`, 'i').test(text));
-    if (battleStat && /\b(?:gain|attain|reach)\b/i.test(text)) {
-      const value = state.data.battlestats?.battlestats?.[battleStat]?.value;
-      if (Number.isFinite(Number(value))) return result(value, battleStat);
-    }
-    if (/\btotal stats?\b/i.test(text)) {
-      const stats = state.data.battlestats?.battlestats;
-      const values = ['strength', 'defense', 'speed', 'dexterity'].map((name) => Number(stats?.[name]?.value));
-      if (values.every(Number.isFinite)) return result(values.reduce((sum, value) => sum + value, 0), 'total battle stats');
-    }
-    return null;
-  }
-
-  function formatAwardProgressNumber(value) {
-    const number = Math.max(0, Number(value) || 0);
-    return (Number.isInteger(number) ? number : Math.floor(number * 10) / 10).toLocaleString();
-  }
-
-  function objectiveProgressMarkup(progress, compact) {
-    const percentages = progress.rows.map((row) => Math.min(100, Math.floor(row.current / row.target * 100)));
-    const percent = percentages.length ? Math.min(...percentages) : 0;
-    const reached = progress.rows.every((row) => row.current >= row.target);
-    const rows = progress.rows.map((row) => {
-      const remaining = Math.max(0, row.target - row.current);
-      return `<span><b>${formatAwardProgressNumber(row.current)} / ${formatAwardProgressNumber(row.target)}</b> ${escapeHtml(row.label)}${remaining > 0 ? ` · ${formatAwardProgressNumber(remaining)} remaining` : ''}</span>`;
-    }).join('');
-    return `<div class="award-progress ${compact ? 'compact' : ''} ${reached ? 'reached' : ''}"><strong>${percent}% complete${reached ? ' · threshold reached' : ''}</strong><div class="award-progress-meter"><i style="width:${percent}%"></i></div>${rows}</div>`;
-  }
-
   function awardProgressMarkup(award, { compact = false } = {}) {
     if (isWeaponFinisherAward(award)) {
       const progress = finisherProgress();
@@ -3077,17 +2773,13 @@
       }
       return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>Your souvenir: ${escapeHtml(assignment.item)}</strong><span>${escapeHtml(assignment.location)} · code ${assignment.code}</span><small>User ID ending ${assignment.lastTwo} → ${assignment.code}</small></div>`;
     }
-    const objective = awardObjectiveProgress(award);
-    if (objective) return objectiveProgressMarkup(objective, compact);
-    if (!compact) return '';
-    const needsRefresh = state.awards.playerFetchedAt && !Object.keys(state.awards.personalStats || {}).length;
-    return `<div class="award-progress compact unavailable"><strong>${needsRefresh ? 'Refresh to load progress' : 'No live counter from Torn'}</strong><small>${needsRefresh ? 'The cached award data predates objective tracking.' : 'Torn only reports this objective when the award is granted.'}</small></div>`;
+    return '';
   }
 
   function trackedAwardsMarkup() {
     const tracked = state.settings.trackedAwards.map(awardByKey).filter(Boolean);
     if (!tracked.length) return '';
-    return `<section class="tracked-awards"><div class="tracked-awards-head"><strong>Tracked awards</strong><button data-action="refresh-awards" title="Refresh award completion and objective progress" ${state.awardsLoading ? 'disabled' : ''}>${state.awardsLoading ? 'Refreshing…' : '↻'}</button></div><div class="tracked-award-grid">${tracked.map((award) => `
+    return `<section class="tracked-awards"><div class="tracked-awards-head"><strong>Tracked awards</strong><button data-action="refresh-awards" title="Refresh completed awards and finisher counts" ${state.awardsLoading ? 'disabled' : ''}>${state.awardsLoading ? 'Refreshing…' : '↻'}</button></div><div class="tracked-award-grid">${tracked.map((award) => `
       <article class="tracked-award ${award.completed ? 'completed' : ''}">
         <div><strong>${escapeHtml(award.name)}</strong><small>${award.completed ? 'Completed' : escapeHtml(award.kind === 'medal' ? 'Medal' : 'Honor')}</small></div>
         <button data-action="untrack-award" data-award-key="${escapeHtml(awardKey(award.kind, award.id))}" title="Stop tracking">×</button>
@@ -3155,7 +2847,7 @@
     const catalogDue = forceCatalog || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length
       || Date.now() - Number(state.awards.catalogFetchedAt) >= AWARD_CATALOG_MAX_AGE_MS;
     const requests = [
-      api('user', { selections: 'profile,medals,honors,merits,personalstats', cat: 'all' }, { priority: 'high' }),
+      api('user', { selections: 'basic,medals,honors,merits,personalstats', cat: 'finishing_hits' }, { priority: 'high' }),
       catalogDue ? api('torn', { selections: 'medals,honors' }, { priority: 'normal' }) : Promise.resolve(null),
     ];
     const [playerResult, catalogResult] = await Promise.allSettled(requests);
@@ -3165,9 +2857,7 @@
       state.awards.medals = Array.isArray(body?.medals) ? body.medals : [];
       state.awards.honors = Array.isArray(body?.honors) ? body.honors : [];
       state.awards.merits = body?.merits && typeof body.merits === 'object' ? body.merits : null;
-      state.awards.profile = awardProfileFromBody(body);
-      state.awards.userId = state.awards.profile.id;
-      state.awards.personalStats = numericPersonalStats(body);
+      state.awards.userId = Math.max(0, Math.trunc(Number(body?.profile?.id) || 0));
       state.awards.finishingHits = finishingHitsFromPersonalStats(body);
       state.awards.playerFetchedAt = Date.now();
     } else if (!isDashboardOwnerPause(playerResult.reason)) {
@@ -4697,15 +4387,6 @@
         .award-progress { display: grid; gap: 3px; margin-top: 7px; padding: 7px; border: 1px solid rgba(255,202,85,.22); border-radius: 7px; color: #d8dee3; background: #302d24; font-size: 10px; }
         .award-progress strong { color: #ffdc8b; }
         .award-progress span, .award-progress small { color: #adb7bf; white-space: normal; }
-        .award-progress span { display: block; }
-        .award-progress span b { color: #edf2f5; font-weight: 750; }
-        .award-progress-meter { height: 5px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.1); }
-        .award-progress-meter i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#e3a93a,#ffdc76); }
-        .award-progress.reached { border-color: rgba(101,214,155,.38); background: #203129; }
-        .award-progress.reached strong { color: #8ee6b1; }
-        .award-progress.reached .award-progress-meter i { background: #65d69b; }
-        .award-progress.unavailable { border-color: rgba(255,255,255,.12); background: #282c31; }
-        .award-progress.unavailable strong { color: #c9d0d7; }
         .tracked-award .award-progress { grid-column: 1 / -1; margin-top: 2px; }
         .tracked-award .award-progress.compact small { display: -webkit-box; overflow: hidden; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
         .settings { padding: 12px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1d2126; }
@@ -4898,8 +4579,7 @@
       state.settings.collapsed = false;
       saveSettings();
       render();
-      if (openingAwards && (!state.awards.playerFetchedAt || !Object.keys(state.awards.personalStats || {}).length
-        || !state.awards.profile?.id || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length)) {
+      if (openingAwards && (!state.awards.playerFetchedAt || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length)) {
         refreshAwards();
       }
       return;
@@ -5117,8 +4797,6 @@
         merits: null,
         userId: 0,
         finishingHits: {},
-        personalStats: {},
-        profile: {},
         error: '',
       };
       saveAwardCache();
@@ -5151,8 +4829,6 @@
           merits: null,
           userId: 0,
           finishingHits: {},
-          personalStats: {},
-          profile: {},
           error: '',
         };
         saveAwardCache();
