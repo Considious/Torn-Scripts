@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.14
+// @version      1.4.13
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -29,7 +29,6 @@
   const ITEM_CATALOG_KEY = 'tdd-item-catalog-v1';
   const BAZAAR_CACHE_KEY = 'tdd-weav3r-bazaar-cache-v1';
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
-  const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
@@ -58,23 +57,6 @@
   const API_SLOW_LIMIT = 30;
   const TORN_DAY_MS = 24 * 60 * 60 * 1000;
   const ITEM_CATALOG_MAX_AGE_MS = 7 * TORN_DAY_MS;
-  const AWARD_CATALOG_MAX_AGE_MS = 7 * TORN_DAY_MS;
-  const TRACKED_AWARD_LIMIT = 3;
-  const FINISHER_TARGET = 1_000;
-  const FINISHER_LABELS = Object.freeze({
-    heavy_artillery: 'Heavy artillery',
-    machine_guns: 'Machine guns',
-    rifles: 'Rifles',
-    sub_machine_guns: 'Sub-machine guns',
-    shotguns: 'Shotguns',
-    pistols: 'Pistols',
-    temporary: 'Temporary',
-    piercing: 'Piercing',
-    slashing: 'Slashing',
-    clubbing: 'Clubbing',
-    mechanical: 'Mechanical',
-    hand_to_hand: 'Hand-to-hand',
-  });
   const MARKET_ITEM_TYPES = [
     ['All', 'All categories'],
     ['Drug', 'Drugs'],
@@ -174,9 +156,6 @@
     apiKey: '',
     collapsed: false,
     settingsOpen: false,
-    activeView: 'alerts',
-    awardTypeFilter: 'all',
-    trackedAwards: [],
     settingsSections: {},
     position: { mode: 'top-center', x: null, y: 8 },
     panelSize: { width: null, height: null },
@@ -249,8 +228,6 @@
     bazaarTimer: null,
     alarmTimer: null,
     itemCatalog: loadItemCatalogCache(),
-    awards: loadAwardCache(),
-    awardsLoading: false,
     bazaarCache: loadBazaarCache(),
     weav3rCategoryCache: loadWeav3rCategoryCache(),
     itemCatalogLoading: false,
@@ -314,11 +291,6 @@
       snoozedUntil,
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
-      activeView: saved?.activeView === 'awards' ? 'awards' : 'alerts',
-      awardTypeFilter: ['all', 'medal', 'honor'].includes(saved?.awardTypeFilter) ? saved.awardTypeFilter : 'all',
-      trackedAwards: Array.isArray(saved?.trackedAwards)
-        ? [...new Set(saved.trackedAwards.map(String).filter((key) => /^(?:medal|honor):\d+$/.test(key)))].slice(0, TRACKED_AWARD_LIMIT)
-        : [],
       marketWatches: Array.isArray(saved?.marketWatches)
         ? saved.marketWatches.map((watch) => ({
           ...watch,
@@ -517,43 +489,6 @@
 
   function focusedTornPage() {
     return state.windowFocused && TornLib.isPageActive();
-  }
-
-  function loadAwardCache() {
-    const cached = GM_getValue(AWARD_CACHE_KEY, {});
-    if (!cached || typeof cached !== 'object' || Array.isArray(cached)) {
-      return {
-        catalogFetchedAt: 0,
-        playerFetchedAt: 0,
-        catalogMedals: [],
-        catalogHonors: [],
-        medals: [],
-        honors: [],
-        merits: null,
-        finishingHits: {},
-        error: '',
-      };
-    }
-    return {
-      catalogFetchedAt: Number(cached.catalogFetchedAt) || 0,
-      playerFetchedAt: Number(cached.playerFetchedAt) || 0,
-      catalogMedals: Array.isArray(cached.catalogMedals) ? cached.catalogMedals : [],
-      catalogHonors: Array.isArray(cached.catalogHonors) ? cached.catalogHonors : [],
-      medals: Array.isArray(cached.medals) ? cached.medals : [],
-      honors: Array.isArray(cached.honors) ? cached.honors : [],
-      merits: cached.merits && typeof cached.merits === 'object' ? cached.merits : null,
-      finishingHits: cached.finishingHits && typeof cached.finishingHits === 'object' && !Array.isArray(cached.finishingHits)
-        ? cached.finishingHits
-        : {},
-      error: String(cached.error || ''),
-    };
-  }
-
-  function saveAwardCache() {
-    GM_setValue(AWARD_CACHE_KEY, {
-      ...state.awards,
-      savedAt: Date.now(),
-    });
   }
 
   function loadWeav3rCategoryCache() {
@@ -2534,175 +2469,6 @@
     return search(body);
   }
 
-  function finishingHitsFromPersonalStats(body) {
-    const direct = body?.personalstats?.finishing_hits;
-    if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
-      return Object.fromEntries(Object.keys(FINISHER_LABELS).map((key) => [key, Math.max(0, Math.trunc(Number(direct[key]) || 0))]));
-    }
-    const legacyNames = {
-      heavy_artillery: 'heavyhits', machine_guns: 'machinehits', rifles: 'riflehits', sub_machine_guns: 'smghits',
-      shotguns: 'shotgunhits', pistols: 'pistolhits', temporary: 'temphits', piercing: 'piercinghits',
-      slashing: 'slashinghits', clubbing: 'clubbinghits', mechanical: 'mechanicalhits', hand_to_hand: 'h2hhits',
-    };
-    const rows = Array.isArray(body?.personalstats) ? body.personalstats : [];
-    const byName = new Map(rows.map((row) => [String(row?.name || ''), Number(row?.value) || 0]));
-    return Object.fromEntries(Object.entries(legacyNames).map(([key, legacyName]) => [key, Math.max(0, Math.trunc(byName.get(legacyName) || 0))]));
-  }
-
-  function awardKey(kind, id) {
-    return `${kind}:${Math.trunc(Number(id) || 0)}`;
-  }
-
-  function awardCatalogRows() {
-    const completedMedals = new Set(state.awards.medals.map((award) => Math.trunc(Number(award?.id))));
-    const completedHonors = new Set(state.awards.honors.map((award) => Math.trunc(Number(award?.id))));
-    return [
-      ...state.awards.catalogMedals.map((award) => ({ ...award, kind: 'medal', completed: completedMedals.has(Math.trunc(Number(award?.id))) })),
-      ...state.awards.catalogHonors.map((award) => ({ ...award, kind: 'honor', completed: completedHonors.has(Math.trunc(Number(award?.id))) })),
-    ].filter((award) => Number(award?.id) > 0 && award?.name);
-  }
-
-  function awardByKey(key) {
-    return awardCatalogRows().find((award) => awardKey(award.kind, award.id) === key) || null;
-  }
-
-  function uncompletedAwards() {
-    const filter = state.settings.awardTypeFilter;
-    return awardCatalogRows()
-      .filter((award) => !award.completed && (filter === 'all' || award.kind === filter))
-      .sort((left, right) => {
-        const leftTracked = state.settings.trackedAwards.includes(awardKey(left.kind, left.id));
-        const rightTracked = state.settings.trackedAwards.includes(awardKey(right.kind, right.id));
-        return Number(rightTracked) - Number(leftTracked)
-          || String(left?.type?.title || '').localeCompare(String(right?.type?.title || ''))
-          || String(left.name).localeCompare(String(right.name));
-      });
-  }
-
-  function isWeaponFinisherAward(award) {
-    const text = `${award?.name || ''} ${award?.description || ''}`;
-    return /\b1,?000\b/i.test(text) && /finishing hits?/i.test(text) && /weapon/i.test(text);
-  }
-
-  function finisherProgress() {
-    const rows = Object.entries(FINISHER_LABELS).map(([key, label]) => ({
-      key,
-      label,
-      value: Math.max(0, Math.trunc(Number(state.awards.finishingHits?.[key]) || 0)),
-    }));
-    const rawTotal = rows.reduce((sum, row) => sum + row.value, 0);
-    const cappedTotal = rows.reduce((sum, row) => sum + Math.min(FINISHER_TARGET, row.value), 0);
-    const remaining = rows.filter((row) => row.value < FINISHER_TARGET);
-    return { rows, rawTotal, cappedTotal, remaining, targetTotal: rows.length * FINISHER_TARGET };
-  }
-
-  function awardProgressMarkup(award, { compact = false } = {}) {
-    if (!isWeaponFinisherAward(award)) return '';
-    const progress = finisherProgress();
-    const percent = progress.targetTotal ? Math.min(100, Math.floor(progress.cappedTotal / progress.targetTotal * 100)) : 0;
-    const missing = progress.remaining.length
-      ? progress.remaining.map((row) => `${row.label} ${row.value.toLocaleString()}/${FINISHER_TARGET.toLocaleString()}`).join(' · ')
-      : 'Every weapon category is at 1,000 or more.';
-    return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>${progress.cappedTotal.toLocaleString()} / ${progress.targetTotal.toLocaleString()} category progress (${percent}%)</strong><span>${progress.rawTotal.toLocaleString()} total finishing hits</span><small>${escapeHtml(missing)}</small></div>`;
-  }
-
-  function trackedAwardsMarkup() {
-    const tracked = state.settings.trackedAwards.map(awardByKey).filter(Boolean);
-    if (!tracked.length) return '';
-    return `<section class="tracked-awards"><div class="tracked-awards-head"><strong>Tracked awards</strong><button data-action="refresh-awards" title="Refresh completed awards and finisher counts" ${state.awardsLoading ? 'disabled' : ''}>${state.awardsLoading ? 'Refreshing…' : '↻'}</button></div><div class="tracked-award-grid">${tracked.map((award) => `
-      <article class="tracked-award ${award.completed ? 'completed' : ''}">
-        <div><strong>${escapeHtml(award.name)}</strong><small>${award.completed ? 'Completed' : escapeHtml(award.kind === 'medal' ? 'Medal' : 'Honor')}</small></div>
-        <button data-action="untrack-award" data-award-key="${escapeHtml(awardKey(award.kind, award.id))}" title="Stop tracking">×</button>
-        <p>${escapeHtml(award.description || 'Requirement not provided by Torn.')}</p>
-        ${awardProgressMarkup(award, { compact: true })}
-      </article>`).join('')}</div></section>`;
-  }
-
-  function awardsMarkup() {
-    const allRows = awardCatalogRows();
-    const incomplete = uncompletedAwards();
-    const meritInfo = state.awards.merits;
-    const refreshed = Number(state.awards.playerFetchedAt) > 0 ? new Date(state.awards.playerFetchedAt).toLocaleString() : 'never';
-    const trackedFull = state.settings.trackedAwards.length >= TRACKED_AWARD_LIMIT;
-    if (!state.settings.apiKey) {
-      return '<div class="empty"><strong>Add an API key in Settings.</strong>A Minimal or higher key can load your medals, honors, merits, and finisher counts.<br><button data-action="settings">Open Settings</button></div>';
-    }
-    if (!allRows.length && state.awardsLoading) return '<div class="empty"><strong>Loading awards…</strong>Torn is returning your completed awards and the award catalog.</div>';
-    if (!allRows.length) {
-      return `<div class="empty"><strong>Awards have not been loaded.</strong>${escapeHtml(state.awards.error || 'Use Refresh awards to load them.')}<br><button data-action="refresh-awards">Refresh awards</button></div>`;
-    }
-    return `<section class="awards-view">
-      <div class="awards-summary">
-        <div><strong>${incomplete.length.toLocaleString()}</strong><span>uncompleted shown</span></div>
-        <div><strong>${Number(meritInfo?.available || 0).toLocaleString()}</strong><span>unspent merits</span></div>
-        <div><strong>${state.settings.trackedAwards.length}/${TRACKED_AWARD_LIMIT}</strong><span>tracked</span></div>
-      </div>
-      <div class="awards-controls">
-        <label>Show <select data-field="award-type-filter"><option value="all" ${state.settings.awardTypeFilter === 'all' ? 'selected' : ''}>All awards</option><option value="medal" ${state.settings.awardTypeFilter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${state.settings.awardTypeFilter === 'honor' ? 'selected' : ''}>Honors</option></select></label>
-        <span>Updated ${escapeHtml(refreshed)}</span>
-        <button data-action="refresh-awards" ${state.awardsLoading ? 'disabled' : ''}>${state.awardsLoading ? 'Refreshing…' : 'Refresh awards'}</button>
-      </div>
-      ${state.awards.error ? `<div class="awards-error">${escapeHtml(state.awards.error)}</div>` : ''}
-      <div class="award-list">${incomplete.map((award) => {
-        const key = awardKey(award.kind, award.id);
-        const tracked = state.settings.trackedAwards.includes(key);
-        return `<article class="award-card ${tracked ? 'tracked' : ''}">
-          <div class="award-card-head"><div><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award.kind === 'medal' ? 'Medal' : 'Honor')}${award?.type?.title ? ` · ${escapeHtml(award.type.title)}` : ''}</small></div><button data-action="${tracked ? 'untrack-award' : 'track-award'}" data-award-key="${escapeHtml(key)}" ${!tracked && trackedFull ? 'disabled title="Untrack an award first; the dashboard shows up to three."' : ''}>${tracked ? 'Tracking' : 'Track'}</button></div>
-          <p>${escapeHtml(award.description || 'Requirement not provided by Torn.')}</p>
-          ${awardProgressMarkup(award)}
-        </article>`;
-      }).join('') || '<div class="empty"><strong>Nothing left in this filter.</strong>Every award in this category is complete.</div>'}</div>
-    </section>`;
-  }
-
-  async function refreshAwards({ forceCatalog = false } = {}) {
-    if (state.awardsLoading) return;
-    dashboardNetworkLease?.refresh?.();
-    if (!ownsDashboardNetworkLease()) {
-      state.awards.error = 'Another Torn tab currently owns Dashboard API polling. Focus this tab and try again.';
-      render();
-      return;
-    }
-    if (!state.settings.apiKey) {
-      state.awards.error = 'Add a Torn API key in Settings.';
-      render();
-      return;
-    }
-    state.awardsLoading = true;
-    state.awards.error = '';
-    render();
-    const catalogDue = forceCatalog || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length
-      || Date.now() - Number(state.awards.catalogFetchedAt) >= AWARD_CATALOG_MAX_AGE_MS;
-    const requests = [
-      api('user', { selections: 'medals,honors,merits,personalstats', cat: 'finishing_hits' }, { priority: 'high' }),
-      catalogDue ? api('torn', { selections: 'medals,honors' }, { priority: 'normal' }) : Promise.resolve(null),
-    ];
-    const [playerResult, catalogResult] = await Promise.allSettled(requests);
-    const errors = [];
-    if (playerResult.status === 'fulfilled') {
-      const body = playerResult.value;
-      state.awards.medals = Array.isArray(body?.medals) ? body.medals : [];
-      state.awards.honors = Array.isArray(body?.honors) ? body.honors : [];
-      state.awards.merits = body?.merits && typeof body.merits === 'object' ? body.merits : null;
-      state.awards.finishingHits = finishingHitsFromPersonalStats(body);
-      state.awards.playerFetchedAt = Date.now();
-    } else if (!isDashboardOwnerPause(playerResult.reason)) {
-      errors.push(playerResult.reason?.message || 'Could not load your completed awards.');
-    }
-    if (catalogResult.status === 'fulfilled' && catalogResult.value) {
-      const body = catalogResult.value;
-      state.awards.catalogMedals = Array.isArray(body?.medals) ? body.medals : [];
-      state.awards.catalogHonors = Array.isArray(body?.honors) ? body.honors : [];
-      state.awards.catalogFetchedAt = Date.now();
-    } else if (catalogResult.status === 'rejected' && !isDashboardOwnerPause(catalogResult.reason)) {
-      errors.push(catalogResult.reason?.message || 'Could not load the award catalog.');
-    }
-    state.awards.error = errors.join(' ');
-    state.awardsLoading = false;
-    saveAwardCache();
-    render();
-  }
-
   function cityItemsRemainingToday() {
     const cityNow = numberFromPersonalStats(state.data.cityItemsNow);
     const cityAtReset = numberFromPersonalStats(state.data.cityItemsAtReset);
@@ -4141,8 +3907,6 @@
         button:hover { background: #414955; }
         button:disabled { cursor: not-allowed; opacity: .55; }
         .icon-button { width: 28px; height: 26px; padding: 0; font-size: 15px; }
-        .view-button { height: 26px; padding: 0 8px; color: #d7e7f2; font-size: 11px; font-weight: 750; }
-        .view-button.active { border-color: rgba(113,214,155,.58); color: #dff8e9; background: #234134; }
         .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; overflow-anchor: none; }
         .panel.user-sized .body { flex: 1 1 auto; max-height: none; }
         .status { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px; color: #aeb7c1; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; }
@@ -4152,7 +3916,6 @@
         .toolbar button { flex: 1; padding: 5px 6px; font-size: 11px; }
         .empty { padding: 22px 16px; text-align: center; color: #aeb7c1; }
         .empty strong { display: block; margin-bottom: 3px; color: #e7ecef; }
-        .empty button { margin-top: 9px; padding: 5px 9px; }
         .alert { display: grid; grid-template-columns: 8px minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.075); }
         .alert:last-child { border-bottom: 0; }
         .tone { width: 8px; height: 34px; border-radius: 99px; background: #ffca55; }
@@ -4175,45 +3938,6 @@
         .market-listing-alert .alert-title { overflow-wrap: anywhere; }
         .market-listing-alert .alert-detail { display: -webkit-box; overflow: hidden; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
         .market-listing-alert .alert-actions { grid-column: 2; flex-wrap: wrap; justify-content: flex-start; align-self: end; }
-        .tracked-awards { padding: 9px 10px 11px; border-top: 1px solid rgba(255,255,255,.09); background: #1d2227; }
-        .tracked-awards-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; color: #e9eef2; }
-        .tracked-awards-head button { width: 28px; height: 24px; padding: 0; }
-        .tracked-award-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 7px; }
-        .tracked-award { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) 22px; align-content: start; gap: 4px; padding: 8px; border: 1px solid rgba(102,178,232,.27); border-radius: 8px; background: #202b34; }
-        .tracked-award.completed { border-color: rgba(101,214,155,.45); background: #203129; }
-        .tracked-award > div:first-child { min-width: 0; }
-        .tracked-award strong, .tracked-award small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .tracked-award small { margin-top: 2px; color: #8fa0ac; font-size: 9px; text-transform: uppercase; }
-        .tracked-award > button { width: 22px; height: 22px; padding: 0; color: #cbd2d8; }
-        .tracked-award > p { grid-column: 1 / -1; margin: 2px 0 0; display: -webkit-box; overflow: hidden; color: #b5c0c8; font-size: 10px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-        .awards-view { min-height: 0; }
-        .awards-summary { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; padding: 10px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1d2227; }
-        .awards-summary > div { padding: 8px; text-align: center; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: #272d33; }
-        .awards-summary strong, .awards-summary span { display: block; }
-        .awards-summary strong { color: #f3f6f8; font-size: 17px; }
-        .awards-summary span { margin-top: 2px; color: #96a2ac; font-size: 9px; text-transform: uppercase; }
-        .awards-controls { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); color: #9eabb4; font-size: 10px; }
-        .awards-controls label { display: flex; align-items: center; gap: 5px; }
-        .awards-controls select { padding: 4px 6px; color: #eef2f5; background: #111418; }
-        .awards-controls span { min-width: 0; flex: 1; text-align: right; }
-        .awards-controls button { padding: 5px 8px; white-space: nowrap; }
-        .awards-error { margin: 8px 10px 0; padding: 7px 8px; border: 1px solid rgba(255,104,104,.35); border-radius: 7px; color: #ffc0c0; background: #3a2525; font-size: 10px; }
-        .award-list { min-height: 0; }
-        .award-card { padding: 10px; border-bottom: 1px solid rgba(255,255,255,.075); }
-        .award-card.tracked { background: rgba(55,101,132,.16); }
-        .award-card-head { display: flex; align-items: flex-start; gap: 8px; }
-        .award-card-head > div { min-width: 0; flex: 1; }
-        .award-card-head strong, .award-card-head small { display: block; }
-        .award-card-head strong { color: #f3f6f8; }
-        .award-card-head small { margin-top: 2px; color: #8fa0ac; font-size: 9px; text-transform: uppercase; }
-        .award-card-head button { min-width: 58px; padding: 4px 7px; font-size: 10px; }
-        .award-card.tracked .award-card-head button { border-color: rgba(101,214,155,.42); color: #dff8e9; background: #234134; }
-        .award-card > p { margin: 6px 0 0; color: #b5c0c8; font-size: 11px; line-height: 1.4; }
-        .award-progress { display: grid; gap: 3px; margin-top: 7px; padding: 7px; border: 1px solid rgba(255,202,85,.22); border-radius: 7px; color: #d8dee3; background: #302d24; font-size: 10px; }
-        .award-progress strong { color: #ffdc8b; }
-        .award-progress span, .award-progress small { color: #adb7bf; white-space: normal; }
-        .tracked-award .award-progress { grid-column: 1 / -1; margin-top: 2px; }
-        .tracked-award .award-progress.compact small { display: -webkit-box; overflow: hidden; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
         .settings { padding: 12px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1d2126; }
         .field { display: grid; gap: 5px; margin-bottom: 10px; color: #d9dfe4; }
         .field small { color: #8f9aa5; font-weight: 400; }
@@ -4305,13 +4029,12 @@
         .exclusion { color: #d7c994; }
         details { margin-top: 10px; color: #dbb184; font-size: 11px; }
         details ul { margin: 6px 0 0; padding-left: 18px; }
-        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .view-button { width: 28px; padding: 0; overflow: hidden; font-size: 0; } .view-button::before { content: '★'; font-size: 14px; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .tracked-award-grid { grid-template-columns: 1fr; } .awards-controls { flex-wrap: wrap; } .awards-controls span { order: 3; flex-basis: 100%; text-align: left; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
+        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
       </style>
       <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
           <div class="title">Daily Dashboard <span class="count">${alerts.length}</span></div>
           <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
-          <button class="view-button ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-awards" title="${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open medals and honors'}">${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Alerts' : 'Awards'}</button>
           <button class="icon-button" data-action="toggle-mute" title="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-label="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-pressed="${state.settings.muteSounds ? 'true' : 'false'}">${state.settings.muteSounds ? '🔇' : '🔊'}</button>
           <button class="icon-button" data-action="settings" title="Settings" aria-label="Settings">⚙</button>
           <button class="icon-button" data-action="collapse" title="${collapsed ? 'Expand' : 'Minimize'}" aria-label="${collapsed ? 'Expand' : 'Minimize'}">${collapsed ? '▾' : '▴'}</button>
@@ -4319,15 +4042,14 @@
         ${collapsed ? '' : `
           <div class="body">
             ${state.settings.settingsOpen ? settingsMarkup() : ''}
-            ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : `
-              <div class="status"><span>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
-              <div class="toolbar">
-                <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
-                <button data-action="snooze-all" data-duration="${TORN_DAY_MS}">Snooze all 1d</button>
-                <button data-action="set-turtle-timer" ${state.turtleChecking ? 'disabled' : ''}>${state.turtleChecking ? 'Checking hospital…' : turtleSeconds > 0 ? `Reset Turtle (${formatDuration(turtleSeconds)})` : 'Set Turtle timer'}</button>
-                ${turtleSeconds > 0 ? '<button data-action="clear-turtle-timer" title="Cancel the saved Turtle timer">Cancel Turtle</button>' : ''}
-              </div>
-              <div class="alerts">
+            <div class="status"><span>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
+            <div class="toolbar">
+              <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
+              <button data-action="snooze-all" data-duration="${TORN_DAY_MS}">Snooze all 1d</button>
+              <button data-action="set-turtle-timer" ${state.turtleChecking ? 'disabled' : ''}>${state.turtleChecking ? 'Checking hospital…' : turtleSeconds > 0 ? `Reset Turtle (${formatDuration(turtleSeconds)})` : 'Set Turtle timer'}</button>
+              ${turtleSeconds > 0 ? '<button data-action="clear-turtle-timer" title="Cancel the saved Turtle timer">Cancel Turtle</button>' : ''}
+            </div>
+            <div class="alerts">
               ${alerts.length ? alerts.map((alert) => `
                 <article class="alert ${escapeHtml(alert.tone)} ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:') ? 'market-listing-alert' : ''}">
                   <span class="tone" aria-hidden="true"></span>
@@ -4349,9 +4071,7 @@
               `).join('') : `
                 <div class="empty"><strong>${state.settings.apiKey ? 'You’re caught up.' : 'Visible-page checks are active.'}</strong>${state.settings.apiKey ? 'No active, unsnoozed reminders.' : 'Add an API key in Settings for reminders that are not exposed on this page.'}</div>
               `}
-              </div>
-              ${trackedAwardsMarkup()}
-            `}
+            </div>
           </div>`}
       </section>`;
     const restoreScroll = () => {
@@ -4397,21 +4117,9 @@
       saveSettings();
       render();
       return;
-    } else if (action === 'toggle-awards') {
-      const openingAwards = state.settings.activeView !== 'awards' || state.settings.settingsOpen;
-      state.settings.activeView = openingAwards ? 'awards' : 'alerts';
-      state.settings.settingsOpen = false;
-      state.settings.collapsed = false;
-      saveSettings();
-      render();
-      if (openingAwards && (!state.awards.playerFetchedAt || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length)) {
-        refreshAwards();
-      }
-      return;
     } else if (action === 'collapse') {
       state.settings.collapsed = !state.settings.collapsed;
     } else if (action === 'settings') {
-      state.settings.activeView = 'alerts';
       state.settings.settingsOpen = !state.settings.settingsOpen;
       state.settings.collapsed = false;
       saveSettings();
@@ -4421,17 +4129,6 @@
     } else if (action === 'refresh') {
       refresh({ force: true });
       return;
-    } else if (action === 'refresh-awards') {
-      refreshAwards();
-      return;
-    } else if (action === 'track-award') {
-      const key = String(button.dataset.awardKey || '');
-      if (awardByKey(key) && !state.settings.trackedAwards.includes(key) && state.settings.trackedAwards.length < TRACKED_AWARD_LIMIT) {
-        state.settings.trackedAwards.push(key);
-      }
-    } else if (action === 'untrack-award') {
-      const key = String(button.dataset.awardKey || '');
-      state.settings.trackedAwards = state.settings.trackedAwards.filter((trackedKey) => trackedKey !== key);
     } else if (action === 'pause-api') {
       const minutes = Math.max(1, Number(shadow.querySelector('[data-field="api-pause-duration"]')?.value) || 15);
       state.settings.apiPausedUntil = Date.now() + minutes * 60_000;
@@ -4613,16 +4310,6 @@
       state.lastJobAddictionUpdated = 0;
       state.lastClusterUpdated = 0;
       state.nextApiChecks = {};
-      state.awards = {
-        ...state.awards,
-        playerFetchedAt: 0,
-        medals: [],
-        honors: [],
-        merits: null,
-        finishingHits: {},
-        error: '',
-      };
-      saveAwardCache();
       saveCheckCache();
     } else if (action === 'save-key') {
       const input = shadow.querySelector('[data-field="api-key"]');
@@ -4644,16 +4331,6 @@
         state.lastJobAddictionUpdated = 0;
         state.lastClusterUpdated = 0;
         state.nextApiChecks = {};
-        state.awards = {
-          ...state.awards,
-          playerFetchedAt: 0,
-          medals: [],
-          honors: [],
-          merits: null,
-          finishingHits: {},
-          error: '',
-        };
-        saveAwardCache();
         invalidateAlertSnapshot();
         saveCheckCache();
       }
@@ -4720,8 +4397,6 @@
     }
     if (event.target.matches('[data-field="api-refresh-minutes"]')) {
       state.settings.apiDailyRefreshMinutes = Number(event.target.value);
-    } else if (event.target.matches('[data-field="award-type-filter"]')) {
-      state.settings.awardTypeFilter = ['medal', 'honor'].includes(event.target.value) ? event.target.value : 'all';
     } else if (event.target.matches('[data-field="market-refresh-minutes"]')) {
       if (event.target.value === 'cache-aligned') {
         state.settings.marketRefreshMode = 'cache-aligned';
@@ -5148,11 +4823,6 @@
     GM_addValueChangeListener(ITEM_CATALOG_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote) return;
       state.itemCatalog = loadItemCatalogCache();
-      render({ force: true });
-    });
-    GM_addValueChangeListener(AWARD_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote) return;
-      state.awards = loadAwardCache();
       render({ force: true });
     });
     GM_addValueChangeListener(BAZAAR_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
