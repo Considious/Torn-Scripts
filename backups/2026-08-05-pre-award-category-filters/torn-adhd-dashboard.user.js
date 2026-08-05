@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.17
+// @version      1.4.16
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -342,7 +342,7 @@
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
       activeView: saved?.activeView === 'awards' ? 'awards' : 'alerts',
-      awardTypeFilter: normalizedAwardTypeFilter(saved?.awardTypeFilter),
+      awardTypeFilter: ['all', 'medal', 'honor'].includes(saved?.awardTypeFilter) ? saved.awardTypeFilter : 'all',
       trackedAwards: Array.isArray(saved?.trackedAwards)
         ? [...new Set(saved.trackedAwards.map(String).filter((key) => /^(?:medal|honor):\d+$/.test(key)))].slice(0, TRACKED_AWARD_LIMIT)
         : [],
@@ -2582,27 +2582,13 @@
     return `${kind}:${Math.trunc(Number(id) || 0)}`;
   }
 
-  function normalizedAwardTypeFilter(value) {
-    const filter = String(value || 'all').toLowerCase();
-    if (filter === 'honor:default') return 'honor';
-    return /^(?:all|medal|honor|medal:[a-z0-9_-]+|honor:[a-z0-9_-]+)$/.test(filter) ? filter : 'all';
-  }
-
-  function awardCategoryTitle(award) {
-    return String(award?.type?.title || '').trim().toLowerCase();
-  }
-
-  function isDefaultHonorAward(award) {
-    return award?.kind === 'honor' && (awardCategoryTitle(award) === 'default' || Number(award?.type?.id) === 1);
-  }
-
   function awardCatalogRows() {
     const completedMedals = new Set(state.awards.medals.map((award) => Math.trunc(Number(award?.id))));
     const completedHonors = new Set(state.awards.honors.map((award) => Math.trunc(Number(award?.id))));
     return [
       ...state.awards.catalogMedals.map((award) => ({ ...award, kind: 'medal', completed: completedMedals.has(Math.trunc(Number(award?.id))) })),
       ...state.awards.catalogHonors.map((award) => ({ ...award, kind: 'honor', completed: completedHonors.has(Math.trunc(Number(award?.id))) })),
-    ].filter((award) => Number(award?.id) > 0 && award?.name && !isDefaultHonorAward(award));
+    ].filter((award) => Number(award?.id) > 0 && award?.name);
   }
 
   function awardByKey(key) {
@@ -2617,19 +2603,8 @@
       .trim();
   }
 
-  function awardNumericRequirementText(award) {
-    const numberWords = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
-    return awardRequirementText(award).replace(/\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/gi, (word) => String(numberWords[word.toLowerCase()]));
-  }
-
-  function normalizedAwardRequirementText(award) {
-    return awardNumericRequirementText(award)
-      .toLowerCase()
-      .replace(/\b(year|month|week|day|hour|minute|second)s?\b/g, '$1');
-  }
-
   function awardRequirementNumbers(award) {
-    const matches = awardNumericRequirementText(award).match(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi) || [];
+    const matches = awardRequirementText(award).match(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi) || [];
     const multipliers = { k: 1e3, thousand: 1e3, m: 1e6, mil: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9, t: 1e12, trillion: 1e12 };
     return matches.map((match) => {
       const clean = match.toLowerCase().replace(/[$,\s]/g, '').replace(/(?:st|nd|rd|th)$/i, '');
@@ -2642,7 +2617,8 @@
   function awardProgressionFamily(award) {
     const numbers = awardRequirementNumbers(award);
     if (!numbers.length) return '';
-    const normalizedRequirement = normalizedAwardRequirementText(award)
+    const normalizedRequirement = awardRequirementText(award)
+      .toLowerCase()
       .replace(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi, '#')
       .replace(/\s+/g, ' ')
       .trim();
@@ -2658,13 +2634,7 @@
       && candidateNumbers.some((value, index) => value < laterNumbers[index]);
   }
 
-  function isStorePurchaseHonor(award) {
-    return award?.kind === 'honor' && /\bpurchased from (?:the )?(?:token shop|points building)(?:\s+or\s+(?:the )?(?:token shop|points building))?\b/i.test(awardRequirementText(award));
-  }
-
   function collapseAwardProgressions(rows) {
-    const storePurchases = rows.filter(isStorePurchaseHonor).sort((left, right) => Number(left.id) - Number(right.id) || String(left.name).localeCompare(String(right.name)));
-    const storeReminder = storePurchases.find((award) => state.settings.trackedAwards.includes(awardKey(award.kind, award.id))) || storePurchases[0] || null;
     const families = new Map();
     rows.forEach((award) => {
       const family = awardProgressionFamily(award) || `unique:${awardKey(award.kind, award.id)}`;
@@ -2673,46 +2643,15 @@
     });
     return rows.filter((award) => {
       const key = awardKey(award.kind, award.id);
-      if (isStorePurchaseHonor(award)) return award === storeReminder;
       if (state.settings.trackedAwards.includes(key)) return true;
       const family = awardProgressionFamily(award) || `unique:${key}`;
       return !families.get(family).some((candidate) => candidate !== award && isEarlierAwardRequirement(candidate, award));
     });
   }
 
-  function awardMatchesTypeFilter(award, filter = state.settings.awardTypeFilter) {
-    const normalized = normalizedAwardTypeFilter(filter);
-    if (normalized === 'all') return true;
-    const [kind, category = ''] = normalized.split(':');
-    return award.kind === kind && (!category || awardCategoryTitle(award) === category);
-  }
-
-  function awardCategoryLabel(category) {
-    if (category === 'misc') return 'Miscellaneous';
-    return category.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-  }
-
-  function awardFilterOptionsMarkup() {
-    const selected = state.settings.awardTypeFilter;
-    const option = (value, label) => `<option value="${escapeHtml(value)}" ${selected === value ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-    const categories = (kind) => [...new Set(awardCatalogRows().filter((award) => award.kind === kind).map(awardCategoryTitle).filter(Boolean))].sort();
-    return `${option('all', 'All awards')}
-      <optgroup label="Medals">${option('medal', 'All medals')}${categories('medal').map((category) => option(`medal:${category}`, awardCategoryLabel(category))).join('')}</optgroup>
-      <optgroup label="Honors">${option('honor', 'All honors')}${categories('honor').map((category) => option(`honor:${category}`, awardCategoryLabel(category))).join('')}</optgroup>`;
-  }
-
-  function pruneUnavailableTrackedAwards() {
-    const available = awardCatalogRows();
-    if (!available.length) return false;
-    const validKeys = new Set(available.map((award) => awardKey(award.kind, award.id)));
-    const next = state.settings.trackedAwards.filter((key) => validKeys.has(key));
-    if (next.length === state.settings.trackedAwards.length) return false;
-    state.settings.trackedAwards = next;
-    return true;
-  }
-
   function uncompletedAwards({ collapseProgressions = true } = {}) {
-    const rows = awardCatalogRows().filter((award) => !award.completed && awardMatchesTypeFilter(award));
+    const filter = state.settings.awardTypeFilter;
+    const rows = awardCatalogRows().filter((award) => !award.completed && (filter === 'all' || award.kind === filter));
     return (collapseProgressions ? collapseAwardProgressions(rows) : rows)
       .sort((left, right) => {
         const leftTracked = state.settings.trackedAwards.includes(awardKey(left.kind, left.id));
@@ -2795,8 +2734,7 @@
     const hiddenMilestones = Math.max(0, allIncomplete.length - incomplete.length);
     const meritInfo = state.awards.merits;
     const refreshed = Number(state.awards.playerFetchedAt) > 0 ? new Date(state.awards.playerFetchedAt).toLocaleString() : 'never';
-    const activeTrackedAwards = state.settings.trackedAwards.map(awardByKey).filter(Boolean);
-    const trackedFull = activeTrackedAwards.length >= TRACKED_AWARD_LIMIT;
+    const trackedFull = state.settings.trackedAwards.length >= TRACKED_AWARD_LIMIT;
     if (!state.settings.apiKey) {
       return '<div class="empty"><strong>Add an API key in Settings.</strong>A Minimal or higher key can load your medals, honors, merits, and finisher counts.<br><button data-action="settings">Open Settings</button></div>';
     }
@@ -2808,10 +2746,10 @@
       <div class="awards-summary">
         <div><strong>${incomplete.length.toLocaleString()}</strong><span>next goals shown</span></div>
         <div><strong>${Number(meritInfo?.available || 0).toLocaleString()}</strong><span>unspent merits</span></div>
-        <div><strong>${activeTrackedAwards.length}/${TRACKED_AWARD_LIMIT}</strong><span>tracked</span></div>
+        <div><strong>${state.settings.trackedAwards.length}/${TRACKED_AWARD_LIMIT}</strong><span>tracked</span></div>
       </div>
       <div class="awards-controls">
-        <label>Show <select data-field="award-type-filter">${awardFilterOptionsMarkup()}</select></label>
+        <label>Show <select data-field="award-type-filter"><option value="all" ${state.settings.awardTypeFilter === 'all' ? 'selected' : ''}>All awards</option><option value="medal" ${state.settings.awardTypeFilter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${state.settings.awardTypeFilter === 'honor' ? 'selected' : ''}>Honors</option></select></label>
         <span>Updated ${escapeHtml(refreshed)}${hiddenMilestones ? ` · ${hiddenMilestones.toLocaleString()} later milestone${hiddenMilestones === 1 ? '' : 's'} hidden` : ''}</span>
         <button data-action="refresh-awards" ${state.awardsLoading ? 'disabled' : ''}>${state.awardsLoading ? 'Refreshing…' : 'Refresh awards'}</button>
       </div>
@@ -2873,7 +2811,6 @@
     }
     state.awards.error = errors.join(' ');
     state.awardsLoading = false;
-    if (pruneUnavailableTrackedAwards()) saveSettings();
     saveAwardCache();
     render();
   }
@@ -4601,7 +4538,6 @@
       return;
     } else if (action === 'track-award') {
       const key = String(button.dataset.awardKey || '');
-      pruneUnavailableTrackedAwards();
       if (awardByKey(key) && !state.settings.trackedAwards.includes(key) && state.settings.trackedAwards.length < TRACKED_AWARD_LIMIT) {
         state.settings.trackedAwards.push(key);
       }
@@ -4899,7 +4835,7 @@
     if (event.target.matches('[data-field="api-refresh-minutes"]')) {
       state.settings.apiDailyRefreshMinutes = Number(event.target.value);
     } else if (event.target.matches('[data-field="award-type-filter"]')) {
-      state.settings.awardTypeFilter = normalizedAwardTypeFilter(event.target.value);
+      state.settings.awardTypeFilter = ['medal', 'honor'].includes(event.target.value) ? event.target.value : 'all';
     } else if (event.target.matches('[data-field="market-refresh-minutes"]')) {
       if (event.target.value === 'cache-aligned') {
         state.settings.marketRefreshMode = 'cache-aligned';
