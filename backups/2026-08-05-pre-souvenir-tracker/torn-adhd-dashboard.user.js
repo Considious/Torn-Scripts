@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.15
+// @version      1.4.14
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -75,33 +75,6 @@
     mechanical: 'Mechanical',
     hand_to_hand: 'Hand-to-hand',
   });
-  const SOUVENIR_ASSIGNMENTS = Object.freeze([
-    { item: 'Mayan Statue', location: 'Mexico' },
-    { item: 'Hockey Stick', location: 'Canada' },
-    { item: 'Pele Charm', location: 'Hawaii' },
-    { item: 'Soccer Ball', location: 'Argentina' },
-    { item: 'Jade Buddha', location: 'China' },
-    { item: 'Maneki Neko', location: 'Japan' },
-    { item: 'Elephant Statue', location: 'South Africa' },
-    { item: 'Afro Comb', location: 'South Africa' },
-    { item: 'Compass', location: 'Argentina' },
-    { item: 'Sextant', location: 'UK' },
-    { item: 'Yucca Plant', location: 'Mexico' },
-    { item: 'Fire Hydrant', location: 'Canada' },
-    { item: 'Model Space Ship', location: 'UK' },
-    { item: 'Ship in a Bottle', location: 'UK' },
-    { item: 'Paper Weight', location: 'UK' },
-    { item: 'Tailors Dummy', location: 'UK' },
-    { item: 'Sumo Doll', location: 'Japan' },
-    { item: 'Chopsticks', location: 'Japan' },
-    { item: 'Dart Board', location: 'UK' },
-    { item: 'Crazy Straw', location: 'Mexico' },
-    { item: 'Sensu', location: 'Japan' },
-    { item: 'Yakitori Lantern', location: 'Japan' },
-    { item: 'Snowboard', location: 'Switzerland' },
-    { item: 'Steel Drum', location: 'Caymans' },
-    { item: 'Nodding Turtle', location: 'Caymans' },
-  ]);
   const MARKET_ITEM_TYPES = [
     ['All', 'All categories'],
     ['Drug', 'Drugs'],
@@ -557,7 +530,6 @@
         medals: [],
         honors: [],
         merits: null,
-        userId: 0,
         finishingHits: {},
         error: '',
       };
@@ -570,7 +542,6 @@
       medals: Array.isArray(cached.medals) ? cached.medals : [],
       honors: Array.isArray(cached.honors) ? cached.honors : [],
       merits: cached.merits && typeof cached.merits === 'object' ? cached.merits : null,
-      userId: Math.max(0, Math.trunc(Number(cached.userId) || 0)),
       finishingHits: cached.finishingHits && typeof cached.finishingHits === 'object' && !Array.isArray(cached.finishingHits)
         ? cached.finishingHits
         : {},
@@ -2613,23 +2584,6 @@
     return /\b1,?000\b/i.test(text) && /finishing hits?/i.test(text) && /weapon/i.test(text);
   }
 
-  function isSouvenirAward(award) {
-    const text = `${award?.name || ''} ${award?.description || ''}`;
-    return /souven(?:ir|ier)/i.test(text);
-  }
-
-  function souvenirAssignmentForUserId(userId) {
-    const normalizedId = Math.trunc(Number(userId));
-    if (!(normalizedId > 0)) return null;
-    const lastTwo = normalizedId % 100;
-    const index = lastTwo % SOUVENIR_ASSIGNMENTS.length;
-    return {
-      ...SOUVENIR_ASSIGNMENTS[index],
-      code: String(index).padStart(2, '0'),
-      lastTwo: String(lastTwo).padStart(2, '0'),
-    };
-  }
-
   function finisherProgress() {
     const rows = Object.entries(FINISHER_LABELS).map(([key, label]) => ({
       key,
@@ -2643,22 +2597,13 @@
   }
 
   function awardProgressMarkup(award, { compact = false } = {}) {
-    if (isWeaponFinisherAward(award)) {
-      const progress = finisherProgress();
-      const percent = progress.targetTotal ? Math.min(100, Math.floor(progress.cappedTotal / progress.targetTotal * 100)) : 0;
-      const missing = progress.remaining.length
-        ? progress.remaining.map((row) => `${row.label} ${row.value.toLocaleString()}/${FINISHER_TARGET.toLocaleString()}`).join(' · ')
-        : 'Every weapon category is at 1,000 or more.';
-      return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>${progress.cappedTotal.toLocaleString()} / ${progress.targetTotal.toLocaleString()} category progress (${percent}%)</strong><span>${progress.rawTotal.toLocaleString()} total finishing hits</span><small>${escapeHtml(missing)}</small></div>`;
-    }
-    if (isSouvenirAward(award)) {
-      const assignment = souvenirAssignmentForUserId(state.awards.userId);
-      if (!assignment) {
-        return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>Souvenir not calculated yet</strong><small>Refresh awards to load your Torn user ID.</small></div>`;
-      }
-      return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>Your souvenir: ${escapeHtml(assignment.item)}</strong><span>${escapeHtml(assignment.location)} · code ${assignment.code}</span><small>User ID ending ${assignment.lastTwo} → ${assignment.code}</small></div>`;
-    }
-    return '';
+    if (!isWeaponFinisherAward(award)) return '';
+    const progress = finisherProgress();
+    const percent = progress.targetTotal ? Math.min(100, Math.floor(progress.cappedTotal / progress.targetTotal * 100)) : 0;
+    const missing = progress.remaining.length
+      ? progress.remaining.map((row) => `${row.label} ${row.value.toLocaleString()}/${FINISHER_TARGET.toLocaleString()}`).join(' · ')
+      : 'Every weapon category is at 1,000 or more.';
+    return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>${progress.cappedTotal.toLocaleString()} / ${progress.targetTotal.toLocaleString()} category progress (${percent}%)</strong><span>${progress.rawTotal.toLocaleString()} total finishing hits</span><small>${escapeHtml(missing)}</small></div>`;
   }
 
   function trackedAwardsMarkup() {
@@ -2729,7 +2674,7 @@
     const catalogDue = forceCatalog || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length
       || Date.now() - Number(state.awards.catalogFetchedAt) >= AWARD_CATALOG_MAX_AGE_MS;
     const requests = [
-      api('user', { selections: 'basic,medals,honors,merits,personalstats', cat: 'finishing_hits' }, { priority: 'high' }),
+      api('user', { selections: 'medals,honors,merits,personalstats', cat: 'finishing_hits' }, { priority: 'high' }),
       catalogDue ? api('torn', { selections: 'medals,honors' }, { priority: 'normal' }) : Promise.resolve(null),
     ];
     const [playerResult, catalogResult] = await Promise.allSettled(requests);
@@ -2739,7 +2684,6 @@
       state.awards.medals = Array.isArray(body?.medals) ? body.medals : [];
       state.awards.honors = Array.isArray(body?.honors) ? body.honors : [];
       state.awards.merits = body?.merits && typeof body.merits === 'object' ? body.merits : null;
-      state.awards.userId = Math.max(0, Math.trunc(Number(body?.profile?.id) || 0));
       state.awards.finishingHits = finishingHitsFromPersonalStats(body);
       state.awards.playerFetchedAt = Date.now();
     } else if (!isDashboardOwnerPause(playerResult.reason)) {
@@ -4675,7 +4619,6 @@
         medals: [],
         honors: [],
         merits: null,
-        userId: 0,
         finishingHits: {},
         error: '',
       };
@@ -4707,7 +4650,6 @@
           medals: [],
           honors: [],
           merits: null,
-          userId: 0,
           finishingHits: {},
           error: '',
         };
