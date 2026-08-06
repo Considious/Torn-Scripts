@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.2.1
+// @version      0.2.0
 // @description  User-defined two-click HTML messages for Torn chats and faction newsletters.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,20 +19,10 @@
 
   const STORAGE_KEY = 'considious-custom-chat-buttons-v1';
   const ARM_DURATION_MS = 10_000;
-  const CHAT_FALLBACK_LIMIT = 255;
   const NEWSLETTER_FALLBACK_LIMIT = 60_000;
   const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"]';
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
-  const SCOPE_CONTEXTS = Object.freeze({
-    faction: ['faction'],
-    private: ['private'],
-    newsletter: ['newsletter'],
-    both: ['faction', 'private'],
-    faction_newsletter: ['faction', 'newsletter'],
-    private_newsletter: ['private', 'newsletter'],
-    all: ['faction', 'private', 'newsletter'],
-  });
-  const SCOPES = new Set(Object.keys(SCOPE_CONTEXTS));
+  const SCOPES = new Set(['both', 'faction', 'private', 'newsletter', 'all']);
 
   let macros = loadMacros();
   let menu = null;
@@ -363,7 +353,11 @@
 
   function eligibleMacros(root) {
     const type = contextType(root);
-    return macros.filter((macro) => macro.enabled && scopeIncludes(macro.scope, type));
+    return macros.filter((macro) => {
+      if (!macro.enabled) return false;
+      if (macro.scope === 'all' || macro.scope === type) return true;
+      return type !== 'newsletter' && macro.scope === 'both';
+    });
   }
 
   function renderMenu(preserveScroll = true) {
@@ -451,11 +445,6 @@
   function newsletterMessageLimit(root) {
     const nativeLimit = Number(newsletterSource(root)?.maxLength || 0);
     return nativeLimit > 0 ? nativeLimit : NEWSLETTER_FALLBACK_LIMIT;
-  }
-
-  function chatMessageLimit(composer) {
-    const nativeLimit = Number(composer?.maxLength || 0);
-    return nativeLimit > 0 ? nativeLimit : CHAT_FALLBACK_LIMIT;
   }
 
   function newsletterContent(root, composer = newsletterComposer(root)) {
@@ -559,14 +548,6 @@
       const limit = newsletterMessageLimit(root);
       if (message.length > limit) {
         menuStatus = `Newsletter is ${message.length.toLocaleString()} characters; the separate limit is ${limit.toLocaleString()}.`;
-        renderMenu();
-        positionMenu(root);
-        return;
-      }
-    } else {
-      const limit = chatMessageLimit(composer);
-      if (message.length > limit) {
-        menuStatus = `Chat message is ${message.length.toLocaleString()} characters; the limit is ${limit.toLocaleString()}.`;
         renderMenu();
         positionMenu(root);
         return;
@@ -681,33 +662,13 @@
     renderEditor();
   }
 
-  function scopeIncludes(scope, context) {
-    return SCOPE_CONTEXTS[scope]?.includes(context) === true;
-  }
-
-  function scopeFromContexts(contexts) {
-    const selected = ['faction', 'private', 'newsletter'].filter((context) => contexts.has(context));
-    return Object.keys(SCOPE_CONTEXTS).find((scope) => {
-      const values = SCOPE_CONTEXTS[scope];
-      return values.length === selected.length && values.every((value) => selected.includes(value));
-    }) || '';
-  }
-
   function scopeUsesNewsletter(scope) {
-    return scopeIncludes(scope, 'newsletter');
-  }
-
-  function scopeUsesChat(scope) {
-    return scopeIncludes(scope, 'faction') || scopeIncludes(scope, 'private');
+    return scope === 'newsletter' || scope === 'all';
   }
 
   function messageCountText(macro) {
     const count = String(macro.message || '').length.toLocaleString();
-    if (!SCOPES.has(macro.scope)) return `${count} characters — choose at least one destination`;
-    if (scopeUsesChat(macro.scope)) {
-      const shared = scopeUsesNewsletter(macro.scope) ? ' (newsletter also enabled)' : '';
-      return `${count} / ${CHAT_FALLBACK_LIMIT.toLocaleString()} chat characters${shared}`;
-    }
+    if (!scopeUsesNewsletter(macro.scope)) return `${count} chat characters`;
     return `${count} / ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} newsletter characters`;
   }
 
@@ -812,30 +773,27 @@
     labelField.appendChild(labelInput);
 
     let messageCount = null;
-    const scopeField = document.createElement('fieldset');
-    scopeField.className = 'ccb-scope-field';
-    const scopeLegend = document.createElement('legend');
-    scopeLegend.textContent = 'Show in';
-    scopeField.appendChild(scopeLegend);
-    const updateScope = () => {
-      const selected = new Set(Array.from(scopeField.querySelectorAll('input[type="checkbox"]:checked'), (input) => input.value));
-      macro.scope = scopeFromContexts(selected);
-      if (messageCount) messageCount.textContent = messageCountText(macro);
-    };
+    const scopeField = document.createElement('label');
+    scopeField.appendChild(document.createTextNode('Show in'));
+    const scope = document.createElement('select');
     [
-      ['faction', 'Faction chat'],
-      ['private', 'Private chat'],
-      ['newsletter', 'Newsletter'],
+      ['both', 'Faction and private'],
+      ['faction', 'Faction only'],
+      ['private', 'Private only'],
+      ['newsletter', 'Newsletter only'],
+      ['all', 'Chats and newsletter'],
     ].forEach(([value, text]) => {
-      const choice = document.createElement('label');
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.value = value;
-      checkbox.checked = scopeIncludes(macro.scope, value);
-      checkbox.addEventListener('change', updateScope);
-      choice.append(checkbox, document.createTextNode(text));
-      scopeField.appendChild(choice);
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      option.selected = macro.scope === value;
+      scope.appendChild(option);
     });
+    scope.addEventListener('change', () => {
+      macro.scope = scope.value;
+      if (messageCount) messageCount.textContent = messageCountText(macro);
+    });
+    scopeField.appendChild(scope);
     fields.append(labelField, scopeField);
     card.appendChild(fields);
 
@@ -898,17 +856,6 @@
       window.alert('Every custom message button needs both a label and a message.');
       return;
     }
-    const noDestination = editorDraft.find((macro) => !SCOPES.has(macro.scope));
-    if (noDestination) {
-      window.alert(`Choose at least one destination for "${noDestination.label}".`);
-      return;
-    }
-    const oversizedChat = editorDraft.find((macro) => scopeUsesChat(macro.scope)
-      && String(macro.message || '').length > CHAT_FALLBACK_LIMIT);
-    if (oversizedChat) {
-      window.alert(`Chat button "${oversizedChat.label}" exceeds the ${CHAT_FALLBACK_LIMIT.toLocaleString()}-character chat-safe limit.`);
-      return;
-    }
     const oversizedNewsletter = editorDraft.find((macro) => scopeUsesNewsletter(macro.scope)
       && String(macro.message || '').length > NEWSLETTER_FALLBACK_LIMIT);
     if (oversizedNewsletter) {
@@ -946,7 +893,7 @@
       .ccb-empty { padding:8px 4px; }
       #ccb-editor-overlay { position:fixed; inset:0; z-index:2147483601; display:flex; align-items:center; justify-content:center; padding:14px; background:rgba(0,0,0,.72); box-sizing:border-box; font:12px/1.35 system-ui,sans-serif; }
       .ccb-editor { display:grid; grid-template-rows:auto minmax(0,1fr) auto; width:min(760px,100%); max-height:min(850px,calc(100vh - 28px)); overflow:hidden; border:1px solid #59616a; border-radius:10px; color:#e7ecef; background:#1d2227; box-shadow:0 18px 60px rgba(0,0,0,.68); }
-      .ccb-editor button, .ccb-editor input, .ccb-editor textarea { font:inherit; }
+      .ccb-editor button, .ccb-editor input, .ccb-editor select, .ccb-editor textarea { font:inherit; }
       .ccb-editor-head, .ccb-editor-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 12px; }
       .ccb-editor-head { border-bottom:1px solid rgba(255,255,255,.1); }
       .ccb-editor-head > div { display:grid; gap:2px; }
@@ -960,14 +907,10 @@
       .ccb-small { padding:4px 7px; }
       .ccb-small:disabled { opacity:.42; cursor:not-allowed; }
       .ccb-small.ccb-danger { color:#ffc1c1; border-color:#7d4949; }
-      .ccb-card-fields { display:grid; grid-template-columns:minmax(0,1fr) minmax(260px,.8fr); gap:8px; }
-      .ccb-card-fields > label, .ccb-message-field { display:grid; gap:4px; color:#cbd3d9; font-weight:700; }
-      .ccb-card-fields > label > input, .ccb-message-field textarea { width:100%; padding:7px 8px; border:1px solid #555f68; border-radius:6px; outline:none; color:#f0f3f5; background:#15191d; box-sizing:border-box; }
-      .ccb-card-fields > label > input:focus, .ccb-message-field textarea:focus { border-color:#7fce70; }
-      .ccb-scope-field { display:flex; flex-wrap:wrap; align-content:start; gap:5px 10px; min-width:0; margin:0; padding:5px 7px 7px; border:1px solid #555f68; border-radius:6px; color:#cbd3d9; }
-      .ccb-scope-field legend { padding:0 3px; font-weight:700; }
-      .ccb-scope-field label { display:flex; align-items:center; gap:4px; white-space:nowrap; font-weight:400; cursor:pointer; }
-      .ccb-scope-field input { width:auto; margin:0; accent-color:#65b957; }
+      .ccb-card-fields { display:grid; grid-template-columns:minmax(0,1fr) 180px; gap:8px; }
+      .ccb-card-fields label, .ccb-message-field { display:grid; gap:4px; color:#cbd3d9; font-weight:700; }
+      .ccb-card-fields input, .ccb-card-fields select, .ccb-message-field textarea { width:100%; padding:7px 8px; border:1px solid #555f68; border-radius:6px; outline:none; color:#f0f3f5; background:#15191d; box-sizing:border-box; }
+      .ccb-card-fields input:focus, .ccb-card-fields select:focus, .ccb-message-field textarea:focus { border-color:#7fce70; }
       .ccb-message-field textarea { min-height:88px; resize:vertical; font-family:Consolas,monospace; line-height:1.35; }
       .ccb-message-field small { color:#929da6; font-weight:400; text-align:right; }
       .ccb-message-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
