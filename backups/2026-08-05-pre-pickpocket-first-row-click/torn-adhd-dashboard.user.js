@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.22
+// @version      1.4.21
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -1643,11 +1643,11 @@
       [data-tdd-pickpocket-button="tooHard"] { background-color: ${PICKPOCKET_COLORS.tooHard} !important; }
       [data-tdd-pickpocket-button="uncategorized"] { background-color: ${PICKPOCKET_COLORS.uncategorized} !important; }
       [data-tdd-pickpocket-score] { margin-left: 5px; font-size: .82em; font-weight: 700; opacity: .9; }
-      #tdd-pickpocket-filter { position: relative; z-index: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; width: 100%; margin: 0 0 10px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; color: #ddd; background: rgba(22,25,28,.96); font: 600 12px/1.2 system-ui,sans-serif; pointer-events: none; box-sizing: border-box; }
+      #tdd-pickpocket-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; color: #ddd; background: rgba(22,25,28,.96); font: 600 12px/1.2 system-ui,sans-serif; }
       #tdd-pickpocket-filter strong { margin-right: 2px; color: #f1f1f1; }
-      #tdd-pickpocket-filter label { display: inline-flex; align-items: center; gap: 4px; pointer-events: auto; }
+      #tdd-pickpocket-filter label { display: inline-flex; align-items: center; gap: 4px; }
       #tdd-pickpocket-filter input { width: 58px; padding: 3px 4px; border: 1px solid rgba(255,255,255,.18); border-radius: 5px; color: #fff; background: #15181b; }
-      #tdd-pickpocket-filter button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.18); border-radius: 5px; color: #fff; background: #363c43; cursor: pointer; pointer-events: auto; }
+      #tdd-pickpocket-filter button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.18); border-radius: 5px; color: #fff; background: #363c43; cursor: pointer; }
       #tdd-pickpocket-filter [data-tdd-pickpocket-visible-count] { margin-left: auto; color: #aeb8c1; font-size: 11px; }
     `;
     document.head?.appendChild(style);
@@ -1681,9 +1681,8 @@
 
   function ensurePickpocketPageControls(cards, visibleCount) {
     const firstCard = cards[0];
-    const cardList = firstCard?.parentElement;
-    const controlsHost = cardList?.parentElement;
-    if (!cardList || !controlsHost) return;
+    const container = firstCard?.parentElement;
+    if (!container) return;
     let controls = document.getElementById('tdd-pickpocket-filter');
     if (!controls) {
       controls = document.createElement('div');
@@ -1704,7 +1703,7 @@
         updatePickpocketRange(1, 300);
       });
     }
-    if (controls.parentElement !== controlsHost || controls.nextSibling !== cardList) controlsHost.insertBefore(controls, cardList);
+    if (controls.parentElement !== container) container.insertBefore(controls, container.firstChild);
     const minInput = controls.querySelector('[data-tdd-pickpocket-min]');
     const maxInput = controls.querySelector('[data-tdd-pickpocket-max]');
     if (document.activeElement !== minInput) minInput.value = String(state.settings.pickpocketMinTargetLevel);
