@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.1.3
+// @version      0.1.2
 // @description  User-defined two-click HTML messages with live page and player-bazaar links for Torn chats.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -268,7 +268,7 @@
     menuStatus = '';
     const element = ensureMenu();
     element.hidden = false;
-    renderMenu(false);
+    renderMenu();
     positionMenu(root);
   }
 
@@ -283,11 +283,8 @@
     return macros.filter((macro) => macro.enabled && (macro.scope === 'both' || macro.scope === type));
   }
 
-  function renderMenu(preserveScroll = true) {
+  function renderMenu() {
     if (!menu || !menuChatRoot) return;
-    const previousScrollTop = preserveScroll
-      ? (menu.querySelector('.ccb-menu-list')?.scrollTop || 0)
-      : 0;
     menu.replaceChildren();
 
     const header = document.createElement('div');
@@ -327,7 +324,6 @@
       });
     }
     menu.appendChild(list);
-    list.scrollTop = previousScrollTop;
 
     const status = document.createElement('div');
     status.className = 'ccb-status';
@@ -347,11 +343,7 @@
   }
 
   function setComposerContent(composer, html) {
-    try {
-      composer.focus({ preventScroll: true });
-    } catch {
-      composer.focus();
-    }
+    composer.focus();
     const prototype = composer.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
     if (setter) setter.call(composer, html);
