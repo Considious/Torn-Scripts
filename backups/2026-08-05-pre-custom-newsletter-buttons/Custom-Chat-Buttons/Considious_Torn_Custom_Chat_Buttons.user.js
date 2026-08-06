@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.2.0
-// @description  User-defined two-click HTML messages for Torn chats and faction newsletters.
+// @version      0.1.3
+// @description  User-defined two-click HTML messages with live page and player-bazaar links for Torn chats.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
@@ -19,10 +19,9 @@
 
   const STORAGE_KEY = 'considious-custom-chat-buttons-v1';
   const ARM_DURATION_MS = 10_000;
-  const NEWSLETTER_FALLBACK_LIMIT = 60_000;
   const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"]';
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
-  const SCOPES = new Set(['both', 'faction', 'private', 'newsletter', 'all']);
+  const SCOPES = new Set(['both', 'faction', 'private']);
 
   let macros = loadMacros();
   let menu = null;
@@ -36,11 +35,10 @@
   let scanTimer = null;
 
   addStyles();
-  scanContexts();
+  scanChatWindows();
 
   const observer = new MutationObserver(scheduleScan);
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  window.addEventListener('hashchange', scheduleScan);
 
   window.addEventListener('resize', () => {
     if (menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
@@ -48,7 +46,7 @@
 
   document.addEventListener('pointerdown', (event) => {
     if (!menu || menu.hidden) return;
-    if (menu.contains(event.target) || event.target.closest?.('[data-ccb-trigger], [data-ccb-newsletter-trigger]')) return;
+    if (menu.contains(event.target) || event.target.closest?.('[data-ccb-trigger]')) return;
     closeMenu();
   });
 
@@ -59,7 +57,7 @@
   });
 
   if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Manage custom message buttons', openEditor);
+    GM_registerMenuCommand('Manage custom chat buttons', openEditor);
   }
 
   if (typeof GM_addValueChangeListener === 'function') {
@@ -109,24 +107,14 @@
     GM_setValue(STORAGE_KEY, macros);
   }
 
-  function isNewsletterPage() {
-    return /factions\.php$/i.test(window.location.pathname) && /(?:^|[&#])option=newsletter(?:&|$)/i.test(window.location.hash);
-  }
-
-  function isNewsletterRoot(root) {
-    return root?.dataset?.ccbNewsletterRoot === 'true';
-  }
-
-  function contextType(root) {
-    if (isNewsletterRoot(root)) return 'newsletter';
+  function chatType(root) {
     return String(root?.id || '').startsWith('faction-') ? 'faction' : 'private';
   }
 
-  function contextTitle(root) {
-    if (isNewsletterRoot(root)) return 'Faction newsletter';
+  function chatTitle(root) {
     const title = root?.querySelector('button[class*="header___"] span[class*="title___"]')
       || root?.querySelector('button svg[aria-label="Minimize"]')?.parentElement?.querySelector('span');
-    return String(title?.textContent || (contextType(root) === 'faction' ? 'Faction' : 'Private chat')).trim();
+    return String(title?.textContent || (chatType(root) === 'faction' ? 'Faction' : 'Private chat')).trim();
   }
 
   function chatHeader(root) {
@@ -135,31 +123,11 @@
       || null;
   }
 
-  function newsletterSource(root) {
-    return root?.querySelector('textarea[class*="sourceArea___"]') || null;
-  }
-
-  function newsletterRichEditor(root) {
-    return root?.querySelector('[data-testid="editor-root"] .editor-content[contenteditable="true"], [data-testid="editor-root"] [class*="editorContent___"][contenteditable="true"]') || null;
-  }
-
-  function newsletterComposer(root) {
-    const source = newsletterSource(root);
-    const sourceVisible = source && !source.hidden && ![...source.classList].some((name) => name.startsWith('hidden___'));
-    return sourceVisible ? source : (newsletterRichEditor(root) || source);
-  }
-
-  function contextComposer(root) {
-    if (isNewsletterRoot(root)) return newsletterComposer(root);
+  function chatComposer(root) {
     return root?.querySelector(COMPOSER_SELECTOR) || null;
   }
 
-  function contextSendButton(root, composer = contextComposer(root)) {
-    if (isNewsletterRoot(root)) {
-      return root?.querySelector('button[aria-label="Send newsletter"]')
-        || [...(root?.querySelectorAll('button') || [])].find((button) => String(button.textContent || '').trim() === 'Send')
-        || null;
-    }
+  function chatSendButton(root, composer = chatComposer(root)) {
     const rowButton = composer?.parentElement?.querySelector('button');
     if (rowButton) return rowButton;
     return [...(root?.querySelectorAll('button, [role="button"]') || [])].find((button) => {
@@ -233,51 +201,14 @@
     if (scanTimer) window.clearTimeout(scanTimer);
     scanTimer = window.setTimeout(() => {
       scanTimer = null;
-      scanContexts();
+      scanChatWindows();
     }, 80);
   }
 
-  function scanContexts() {
+  function scanChatWindows() {
     document.querySelectorAll(CHAT_ROOT_SELECTOR).forEach(injectMenuTrigger);
-    injectNewsletterTrigger();
     if (menuChatRoot && !menuChatRoot.isConnected) closeMenu();
     else if (menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
-  }
-
-  function findNewsletterRoot() {
-    if (!isNewsletterPage()) return null;
-    const editorRoot = document.querySelector('[data-testid="editor-root"]');
-    return editorRoot?.closest('[class*="letterWrap___"]') || null;
-  }
-
-  function injectNewsletterTrigger() {
-    const root = findNewsletterRoot();
-    if (!root) return;
-    root.dataset.ccbNewsletterRoot = 'true';
-    if (root.querySelector(':scope > .ccb-newsletter-bar')) return;
-
-    const editorRoot = root.querySelector('[data-testid="editor-root"]');
-    if (!editorRoot) return;
-    const bar = document.createElement('div');
-    bar.className = 'ccb-newsletter-bar';
-
-    const trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.dataset.ccbNewsletterTrigger = 'true';
-    trigger.className = 'ccb-newsletter-trigger';
-    trigger.setAttribute('aria-label', 'Custom newsletter buttons');
-    trigger.textContent = '✦ Custom newsletter buttons';
-    trigger.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleMenu(root);
-    });
-
-    const limit = document.createElement('small');
-    limit.className = 'ccb-newsletter-limit';
-    limit.textContent = `Newsletter presets: ${newsletterMessageLimit(root).toLocaleString()} character limit`;
-    bar.append(trigger, limit);
-    root.insertBefore(bar, editorRoot);
   }
 
   function stopHeaderAction(event) {
@@ -347,17 +278,9 @@
     menuStatus = '';
   }
 
-  function contextId(root) {
-    return isNewsletterRoot(root) ? 'newsletter' : String(root?.id || '');
-  }
-
   function eligibleMacros(root) {
-    const type = contextType(root);
-    return macros.filter((macro) => {
-      if (!macro.enabled) return false;
-      if (macro.scope === 'all' || macro.scope === type) return true;
-      return type !== 'newsletter' && macro.scope === 'both';
-    });
+    const type = chatType(root);
+    return macros.filter((macro) => macro.enabled && (macro.scope === 'both' || macro.scope === type));
   }
 
   function renderMenu(preserveScroll = true) {
@@ -370,12 +293,12 @@
     const header = document.createElement('div');
     header.className = 'ccb-menu-head';
     const title = document.createElement('strong');
-    title.textContent = `${contextTitle(menuChatRoot)} buttons`;
+    title.textContent = `${chatTitle(menuChatRoot)} buttons`;
     const manage = document.createElement('button');
     manage.type = 'button';
     manage.className = 'ccb-manage';
-    manage.title = 'Manage custom message buttons';
-    manage.setAttribute('aria-label', 'Manage custom message buttons');
+    manage.title = 'Manage custom chat buttons';
+    manage.setAttribute('aria-label', 'Manage custom chat buttons');
     manage.textContent = '⚙';
     manage.addEventListener('click', openEditor);
     header.append(title, manage);
@@ -387,14 +310,14 @@
     if (!available.length) {
       const empty = document.createElement('div');
       empty.className = 'ccb-empty';
-      empty.textContent = `No buttons for this ${contextType(menuChatRoot) === 'newsletter' ? 'newsletter' : 'chat'}. Use ⚙ to add one.`;
+      empty.textContent = 'No buttons for this chat. Use ⚙ to add one.';
       list.appendChild(empty);
     } else {
       available.forEach((macro) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'ccb-macro';
-        const isArmed = armed?.macroId === macro.id && armed?.contextId === contextId(menuChatRoot) && armed.expiresAt > Date.now();
+        const isArmed = armed?.macroId === macro.id && armed?.chatId === menuChatRoot.id && armed.expiresAt > Date.now();
         if (isArmed) button.classList.add('ccb-armed');
         button.disabled = sending;
         button.textContent = isArmed ? `Send: ${macro.label}` : macro.label;
@@ -414,102 +337,13 @@
 
   function positionMenu(root) {
     if (!menu || menu.hidden) return;
-    const anchor = isNewsletterRoot(root)
-      ? root.querySelector('[data-ccb-newsletter-trigger]')
-      : (chatHeader(root)?.querySelector('[data-ccb-trigger]') || chatHeader(root));
+    const anchor = chatHeader(root)?.querySelector('[data-ccb-trigger]') || chatHeader(root);
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
     const width = Math.min(280, window.innerWidth - 12);
     menu.style.width = `${width}px`;
     menu.style.left = `${Math.max(6, Math.min(window.innerWidth - width - 6, rect.right - width))}px`;
     menu.style.top = `${Math.max(6, Math.min(window.innerHeight - menu.offsetHeight - 6, rect.bottom + 5))}px`;
-  }
-
-  function tinyNewsletterEditor(root) {
-    try {
-      if (!window.tinymce) return null;
-      const rich = newsletterRichEditor(root);
-      const editors = window.tinymce.editors || [];
-      return editors.find((editorInstance) => {
-        try {
-          return editorInstance.getBody?.() === rich;
-        } catch {
-          return false;
-        }
-      }) || window.tinymce.activeEditor || null;
-    } catch {
-      return null;
-    }
-  }
-
-  function newsletterMessageLimit(root) {
-    const nativeLimit = Number(newsletterSource(root)?.maxLength || 0);
-    return nativeLimit > 0 ? nativeLimit : NEWSLETTER_FALLBACK_LIMIT;
-  }
-
-  function newsletterContent(root, composer = newsletterComposer(root)) {
-    const editorInstance = tinyNewsletterEditor(root);
-    if (editorInstance?.getContent) {
-      try {
-        return String(editorInstance.getContent() || '');
-      } catch {
-        // Fall through to Torn's source or rich editor element.
-      }
-    }
-    if (composer?.tagName === 'TEXTAREA') return String(composer.value || '');
-    return String(newsletterRichEditor(root)?.innerHTML || newsletterSource(root)?.value || '');
-  }
-
-  function setNewsletterContent(root, html) {
-    const editorInstance = tinyNewsletterEditor(root);
-    const rich = newsletterRichEditor(root);
-    const source = newsletterSource(root);
-    let applied = false;
-
-    if (editorInstance?.setContent) {
-      try {
-        editorInstance.setContent(html || '');
-        editorInstance.fire?.('change');
-        editorInstance.fire?.('input');
-        editorInstance.fire?.('keyup');
-        editorInstance.save?.();
-        window.tinymce?.triggerSave?.();
-        applied = true;
-      } catch {
-        // The direct editor elements below remain as fallbacks.
-      }
-    }
-
-    if (rich) {
-      if (!applied) rich.innerHTML = html || '';
-      try {
-        rich.focus({ preventScroll: true });
-      } catch {
-        rich.focus();
-      }
-      rich.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      rich.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-      applied = true;
-    }
-
-    if (source) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      if (setter) setter.call(source, html || '');
-      else source.value = html || '';
-      source.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      source.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    }
-    return applied;
-  }
-
-  function contextContent(root, composer = contextComposer(root)) {
-    return isNewsletterRoot(root) ? newsletterContent(root, composer) : String(composer?.value || '');
-  }
-
-  function setContextContent(root, composer, html) {
-    if (isNewsletterRoot(root)) return setNewsletterContent(root, html);
-    setComposerContent(composer, html);
-    return true;
   }
 
   function setComposerContent(composer, html) {
@@ -544,25 +378,11 @@
       positionMenu(root);
       return;
     }
-    if (isNewsletterRoot(root)) {
-      const limit = newsletterMessageLimit(root);
-      if (message.length > limit) {
-        menuStatus = `Newsletter is ${message.length.toLocaleString()} characters; the separate limit is ${limit.toLocaleString()}.`;
-        renderMenu();
-        positionMenu(root);
-        return;
-      }
-    }
-    if (!setContextContent(root, composer, message)) {
-      menuStatus = `Torn's ${isNewsletterRoot(root) ? 'newsletter editor' : 'message box'} could not be updated.`;
-      renderMenu();
-      return;
-    }
-    const storedMessage = contextContent(root, composer) || message;
+    setComposerContent(composer, message);
     armed = {
       macroId: macro.id,
-      contextId: contextId(root),
-      message: storedMessage,
+      chatId: root.id,
+      message,
       expiresAt: Date.now() + ARM_DURATION_MS,
     };
     armTimer = window.setTimeout(() => {
@@ -597,28 +417,28 @@
       closeMenu();
       return;
     }
-    const composer = contextComposer(root);
+    const composer = chatComposer(root);
     if (!composer) {
-      menuStatus = `Open the ${isNewsletterRoot(root) ? 'newsletter editor' : 'chat'} fully before using a message button.`;
+      menuStatus = 'Open this chat fully before using a message button.';
       renderMenu();
       return;
     }
 
     const confirmsCurrent = armed?.macroId === macro.id
-      && armed?.contextId === contextId(root)
+      && armed?.chatId === root.id
       && armed.expiresAt > Date.now();
     if (!confirmsCurrent) {
       armMacro(macro, root, composer);
       return;
     }
-    if (contextContent(root, composer) !== armed.message) {
+    if (composer.value !== armed.message) {
       clearArmed();
       menuStatus = 'Message changed, so sending was disarmed. Click again to reload it.';
       renderMenu();
       return;
     }
 
-    const sendButton = contextSendButton(root, composer);
+    const sendButton = chatSendButton(root, composer);
     if (!sendButton) {
       menuStatus = 'Torn’s Send button could not be found.';
       renderMenu();
@@ -630,7 +450,7 @@
     try {
       const enabled = await waitForEnabledSend(sendButton);
       if (!enabled) {
-        menuStatus = `Torn did not enable Send. The message may exceed the ${isNewsletterRoot(root) ? 'newsletter' : 'chat'} limit.`;
+        menuStatus = 'Torn did not enable Send. The message may exceed the chat limit.';
         renderMenu();
         return;
       }
@@ -662,16 +482,6 @@
     renderEditor();
   }
 
-  function scopeUsesNewsletter(scope) {
-    return scope === 'newsletter' || scope === 'all';
-  }
-
-  function messageCountText(macro) {
-    const count = String(macro.message || '').length.toLocaleString();
-    if (!scopeUsesNewsletter(macro.scope)) return `${count} chat characters`;
-    return `${count} / ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} newsletter characters`;
-  }
-
   function closeEditor() {
     editor?.remove();
     editor = null;
@@ -688,9 +498,9 @@
     heading.className = 'ccb-editor-head';
     const headingText = document.createElement('div');
     const title = document.createElement('strong');
-    title.textContent = 'Custom message buttons';
+    title.textContent = 'Custom chat buttons';
     const note = document.createElement('small');
-    note.textContent = 'Messages are stored as raw HTML. Choose whether each button belongs in chats, newsletters, or both.';
+    note.textContent = 'Messages are stored as raw text. Live page placeholders are filled when you click a chat button.';
     headingText.append(title, note);
     const add = document.createElement('button');
     add.type = 'button';
@@ -772,27 +582,17 @@
     labelInput.addEventListener('input', () => { macro.label = labelInput.value; });
     labelField.appendChild(labelInput);
 
-    let messageCount = null;
     const scopeField = document.createElement('label');
     scopeField.appendChild(document.createTextNode('Show in'));
     const scope = document.createElement('select');
-    [
-      ['both', 'Faction and private'],
-      ['faction', 'Faction only'],
-      ['private', 'Private only'],
-      ['newsletter', 'Newsletter only'],
-      ['all', 'Chats and newsletter'],
-    ].forEach(([value, text]) => {
+    [['both', 'Faction and private'], ['faction', 'Faction only'], ['private', 'Private only']].forEach(([value, text]) => {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = text;
       option.selected = macro.scope === value;
       scope.appendChild(option);
     });
-    scope.addEventListener('change', () => {
-      macro.scope = scope.value;
-      if (messageCount) messageCount.textContent = messageCountText(macro);
-    });
+    scope.addEventListener('change', () => { macro.scope = scope.value; });
     scopeField.appendChild(scope);
     fields.append(labelField, scopeField);
     card.appendChild(fields);
@@ -802,19 +602,19 @@
     const messageHeading = document.createElement('span');
     messageHeading.className = 'ccb-message-heading';
     const messageTitle = document.createElement('span');
-    messageTitle.textContent = 'Message / Torn HTML';
+    messageTitle.textContent = 'Message / Torn chat HTML';
     const tokenButtons = document.createElement('span');
     tokenButtons.className = 'ccb-token-buttons';
-    messageCount = document.createElement('small');
-    messageCount.textContent = messageCountText(macro);
+    const count = document.createElement('small');
+    count.textContent = `${macro.message.length.toLocaleString()} characters`;
     const message = document.createElement('textarea');
     message.rows = 5;
     message.spellcheck = false;
     message.value = macro.message;
-    message.placeholder = 'Type the message exactly as Torn should receive it.';
+    message.placeholder = 'Type the message exactly as Torn chat should receive it.';
     message.addEventListener('input', () => {
       macro.message = message.value;
-      messageCount.textContent = messageCountText(macro);
+      count.textContent = `${macro.message.length.toLocaleString()} characters`;
     });
     const insertToken = (token) => {
       const start = message.selectionStart ?? message.value.length;
@@ -828,7 +628,7 @@
     const playerBazaarButton = smallEditorButton('Insert player bazaar', 'Insert the player name and bazaar link found on the page', () => insertToken('{{Player Bazaar}}'));
     tokenButtons.append(pageLinkButton, pageUrlButton, playerBazaarButton);
     messageHeading.append(messageTitle, tokenButtons);
-    messageField.append(messageHeading, message, messageCount);
+    messageField.append(messageHeading, message, count);
     card.appendChild(messageField);
     return card;
   }
@@ -853,20 +653,14 @@
   function saveEditor() {
     const incomplete = editorDraft.find((macro) => !String(macro.label || '').trim() || !String(macro.message || '').trim());
     if (incomplete) {
-      window.alert('Every custom message button needs both a label and a message.');
-      return;
-    }
-    const oversizedNewsletter = editorDraft.find((macro) => scopeUsesNewsletter(macro.scope)
-      && String(macro.message || '').length > NEWSLETTER_FALLBACK_LIMIT);
-    if (oversizedNewsletter) {
-      window.alert(`Newsletter button "${oversizedNewsletter.label}" exceeds the separate ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} character limit.`);
+      window.alert('Every custom chat button needs both a label and a message.');
       return;
     }
     macros = normalizeMacros(editorDraft);
     saveMacros();
     clearArmed();
     closeEditor();
-    scanContexts();
+    scanChatWindows();
   }
 
   function addStyles() {
@@ -875,10 +669,6 @@
     style.textContent = `
       .ccb-trigger { display:inline-flex; align-items:center; justify-content:center; flex:0 0 25px; width:25px; height:25px; margin-left:auto; border-radius:5px; color:#bfffb1; background:rgba(57,255,20,.12); font:900 17px/1 system-ui,sans-serif; cursor:pointer; user-select:none; box-sizing:border-box; }
       .ccb-trigger:hover, .ccb-trigger:focus { outline:1px solid rgba(126,255,99,.8); color:#fff; background:rgba(57,255,20,.28); }
-      .ccb-newsletter-bar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:8px 0; padding:7px 9px; border:1px solid #59616a; border-radius:7px; color:#dce3e8; background:#1d2227; font:12px/1.3 system-ui,sans-serif; box-sizing:border-box; }
-      .ccb-newsletter-trigger { padding:6px 10px; border:1px solid #6e9d64; border-radius:6px; color:#e8ffe3; background:#2c5a34; font:700 12px/1.2 system-ui,sans-serif; cursor:pointer; }
-      .ccb-newsletter-trigger:hover, .ccb-newsletter-trigger:focus { border-color:#92ff7c; background:#376d40; outline:none; }
-      .ccb-newsletter-limit { color:#9faab3; text-align:right; }
       #ccb-menu { position:fixed; z-index:2147483600; max-height:min(360px,calc(100vh - 12px)); overflow:hidden; padding:7px; border:1px solid #59616a; border-radius:8px; color:#e9edf0; background:#1d2227; box-shadow:0 10px 32px rgba(0,0,0,.58); font:12px/1.3 system-ui,sans-serif; box-sizing:border-box; }
       #ccb-menu[hidden] { display:none !important; }
       .ccb-menu-head { display:flex; align-items:center; gap:8px; padding:2px 2px 6px; border-bottom:1px solid rgba(255,255,255,.1); }
@@ -920,7 +710,7 @@
       .ccb-editor-footer > div { display:flex; gap:6px; }
       .ccb-editor-footer .ccb-primary { border-color:#75cb64; color:#e8ffe3; background:#2c5a34; }
       .ccb-editor-empty { padding:24px; color:#aeb7bf; text-align:center; }
-      @media (max-width:600px) { .ccb-newsletter-bar { align-items:flex-start; flex-direction:column; } .ccb-newsletter-limit { text-align:left; } .ccb-card-fields { grid-template-columns:1fr; } .ccb-editor-head, .ccb-editor-footer { align-items:flex-start; flex-direction:column; } .ccb-editor-footer > div { align-self:flex-end; } }
+      @media (max-width:600px) { .ccb-card-fields { grid-template-columns:1fr; } .ccb-editor-head, .ccb-editor-footer { align-items:flex-start; flex-direction:column; } .ccb-editor-footer > div { align-self:flex-end; } }
     `;
     document.head?.appendChild(style);
   }
