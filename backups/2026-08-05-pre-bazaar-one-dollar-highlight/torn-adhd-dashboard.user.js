@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.21
+// @version      1.4.20
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -309,7 +309,6 @@
     renderPending: false,
     domObserver: null,
     domRefreshTimer: null,
-    bazaarOneDollarTimer: null,
     windowResizeTimer: null,
     pickpocketRefreshTimer: null,
     pickpocketHeartbeat: null,
@@ -840,97 +839,6 @@
     if (Number(lastUpdatedAt) > 0) url.searchParams.set('v', String(Math.trunc(Number(lastUpdatedAt) / 1000)));
     url.hash = '/';
     return url.toString();
-  }
-
-  function onBazaarPage() {
-    return /\/bazaar\.php$/i.test(location.pathname);
-  }
-
-  function ensureBazaarOneDollarStyles() {
-    if (document.getElementById('tdd-bazaar-one-dollar-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'tdd-bazaar-one-dollar-styles';
-    style.textContent = `
-      [data-tdd-bazaar-one-dollar="true"] {
-        outline: 4px solid #39ff14 !important;
-        outline-offset: 2px !important;
-        box-shadow: 0 0 18px 5px rgba(57,255,20,.72), inset 0 0 0 2px rgba(57,255,20,.5) !important;
-      }
-    `;
-    document.head?.appendChild(style);
-  }
-
-  function bazaarCardPrice(card) {
-    const priceElement = card?.querySelector?.('[data-testid="price"]');
-    if (!priceElement) return null;
-    for (const node of priceElement.childNodes) {
-      if (node.nodeType !== Node.TEXT_NODE) continue;
-      const match = String(node.textContent || '').replaceAll(',', '').match(/\$?\s*(\d+(?:\.\d+)?)/);
-      if (match) return Number(match[1]);
-    }
-    const match = String(priceElement.textContent || '').match(/^\s*\$?\s*([\d,]+(?:\.\d+)?)/);
-    return match ? Number(match[1].replaceAll(',', '')) : null;
-  }
-
-  function bazaarCssColorLooksRed(value) {
-    const match = String(value || '').match(/rgba?\(\s*(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)(?:\D+(\d+(?:\.\d+)?))?/i);
-    if (!match || (match[4] != null && Number(match[4]) === 0)) return false;
-    const red = Number(match[1]);
-    const green = Number(match[2]);
-    const blue = Number(match[3]);
-    return red >= 90 && green <= red * 0.65 && blue <= red * 0.8;
-  }
-
-  function bazaarCardUnavailable(card) {
-    const priceElement = card.querySelector('[data-testid="price"]');
-    const unavailableSelector = '[aria-disabled="true"], [data-disabled="true"], [class*="disabled" i], [class*="unavailable" i], [class*="soldOut" i], [class*="cannotBuy" i]';
-    if (card.matches(unavailableSelector) || priceElement?.matches(unavailableSelector)) return true;
-    if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(card.textContent || ''))) return true;
-    const purchaseControls = Array.from(card.querySelectorAll('button, [role="button"]')).filter((control) => (
-      /\b(?:buy|purchase)\b/i.test(`${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('title') || ''}`)
-    ));
-    if (purchaseControls.length && !purchaseControls.some((control) => !control.disabled && control.getAttribute('aria-disabled') !== 'true')) return true;
-    const cardStyle = getComputedStyle(card);
-    const priceStyle = priceElement ? getComputedStyle(priceElement) : null;
-    return bazaarCssColorLooksRed(cardStyle.backgroundColor)
-      || bazaarCssColorLooksRed(cardStyle.borderColor)
-      || bazaarCssColorLooksRed(priceStyle?.color)
-      || bazaarCssColorLooksRed(priceStyle?.backgroundColor);
-  }
-
-  function bazaarListingCards() {
-    const container = document.querySelector('[data-testid="bazaar-items"]');
-    if (!container) return [];
-    const direct = Array.from(container.querySelectorAll('[data-testid="item"]'));
-    if (direct.length) return direct;
-    return [...new Set(Array.from(container.querySelectorAll('img[src*="/images/items/"], img[srcset*="/images/items/"]'))
-      .map((image) => image.closest('[class*="item___"]'))
-      .filter(Boolean))];
-  }
-
-  function formatBazaarOneDollarListings() {
-    if (!onBazaarPage()) {
-      document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => card.removeAttribute('data-tdd-bazaar-one-dollar'));
-      return;
-    }
-    ensureBazaarOneDollarStyles();
-    const cards = new Set(bazaarListingCards());
-    document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => {
-      if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-one-dollar');
-    });
-    cards.forEach((card) => {
-      const highlight = bazaarCardPrice(card) === 1 && !bazaarCardUnavailable(card);
-      if (highlight) card.setAttribute('data-tdd-bazaar-one-dollar', 'true');
-      else card.removeAttribute('data-tdd-bazaar-one-dollar');
-    });
-  }
-
-  function scheduleBazaarOneDollarFormatting(delay = 80) {
-    if (state.bazaarOneDollarTimer) window.clearTimeout(state.bazaarOneDollarTimer);
-    state.bazaarOneDollarTimer = window.setTimeout(() => {
-      state.bazaarOneDollarTimer = null;
-      formatBazaarOneDollarListings();
-    }, delay);
   }
 
   function weav3rBazaars(itemId) {
@@ -5934,18 +5842,16 @@
     state.domObserver = new MutationObserver(() => {
       scheduleVisiblePageSignalRefresh();
       schedulePickpocketFormatting();
-      scheduleBazaarOneDollarFormatting();
     });
     state.domObserver.observe(document.body, {
       subtree: true,
       childList: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['title', 'aria-label', 'aria-disabled', 'disabled', 'data-disabled', 'data-tooltip', 'class', 'style', 'fill', 'stroke', 'href', 'src'],
+      attributeFilter: ['title', 'aria-label', 'data-tooltip', 'class', 'style', 'fill', 'stroke', 'href', 'src'],
     });
   }
   schedulePickpocketFormatting(0);
-  scheduleBazaarOneDollarFormatting(0);
   state.pickpocketHeartbeat = window.setInterval(() => {
     if (focusedTornPage()) schedulePickpocketFormatting(0);
     else cleanupPickpocketFormatting();
