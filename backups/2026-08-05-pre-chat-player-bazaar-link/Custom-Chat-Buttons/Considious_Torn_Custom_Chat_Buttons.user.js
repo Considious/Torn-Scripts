@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.1.2
-// @description  User-defined two-click HTML messages with live page and player-bazaar links for Torn chats.
+// @version      0.1.1
+// @description  User-defined two-click HTML message buttons with live page links for Torn faction and private chats.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
@@ -144,51 +144,10 @@
       .replaceAll('>', '&gt;');
   }
 
-  function bazaarPlayerFromAnchor(anchor) {
-    if (!anchor) return null;
-    let profileUrl;
-    try {
-      profileUrl = new URL(anchor.getAttribute('href') || anchor.href || '', window.location.href);
-    } catch {
-      return null;
-    }
-    const playerId = profileUrl.searchParams.get('XID');
-    if (!/^\d+$/.test(playerId || '')) return null;
-    const anchorName = String(anchor.textContent || '').trim();
-    if (!anchorName) return null;
-    const possessiveName = /(?:'s|’s)$/i.test(anchorName) ? anchorName : `${anchorName}'s`;
-    return {
-      playerId,
-      label: `${possessiveName} Bazaar`,
-      url: `${window.location.origin}/bazaar.php?userId=${encodeURIComponent(playerId)}`,
-    };
-  }
-
-  function findPlayerBazaar() {
-    const details = [...document.querySelectorAll('.tt-bazaar-text')];
-    for (const detail of details) {
-      const container = detail.closest('[class*="messageContent___"], .msg') || detail.parentElement;
-      const player = bazaarPlayerFromAnchor(container?.querySelector('a[href*="profiles.php?XID="]'));
-      if (player) return player;
-    }
-    const profileLinks = [...document.querySelectorAll('[class*="messageContent___"] a[href*="profiles.php?XID="], .msg a[href*="profiles.php?XID="]')];
-    const anchor = profileLinks.find((link) => /\bbazaar\b/i.test(link.parentElement?.textContent || ''));
-    return bazaarPlayerFromAnchor(anchor);
-  }
-
-  function playerBazaarTokenPresent(value) {
-    return /\{\{\s*player(?:_|\s+)bazaar\s*\}\}/i.test(String(value));
-  }
-
   function expandMessageTemplate(template) {
     const pageUrl = escapeChatHtml(window.location.href);
     const pageTitle = escapeChatHtml(document.title.trim() || 'Open page');
-    const playerBazaar = playerBazaarTokenPresent(template) ? findPlayerBazaar() : null;
     return String(template)
-      .replace(/\{\{\s*player(?:_|\s+)bazaar\s*\}\}/gi, (token) => {
-        if (!playerBazaar) return token;
-        return `<a href="${escapeChatHtml(playerBazaar.url)}">${escapeChatHtml(playerBazaar.label)}</a>`;
-      })
       .replace(/\{\{page_link(?::([^{}]*))?\}\}/gi, (_match, customLabel) => {
         const label = escapeChatHtml(String(customLabel || '').trim() || 'Open page');
         return `<a href="${pageUrl}">${label}</a>`;
@@ -364,12 +323,6 @@
   function armMacro(macro, root, composer) {
     clearArmed();
     const message = expandMessageTemplate(macro.message);
-    if (playerBazaarTokenPresent(message)) {
-      menuStatus = 'No player bazaar was found on this page. Open a bazaar page and try again.';
-      renderMenu();
-      positionMenu(root);
-      return;
-    }
     setComposerContent(composer, message);
     armed = {
       macroId: macro.id,
@@ -518,7 +471,7 @@
     const footer = document.createElement('div');
     footer.className = 'ccb-editor-footer';
     const help = document.createElement('small');
-    help.textContent = 'Live placeholders: {{page_link}}, {{page_url}}, {{page_title}}, and {{Player Bazaar}}';
+    help.textContent = 'Live placeholders: {{page_link}}, {{page_link:Custom label}}, {{page_url}}, and {{page_title}}';
     const actions = document.createElement('div');
     const cancel = document.createElement('button');
     cancel.type = 'button';
@@ -617,8 +570,7 @@
     };
     const pageLinkButton = smallEditorButton('Insert page link', 'Insert a link to the page open when this button is used', () => insertToken('{{page_link}}'));
     const pageUrlButton = smallEditorButton('Insert raw URL', 'Insert the current page URL without an anchor tag', () => insertToken('{{page_url}}'));
-    const playerBazaarButton = smallEditorButton('Insert player bazaar', 'Insert the player name and bazaar link found on the page', () => insertToken('{{Player Bazaar}}'));
-    tokenButtons.append(pageLinkButton, pageUrlButton, playerBazaarButton);
+    tokenButtons.append(pageLinkButton, pageUrlButton);
     messageHeading.append(messageTitle, tokenButtons);
     messageField.append(messageHeading, message, count);
     card.appendChild(messageField);
@@ -696,7 +648,7 @@
       .ccb-message-field textarea { min-height:88px; resize:vertical; font-family:Consolas,monospace; line-height:1.35; }
       .ccb-message-field small { color:#929da6; font-weight:400; text-align:right; }
       .ccb-message-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-      .ccb-token-buttons { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
+      .ccb-token-buttons { display:flex; gap:4px; }
       .ccb-token-buttons .ccb-small { padding:3px 6px; font-size:11px; font-weight:400; }
       .ccb-editor-footer { border-top:1px solid rgba(255,255,255,.1); }
       .ccb-editor-footer > div { display:flex; gap:6px; }
