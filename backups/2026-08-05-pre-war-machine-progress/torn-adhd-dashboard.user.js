@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.20
+// @version      1.4.19
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -2867,11 +2867,9 @@
       });
   }
 
-  function isWarMachineAward(award) {
-    const name = String(award?.name || '');
-    const requirement = String(award?.description || '');
-    return /\bwar\s+machine\b/i.test(name)
-      || (/\b1,?000\b/i.test(requirement) && /finishing hits?/i.test(requirement) && /\b(?:every|all) categor(?:y|ies)\b/i.test(requirement));
+  function isWeaponFinisherAward(award) {
+    const text = `${award?.name || ''} ${award?.description || ''}`;
+    return /\b1,?000\b/i.test(text) && /finishing hits?/i.test(text) && /weapon/i.test(text);
   }
 
   function isSouvenirAward(award) {
@@ -3151,14 +3149,13 @@
   }
 
   function awardProgressMarkup(award, { compact = false } = {}) {
-    if (isWarMachineAward(award)) {
+    if (isWeaponFinisherAward(award)) {
       const progress = finisherProgress();
       const percent = progress.targetTotal ? Math.min(100, Math.floor(progress.cappedTotal / progress.targetTotal * 100)) : 0;
-      const completeCount = progress.rows.length - progress.remaining.length;
-      const remainingMarkup = progress.remaining.length
-        ? `<div class="finisher-progress-list">${progress.remaining.map((row) => `<span><b>${row.value.toLocaleString()} / ${FINISHER_TARGET.toLocaleString()}</b> ${escapeHtml(row.label)} · ${(FINISHER_TARGET - row.value).toLocaleString()} remaining</span>`).join('')}</div>`
-        : '<span>Every finishing-hit category is complete.</span>';
-      return `<div class="award-progress ${compact ? 'compact' : ''} ${progress.remaining.length ? '' : 'reached'}"><strong>${completeCount}/${progress.rows.length} categories complete · ${percent}% overall</strong><div class="award-progress-meter"><i style="width:${percent}%"></i></div>${remainingMarkup}</div>`;
+      const missing = progress.remaining.length
+        ? progress.remaining.map((row) => `${row.label} ${row.value.toLocaleString()}/${FINISHER_TARGET.toLocaleString()}`).join(' · ')
+        : 'Every weapon category is at 1,000 or more.';
+      return `<div class="award-progress ${compact ? 'compact' : ''}"><strong>${progress.cappedTotal.toLocaleString()} / ${progress.targetTotal.toLocaleString()} category progress (${percent}%)</strong><span>${progress.rawTotal.toLocaleString()} total finishing hits</span><small>${escapeHtml(missing)}</small></div>`;
     }
     if (isSouvenirAward(award)) {
       const assignment = souvenirAssignmentForUserId(state.awards.userId);
@@ -4785,7 +4782,6 @@
         .award-progress span, .award-progress small { color: #adb7bf; white-space: normal; }
         .award-progress span { display: block; }
         .award-progress span b { color: #edf2f5; font-weight: 750; }
-        .finisher-progress-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(175px,1fr)); gap: 3px 9px; }
         .award-progress-meter { height: 5px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.1); }
         .award-progress-meter i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#e3a93a,#ffdc76); }
         .award-progress.reached { border-color: rgba(101,214,155,.38); background: #203129; }
