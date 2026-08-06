@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.1.1
-// @description  User-defined two-click HTML message buttons with live page links for Torn faction and private chats.
+// @version      0.1.0
+// @description  User-defined two-click HTML message buttons inside Torn faction and private chat headers.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
@@ -134,26 +134,6 @@
       const label = `${button.textContent || ''} ${button.getAttribute?.('aria-label') || ''} ${button.getAttribute?.('title') || ''}`.trim();
       return button.type === 'submit' || /\bsend(?: message)?\b/i.test(label) || Boolean(button.querySelector?.('svg[viewBox="0 0 18 18"]'));
     }) || null;
-  }
-
-  function escapeChatHtml(value) {
-    return String(value)
-      .replaceAll('&', '&amp;')
-      .replaceAll('"', '&quot;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;');
-  }
-
-  function expandMessageTemplate(template) {
-    const pageUrl = escapeChatHtml(window.location.href);
-    const pageTitle = escapeChatHtml(document.title.trim() || 'Open page');
-    return String(template)
-      .replace(/\{\{page_link(?::([^{}]*))?\}\}/gi, (_match, customLabel) => {
-        const label = escapeChatHtml(String(customLabel || '').trim() || 'Open page');
-        return `<a href="${pageUrl}">${label}</a>`;
-      })
-      .replace(/\{\{page_url\}\}/gi, pageUrl)
-      .replace(/\{\{page_title\}\}/gi, pageTitle);
   }
 
   function scheduleScan() {
@@ -322,12 +302,11 @@
 
   function armMacro(macro, root, composer) {
     clearArmed();
-    const message = expandMessageTemplate(macro.message);
-    setComposerContent(composer, message);
+    setComposerContent(composer, macro.message);
     armed = {
       macroId: macro.id,
       chatId: root.id,
-      message,
+      message: macro.message,
       expiresAt: Date.now() + ARM_DURATION_MS,
     };
     armTimer = window.setTimeout(() => {
@@ -445,7 +424,7 @@
     const title = document.createElement('strong');
     title.textContent = 'Custom chat buttons';
     const note = document.createElement('small');
-    note.textContent = 'Messages are stored as raw text. Live page placeholders are filled when you click a chat button.';
+    note.textContent = 'Messages are stored as raw text and passed to Torn chat. Torn decides which HTML and message length it accepts.';
     headingText.append(title, note);
     const add = document.createElement('button');
     add.type = 'button';
@@ -471,7 +450,7 @@
     const footer = document.createElement('div');
     footer.className = 'ccb-editor-footer';
     const help = document.createElement('small');
-    help.textContent = 'Live placeholders: {{page_link}}, {{page_link:Custom label}}, {{page_url}}, and {{page_title}}';
+    help.textContent = 'HTML examples: <br> and <a href="https://www.torn.com/">Open Torn</a>';
     const actions = document.createElement('div');
     const cancel = document.createElement('button');
     cancel.type = 'button';
@@ -542,14 +521,10 @@
     fields.append(labelField, scopeField);
     card.appendChild(fields);
 
-    const messageField = document.createElement('div');
+    const messageField = document.createElement('label');
     messageField.className = 'ccb-message-field';
     const messageHeading = document.createElement('span');
-    messageHeading.className = 'ccb-message-heading';
-    const messageTitle = document.createElement('span');
-    messageTitle.textContent = 'Message / Torn chat HTML';
-    const tokenButtons = document.createElement('span');
-    tokenButtons.className = 'ccb-token-buttons';
+    messageHeading.textContent = 'Message / Torn chat HTML';
     const count = document.createElement('small');
     count.textContent = `${macro.message.length.toLocaleString()} characters`;
     const message = document.createElement('textarea');
@@ -561,17 +536,6 @@
       macro.message = message.value;
       count.textContent = `${macro.message.length.toLocaleString()} characters`;
     });
-    const insertToken = (token) => {
-      const start = message.selectionStart ?? message.value.length;
-      const end = message.selectionEnd ?? start;
-      message.setRangeText(token, start, end, 'end');
-      message.dispatchEvent(new Event('input', { bubbles: true }));
-      message.focus();
-    };
-    const pageLinkButton = smallEditorButton('Insert page link', 'Insert a link to the page open when this button is used', () => insertToken('{{page_link}}'));
-    const pageUrlButton = smallEditorButton('Insert raw URL', 'Insert the current page URL without an anchor tag', () => insertToken('{{page_url}}'));
-    tokenButtons.append(pageLinkButton, pageUrlButton);
-    messageHeading.append(messageTitle, tokenButtons);
     messageField.append(messageHeading, message, count);
     card.appendChild(messageField);
     return card;
@@ -647,9 +611,6 @@
       .ccb-card-fields input:focus, .ccb-card-fields select:focus, .ccb-message-field textarea:focus { border-color:#7fce70; }
       .ccb-message-field textarea { min-height:88px; resize:vertical; font-family:Consolas,monospace; line-height:1.35; }
       .ccb-message-field small { color:#929da6; font-weight:400; text-align:right; }
-      .ccb-message-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-      .ccb-token-buttons { display:flex; gap:4px; }
-      .ccb-token-buttons .ccb-small { padding:3px 6px; font-size:11px; font-weight:400; }
       .ccb-editor-footer { border-top:1px solid rgba(255,255,255,.1); }
       .ccb-editor-footer > div { display:flex; gap:6px; }
       .ccb-editor-footer .ccb-primary { border-color:#75cb64; color:#e8ffe3; background:#2c5a34; }
