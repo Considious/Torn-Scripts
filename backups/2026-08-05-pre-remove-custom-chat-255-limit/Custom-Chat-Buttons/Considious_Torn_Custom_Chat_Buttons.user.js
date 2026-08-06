@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.2.2
+// @version      0.2.1
 // @description  User-defined two-click HTML messages for Torn chats and faction newsletters.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,6 +19,7 @@
 
   const STORAGE_KEY = 'considious-custom-chat-buttons-v1';
   const ARM_DURATION_MS = 10_000;
+  const CHAT_FALLBACK_LIMIT = 255;
   const NEWSLETTER_FALLBACK_LIMIT = 60_000;
   const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"]';
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
@@ -452,6 +453,11 @@
     return nativeLimit > 0 ? nativeLimit : NEWSLETTER_FALLBACK_LIMIT;
   }
 
+  function chatMessageLimit(composer) {
+    const nativeLimit = Number(composer?.maxLength || 0);
+    return nativeLimit > 0 ? nativeLimit : CHAT_FALLBACK_LIMIT;
+  }
+
   function newsletterContent(root, composer = newsletterComposer(root)) {
     const editorInstance = tinyNewsletterEditor(root);
     if (editorInstance?.getContent) {
@@ -553,6 +559,14 @@
       const limit = newsletterMessageLimit(root);
       if (message.length > limit) {
         menuStatus = `Newsletter is ${message.length.toLocaleString()} characters; the separate limit is ${limit.toLocaleString()}.`;
+        renderMenu();
+        positionMenu(root);
+        return;
+      }
+    } else {
+      const limit = chatMessageLimit(composer);
+      if (message.length > limit) {
+        menuStatus = `Chat message is ${message.length.toLocaleString()} characters; the limit is ${limit.toLocaleString()}.`;
         renderMenu();
         positionMenu(root);
         return;
@@ -691,9 +705,8 @@
     const count = String(macro.message || '').length.toLocaleString();
     if (!SCOPES.has(macro.scope)) return `${count} characters — choose at least one destination`;
     if (scopeUsesChat(macro.scope)) {
-      return scopeUsesNewsletter(macro.scope)
-        ? `${count} / ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} newsletter characters • also available in chat`
-        : `${count} chat characters`;
+      const shared = scopeUsesNewsletter(macro.scope) ? ' (newsletter also enabled)' : '';
+      return `${count} / ${CHAT_FALLBACK_LIMIT.toLocaleString()} chat characters${shared}`;
     }
     return `${count} / ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} newsletter characters`;
   }
@@ -888,6 +901,12 @@
     const noDestination = editorDraft.find((macro) => !SCOPES.has(macro.scope));
     if (noDestination) {
       window.alert(`Choose at least one destination for "${noDestination.label}".`);
+      return;
+    }
+    const oversizedChat = editorDraft.find((macro) => scopeUsesChat(macro.scope)
+      && String(macro.message || '').length > CHAT_FALLBACK_LIMIT);
+    if (oversizedChat) {
+      window.alert(`Chat button "${oversizedChat.label}" exceeds the ${CHAT_FALLBACK_LIMIT.toLocaleString()}-character chat-safe limit.`);
       return;
     }
     const oversizedNewsletter = editorDraft.find((macro) => scopeUsesNewsletter(macro.scope)
