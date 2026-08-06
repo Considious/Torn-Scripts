@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.19
+// @version      1.4.18
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -210,7 +210,7 @@
     medicalThresholdHours: 3,
     boosterThresholdHours: 3,
     pickpocketHelperEnabled: true,
-    pickpocketMinTargetLevel: 1,
+    pickpocketMinTargetLevel: 100,
     pickpocketMaxTargetLevel: 300,
     pickpocketLastSkill: 1,
     apiDailyRefreshMinutes: 10,
@@ -332,8 +332,6 @@
     Object.entries(snoozeLedger).forEach(([id, until]) => {
       snoozedUntil[id] = Math.max(Number(snoozedUntil[id]) || 0, Number(until) || 0);
     });
-    const pickpocketMin = Math.min(300, Math.max(1, Math.trunc(Number(saved?.pickpocketMinTargetLevel) || DEFAULT_SETTINGS.pickpocketMinTargetLevel)));
-    const pickpocketMax = Math.min(300, Math.max(1, Math.trunc(Number(saved?.pickpocketMaxTargetLevel) || DEFAULT_SETTINGS.pickpocketMaxTargetLevel)));
     return {
       ...DEFAULT_SETTINGS,
       ...(saved && typeof saved === 'object' ? saved : {}),
@@ -348,8 +346,6 @@
       trackedAwards: Array.isArray(saved?.trackedAwards)
         ? [...new Set(saved.trackedAwards.map(String).filter((key) => /^(?:medal|honor):\d+$/.test(key)))].slice(0, TRACKED_AWARD_LIMIT)
         : [],
-      pickpocketMinTargetLevel: Math.min(pickpocketMin, pickpocketMax),
-      pickpocketMaxTargetLevel: Math.max(pickpocketMin, pickpocketMax),
       marketWatches: Array.isArray(saved?.marketWatches)
         ? saved.marketWatches.map((watch) => ({
           ...watch,
@@ -1551,12 +1547,6 @@
       [data-tdd-pickpocket-button="tooHard"] { background-color: ${PICKPOCKET_COLORS.tooHard} !important; }
       [data-tdd-pickpocket-button="uncategorized"] { background-color: ${PICKPOCKET_COLORS.uncategorized} !important; }
       [data-tdd-pickpocket-score] { margin-left: 5px; font-size: .82em; font-weight: 700; opacity: .9; }
-      #tdd-pickpocket-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; color: #ddd; background: rgba(22,25,28,.96); font: 600 12px/1.2 system-ui,sans-serif; }
-      #tdd-pickpocket-filter strong { margin-right: 2px; color: #f1f1f1; }
-      #tdd-pickpocket-filter label { display: inline-flex; align-items: center; gap: 4px; }
-      #tdd-pickpocket-filter input { width: 58px; padding: 3px 4px; border: 1px solid rgba(255,255,255,.18); border-radius: 5px; color: #fff; background: #15181b; }
-      #tdd-pickpocket-filter button { padding: 4px 7px; border: 1px solid rgba(255,255,255,.18); border-radius: 5px; color: #fff; background: #363c43; cursor: pointer; }
-      #tdd-pickpocket-filter [data-tdd-pickpocket-visible-count] { margin-left: auto; color: #aeb8c1; font-size: 11px; }
     `;
     document.head?.appendChild(style);
   }
@@ -1570,54 +1560,7 @@
         element.removeAttribute('data-tdd-pickpocket-card');
       });
     document.querySelectorAll('[data-tdd-pickpocket-score]').forEach((element) => element.remove());
-    document.getElementById('tdd-pickpocket-filter')?.remove();
     state.pickpocketFormattedCount = 0;
-  }
-
-  function normalizedPickpocketLevel(value, fallback) {
-    return Math.min(300, Math.max(1, Math.trunc(Number(value) || fallback)));
-  }
-
-  function updatePickpocketRange(minimum, maximum) {
-    const min = normalizedPickpocketLevel(minimum, 1);
-    const max = normalizedPickpocketLevel(maximum, 300);
-    state.settings.pickpocketMinTargetLevel = Math.min(min, max);
-    state.settings.pickpocketMaxTargetLevel = Math.max(min, max);
-    saveSettings();
-    schedulePickpocketFormatting(0);
-  }
-
-  function ensurePickpocketPageControls(cards, visibleCount) {
-    const firstCard = cards[0];
-    const container = firstCard?.parentElement;
-    if (!container) return;
-    let controls = document.getElementById('tdd-pickpocket-filter');
-    if (!controls) {
-      controls = document.createElement('div');
-      controls.id = 'tdd-pickpocket-filter';
-      controls.innerHTML = `<strong>Target level</strong>
-        <label>Min <input type="number" min="1" max="300" step="1" data-tdd-pickpocket-min></label>
-        <label>Max <input type="number" min="1" max="300" step="1" data-tdd-pickpocket-max></label>
-        <button type="button" data-tdd-pickpocket-all>Show 1–300</button>
-        <span data-tdd-pickpocket-visible-count></span>`;
-      controls.addEventListener('change', (event) => {
-        if (!event.target.matches('[data-tdd-pickpocket-min], [data-tdd-pickpocket-max]')) return;
-        const minInput = controls.querySelector('[data-tdd-pickpocket-min]');
-        const maxInput = controls.querySelector('[data-tdd-pickpocket-max]');
-        updatePickpocketRange(minInput?.value, maxInput?.value);
-      });
-      controls.addEventListener('click', (event) => {
-        if (!event.target.closest('[data-tdd-pickpocket-all]')) return;
-        updatePickpocketRange(1, 300);
-      });
-    }
-    if (controls.parentElement !== container) container.insertBefore(controls, container.firstChild);
-    const minInput = controls.querySelector('[data-tdd-pickpocket-min]');
-    const maxInput = controls.querySelector('[data-tdd-pickpocket-max]');
-    if (document.activeElement !== minInput) minInput.value = String(state.settings.pickpocketMinTargetLevel);
-    if (document.activeElement !== maxInput) maxInput.value = String(state.settings.pickpocketMaxTargetLevel);
-    const count = controls.querySelector('[data-tdd-pickpocket-visible-count]');
-    if (count) count.textContent = `${visibleCount}/${cards.length} visible`;
   }
 
   function pickpocketSkillFromPage() {
@@ -1650,13 +1593,14 @@
 
   function pickpocketCardForTitleGroup(titleGroup) {
     let node = titleGroup;
+    let best = null;
     for (let depth = 0; depth < 12 && node?.parentElement; depth += 1) {
       node = node.parentElement;
       const commitSections = node.querySelectorAll('[class*="commitButtonSection" i]');
-      if (commitSections.length === 1) return node;
+      if (commitSections.length === 1) best = node;
       if (commitSections.length > 1) break;
     }
-    return null;
+    return best;
   }
 
   function pickpocketTitleGroups() {
@@ -1681,10 +1625,9 @@
       state.settings.pickpocketLastSkill = scrapedSkill;
       saveSettings();
     }
-    const minimum = Math.min(normalizedPickpocketLevel(state.settings.pickpocketMinTargetLevel, 1), normalizedPickpocketLevel(state.settings.pickpocketMaxTargetLevel, 300));
-    const maximum = Math.max(normalizedPickpocketLevel(state.settings.pickpocketMinTargetLevel, 1), normalizedPickpocketLevel(state.settings.pickpocketMaxTargetLevel, 300));
+    const minimum = Math.min(Number(state.settings.pickpocketMinTargetLevel) || 100, Number(state.settings.pickpocketMaxTargetLevel) || 300);
+    const maximum = Math.max(Number(state.settings.pickpocketMinTargetLevel) || 100, Number(state.settings.pickpocketMaxTargetLevel) || 300);
     const formattedCards = new Set();
-    let visibleCount = 0;
     for (const titleGroup of pickpocketTitleGroups()) {
       const titleElement = titleGroup.firstElementChild || titleGroup;
       const titleText = String(titleElement.textContent || '').replace(/\s+/g, ' ').trim();
@@ -1704,9 +1647,7 @@
       const activityTooHard = PICKPOCKET_STATUSES_TO_AVOID[mark]?.includes(activity);
       const finalSemantic = buildTooHard || activityTooHard ? 'tooHard' : csSemantic;
       card.dataset.tddPickpocketCard = mark;
-      const hidden = level < minimum || level > maximum;
-      card.dataset.tddPickpocketHidden = hidden ? 'true' : 'false';
-      if (!hidden) visibleCount += 1;
+      card.dataset.tddPickpocketHidden = level < minimum || level > maximum ? 'true' : 'false';
       titleElement.dataset.tddPickpocketSemantic = csSemantic;
       if (physicalElement) {
         if (buildTooHard) physicalElement.dataset.tddPickpocketSemantic = 'tooHard';
@@ -1728,7 +1669,6 @@
       if (badge.textContent !== scoreText) badge.textContent = scoreText;
     }
     state.pickpocketFormattedCount = formattedCards.size;
-    ensurePickpocketPageControls([...formattedCards], visibleCount);
   }
 
   function schedulePickpocketFormatting(delay = 120) {
@@ -2713,30 +2653,13 @@
     return award?.kind === 'honor' && (awardCategoryTitle(award) === 'default' || Number(award?.type?.id) === 1);
   }
 
-  function isUnavailableCurrentAward(award) {
-    const text = `${awardCategoryTitle(award)} ${awardRequirementText(award)}`;
-    return /\b(?:auto thefts?|grand theft auto)\b/i.test(text);
-  }
-
-  function awardObjectiveSatisfied(award) {
-    const requirement = normalizedAwardRequirementText(award);
-    const hasSafeCumulativeObjective = /\breach level \d+\b/.test(requirement)
-      || (awardRequirementNumbers(award).length > 0 && /\b(?:crimes?|offenses?)\b/.test(requirement));
-    if (!hasSafeCumulativeObjective) return false;
-    const progress = awardObjectiveProgress(award);
-    return Boolean(progress?.rows?.length) && progress.rows.every((row) => (
-      Number.isFinite(Number(row.current)) && Number.isFinite(Number(row.target)) && Number(row.current) >= Number(row.target)
-    ));
-  }
-
   function awardCatalogRows() {
-    const completedMedals = new Set(state.awards.medals.map((award) => Math.trunc(Number(award?.id ?? award))));
-    const completedHonors = new Set(state.awards.honors.map((award) => Math.trunc(Number(award?.id ?? award))));
+    const completedMedals = new Set(state.awards.medals.map((award) => Math.trunc(Number(award?.id))));
+    const completedHonors = new Set(state.awards.honors.map((award) => Math.trunc(Number(award?.id))));
     return [
       ...state.awards.catalogMedals.map((award) => ({ ...award, kind: 'medal', completed: completedMedals.has(Math.trunc(Number(award?.id))) })),
       ...state.awards.catalogHonors.map((award) => ({ ...award, kind: 'honor', completed: completedHonors.has(Math.trunc(Number(award?.id))) })),
-    ].filter((award) => Number(award?.id) > 0 && award?.name && !isDefaultHonorAward(award) && !isUnavailableCurrentAward(award))
-      .map((award) => award.completed || !awardObjectiveSatisfied(award) ? award : { ...award, completed: true, completedByCounter: true });
+    ].filter((award) => Number(award?.id) > 0 && award?.name && !isDefaultHonorAward(award));
   }
 
   function awardByKey(key) {
@@ -2752,18 +2675,8 @@
   }
 
   function awardNumericRequirementText(award) {
-    const units = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
-    const tens = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
-    const word = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)';
-    return awardRequirementText(award).replace(new RegExp(`\\b${word}(?:[ -]+${word})*\\b`, 'gi'), (phrase) => {
-      let value = 0;
-      for (const token of phrase.toLowerCase().split(/[ -]+/)) {
-        if (Object.hasOwn(units, token)) value += units[token];
-        else if (Object.hasOwn(tens, token)) value += tens[token];
-        else if (token === 'hundred') value = Math.max(1, value) * 100;
-      }
-      return String(value);
-    });
+    const numberWords = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
+    return awardRequirementText(award).replace(/\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/gi, (word) => String(numberWords[word.toLowerCase()]));
   }
 
   function normalizedAwardRequirementText(award) {
@@ -3048,8 +2961,8 @@
       murder: /murders?/,
       other: /["']?other["']? crimes?/,
     }).find(([, pattern]) => pattern.test(text));
-    if (/\b(?:crimes?|offenses?)\b/i.test(text) && crimeType) {
-      return statResult([`crimes.offenses.${crimeType[0]}`, `crimes.${crimeType[0]}`], `${awardCategoryLabel(crimeType[0])} offenses`);
+    if (/\bcrimes?\b/i.test(text) && crimeType) {
+      return statResult([`crimes.offenses.${crimeType[0]}`, `crimes.${crimeType[0]}`], `${awardCategoryLabel(crimeType[0])} crimes`);
     }
 
     if (/\bmails?\b.*\b(?:send|sent)\b|\b(?:send|sent)\b.*\bmails?\b/i.test(text)) return statResult('communication.mails_sent.total', 'mail sent');
@@ -4527,10 +4440,14 @@
             <strong>Pickpocket helper · live page only</strong>
             <label><input type="checkbox" data-field="pickpocket-helper-enabled" ${state.settings.pickpocketHelperEnabled ? 'checked' : ''}> Highlight and filter Pickpocketing targets</label>
             <label>Minimum target
-              <input type="number" min="1" max="300" step="1" data-field="pickpocket-min-level" value="${Number(state.settings.pickpocketMinTargetLevel)}">
+              <select data-field="pickpocket-min-level">
+                ${[100, 150, 200, 250, 300, 350].map((level) => `<option value="${level}" ${Number(state.settings.pickpocketMinTargetLevel) === level ? 'selected' : ''}>${level}%</option>`).join('')}
+              </select>
             </label>
             <label>Maximum target
-              <input type="number" min="1" max="300" step="1" data-field="pickpocket-max-level" value="${Number(state.settings.pickpocketMaxTargetLevel)}">
+              <select data-field="pickpocket-max-level">
+                ${[100, 150, 200, 250, 300, 350].map((level) => `<option value="${level}" ${Number(state.settings.pickpocketMaxTargetLevel) === level ? 'selected' : ''}>${level}%</option>`).join('')}
+              </select>
             </label>
             <small>Last focused-page skill: ${Number(state.settings.pickpocketLastSkill || 1)} · currently formatted: ${Number(state.pickpocketFormattedCount || 0)} targets. No API calls.</small>
           </div>
@@ -4802,8 +4719,7 @@
         .api-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 10px; margin: 10px 0; padding: 9px; border: 1px solid rgba(107,178,255,.25); border-radius: 7px; color: #cbd2d8; background: #202a34; }
         .api-controls strong, .api-controls small { flex-basis: 100%; }
         .api-controls label { display: flex; align-items: center; gap: 5px; }
-        .api-controls select, .api-controls input[type="number"] { padding: 3px 5px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #f1f4f6; background: #111418; }
-        .api-controls input[type="number"] { width: 64px; }
+        .api-controls select { padding: 3px 5px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #f1f4f6; background: #111418; }
         .api-ledger-details { flex-basis: 100%; min-width: 0; padding: 7px 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; background: rgba(0,0,0,.18); }
         .api-ledger-details > summary, .api-ledger-recent > summary { cursor: pointer; color: #eef2f5; font-weight: 700; }
         .api-ledger-details p { margin: 7px 0; color: #aeb8c1; font-size: 11px; line-height: 1.4; }
@@ -5294,7 +5210,7 @@
     }
     if (event.target.matches('[data-field="pickpocket-min-level"], [data-field="pickpocket-max-level"]')) {
       const field = event.target.matches('[data-field="pickpocket-min-level"]') ? 'pickpocketMinTargetLevel' : 'pickpocketMaxTargetLevel';
-      state.settings[field] = normalizedPickpocketLevel(event.target.value, field === 'pickpocketMinTargetLevel' ? 1 : 300);
+      state.settings[field] = Number(event.target.value);
       if (Number(state.settings.pickpocketMinTargetLevel) > Number(state.settings.pickpocketMaxTargetLevel)) {
         if (field === 'pickpocketMinTargetLevel') state.settings.pickpocketMaxTargetLevel = state.settings.pickpocketMinTargetLevel;
         else state.settings.pickpocketMinTargetLevel = state.settings.pickpocketMaxTargetLevel;
