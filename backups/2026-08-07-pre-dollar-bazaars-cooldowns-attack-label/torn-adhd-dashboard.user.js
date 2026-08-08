@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.23
+// @version      1.4.22
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -14,7 +14,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.4
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.3
 // @run-at       document-end
 // ==/UserScript==
 
@@ -28,7 +28,6 @@
   const SNOOZE_STORAGE_KEY = 'tdd-snoozes-v1';
   const ITEM_CATALOG_KEY = 'tdd-item-catalog-v1';
   const BAZAAR_CACHE_KEY = 'tdd-weav3r-bazaar-cache-v1';
-  const DOLLAR_BAZAAR_CACHE_KEY = 'tdd-weav3r-dollar-bazaars-v1';
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
@@ -50,8 +49,6 @@
   const WEAV3R_PRIORITY_REFRESH_MS = Object.freeze({ high: 10_000, normal: 30_000, low: 60_000 });
   const WEAV3R_CATEGORY_CACHE_MAX_AGE_MS = 60 * 60_000;
   const WEAV3R_CATEGORY_MAX_PAGES = 6;
-  const DOLLAR_BAZAAR_CACHE_MAX_AGE_MS = 30_000;
-  const DOLLAR_BAZAAR_LIMIT = 50;
   const CITY_SHOP_TARGETS = [
     { id: 180, name: 'Bottle of Beer', label: 'Beer' },
     { id: 392, name: 'Pepper Spray', label: 'Pepper Spray' },
@@ -282,10 +279,6 @@
     awards: loadAwardCache(),
     awardsLoading: false,
     bazaarCache: loadBazaarCache(),
-    dollarBazaarCache: loadDollarBazaarCache(),
-    dollarBazaarLoading: false,
-    dollarBazaarError: '',
-    dollarBazaarBackoffUntil: 0,
     weav3rCategoryCache: loadWeav3rCategoryCache(),
     itemCatalogLoading: false,
     pawnShopCandidates: [],
@@ -351,7 +344,7 @@
       snoozedUntil,
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
-      activeView: ['alerts', 'awards', 'dollarBazaars'].includes(saved?.activeView) ? saved.activeView : 'alerts',
+      activeView: saved?.activeView === 'awards' ? 'awards' : 'alerts',
       awardTypeFilter: normalizedAwardTypeFilter(saved?.awardTypeFilter),
       trackedAwards: Array.isArray(saved?.trackedAwards)
         ? [...new Set(saved.trackedAwards.map(String).filter((key) => /^(?:medal|honor):\d+$/.test(key)))].slice(0, TRACKED_AWARD_LIMIT)
@@ -502,24 +495,6 @@
     const cached = GM_getValue(BAZAAR_CACHE_KEY, {});
     if (!cached || typeof cached !== 'object' || Array.isArray(cached)) return {};
     return Object.fromEntries(Object.entries(cached).filter(([, result]) => Number(result?.fetchedAt) > Date.now() - 7 * TORN_DAY_MS && Array.isArray(result?.listings)));
-  }
-
-  function loadDollarBazaarCache() {
-    const cached = GM_getValue(DOLLAR_BAZAAR_CACHE_KEY, {});
-    if (!cached || typeof cached !== 'object' || Array.isArray(cached) || !Array.isArray(cached.bazaars)) {
-      return { fetchedAt: 0, sourceUrl: 'https://weav3r.dev/dollar-bazaars', bazaars: [] };
-    }
-    return {
-      fetchedAt: Math.max(0, Number(cached.fetchedAt) || 0),
-      sourceUrl: String(cached.sourceUrl || 'https://weav3r.dev/dollar-bazaars'),
-      bazaars: cached.bazaars.map((row) => ({
-        playerId: Math.max(0, Math.trunc(Number(row?.playerId) || 0)),
-        playerName: String(row?.playerName || ''),
-        itemCount: Math.max(0, Math.trunc(Number(row?.itemCount) || 0)),
-        totalValue: Math.max(0, Math.trunc(Number(row?.totalValue) || 0)),
-        updatedAt: Math.max(0, Number(row?.updatedAt) || 0),
-      })).filter((row) => row.playerId > 0),
-    };
   }
 
   function saveSettings() {
@@ -1027,119 +1002,6 @@
     });
   }
 
-  function externalTimestampMs(value) {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric) && numeric > 0) return numeric > 10_000_000_000 ? numeric : numeric * 1000;
-    const parsed = Date.parse(String(value || ''));
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function normalizedDollarBazaar(row) {
-    const source = row?.bazaar && typeof row.bazaar === 'object' ? { ...row, ...row.bazaar } : row;
-    const player = source?.player && typeof source.player === 'object' ? source.player : {};
-    const playerId = Math.trunc(Number(
-      source?.player_id ?? source?.playerId ?? source?.user_id ?? source?.userId
-      ?? source?.seller_id ?? source?.sellerId ?? player?.id ?? source?.id
-    ));
-    if (!(playerId > 0)) return null;
-    return {
-      playerId,
-      playerName: String(
-        source?.player_name ?? source?.playerName ?? source?.user_name ?? source?.userName
-        ?? source?.seller_name ?? source?.sellerName ?? player?.name ?? `Player ${playerId}`
-      ).trim() || `Player ${playerId}`,
-      itemCount: Math.max(0, Math.trunc(Number(
-        source?.item_count ?? source?.itemCount ?? source?.items_count ?? source?.itemsCount
-        ?? source?.total_items ?? source?.totalItems ?? source?.quantity ?? source?.count
-        ?? (Array.isArray(source?.items) ? source.items.length : 0)
-      ) || 0)),
-      totalValue: Math.max(0, Math.trunc(Number(
-        source?.total_value ?? source?.totalValue ?? source?.market_value ?? source?.marketValue
-        ?? source?.total_market_value ?? source?.totalMarketValue ?? source?.value
-      ) || 0)),
-      updatedAt: externalTimestampMs(
-        source?.updated_at ?? source?.updatedAt ?? source?.last_checked ?? source?.lastChecked
-        ?? source?.content_updated ?? source?.contentUpdated
-      ),
-    };
-  }
-
-  function dollarBazaarRows(body) {
-    const candidates = [
-      body,
-      body?.bazaars,
-      body?.results,
-      body?.items,
-      body?.data,
-      body?.data?.bazaars,
-      body?.data?.results,
-      body?.data?.items,
-    ];
-    const rows = candidates.find(Array.isArray) || [];
-    const unique = new Map();
-    rows.map(normalizedDollarBazaar).filter(Boolean).forEach((row) => {
-      const current = unique.get(row.playerId);
-      if (!current || row.totalValue > current.totalValue || row.updatedAt > current.updatedAt) unique.set(row.playerId, row);
-    });
-    return [...unique.values()]
-      .sort((left, right) => right.totalValue - left.totalValue || right.itemCount - left.itemCount || left.playerName.localeCompare(right.playerName))
-      .slice(0, DOLLAR_BAZAAR_LIMIT);
-  }
-
-  async function refreshDollarBazaars({ force = false } = {}) {
-    if (state.dollarBazaarLoading) return false;
-    dashboardNetworkLease?.refresh();
-    if (!ownsDashboardNetworkLease()) {
-      state.dollarBazaarError = 'Another Torn tab owns Dashboard network requests. Keep this tab visible and try again.';
-      render();
-      return false;
-    }
-    const now = Date.now();
-    if (!force && Number(state.dollarBazaarCache.fetchedAt) > now - DOLLAR_BAZAAR_CACHE_MAX_AGE_MS) {
-      state.dollarBazaarError = '';
-      render();
-      return true;
-    }
-    if (now < state.dollarBazaarBackoffUntil) {
-      state.dollarBazaarError = `TornW3B is rate-limited. Try again in ${formatDuration(Math.ceil((state.dollarBazaarBackoffUntil - now) / 1000))}.`;
-      render();
-      return false;
-    }
-    state.dollarBazaarLoading = true;
-    state.dollarBazaarError = '';
-    render();
-    const sourceUrl = `https://weav3r.dev/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`;
-    try {
-      state.bazaarCalls += 1;
-      const body = await TornLib.requestJson(sourceUrl, {
-        headers: { Accept: 'application/json' },
-        timeout: 20_000,
-        invalidJsonMessage: 'TornW3B returned an unreadable $1 Bazaar response.',
-        networkErrorMessage: 'Could not reach TornW3B for $1 Bazaars.',
-        timeoutMessage: 'The TornW3B $1 Bazaar request timed out.',
-      });
-      if (!ownsDashboardNetworkLease()) throw dashboardOwnerPauseError('The $1 Bazaar response was ignored because another Torn tab became Dashboard owner.');
-      const bazaars = dollarBazaarRows(body);
-      state.dollarBazaarCache = {
-        fetchedAt: Date.now(),
-        sourceUrl: 'https://weav3r.dev/dollar-bazaars?tab=bazaars',
-        bazaars,
-      };
-      GM_setValue(DOLLAR_BAZAAR_CACHE_KEY, state.dollarBazaarCache);
-      state.dollarBazaarBackoffUntil = 0;
-      return true;
-    } catch (error) {
-      if (Number(error?.status) === 429) state.dollarBazaarBackoffUntil = Date.now() + 60_000;
-      state.dollarBazaarError = isDashboardOwnerPause(error)
-        ? error.message
-        : error?.message || 'Could not load TornW3B $1 Bazaars.';
-      return false;
-    } finally {
-      state.dollarBazaarLoading = false;
-      render();
-    }
-  }
-
   function dailyRefreshMs() {
     const normal = Math.max(5, Number(state.settings.apiDailyRefreshMinutes) || 10) * 60_000;
     return state.settings.slowApiMode ? normal * 3 : normal;
@@ -1175,25 +1037,12 @@
     return fetchedAt + fallbackMs;
   }
 
-  function normalizedCooldownSeconds(value) {
-    const seconds = Number(value);
-    return Number.isFinite(seconds) && seconds >= 0 ? Math.max(0, Math.trunc(seconds)) : null;
-  }
-
-  function cooldownThresholdSeconds(type) {
-    const configured = Number(type === 'medical' ? state.settings.medicalThresholdHours : state.settings.boosterThresholdHours);
-    if (type === 'medical') return (Number.isFinite(configured) && configured >= 1 ? configured : 3) * 3600;
-    if (type === 'booster') return (Number.isFinite(configured) && configured >= 0 ? configured : 3) * 3600;
-    return 0;
-  }
-
-  function cooldownNextApiCheckAt(type, seconds, fetchedAt) {
-    const remaining = normalizedCooldownSeconds(seconds);
-    const fallbackAt = fetchedAt + COOLDOWN_REFRESH_MS;
-    if (remaining === null || remaining === 0) return fallbackAt;
-    const threshold = cooldownThresholdSeconds(type);
-    const nextTransitionSeconds = remaining > threshold ? remaining - threshold : remaining;
-    return Math.min(fallbackAt, fetchedAt + nextTransitionSeconds * 1000 + API_TRANSITION_SETTLE_MS);
+  function cooldownNextApiCheckAt(seconds, fetchedAt) {
+    const remaining = Number(seconds);
+    if (Number.isFinite(remaining) && remaining > 0) {
+      return fetchedAt + remaining * 1000 + API_TRANSITION_SETTLE_MS;
+    }
+    return fetchedAt + COOLDOWN_REFRESH_MS;
   }
 
   function educationNextApiCheckAt(education, fetchedAt) {
@@ -1220,37 +1069,14 @@
   }
 
   function countdownRemainingSeconds(seconds, fetchedAt) {
-    const initial = normalizedCooldownSeconds(seconds);
-    if (initial === null) return null;
+    const initial = Number(seconds);
+    if (!Number.isFinite(initial) || initial < 0) return null;
     const elapsed = Number(fetchedAt) > 0 ? Math.max(0, (Date.now() - Number(fetchedAt)) / 1000) : 0;
     return Math.max(0, Math.ceil(initial - elapsed));
   }
 
   function apiCooldownRemaining(type) {
     return countdownRemainingSeconds(state.data.cooldowns?.cooldowns?.[type], state.data.cooldowns?.__fetchedAt);
-  }
-
-  function resolvedCooldownRemaining(type) {
-    const domRemaining = normalizedCooldownSeconds(state.dom.cooldowns?.[type]);
-    const apiRemaining = apiCooldownRemaining(type);
-    if (apiRemaining === null) return domRemaining;
-    if (domRemaining === null) return apiRemaining;
-    const domFresh = state.dom.source === 'live-page' && Date.now() - Number(state.dom.capturedAt || 0) < 30_000;
-    if (!domFresh) return apiRemaining;
-    // A larger live value means the player used another item since the last API
-    // response. A much smaller live value is more likely a mislabeled sidebar
-    // snippet, so retain the authoritative API countdown in that direction.
-    if (domRemaining > apiRemaining + 90) return domRemaining;
-    if (Math.abs(domRemaining - apiRemaining) <= 90) return domRemaining;
-    return apiRemaining;
-  }
-
-  function resolvedCooldowns() {
-    return {
-      drug: resolvedCooldownRemaining('drug'),
-      medical: resolvedCooldownRemaining('medical'),
-      booster: resolvedCooldownRemaining('booster'),
-    };
   }
 
   function apiTravelRemaining() {
@@ -2461,17 +2287,9 @@
     const apiCooldowns = state.data.cooldowns?.cooldowns;
     if ((alertCheckDue('energyFull') && !state.dom.bars?.energy && (energyDue || !apiBars?.energy))
       || (alertCheckDue('nerveFull') && !state.dom.bars?.nerve && (nerveDue || !apiBars?.nerve))) selections.push('bars');
-    const cooldownTypes = [
-      ['drug', 'drugCooldown'],
-      ['medical', 'medicalCooldown'],
-      ['booster', 'boosterCooldown'],
-    ];
-    const enabledCooldowns = cooldownTypes.filter(([, alertId]) => alertCheckDue(alertId));
-    const cooldownMissing = enabledCooldowns.some(([type]) => (
-      normalizedCooldownSeconds(state.dom.cooldowns?.[type]) === null
-      && normalizedCooldownSeconds(apiCooldowns?.[type]) === null
-    ));
-    if (enabledCooldowns.length && (cooldownsDue || cooldownMissing)) selections.push('cooldowns');
+    if ((alertCheckDue('drugCooldown') && state.dom.cooldowns?.drug == null && (cooldownsDue || apiCooldowns?.drug == null))
+      || (alertCheckDue('medicalCooldown') && state.dom.cooldowns?.medical == null && (cooldownsDue || apiCooldowns?.medical == null))
+      || (alertCheckDue('boosterCooldown') && state.dom.cooldowns?.booster == null && (cooldownsDue || apiCooldowns?.booster == null))) selections.push('cooldowns');
     return selections;
   }
 
@@ -2567,9 +2385,9 @@
           state.lastCooldownsUpdated = updatedAt;
           const apiCooldowns = state.data.cooldowns?.cooldowns;
           const nextChecks = [
-            state.settings.enabled.drugCooldown !== false ? cooldownNextApiCheckAt('drug', apiCooldowns?.drug, updatedAt) : 0,
-            state.settings.enabled.medicalCooldown !== false ? cooldownNextApiCheckAt('medical', apiCooldowns?.medical, updatedAt) : 0,
-            state.settings.enabled.boosterCooldown !== false ? cooldownNextApiCheckAt('booster', apiCooldowns?.booster, updatedAt) : 0,
+            state.settings.enabled.drugCooldown !== false ? cooldownNextApiCheckAt(apiCooldowns?.drug, updatedAt) : 0,
+            state.settings.enabled.medicalCooldown !== false ? cooldownNextApiCheckAt(apiCooldowns?.medical, updatedAt) : 0,
+            state.settings.enabled.boosterCooldown !== false ? cooldownNextApiCheckAt(apiCooldowns?.booster, updatedAt) : 0,
           ].filter((value) => value > updatedAt);
           deferApiCheck('cooldowns', nextChecks.length ? Math.min(...nextChecks) : updatedAt + COOLDOWN_REFRESH_MS);
         }
@@ -2580,7 +2398,11 @@
           energy: state.dom.bars?.energy || apiBars?.energy,
           nerve: state.dom.bars?.nerve || apiBars?.nerve,
         };
-        const cooldowns = resolvedCooldowns();
+        const cooldowns = {
+          drug: state.dom.cooldowns?.drug ?? apiCooldownRemaining('drug'),
+          medical: state.dom.cooldowns?.medical ?? apiCooldownRemaining('medical'),
+          booster: state.dom.cooldowns?.booster ?? apiCooldownRemaining('booster'),
+        };
         if (bars?.energy) groups.push('energyFull');
         if (bars?.nerve) groups.push('nerveFull');
         if (cooldowns?.drug != null) groups.push('drugCooldown');
@@ -3497,37 +3319,6 @@
     </section>`;
   }
 
-  function dollarBazaarHref(playerId) {
-    const url = new URL('https://www.torn.com/bazaar.php');
-    url.searchParams.set('userId', String(Math.trunc(Number(playerId))));
-    url.hash = '/';
-    return url.toString();
-  }
-
-  function dollarBazaarsMarkup() {
-    const rows = state.dollarBazaarCache.bazaars || [];
-    const refreshed = Number(state.dollarBazaarCache.fetchedAt) > 0
-      ? new Date(state.dollarBazaarCache.fetchedAt).toLocaleString()
-      : 'never';
-    const sourceUrl = state.dollarBazaarCache.sourceUrl || 'https://weav3r.dev/dollar-bazaars';
-    return `<section class="dollar-bazaars-view">
-      <div class="dollar-bazaars-controls">
-        <div><strong>Weaver $1 Bazaars</strong><small>${rows.length.toLocaleString()} Bazaar link${rows.length === 1 ? '' : 's'} · updated ${escapeHtml(refreshed)}</small></div>
-        <button data-action="refresh-dollar-bazaars" ${state.dollarBazaarLoading ? 'disabled' : ''}>${state.dollarBazaarLoading ? 'Polling…' : 'Poll now'}</button>
-      </div>
-      ${state.dollarBazaarError ? `<div class="awards-error">${escapeHtml(state.dollarBazaarError)}</div>` : ''}
-      <div class="dollar-bazaar-list">${rows.map((row) => `
-        <article class="dollar-bazaar-row">
-          <a href="${escapeHtml(dollarBazaarHref(row.playerId))}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.playerName)} [${row.playerId}]</a>
-          <span>${row.itemCount.toLocaleString()} item${row.itemCount === 1 ? '' : 's'}</span>
-          <strong>${row.totalValue > 0 ? `$${row.totalValue.toLocaleString()}` : 'Value unavailable'}</strong>
-          ${row.updatedAt > 0 ? `<small>Checked ${escapeHtml(new Date(row.updatedAt).toLocaleString())}</small>` : ''}
-        </article>
-      `).join('') || `<div class="empty"><strong>${state.dollarBazaarLoading ? 'Polling TornW3B…' : 'No $1 Bazaars loaded.'}</strong>${state.dollarBazaarLoading ? 'Waiting for Weaver’s current Bazaar list.' : 'Use Poll now to load up to 50 active Bazaar links.'}</div>`}</div>
-      <div class="dollar-bazaars-source"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open the full TornW3B Dollar Bazaars page</a><small>This uses Weaver, not your Torn API quota. Availability restrictions are only known after opening a Bazaar.</small></div>
-    </section>`;
-  }
-
   async function refreshAwards({ forceCatalog = false } = {}) {
     if (state.awardsLoading) return;
     dashboardNetworkLease?.refresh?.();
@@ -3819,7 +3610,11 @@
       energy: state.dom.bars?.energy || apiBars?.energy,
       nerve: state.dom.bars?.nerve || apiBars?.nerve,
     };
-    const cooldowns = resolvedCooldowns();
+    const cooldowns = {
+      drug: state.dom.cooldowns?.drug ?? apiCooldownRemaining('drug'),
+      medical: state.dom.cooldowns?.medical ?? apiCooldownRemaining('medical'),
+      booster: state.dom.cooldowns?.booster ?? apiCooldownRemaining('booster'),
+    };
     const profile = state.data.profile?.profile;
     const travel = state.data.travel?.travel;
     const missions = state.data.missions?.missions?.givers || [];
@@ -3860,8 +3655,8 @@
     const cityAtReset = numberFromPersonalStats(state.data.cityItemsAtReset);
     const boughtInCityToday = cityNow !== null && cityAtReset !== null ? Math.max(0, cityNow - cityAtReset) : null;
     const cityStockSummary = cityShopStockSummary();
-    const medicalThresholdSeconds = cooldownThresholdSeconds('medical');
-    const boosterThresholdSeconds = cooldownThresholdSeconds('booster');
+    const medicalThresholdSeconds = Number(state.settings.medicalThresholdHours || 3) * 3600;
+    const boosterThresholdSeconds = Number(state.settings.boosterThresholdHours ?? 3) * 3600;
     const playerAddiction = playerAddictionPercent();
     const jobAddiction = jobAddictionPenalty();
 
@@ -3898,7 +3693,7 @@
         active: cooldowns?.medical != null && cooldowns.medical <= medicalThresholdSeconds,
         title: cooldowns?.medical === 0 ? 'Medical cooldown clear - fill blood bags' : 'Medical cooldown is nearly clear',
         detail: cooldowns ? (cooldowns.medical === 0 ? 'Fill an empty blood bag or collect medical supplies.' : `${formatDuration(cooldowns.medical)} remaining`) : '',
-        timerSeconds: cooldowns?.medical,
+        timerSeconds: Number(cooldowns?.medical) || 0,
         links: [
           { label: 'Items', href: 'https://www.torn.com/item.php' },
           { label: 'Armory', href: 'https://www.torn.com/factions.php?step=your&search=first#/tab=armoury&start=0&sub=medical' },
@@ -3910,7 +3705,7 @@
         active: cooldowns?.booster != null && cooldowns.booster <= boosterThresholdSeconds,
         title: cooldowns?.booster === 0 ? 'Booster cooldown is clear' : 'Booster cooldown is nearly clear',
         detail: cooldowns?.booster != null ? (cooldowns.booster === 0 ? 'You can use a booster now.' : `${formatDuration(cooldowns.booster)} remaining`) : '',
-        timerSeconds: cooldowns?.booster,
+        timerSeconds: Number(cooldowns?.booster) || 0,
         links: [
           { label: 'Items', href: 'https://www.torn.com/item.php' },
           { label: 'Armory', href: 'https://www.torn.com/factions.php?step=your&search=first#/tab=armoury&start=0&sub=boosters' },
@@ -5068,20 +4863,6 @@
         .awards-controls button { padding: 5px 8px; white-space: nowrap; }
         .awards-error { margin: 8px 10px 0; padding: 7px 8px; border: 1px solid rgba(255,104,104,.35); border-radius: 7px; color: #ffc0c0; background: #3a2525; font-size: 10px; }
         .award-list { min-height: 0; }
-        .dollar-bazaars-view { min-height: 0; }
-        .dollar-bazaars-controls { display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1d2227; }
-        .dollar-bazaars-controls > div { min-width: 0; flex: 1; }
-        .dollar-bazaars-controls strong, .dollar-bazaars-controls small { display: block; }
-        .dollar-bazaars-controls small { margin-top: 2px; color: #96a2ac; font-size: 9px; }
-        .dollar-bazaars-controls button { white-space: nowrap; }
-        .dollar-bazaar-list { min-height: 0; }
-        .dollar-bazaar-row { display: grid; grid-template-columns: minmax(145px,1fr) auto auto; gap: 4px 9px; align-items: center; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.075); }
-        .dollar-bazaar-row > a { min-width: 0; overflow: hidden; color: #8dc8ed; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-        .dollar-bazaar-row > span { color: #aab5bd; font-size: 10px; white-space: nowrap; }
-        .dollar-bazaar-row > strong { color: #8fe0af; font-size: 11px; text-align: right; white-space: nowrap; }
-        .dollar-bazaar-row > small { grid-column: 1 / -1; color: #77858f; font-size: 9px; }
-        .dollar-bazaars-source { display: grid; gap: 3px; padding: 9px 10px; color: #8d9aa3; background: #1d2227; font-size: 9px; }
-        .dollar-bazaars-source a { color: #8dc8ed; }
         .award-card { padding: 10px; border-bottom: 1px solid rgba(255,255,255,.075); }
         .award-card.tracked { background: rgba(55,101,132,.16); }
         .award-card-head { display: flex; align-items: flex-start; gap: 8px; }
@@ -5199,14 +4980,13 @@
         .exclusion { color: #d7c994; }
         details { margin-top: 10px; color: #dbb184; font-size: 11px; }
         details ul { margin: 6px 0 0; padding-left: 18px; }
-        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .view-button { width: 28px; padding: 0; overflow: hidden; font-size: 0; } .view-button::before { content: '★'; font-size: 14px; } .view-button.dollar-button::before { content: '$1'; font-size: 11px; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .tracked-award-grid { grid-template-columns: 1fr; } .awards-controls { flex-wrap: wrap; } .awards-controls span { order: 3; flex-basis: 100%; text-align: left; } .dollar-bazaar-row { grid-template-columns: minmax(110px,1fr) auto; } .dollar-bazaar-row > strong { grid-column: 2; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
+        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .view-button { width: 28px; padding: 0; overflow: hidden; font-size: 0; } .view-button::before { content: '★'; font-size: 14px; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .tracked-award-grid { grid-template-columns: 1fr; } .awards-controls { flex-wrap: wrap; } .awards-controls span { order: 3; flex-basis: 100%; text-align: left; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
       </style>
       <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
           <div class="title">Daily Dashboard <span class="count">${alerts.length}</span></div>
           <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
           <button class="view-button ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-awards" title="${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open medals and honors'}">${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Alerts' : 'Awards'}</button>
-          <button class="view-button dollar-button ${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-dollar-bazaars" title="${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open Weaver $1 Bazaars'}">${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Alerts' : '$1'}</button>
           <button class="icon-button" data-action="toggle-mute" title="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-label="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-pressed="${state.settings.muteSounds ? 'true' : 'false'}">${state.settings.muteSounds ? '🔇' : '🔊'}</button>
           <button class="icon-button" data-action="settings" title="Settings" aria-label="Settings">⚙</button>
           <button class="icon-button" data-action="collapse" title="${collapsed ? 'Expand' : 'Minimize'}" aria-label="${collapsed ? 'Expand' : 'Minimize'}">${collapsed ? '▾' : '▴'}</button>
@@ -5214,7 +4994,7 @@
         ${collapsed ? '' : `
           <div class="body">
             ${state.settings.settingsOpen ? settingsMarkup() : ''}
-            ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? dollarBazaarsMarkup() : `
+            ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : `
               <div class="status"><span>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
               <div class="toolbar">
                 <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
@@ -5304,15 +5084,6 @@
         refreshAwards();
       }
       return;
-    } else if (action === 'toggle-dollar-bazaars') {
-      const openingDollarBazaars = state.settings.activeView !== 'dollarBazaars' || state.settings.settingsOpen;
-      state.settings.activeView = openingDollarBazaars ? 'dollarBazaars' : 'alerts';
-      state.settings.settingsOpen = false;
-      state.settings.collapsed = false;
-      saveSettings();
-      render();
-      if (openingDollarBazaars) refreshDollarBazaars();
-      return;
     } else if (action === 'collapse') {
       state.settings.collapsed = !state.settings.collapsed;
     } else if (action === 'settings') {
@@ -5328,9 +5099,6 @@
       return;
     } else if (action === 'refresh-awards') {
       refreshAwards();
-      return;
-    } else if (action === 'refresh-dollar-bazaars') {
-      refreshDollarBazaars({ force: true });
       return;
     } else if (action === 'track-award') {
       const key = String(button.dataset.awardKey || '');
@@ -5603,7 +5371,6 @@
     if (event.target.matches('[data-field="medical-hours"]')) {
       state.settings.medicalThresholdHours = Number(event.target.value);
       saveSettings();
-      if (state.alertSnapshotReady && !state.syncing) publishAlertGroups(['medicalCooldown']);
       render();
       return;
     }
@@ -6074,12 +5841,6 @@
     GM_addValueChangeListener(BAZAAR_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote || ownsDashboardNetworkLease()) return;
       state.bazaarCache = loadBazaarCache();
-    });
-    GM_addValueChangeListener(DOLLAR_BAZAAR_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote || ownsDashboardNetworkLease()) return;
-      state.dollarBazaarCache = loadDollarBazaarCache();
-      state.dollarBazaarError = '';
-      if (state.settings.activeView === 'dollarBazaars') render({ force: true });
     });
     GM_addValueChangeListener(WEAV3R_CATEGORY_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote || ownsDashboardNetworkLease()) return;

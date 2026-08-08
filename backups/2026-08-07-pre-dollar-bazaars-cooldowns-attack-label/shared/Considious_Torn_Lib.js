@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.4
+// @version      1.3.3
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,8 +26,7 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.4';
-  const ATTACK_LABEL = '【ATTACK】';
+  const VERSION = '1.3.3';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
   const TORN_API_MAX_LIMIT = 60;
@@ -849,14 +848,6 @@
       .replaceAll("'", '&#039;');
   }
 
-  function attackLink(href, options = {}) {
-    const attributes = [`href="${escapeHtml(href)}"`];
-    if (options.target) attributes.push(`target="${escapeHtml(options.target)}"`);
-    if (options.rel) attributes.push(`rel="${escapeHtml(options.rel)}"`);
-    if (options.className) attributes.push(`class="${escapeHtml(options.className)}"`);
-    return `<a ${attributes.join(' ')}>${escapeHtml(options.label || ATTACK_LABEL)}</a>`;
-  }
-
   function formatHumanDuration(seconds) {
     const total = Math.max(0, Math.floor(Number(seconds) || 0));
     const hours = Math.floor(total / 3600);
@@ -900,9 +891,7 @@
   Object.defineProperty(global, 'ConsidiousTornLib', {
     value: Object.freeze({
       VERSION,
-      ATTACK_LABEL,
       TORN_API_DEFAULT_LIMIT,
-      attackLink,
       copyText,
       createTabLeaderLease,
       elementVisible,

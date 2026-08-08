@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Ranked War Target Panel
 // @namespace    Considious [3853023]
-// @version      0.9.30
+// @version      0.9.29
 // @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -13,7 +13,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.4
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.3
 // @run-at       document-end
 // ==/UserScript==
 
@@ -862,7 +862,7 @@
         const profile = `https://www.torn.com/profiles.php?XID=${member.id}`;
         const attack = `https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}`;
         const linkedName = `<a href="${profile}">${escapeHtml(member.name)} [${member.id}]</a>`;
-        const details = [TornLib.attackLink(attack)];
+        const details = [`<a href="${attack}">Attack</a>`];
 
         const hospital = formatHospital(member);
         if (hospital) {
@@ -2018,7 +2018,7 @@
                     ${hospital ? `<span>${hospital}</span>` : ''}
                     ${shouldHospitalize(member) ? '<span class="rw-hospitalize">HOSP</span>' : ''}
                     <span class="rw-actions">
-                        ${TornLib.attackLink(`https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}`, { target: '_blank', rel: 'noopener noreferrer' })}
+                        <a target="_blank" href="https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}">Attack</a>
                         <a target="_blank" href="https://www.torn.com/profiles.php?XID=${member.id}">Profile</a>
                     </span>
                 </div>
