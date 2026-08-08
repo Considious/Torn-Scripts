@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.25
+// @version      1.4.26
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 2;
+  const CHECK_CACHE_SCHEMA_VERSION = 3;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -278,7 +278,7 @@
     syncing: false,
     lastUpdated: 0,
     lastDailyUpdated: persistedChecks.lastDailyUpdated,
-    tornDayStart: tornDayStartSeconds(),
+    tornDayStart: persistedChecks.tornDayStart,
     coreTimer: null,
     marketTimer: null,
     bazaarTimer: null,
@@ -402,6 +402,7 @@
     if (!cached || typeof cached !== 'object' || Array.isArray(cached)) {
       return {
         data: {},
+        tornDayStart: 0,
         lastDailyUpdated: 0,
         lastMarketUpdated: 0,
         lastBazaarUpdated: 0,
@@ -427,10 +428,13 @@
     const nextApiChecks = cached.nextApiChecks && typeof cached.nextApiChecks === 'object' && !Array.isArray(cached.nextApiChecks)
       ? Object.fromEntries(Object.entries(cached.nextApiChecks).map(([key, value]) => [key, Number(value) || 0]))
       : {};
+    const cachedSchemaVersion = Number(cached.schemaVersion) || 0;
+    let tornDayStart = Number(cached.tornDayStart) || 0;
+    let lastDailyUpdated = Number(cached.lastDailyUpdated) || 0;
     let lastCooldownsUpdated = Number(cached.lastCooldownsUpdated) || legacyFastUpdated;
     let alertSnapshot = Array.isArray(cached.alertSnapshot) ? cached.alertSnapshot : [];
     let readyAlertGroups = Array.isArray(cached.readyAlertGroups) ? cached.readyAlertGroups.filter(Boolean) : [];
-    if ((Number(cached.schemaVersion) || 0) < CHECK_CACHE_SCHEMA_VERSION) {
+    if (cachedSchemaVersion < 2) {
       const cooldownAlertIds = new Set(['drugCooldown', 'medicalCooldown', 'boosterCooldown']);
       delete data.cooldowns;
       delete nextApiChecks.cooldowns;
@@ -438,9 +442,19 @@
       alertSnapshot = alertSnapshot.filter((alert) => !cooldownAlertIds.has(alert?.id));
       readyAlertGroups = readyAlertGroups.filter((group) => !cooldownAlertIds.has(group));
     }
+    if (cachedSchemaVersion < 3) {
+      const dailyAlertIds = new Set(['energyRefill', 'nerveRefill', 'cityItem']);
+      ['refills', 'cityItemsNow', 'cityItemsAtReset', 'cityShops'].forEach((key) => delete data[key]);
+      ['refills', 'cityItems'].forEach((key) => delete nextApiChecks[key]);
+      tornDayStart = 0;
+      lastDailyUpdated = 0;
+      alertSnapshot = alertSnapshot.filter((alert) => !dailyAlertIds.has(alert?.id));
+      readyAlertGroups = readyAlertGroups.filter((group) => group !== 'refills' && group !== 'cityItem');
+    }
     return {
       data,
-      lastDailyUpdated: Number(cached.lastDailyUpdated) || 0,
+      tornDayStart,
+      lastDailyUpdated,
       lastMarketUpdated: Number(cached.lastMarketUpdated) || 0,
       lastBazaarUpdated: Number(cached.lastBazaarUpdated) || 0,
       lastEnergyUpdated: Number(cached.lastEnergyUpdated) || legacyFastUpdated,
@@ -466,6 +480,7 @@
     GM_setValue(CHECK_CACHE_KEY, {
       schemaVersion: CHECK_CACHE_SCHEMA_VERSION,
       data: state.data,
+      tornDayStart: state.tornDayStart,
       lastDailyUpdated: state.lastDailyUpdated,
       lastMarketUpdated: state.lastMarketUpdated,
       lastBazaarUpdated: state.lastBazaarUpdated,
@@ -490,6 +505,7 @@
 
   function applyCheckCache(cached) {
     state.data = cached.data;
+    state.tornDayStart = cached.tornDayStart;
     state.lastDailyUpdated = cached.lastDailyUpdated;
     state.lastMarketUpdated = cached.lastMarketUpdated;
     state.lastBazaarUpdated = cached.lastBazaarUpdated;
@@ -1169,9 +1185,10 @@
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) + TORN_RESET_SETTLE_MS;
   }
 
-  function apiCheckDueAt(key, lastUpdated, fallbackMs, now = Date.now()) {
+  function apiCheckDueAt(key, lastUpdated, fallbackMs, now = Date.now(), { honorScheduled = false } = {}) {
     const scheduled = Number(state.nextApiChecks?.[key]) || 0;
     const fallbackAt = (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
+    if (honorScheduled && scheduled > 0) return now >= scheduled;
     return now >= (scheduled > 0 ? Math.min(scheduled, fallbackAt) : fallbackAt);
   }
 
@@ -2604,9 +2621,9 @@
     const dailyInterval = dailyRefreshMs();
     const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
     const refillsDue = refillsEnabled && (force || dayChanged || snoozeExpiredFor('energyRefill', 'nerveRefill')
-      || apiCheckDueAt('refills', state.lastDailyUpdated, dailyInterval, now));
+      || apiCheckDueAt('refills', state.lastDailyUpdated, dailyInterval, now, { honorScheduled: true }));
     const cityItemsDue = alertCheckDue('cityItem') && (force || dayChanged || snoozeExpiredFor('cityItem')
-      || apiCheckDueAt('cityItems', state.lastDailyUpdated, dailyInterval, now));
+      || apiCheckDueAt('cityItems', state.lastDailyUpdated, dailyInterval, now, { honorScheduled: true }));
     const playerAddictionDue = alertCheckDue('playerAddiction') && state.dom.playerAddiction == null
       && (force || dayChanged || snoozeExpiredFor('playerAddiction')
         || apiCheckDueAt('playerAddiction', state.lastDailyUpdated, dailyInterval, now));
@@ -2831,8 +2848,9 @@
       if (needsDaily) {
         if (refillsDue) {
           dailyTasks.push((async () => {
-            const okay = await guardedRequest('legacyDaily', () => apiV1('user', { selections: 'refills' }), (body) => { state.data.refills = { ...body, __fetchedAt: Date.now() }; });
+            const okay = await guardedRequest('dailyRefills', () => api('user/refills'), (body) => { state.data.refills = { ...body, __fetchedAt: Date.now() }; });
             if (!okay) return;
+            delete state.errors.legacyDaily;
             deferApiCheck('refills', enabledRefillsComplete() ? nextTornResetAtMs() : Date.now() + dailyInterval);
             publishAlertGroups(['refills']);
           })());
