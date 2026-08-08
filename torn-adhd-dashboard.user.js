@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.24
+// @version      1.4.25
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,6 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
+  const CHECK_CACHE_SCHEMA_VERSION = 2;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -422,14 +423,29 @@
       };
     }
     const legacyFastUpdated = Number(cached.lastFastUpdated) || 0;
+    const data = cached.data && typeof cached.data === 'object' && !Array.isArray(cached.data) ? { ...cached.data } : {};
+    const nextApiChecks = cached.nextApiChecks && typeof cached.nextApiChecks === 'object' && !Array.isArray(cached.nextApiChecks)
+      ? Object.fromEntries(Object.entries(cached.nextApiChecks).map(([key, value]) => [key, Number(value) || 0]))
+      : {};
+    let lastCooldownsUpdated = Number(cached.lastCooldownsUpdated) || legacyFastUpdated;
+    let alertSnapshot = Array.isArray(cached.alertSnapshot) ? cached.alertSnapshot : [];
+    let readyAlertGroups = Array.isArray(cached.readyAlertGroups) ? cached.readyAlertGroups.filter(Boolean) : [];
+    if ((Number(cached.schemaVersion) || 0) < CHECK_CACHE_SCHEMA_VERSION) {
+      const cooldownAlertIds = new Set(['drugCooldown', 'medicalCooldown', 'boosterCooldown']);
+      delete data.cooldowns;
+      delete nextApiChecks.cooldowns;
+      lastCooldownsUpdated = 0;
+      alertSnapshot = alertSnapshot.filter((alert) => !cooldownAlertIds.has(alert?.id));
+      readyAlertGroups = readyAlertGroups.filter((group) => !cooldownAlertIds.has(group));
+    }
     return {
-      data: cached.data && typeof cached.data === 'object' && !Array.isArray(cached.data) ? cached.data : {},
+      data,
       lastDailyUpdated: Number(cached.lastDailyUpdated) || 0,
       lastMarketUpdated: Number(cached.lastMarketUpdated) || 0,
       lastBazaarUpdated: Number(cached.lastBazaarUpdated) || 0,
       lastEnergyUpdated: Number(cached.lastEnergyUpdated) || legacyFastUpdated,
       lastNerveUpdated: Number(cached.lastNerveUpdated) || legacyFastUpdated,
-      lastCooldownsUpdated: Number(cached.lastCooldownsUpdated) || legacyFastUpdated,
+      lastCooldownsUpdated,
       lastEducationOcUpdated: Number(cached.lastEducationOcUpdated) || 0,
       lastRaceUpdated: Number(cached.lastRaceUpdated) || 0,
       nextRaceTravelCheckAt: Number(cached.nextRaceTravelCheckAt) || 0,
@@ -437,19 +453,18 @@
       lastCasinoUpdated: Number(cached.lastCasinoUpdated) || 0,
       lastJobAddictionUpdated: Number(cached.lastJobAddictionUpdated) || 0,
       lastClusterUpdated: Number(cached.lastClusterUpdated) || 0,
-      nextApiChecks: cached.nextApiChecks && typeof cached.nextApiChecks === 'object' && !Array.isArray(cached.nextApiChecks)
-        ? Object.fromEntries(Object.entries(cached.nextApiChecks).map(([key, value]) => [key, Number(value) || 0]))
-        : {},
+      nextApiChecks,
       lastUpdated: Number(cached.lastUpdated) || Number(cached.savedAt) || 0,
-      alertSnapshot: Array.isArray(cached.alertSnapshot) ? cached.alertSnapshot : [],
-      alertSnapshotReady: cached.alertSnapshotReady === true,
-      readyAlertGroups: Array.isArray(cached.readyAlertGroups) ? cached.readyAlertGroups.filter(Boolean) : [],
+      alertSnapshot,
+      alertSnapshotReady: cached.alertSnapshotReady === true && readyAlertGroups.length > 0,
+      readyAlertGroups,
     };
   }
 
   function saveCheckCache() {
     if (dashboardNetworkLease && !ownsDashboardNetworkLease()) return;
     GM_setValue(CHECK_CACHE_KEY, {
+      schemaVersion: CHECK_CACHE_SCHEMA_VERSION,
       data: state.data,
       lastDailyUpdated: state.lastDailyUpdated,
       lastMarketUpdated: state.lastMarketUpdated,
@@ -1156,8 +1171,8 @@
 
   function apiCheckDueAt(key, lastUpdated, fallbackMs, now = Date.now()) {
     const scheduled = Number(state.nextApiChecks?.[key]) || 0;
-    if (scheduled > 0) return now >= scheduled;
-    return now - (Number(lastUpdated) || 0) >= Math.max(1_000, Number(fallbackMs) || 0);
+    const fallbackAt = (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
+    return now >= (scheduled > 0 ? Math.min(scheduled, fallbackAt) : fallbackAt);
   }
 
   function deferApiCheck(key, nextAt) {
@@ -2200,10 +2215,21 @@
 
   function parseCooldownSeconds(text) {
     const value = String(text || '').toLowerCase();
-    const clock = value.match(/(?:(\d+)\s*d(?:ays?)?\s*)?(\d{1,3}):(\d{2}):(\d{2})/i);
+    const clockPair = value.match(/\b(\d{1,3}):(\d{2}):(\d{2})\s*\/\s*(\d{1,3}):(\d{2}):(\d{2})\b/);
+    if (clockPair) return Number(clockPair[1]) * 3600 + Number(clockPair[2]) * 60 + Number(clockPair[3]);
+    const units = [...value.matchAll(/(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/gi)];
+    if (units.length) {
+      return Math.max(0, Math.round(units.reduce((total, match) => {
+        const amount = Number(match[1]);
+        const unit = match[2][0].toLowerCase();
+        return total + amount * (unit === 'd' ? 86400 : unit === 'h' ? 3600 : unit === 'm' ? 60 : 1);
+      }, 0)));
+    }
+    const withoutCompletionDates = value.replace(/\b\d{1,2}:\d{1,2}:\d{4}\s+\d{1,3}:\d{2}:\d{2}\b/g, ' ');
+    const clock = withoutCompletionDates.match(/(?:(\d+)\s*d(?:ays?)?\s*)?(\d{1,3}):(\d{2}):(\d{2})/i);
     if (clock) return Number(clock[1] || 0) * 86400 + Number(clock[2]) * 3600 + Number(clock[3]) * 60 + Number(clock[4]);
-    const words = value.match(/(?:(\d+)\s*d(?:ays?)?)?\s*(?:(\d+)\s*h(?:ours?)?)?\s*(?:(\d+)\s*m(?:in(?:utes?)?)?)?/i);
-    if (words && (words[1] || words[2] || words[3])) return Number(words[1] || 0) * 86400 + Number(words[2] || 0) * 3600 + Number(words[3] || 0) * 60;
+    const shortClock = withoutCompletionDates.match(/\b(\d{1,3}):(\d{2})(?!:)\b/);
+    if (shortClock) return Number(shortClock[1]) * 3600 + Number(shortClock[2]) * 60;
     if (/\b(?:ready|clear|no cooldown)\b/i.test(value)) return 0;
     return null;
   }
