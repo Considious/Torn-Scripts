@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.23
+// @version      1.4.24
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -43,7 +43,11 @@
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
   const API_TRANSITION_SETTLE_MS = 5_000;
   const TORN_RESET_SETTLE_MS = 15_000;
-  const ITEM_MARKET_CACHE_REFRESH_MS = 20_000;
+  const ITEM_MARKET_FALLBACK_REFRESH_MS = 30_000;
+  const ITEM_MARKET_CACHE_SAFETY_MS = 1_000;
+  const ITEM_MARKET_STALE_RETRY_MIN_MS = 2_000;
+  const ITEM_MARKET_STALE_RETRY_MAX_MS = 5_000;
+  const ITEM_MARKET_LISTING_LIMIT = 5;
   const POINTS_MARKET_REFRESH_MS = 30_000;
   const MARKET_WATCH_LIMIT = 50;
   const MARKET_PRIORITY_CYCLES = Object.freeze({ high: 1, normal: 2, low: 4 });
@@ -1295,7 +1299,7 @@
 
   function marketRefreshMs(marketType = 'points') {
     if (state.settings.marketRefreshMode === 'cache-aligned') {
-      return marketType === 'item' ? ITEM_MARKET_CACHE_REFRESH_MS : POINTS_MARKET_REFRESH_MS;
+      return marketType === 'item' ? ITEM_MARKET_FALLBACK_REFRESH_MS : POINTS_MARKET_REFRESH_MS;
     }
     return Math.max(1, Number(state.settings.marketRefreshMinutes) || 2) * 60_000;
   }
@@ -1330,14 +1334,41 @@
     }, 'low');
   }
 
+  function itemMarketCacheTimestamp(result) {
+    const timestamp = Number(result?.itemmarket?.cache_timestamp);
+    return Number.isFinite(timestamp) && timestamp > 0 ? Math.trunc(timestamp) : 0;
+  }
+
+  function itemMarketCacheDelayMs(result) {
+    const delaySeconds = Number(result?.itemmarket?.cache_delay);
+    return Number.isFinite(delaySeconds) && delaySeconds >= 0 ? Math.ceil(delaySeconds * 1_000) : null;
+  }
+
+  function itemMarketCacheBoundaryAt(result) {
+    const timestamp = itemMarketCacheTimestamp(result);
+    const delayMs = itemMarketCacheDelayMs(result);
+    if (!timestamp || delayMs === null) return 0;
+    return timestamp * 1_000 + delayMs + ITEM_MARKET_CACHE_SAFETY_MS;
+  }
+
+  function itemMarketStaleRetryMs(result) {
+    const retryCount = Math.max(1, Math.trunc(Number(result?.__cacheRetryCount) || 1));
+    return Math.min(ITEM_MARKET_STALE_RETRY_MAX_MS, ITEM_MARKET_STALE_RETRY_MIN_MS + (retryCount - 1) * 1_000);
+  }
+
   function itemMarketNextCheckAt(result, priority = 'normal') {
+    const stored = Number(result?.__nextCheckAt) || 0;
+    if (stored > 0) return stored;
     const fetchedAt = Number(result?.__fetchedAt) || 0;
     if (!fetchedAt) return 0;
     const cycles = MARKET_PRIORITY_CYCLES[normalizedMarketPriority(priority)];
     if (state.settings.marketRefreshMode !== 'cache-aligned') {
       return fetchedAt + marketRefreshMs('item') * cycles;
     }
-    return fetchedAt + ITEM_MARKET_CACHE_REFRESH_MS * cycles;
+    const cacheBoundaryAt = itemMarketCacheBoundaryAt(result);
+    return cacheBoundaryAt > 0
+      ? Math.max(cacheBoundaryAt, fetchedAt + ITEM_MARKET_CACHE_SAFETY_MS)
+      : fetchedAt + ITEM_MARKET_FALLBACK_REFRESH_MS;
   }
 
   function weav3rRefreshMsForPriority(priority = 'normal') {
@@ -1434,11 +1465,28 @@
           try {
             const body = group.marketType === 'points'
               ? await api('market', { selections: 'pointsmarket', limit: 100 }, { priority: 'high', waitForQuota: false, maxWaitMs: 0 })
-              : await api(`market/${group.itemId}/itemmarket`, { limit: 1 }, { priority: group.priority, quotaClass: 'itemmarket', waitForQuota: false, maxWaitMs: 0 });
+              : await api(`market/${group.itemId}/itemmarket`, { limit: ITEM_MARKET_LISTING_LIMIT }, { priority: group.priority, quotaClass: 'itemmarket', waitForQuota: false, maxWaitMs: 0 });
             const fetchedAt = Date.now();
             body.__fetchedAt = fetchedAt;
             body.__marketType = group.marketType;
+            const previousCacheTimestamp = group.marketType === 'item' ? itemMarketCacheTimestamp(previous) : 0;
+            const responseCacheTimestamp = group.marketType === 'item' ? itemMarketCacheTimestamp(body) : 0;
+            const cacheDidNotAdvance = state.settings.marketRefreshMode === 'cache-aligned'
+              && previousCacheTimestamp > 0
+              && responseCacheTimestamp === previousCacheTimestamp;
+            if (cacheDidNotAdvance) {
+              const retained = previous && typeof previous === 'object' ? previous : body;
+              retained.__fetchedAt = fetchedAt;
+              retained.__cacheRetryCount = Math.min(4, Math.max(0, Math.trunc(Number(retained.__cacheRetryCount) || 0)) + 1);
+              retained.__nextCheckAt = fetchedAt + itemMarketStaleRetryMs(retained);
+              retained.__lastCacheAttemptAt = fetchedAt;
+              state.data.market ||= {};
+              group.watches.forEach((watch) => { state.data.market[watch.uid] = retained; });
+              delete state.errors[errorKey];
+              return;
+            }
             const nextPriority = group.marketType === 'item' ? groupMarketPriority(group.watches, body) : 'normal';
+            if (group.marketType === 'item') body.__cacheRetryCount = 0;
             body.__nextCheckAt = group.marketType === 'item'
               ? itemMarketNextCheckAt(body, nextPriority)
               : fetchedAt + marketRefreshMs(group.marketType);
@@ -4878,12 +4926,12 @@
             <button data-action="add-market-watch" ${state.settings.marketWatches.length >= MARKET_WATCH_LIMIT ? 'disabled' : ''}>${state.settings.marketWatches.length >= MARKET_WATCH_LIMIT ? `${MARKET_WATCH_LIMIT} watch limit` : `Add watch (${state.settings.marketWatches.length}/${MARKET_WATCH_LIMIT})`}</button>
             <label>Torn market polling
               <select data-field="market-refresh-minutes">
-                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Priority scheduler / points 30s</option>
+                <option value="cache-aligned" ${state.settings.marketRefreshMode === 'cache-aligned' ? 'selected' : ''}>Torn cache-aligned / points 30s</option>
                 ${[1, 2, 5, 10].map((minutes) => `<option value="${minutes}" ${state.settings.marketRefreshMode !== 'cache-aligned' && Number(state.settings.marketRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} min</option>`).join('')}
               </select>
             </label>
           </div>
-          <p class="priority-note"><strong>Priority:</strong> High is eligible every 20 seconds and can use slots up to the firm 60/minute limit. Normal is eligible every 40 seconds only while usage is below 50/minute. Low is eligible every 80 seconds only while usage is below 40/minute. A watch at or below its alert price temporarily becomes High. Every Torn Item Market check counts in Core's shared API ledger.</p>
+          <p class="priority-note"><strong>Priority:</strong> Each Item Market watch follows Torn's returned cache timestamp and delay, then checks one second after that cache should refresh. If Torn still returns the same timestamp, it retries after 2–5 seconds. High, Normal, and Low determine quota order and headroom; a watch at or below its alert price temporarily becomes High. Each response is limited to the five cheapest listings, and every Torn Item Market check counts in Core's shared API ledger.</p>
           <div class="bazaar-controls">
             <label><input type="checkbox" data-field="weav3r-bazaar-enabled" ${state.settings.weav3rBazaarEnabled ? 'checked' : ''}> Check TornW3B bazaars</label>
             <span>High 10s · Normal 30s · Low 60s; four at a time with rate-limit backoff</span>
