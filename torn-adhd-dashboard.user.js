@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.28
+// @version      1.4.29
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -913,12 +913,12 @@
     const style = document.createElement('style');
     style.id = 'tdd-bazaar-one-dollar-styles';
     style.textContent = `
-      [data-tdd-bazaar-one-dollar="true"] {
+      [data-tdd-bazaar-one-dollar] {
         outline: 4px solid #39ff14 !important;
         outline-offset: 2px !important;
         box-shadow: 0 0 18px 5px rgba(57,255,20,.72), inset 0 0 0 2px rgba(57,255,20,.5) !important;
       }
-      [data-tdd-bazaar-shop-profit="true"] {
+      [data-tdd-bazaar-shop-profit] {
         outline: 4px solid #ff4fbd !important;
         outline-offset: 2px !important;
         box-shadow: 0 0 18px 5px rgba(255,79,189,.68), inset 0 0 0 2px rgba(255,79,189,.48) !important;
