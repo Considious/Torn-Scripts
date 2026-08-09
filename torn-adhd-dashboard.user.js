@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.26
+// @version      1.4.27
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -322,6 +322,8 @@
     domObserver: null,
     domRefreshTimer: null,
     bazaarOneDollarTimer: null,
+    bazaarCatalogRequestedAt: 0,
+    pendingBazaarPurchase: null,
     windowResizeTimer: null,
     pickpocketRefreshTimer: null,
     pickpocketHeartbeat: null,
@@ -916,6 +918,11 @@
         outline-offset: 2px !important;
         box-shadow: 0 0 18px 5px rgba(57,255,20,.72), inset 0 0 0 2px rgba(57,255,20,.5) !important;
       }
+      [data-tdd-bazaar-shop-profit="true"] {
+        outline: 4px solid #ff4fbd !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 18px 5px rgba(255,79,189,.68), inset 0 0 0 2px rgba(255,79,189,.48) !important;
+      }
     `;
     document.head?.appendChild(style);
   }
@@ -943,7 +950,9 @@
 
   function bazaarCardUnavailable(card) {
     const priceElement = card.querySelector('[data-testid="price"]');
+    const blockedPurchaseSelector = '[class*="isBlockedForBuying"], #isBlockedForBuyingTooltip';
     const unavailableSelector = '[aria-disabled="true"], [data-disabled="true"], [class*="disabled" i], [class*="unavailable" i], [class*="soldOut" i], [class*="cannotBuy" i]';
+    if (card.querySelector(blockedPurchaseSelector)) return true;
     if (card.matches(unavailableSelector) || priceElement?.matches(unavailableSelector)) return true;
     if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(card.textContent || ''))) return true;
     const purchaseControls = Array.from(card.querySelectorAll('button, [role="button"]')).filter((control) => (
@@ -968,21 +977,126 @@
       .filter(Boolean))];
   }
 
+  function bazaarCardItemId(card) {
+    const image = card?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+    const match = `${image?.getAttribute('src') || ''} ${image?.getAttribute('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
+    return match ? Math.trunc(Number(match[1])) : 0;
+  }
+
+  function bazaarCardStock(card) {
+    const stockText = card?.querySelector?.('[data-testid="amount-value"]')?.textContent
+      || String(card?.textContent || '').match(/([\d,]+)\s+in stock/i)?.[1]
+      || '';
+    const stock = Number(String(stockText).replace(/[^\d]/g, ''));
+    return Number.isFinite(stock) && stock > 0 ? Math.trunc(stock) : 0;
+  }
+
+  function catalogItemById(itemId) {
+    const id = Math.trunc(Number(itemId));
+    return id > 0 ? state.itemCatalog.items.find((item) => item.id === id) || null : null;
+  }
+
+  function requestBazaarSellPriceCatalog() {
+    if (state.itemCatalog.items.length || state.itemCatalogLoading || !state.settings.apiKey || !ownsDashboardNetworkLease()) return;
+    if (Date.now() - Number(state.bazaarCatalogRequestedAt || 0) < 5 * 60_000) return;
+    state.bazaarCatalogRequestedAt = Date.now();
+    void loadItemCatalog().then(() => scheduleBazaarOneDollarFormatting(0));
+  }
+
   function formatBazaarOneDollarListings() {
     if (!onBazaarPage()) {
       document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => card.removeAttribute('data-tdd-bazaar-one-dollar'));
+      document.querySelectorAll('[data-tdd-bazaar-shop-profit]').forEach((card) => card.removeAttribute('data-tdd-bazaar-shop-profit'));
       return;
     }
     ensureBazaarOneDollarStyles();
+    requestBazaarSellPriceCatalog();
     const cards = new Set(bazaarListingCards());
     document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => {
       if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-one-dollar');
     });
-    cards.forEach((card) => {
-      const highlight = bazaarCardPrice(card) === 1 && !bazaarCardUnavailable(card);
-      if (highlight) card.setAttribute('data-tdd-bazaar-one-dollar', 'true');
-      else card.removeAttribute('data-tdd-bazaar-one-dollar');
+    document.querySelectorAll('[data-tdd-bazaar-shop-profit]').forEach((card) => {
+      if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-shop-profit');
     });
+    cards.forEach((card) => {
+      const price = bazaarCardPrice(card);
+      const available = !bazaarCardUnavailable(card);
+      const sellPrice = Number(catalogItemById(bazaarCardItemId(card))?.sellPrice) || 0;
+      const oneDollar = available && price === 1;
+      const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
+      card.toggleAttribute('data-tdd-bazaar-one-dollar', oneDollar);
+      card.toggleAttribute('data-tdd-bazaar-shop-profit', shopProfit);
+    });
+  }
+
+  function bazaarPurchaseButton(control) {
+    if (!control) return false;
+    if (control.matches('[class*="controlPanelButton___"]')) return true;
+    const label = `${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('title') || ''}`.trim();
+    return /^(?:buy|purchase)\b/i.test(label);
+  }
+
+  function bazaarPurchaseQuantityInput(pending) {
+    const itemId = Number(pending?.itemId) || 0;
+    const currentCard = pending?.card?.isConnected
+      ? pending.card
+      : bazaarListingCards().find((card) => bazaarCardItemId(card) === itemId);
+    const roots = [currentCard];
+    document.querySelectorAll('[class*="buyMenu__"], [class*="buyForm___"], [role="dialog"], [aria-modal="true"], [class*="modal" i], [class*="dialog" i], [class*="confirm" i]').forEach((root) => {
+      if (elementVisible(root)) roots.push(root);
+    });
+    const active = document.activeElement;
+    if (active?.matches?.('[class*="buyAmountInput_"], input[type="number"], input[inputmode="numeric"]') && !active.disabled && !active.readOnly) return active;
+    for (const root of roots.filter(Boolean)) {
+      const inputs = Array.from(root.querySelectorAll('[class*="buyAmountInput_"], input[type="number"], input[inputmode="numeric"], input[pattern*="0-9"]'))
+        .filter((input) => !input.disabled && !input.readOnly && elementVisible(input));
+      const labelled = inputs.find((input) => /\b(?:amount|quantity|qty|buy)\b/i.test(`${input.name || ''} ${input.id || ''} ${input.placeholder || ''} ${input.getAttribute('aria-label') || ''}`));
+      if (labelled || inputs.length === 1) return labelled || inputs[0];
+    }
+    return null;
+  }
+
+  function fillBazaarPurchaseMaximum(pending) {
+    if (!pending || state.pendingBazaarPurchase !== pending || Date.now() - pending.clickedAt > 2_000) return false;
+    const input = bazaarPurchaseQuantityInput(pending);
+    if (!input) return false;
+    const declaredMax = Number(input.max || input.getAttribute('aria-valuemax') || input.dataset.max);
+    const moneyText = document.querySelector('#user-money')?.dataset?.money;
+    const normalizedMoney = String(moneyText ?? '').replace(/[^\d.-]/g, '');
+    const money = normalizedMoney ? Number(normalizedMoney) : null;
+    const affordable = Number(pending.price) > 0 && Number.isFinite(money) ? Math.floor(money / Number(pending.price)) : null;
+    if (affordable !== null && affordable < 1) return false;
+    const candidates = [Number(pending.stock), declaredMax, affordable, 10_000].filter((value) => Number.isFinite(value) && value > 0);
+    if (!candidates.length) return false;
+    const maximum = Math.max(1, Math.trunc(Math.min(...candidates)));
+    if (Number(input.value) !== maximum) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(input, String(maximum));
+      else input.value = String(maximum);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return true;
+  }
+
+  function handleBazaarPurchaseClick(event) {
+    if (!onBazaarPage()) return;
+    const control = event.target?.closest?.('button, [role="button"]');
+    if (!bazaarPurchaseButton(control)) return;
+    const card = bazaarListingCards().find((candidate) => candidate.contains(control));
+    if (!card || bazaarCardUnavailable(card)) return;
+    const pending = {
+      card,
+      itemId: bazaarCardItemId(card),
+      price: bazaarCardPrice(card),
+      stock: bazaarCardStock(card),
+      clickedAt: Date.now(),
+    };
+    state.pendingBazaarPurchase = pending;
+    [0, 60, 180, 420, 900, 1_500].forEach((delay) => window.setTimeout(() => {
+      fillBazaarPurchaseMaximum(pending);
+      if (delay === 1_500 && state.pendingBazaarPurchase === pending) state.pendingBazaarPurchase = null;
+    }, delay));
   }
 
   function scheduleBazaarOneDollarFormatting(delay = 80) {
@@ -4951,8 +5065,8 @@
             <small>Only fires while this Torn tab is visible. Mobile support depends on the browser; this script cannot send background push when Torn is closed or hidden.</small>
           </div>
         </details>
-        <div class="market-settings">
-          <div class="section-title">Market watches</div>
+        <details class="settings-group market-settings" data-settings-section="marketWatches" ${sectionOpen('marketWatches')}>
+          <summary>Market watches · ${state.settings.marketWatches.length}/${MARKET_WATCH_LIMIT}</summary>
           <p>Choose Item Market or Points Market, then set the maximum price that should trigger an alert.</p>
           <div class="catalog-controls">
             <label>Category
@@ -5003,7 +5117,7 @@
             <p class="pawn-status">${escapeHtml(state.pawnShopStatus || `${pawnCapacity} watch slots available.`)}</p>
             ${pawnRows ? `<div class="pawn-candidate-list">${pawnRows}</div>` : '<div class="market-empty">Load the current travel-contraband list to review city-shop profit candidates.</div>'}
           </details>
-        </div>
+        </details>
         <p class="privacy"><strong>Privacy rule:</strong> Torn page content is read only while this tab is visible and the Torn browser window is focused. When visible but unfocused, scraped signals are discarded and Torn API fallback is used. Hidden tabs are paused.</p>
         ${exclusion ? `<p class="exclusion">Casino reminder paused by “${escapeHtml(exclusion.title)}”${exclusion.untilMs ? ` until ${new Date(exclusion.untilMs).toLocaleString()}` : ''}.</p>` : ''}
         ${errors ? `<details><summary>API warnings</summary><ul>${errors}</ul></details>` : ''}
@@ -5247,7 +5361,7 @@
         .crime-unique-settings ul { margin: 5px 0; padding-left: 18px; }
         .crime-unique-settings small { color: #98a2aa; }
         .alarm-settings select, .landing-alarm-settings select, .turtle-alarm-settings select, .market-controls select, .catalog-controls select, .bazaar-controls select, .pawn-builder-controls select, .pawn-builder-controls input { padding: 3px 5px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #f1f4f6; background: #111418; }
-        .market-settings { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.1); }
+        .market-settings { margin-top: 10px; padding-top: 0; border-top: 0; }
         .section-title { color: #eef2f5; font-weight: 750; }
         .market-settings > p { margin: 3px 0 9px; color: #929da7; font-size: 11px; }
         .catalog-controls { display: flex; align-items: center; gap: 8px; margin: 7px 0 10px; color: #aeb7c1; font-size: 11px; }
@@ -6021,6 +6135,7 @@
 
   window.addEventListener('hashchange', () => schedulePickpocketFormatting(0));
   window.addEventListener('popstate', () => schedulePickpocketFormatting(0));
+  document.addEventListener('click', handleBazaarPurchaseClick, true);
 
   function scheduleVisiblePageSignalRefresh() {
     if (!focusedTornPage() || state.domRefreshTimer) return;
