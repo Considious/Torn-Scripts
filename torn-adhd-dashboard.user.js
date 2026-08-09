@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.32
+// @version      1.4.33
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -38,7 +38,8 @@
   const CORE_REFRESH_MS = 60_000;
   const NERVE_REFRESH_MS = 5 * 60_000;
   const ENERGY_REFRESH_MS = 10 * 60_000;
-  const COOLDOWN_REFRESH_MS = 10 * 60_000;
+  const COOLDOWN_RETRY_MS = 10 * 60_000;
+  const COOLDOWN_CLEAR_REFRESH_MS = 2 * 60 * 60_000;
   const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
@@ -1419,8 +1420,8 @@
 
   function cooldownNextApiCheckAt(type, seconds, fetchedAt) {
     const remaining = normalizedCooldownSeconds(seconds);
-    const fallbackAt = fetchedAt + COOLDOWN_REFRESH_MS;
-    if (remaining === null || remaining === 0) return fallbackAt;
+    if (remaining === null) return fetchedAt + COOLDOWN_RETRY_MS;
+    if (remaining === 0) return fetchedAt + COOLDOWN_CLEAR_REFRESH_MS;
     const threshold = cooldownThresholdSeconds(type);
     const nextTransitionSeconds = remaining > threshold ? remaining - threshold : remaining;
     return fetchedAt + nextTransitionSeconds * 1000 + API_TRANSITION_SETTLE_MS;
@@ -2763,13 +2764,14 @@
     // A failed request makes the API state unknown. Never retain an older zero,
     // because that would turn an authentication/network error into "clear."
     delete state.data.cooldowns;
+    const checkedAt = Date.now();
     state.data.cooldownApiStatus = {
       ok: false,
-      checkedAt: Date.now(),
+      checkedAt,
       message: String(message || 'Unknown cooldown API error.'),
     };
-    state.lastCooldownsUpdated = 0;
-    delete state.nextApiChecks.cooldowns;
+    state.lastCooldownsUpdated = checkedAt;
+    deferApiCheck('cooldowns', checkedAt + COOLDOWN_RETRY_MS);
   }
 
   async function guardedRequest(errorKey, request, onSuccess) {
@@ -2874,7 +2876,7 @@
           energyDue: force || snoozeExpiredFor('energyFull') || apiCheckDueAt('energy', state.lastEnergyUpdated, ENERGY_REFRESH_MS, now),
           nerveDue: force || snoozeExpiredFor('nerveFull') || apiCheckDueAt('nerve', state.lastNerveUpdated, NERVE_REFRESH_MS, now),
           cooldownsDue: force || snoozeExpiredFor('drugCooldown', 'medicalCooldown', 'boosterCooldown')
-            || apiCheckDueAt('cooldowns', state.lastCooldownsUpdated, COOLDOWN_REFRESH_MS, now, { honorScheduled: true }),
+            || apiCheckDueAt('cooldowns', state.lastCooldownsUpdated, COOLDOWN_RETRY_MS, now, { honorScheduled: true }),
         };
         const fastSelections = fastSelectionsNeeded(fastDue);
         const cooldownRequested = fastSelections.includes('cooldowns');
@@ -2907,7 +2909,7 @@
             state.settings.enabled.medicalCooldown !== false ? cooldownNextApiCheckAt('medical', apiCooldowns?.medical, updatedAt) : 0,
             state.settings.enabled.boosterCooldown !== false ? cooldownNextApiCheckAt('booster', apiCooldowns?.booster, updatedAt) : 0,
           ].filter((value) => value > updatedAt);
-          deferApiCheck('cooldowns', nextChecks.length ? Math.min(...nextChecks) : updatedAt + COOLDOWN_REFRESH_MS);
+          deferApiCheck('cooldowns', nextChecks.length ? Math.min(...nextChecks) : updatedAt + COOLDOWN_RETRY_MS);
         }
         const groups = [];
         const apiBars = state.data.bars?.bars;
