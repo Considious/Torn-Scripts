@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.5
+// @version      1.3.4
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,7 +26,7 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.5';
+  const VERSION = '1.3.4';
   const ATTACK_LABEL = '【ATTACK】';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
@@ -312,20 +312,10 @@
   function sanitizeTornApiEndpoint(url) {
     try {
       const parsed = new URL(String(url), global.location?.href || 'https://www.torn.com/');
-      const queryParts = [...new Set([...parsed.searchParams.keys()]
+      const queryNames = [...new Set([...parsed.searchParams.keys()]
         .filter((name) => String(name).toLowerCase() !== 'key'))]
-        .sort()
-        .map((name) => {
-          // Showing a numeric page size is safe and makes it possible to verify
-          // that callers are actually honoring small response limits. Other
-          // values stay redacted so the shared ledger never becomes a query log.
-          if (String(name).toLowerCase() === 'limit') {
-            const value = parsed.searchParams.get(name);
-            return /^\d+$/.test(String(value || '')) ? `${name}=${value}` : name;
-          }
-          return name;
-        });
-      return `${parsed.pathname || '/'}${queryParts.length ? `?${queryParts.join('&')}` : ''}`.slice(0, 240);
+        .sort();
+      return `${parsed.pathname || '/'}${queryNames.length ? `?${queryNames.join('&')}` : ''}`.slice(0, 240);
     } catch {
       return 'Unknown endpoint';
     }
