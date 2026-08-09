@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.35
+// @version      1.4.34
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 7;
+  const CHECK_CACHE_SCHEMA_VERSION = 6;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -40,7 +40,6 @@
   const ENERGY_REFRESH_MS = 10 * 60_000;
   const COOLDOWN_RETRY_MS = 10 * 60_000;
   const COOLDOWN_CLEAR_REFRESH_MS = 2 * 60 * 60_000;
-  const DAILY_UNKNOWN_RETRY_MS = 3 * 60_000;
   const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
@@ -227,6 +226,7 @@
     pickpocketMinTargetLevel: 1,
     pickpocketMaxTargetLevel: 300,
     pickpocketLastSkill: 1,
+    apiDailyRefreshMinutes: 10,
     marketRefreshMinutes: 2,
     marketRefreshMode: 'cache-aligned',
     weav3rBazaarEnabled: false,
@@ -405,15 +405,6 @@
     saveSnoozeLedger({ replace: true });
   }
 
-  function clearPersistedDashboardCaches() {
-    GM_setValue(CHECK_CACHE_KEY, {});
-    GM_setValue(ITEM_CATALOG_KEY, { fetchedAt: 0, items: [] });
-    GM_setValue(BAZAAR_CACHE_KEY, {});
-    GM_setValue(DOLLAR_BAZAAR_CACHE_KEY, {});
-    GM_setValue(WEAV3R_CATEGORY_CACHE_KEY, {});
-    GM_setValue(AWARD_CACHE_KEY, {});
-  }
-
   function loadCheckCache() {
     const cached = GM_getValue(CHECK_CACHE_KEY, {});
     if (!cached || typeof cached !== 'object' || Array.isArray(cached)) {
@@ -446,11 +437,6 @@
       ? Object.fromEntries(Object.entries(cached.nextApiChecks).map(([key, value]) => [key, Number(value) || 0]))
       : {};
     const cachedSchemaVersion = Number(cached.schemaVersion) || 0;
-    if (cachedSchemaVersion < CHECK_CACHE_SCHEMA_VERSION) {
-      clearPersistedDashboardCaches();
-      GM_setValue(CHECK_CACHE_KEY, { schemaVersion: CHECK_CACHE_SCHEMA_VERSION });
-      return loadCheckCache();
-    }
     let tornDayStart = Number(cached.tornDayStart) || 0;
     let lastDailyUpdated = Number(cached.lastDailyUpdated) || 0;
     let lastCasinoUpdated = Number(cached.lastCasinoUpdated) || 0;
@@ -576,28 +562,6 @@
     state.alertSnapshot = cached.alertSnapshot;
     state.alertSnapshotReady = cached.alertSnapshotReady;
     state.readyAlertGroups = new Set(cached.readyAlertGroups);
-  }
-
-  function clearDashboardCachesAndRefresh() {
-    clearPersistedDashboardCaches();
-    GM_setValue(CHECK_CACHE_KEY, { schemaVersion: CHECK_CACHE_SCHEMA_VERSION });
-    applyCheckCache(loadCheckCache());
-    state.itemCatalog = loadItemCatalogCache();
-    state.awards = loadAwardCache();
-    state.bazaarCache = loadBazaarCache();
-    state.dollarBazaarCache = loadDollarBazaarCache();
-    state.weav3rCategoryCache = loadWeav3rCategoryCache();
-    state.errors = {};
-    state.marketRetryAt = 0;
-    state.bazaarBackoffUntil = 0;
-    state.dollarBazaarBackoffUntil = 0;
-    state.raceCheckPending = true;
-    state.raceCheckComplete = false;
-    state.confirmedRaceActive = false;
-    invalidateAlertSnapshot();
-    scheduleMarketPoll(0);
-    scheduleBazaarPoll(0);
-    refresh({ force: true });
   }
 
   function loadItemCatalogCache() {
@@ -1509,6 +1473,11 @@
     }
   }
 
+  function dailyRefreshMs() {
+    const normal = Math.max(5, Number(state.settings.apiDailyRefreshMinutes) || 10) * 60_000;
+    return state.settings.slowApiMode ? normal * 3 : normal;
+  }
+
   function nextTornResetAtMs(now = Date.now()) {
     const date = new Date(now);
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) + TORN_RESET_SETTLE_MS;
@@ -1523,10 +1492,7 @@
 
   function dailyStatusCheckDue(key, statusKnown, lastUpdated, fallbackMs, now = Date.now()) {
     if (!statusKnown) {
-      const scheduled = Number(state.nextApiChecks?.[key]) || 0;
-      const retryAt = scheduled > 0
-        ? scheduled
-        : (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
+      const retryAt = (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
       return now >= retryAt;
     }
     return apiCheckDueAt(key, lastUpdated, fallbackMs, now, { honorScheduled: true });
@@ -1586,6 +1552,14 @@
     const readyAt = Number(organizedCrime.ready_at) * 1000;
     if (readyAt > fetchedAt) return readyAt + API_TRANSITION_SETTLE_MS;
     return fetchedAt + EDUCATION_OC_REFRESH_MS;
+  }
+
+  function enabledRefillsComplete() {
+    const refills = state.data.refills?.refills;
+    const statuses = [];
+    if (alertCheckDue('energyRefill')) statuses.push(refillUsedStatus(refills, 'energy'));
+    if (alertCheckDue('nerveRefill')) statuses.push(refillUsedStatus(refills, 'nerve'));
+    return statuses.length > 0 && statuses.every((used) => used === true);
   }
 
   function enabledRefillStatusKnown() {
@@ -1663,7 +1637,7 @@
   }
 
   function clusterFallbackRefreshMs() {
-    return state.settings.slowApiMode ? 5 * 60_000 : 2 * 60_000;
+    return state.settings.slowApiMode ? 5 * 60_000 : CORE_REFRESH_MS;
   }
 
   function marketRefreshMs(marketType = 'points') {
@@ -2197,9 +2171,8 @@
     delete state.data.cityItemsAtReset;
     delete state.data.refills;
     delete state.data.casino;
-    delete state.data.battlestats;
     ['refills', 'cityItems', 'casinoTokens', 'playerAddiction'].forEach((key) => delete state.nextApiChecks[key]);
-    invalidateAlertGroups(['cityItem', 'refills', 'casinoTokens', 'playerAddiction']);
+    invalidateAlertGroups(['cityItem', 'refills', 'casinoTokens']);
     ['cityItem', 'stockBenefits', 'energyRefill', 'nerveRefill', 'casinoTokens'].forEach((id) => delete state.settings.alarmHistory[id]);
     saveSettings();
     return true;
@@ -2447,14 +2420,6 @@
     return (response?.crimes?.uniques || []).map((unique) => Number(unique?.id)).filter(Number.isFinite);
   }
 
-  function validCrimeProgressResponse(body) {
-    const skill = body?.crimes?.skill;
-    return Boolean(body?.crimes)
-      && skill !== null && skill !== undefined && skill !== ''
-      && Number.isFinite(Number(skill))
-      && Array.isArray(body.crimes.uniques);
-  }
-
   function scrapeFocusedCrimeUnique() {
     const definition = activeCrimeUniqueDefinition();
     if (!definition) return { key: null, known: false, available: false, detail: '' };
@@ -2514,22 +2479,18 @@
         : latestTctSchedule(12, 0, now);
       const current = state.data.crimeUniques?.[definition.key]
         || (definition.key === 'shoplifting' ? state.data.shoplifting : null);
-      const retryAt = Number(state.nextApiChecks?.[`crimeUnique:${definition.key}`]) || 0;
-      return force || (Number(current?.__fetchedAt || 0) < scheduled && (!retryAt || now >= retryAt));
+      return force || Number(current?.__fetchedAt || 0) < scheduled;
     });
     if (!due.length) return true;
     state.crimeProgressPromise = (async () => {
       const results = await Promise.all(due.map(async (definition) => {
         let succeeded = false;
         await guardedRequest(`crimeUniques:${definition.key}`, () => api(`user/${definition.crimeId}/crimes`, {}, { priority: 'low' }), (body) => {
-          if (!validCrimeProgressResponse(body)) throw new Error(`Torn returned incomplete ${definition.name} crime progress.`);
           state.data.crimeUniques ||= {};
           state.data.crimeUniques[definition.key] = { ...body, __fetchedAt: Date.now() };
           if (definition.key === 'shoplifting') state.data.shoplifting = state.data.crimeUniques[definition.key];
-          delete state.nextApiChecks[`crimeUnique:${definition.key}`];
           succeeded = true;
         });
-        if (!succeeded) deferApiCheck(`crimeUnique:${definition.key}`, Date.now() + DAILY_UNKNOWN_RETRY_MS);
         return succeeded;
       }));
       publishAlertGroups(due.map((definition) => definition.alertId));
@@ -2971,6 +2932,7 @@
     if (!focusedTornPage()) return false;
     const sid = new URL(location.href).searchParams.get('sid')?.toLowerCase() || '';
     if (sid === 'racing') return !state.dom.racePageLoaded;
+    if (sid === 'crimes' && /shoplifting/i.test(location.hash)) return !state.dom.clusterRingSignalKnown;
     return false;
   }
 
@@ -2989,6 +2951,8 @@
       if (state.dom.bars?.nerve) liveGroups.push('nerveFull');
       if (state.dom.stockBenefitsSignalKnown) liveGroups.push('stockBenefits');
       if (state.dom.educationActive) liveGroups.push('education');
+      if (state.dom.playerAddiction != null) liveGroups.push('playerAddiction');
+      if (state.dom.clusterRingSignalKnown && state.data.shoplifting) liveGroups.push('clusterRing');
       const activeCrimeDefinition = crimeUniqueDefinition(state.dom.crimeUniqueSignal?.key);
       if (state.dom.crimeUniqueSignal?.known && activeCrimeDefinition) liveGroups.push(activeCrimeDefinition.alertId);
       if (state.raceCheckComplete && !state.raceCheckPending) liveGroups.push('raceTravel');
@@ -3000,18 +2964,19 @@
       return;
     }
     const now = Date.now();
+    const dailySnoozeExpired = snoozeExpiredFor('energyRefill', 'nerveRefill', 'cityItem', 'playerAddiction');
+    const dailyInterval = dailyRefreshMs();
     const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
-    const refillsDue = refillsEnabled && (force || dayChanged
-      || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
+    const refillsDue = refillsEnabled && (force || dayChanged || snoozeExpiredFor('energyRefill', 'nerveRefill')
+      || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, dailyInterval, now));
     const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
       && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
-    const cityItemsDue = alertCheckDue('cityItem') && (force || dayChanged
-      || dailyStatusCheckDue('cityItems', cityItemsStatusKnown, state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
-    const apiPlayerAddictionKnown = addictionPercentFromBattleStats(state.data.battlestats) !== null;
-    const playerAddictionDue = alertCheckDue('playerAddiction')
-      && (force || dayChanged
-        || dailyStatusCheckDue('playerAddiction', apiPlayerAddictionKnown, state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
-    const needsDaily = force || includeDaily || dayChanged
+    const cityItemsDue = alertCheckDue('cityItem') && (force || dayChanged || snoozeExpiredFor('cityItem')
+      || dailyStatusCheckDue('cityItems', cityItemsStatusKnown, state.lastDailyUpdated, dailyInterval, now));
+    const playerAddictionDue = alertCheckDue('playerAddiction') && state.dom.playerAddiction == null
+      && (force || dayChanged || snoozeExpiredFor('playerAddiction')
+        || apiCheckDueAt('playerAddiction', state.lastDailyUpdated, dailyInterval, now));
+    const needsDaily = force || includeDaily || dayChanged || dailySnoozeExpired
       || refillsDue || cityItemsDue || playerAddictionDue;
     const marketWatchesActive = activeMarketWatches();
     state.syncing = true;
@@ -3206,37 +3171,27 @@
       if (alertCheckDue('clusterRing')) {
         tasks.push((async () => {
           if (!state.data.shoplifting && state.crimeProgressPromise) await state.crimeProgressPromise;
-          if (!state.data.shoplifting) return;
           if (clusterRingAlreadyAchieved()) {
             delete state.errors.clusterRingStatus;
             state.lastClusterUpdated = now;
             publishAlertGroups(['clusterRing']);
             return;
           }
-          const cachedStatusKnown = Array.isArray(state.data.shopliftingStatus?.shoplifting?.jewelry_store);
+          const cachedStatusKnown = state.dom.clusterRingSignalKnown
+            || Array.isArray(state.data.shopliftingStatus?.shoplifting?.jewelry_store);
           if (!force && !snoozeExpiredFor('clusterRing') && cachedStatusKnown && state.data.shoplifting && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
             publishAlertGroups(['clusterRing']);
             return;
           }
-          const clusterRetryAt = Number(state.nextApiChecks?.clusterRingStatus) || 0;
-          if (!force && clusterRetryAt > now) return;
-          const statusPromise = guardedRequest('clusterRingStatus', () => api('torn', { selections: 'shoplifting' }, { priority: 'low' }), (body) => {
-            const jewelryStore = body?.shoplifting?.jewelry_store;
-            if (!Array.isArray(jewelryStore) || jewelryStore.length < 2
-              || jewelryStore.slice(0, 2).some((entry) => entry?.disabled === null || entry?.disabled === undefined)) {
-              throw new Error('Torn returned incomplete Shoplifting status for the Cluster Ring check.');
-            }
-            state.data.shopliftingStatus = { ...body, __fetchedAt: Date.now() };
-          });
-          const statusOkay = await statusPromise;
-          if (statusOkay) {
-            delete state.nextApiChecks.clusterRingStatus;
+          const statusPromise = state.dom.clusterRingSignalKnown
+            ? Promise.resolve(true)
+            : guardedRequest('clusterRingStatus', () => api('torn', { selections: 'shoplifting' }, { priority: 'low' }), (body) => { state.data.shopliftingStatus = body; });
+          if (state.dom.clusterRingSignalKnown) delete state.errors.clusterRingStatus;
+          const uniquePromise = state.data.shoplifting ? Promise.resolve(true) : Promise.resolve(false);
+          const [statusOkay, uniqueOkay] = await Promise.all([statusPromise, uniquePromise]);
+          if (statusOkay && uniqueOkay && state.data.shoplifting) {
             state.lastClusterUpdated = Date.now();
             publishAlertGroups(['clusterRing']);
-          } else {
-            delete state.data.shopliftingStatus;
-            deferApiCheck('clusterRingStatus', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-            invalidateAlertGroups(['clusterRing']);
           }
         })());
       }
@@ -3246,13 +3201,10 @@
       const casinoStatusKnown = casinoTokenCount() !== null
         && (state.dom.selfExcluded || Array.isArray(state.data.icons?.icons));
       const casinoDue = alertCheckDue('casinoTokens')
-        && (force || dayChanged
-          || dailyStatusCheckDue('casinoTokens', casinoStatusKnown, state.lastCasinoUpdated, DAILY_UNKNOWN_RETRY_MS, now));
-      const jobAddictionRetryAt = Number(state.nextApiChecks?.jobAddiction) || 0;
+        && (force || dayChanged || snoozeExpiredFor('casinoTokens')
+          || dailyStatusCheckDue('casinoTokens', casinoStatusKnown, state.lastCasinoUpdated, dailyInterval, now));
       const jobAddictionDue = alertCheckDue('jobAddiction')
-        && (force
-          || (scheduledTctCheckDue(state.lastJobAddictionUpdated, 18, 15, now)
-            && (!jobAddictionRetryAt || now >= jobAddictionRetryAt)));
+        && (force || snoozeExpiredFor('jobAddiction') || scheduledTctCheckDue(state.lastJobAddictionUpdated, 18, 15, now));
       const dailyTasks = [];
 
       if (needsDaily) {
@@ -3264,28 +3216,17 @@
               }
               state.data.refills = { ...body, __fetchedAt: Date.now() };
             });
-            if (!okay) {
-              deferApiCheck('refills', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-              return;
-            }
+            if (!okay) return;
             delete state.errors.legacyDaily;
-            deferApiCheck('refills', nextTornResetAtMs());
+            deferApiCheck('refills', enabledRefillsComplete() ? nextTornResetAtMs() : Date.now() + dailyInterval);
             publishAlertGroups(['refills']);
           })());
         }
         if (playerAddictionDue) {
           dailyTasks.push((async () => {
-            const okay = await guardedRequest('playerAddiction', () => api('user/battlestats'), (body) => {
-              if (addictionPercentFromBattleStats(body) === null) {
-                throw new Error('Torn returned battlestats without usable addiction modifiers.');
-              }
-              state.data.battlestats = { ...body, __fetchedAt: Date.now() };
-            });
-            if (!okay) {
-              deferApiCheck('playerAddiction', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-              return;
-            }
-            deferApiCheck('playerAddiction', nextTornResetAtMs());
+            const okay = await guardedRequest('playerAddiction', () => api('user/battlestats'), (body) => { state.data.battlestats = body; });
+            if (!okay) return;
+            deferApiCheck('playerAddiction', Date.now() + dailyInterval);
             publishAlertGroups(['playerAddiction']);
           })());
         }
@@ -3293,29 +3234,20 @@
           dailyTasks.push((async () => {
             const baselineKnown = numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
             const results = await Promise.all([
-              guardedRequest('cityItemsNow', () => api('user/personalstats', { cat: 'trading' }), (body) => {
-                if (numberFromPersonalStats(body) === null) throw new Error('Torn returned no current city-item total.');
-                state.data.cityItemsNow = { ...body, __fetchedAt: Date.now() };
-              }),
+              guardedRequest('cityItemsNow', () => api('user/personalstats', { cat: 'trading' }), (body) => { state.data.cityItemsNow = body; }),
               baselineKnown
                 ? Promise.resolve(true)
-                : guardedRequest('cityItemsAtReset', () => api('user/personalstats', { stat: 'cityitemsbought', timestamp: state.tornDayStart }), (body) => {
-                  if (numberFromPersonalStats(body) === null) throw new Error('Torn returned no city-item total for daily reset.');
-                  state.data.cityItemsAtReset = { ...body, __fetchedAt: Date.now() };
-                }),
+                : guardedRequest('cityItemsAtReset', () => api('user/personalstats', { stat: 'cityitemsbought', timestamp: state.tornDayStart }), (body) => { state.data.cityItemsAtReset = body; }),
             ]);
-            if (!results.every(Boolean)) {
-              deferApiCheck('cityItems', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-              return;
-            }
+            if (!results.every(Boolean)) return;
             const remaining = cityItemsRemainingToday();
             if (remaining === null) {
               state.errors.cityItemsStatus = 'Torn returned city-item totals in an unreadable format.';
-              deferApiCheck('cityItems', Date.now() + DAILY_UNKNOWN_RETRY_MS);
+              deferApiCheck('cityItems', Date.now() + dailyInterval);
               return;
             }
             delete state.errors.cityItemsStatus;
-            deferApiCheck('cityItems', nextTornResetAtMs());
+            deferApiCheck('cityItems', remaining === 0 ? nextTornResetAtMs() : Date.now() + dailyInterval);
             publishAlertGroups(['cityItem']);
           })());
         }
@@ -3345,49 +3277,31 @@
           if (state.dom.selfExcluded) delete state.errors.casinoExclusion;
           const [casinoOkay, iconsOkay] = await Promise.all([casinoPromise, iconsPromise]);
           if (!casinoOkay || !iconsOkay) {
-            deferApiCheck('casinoTokens', Date.now() + DAILY_UNKNOWN_RETRY_MS);
+            state.lastCasinoUpdated = Date.now();
+            deferApiCheck('casinoTokens', Date.now() + dailyInterval);
             return;
           }
           state.lastCasinoUpdated = Date.now();
-          deferApiCheck('casinoTokens', nextTornResetAtMs());
+          deferApiCheck('casinoTokens', casinoTokenCount() === 0 || iconSelfExclusion()
+            ? nextTornResetAtMs()
+            : Date.now() + dailyInterval);
           publishAlertGroups(['casinoTokens']);
         })());
       }
 
       if (jobAddictionDue) {
         dailyTasks.push((async () => {
-          const baseOkay = await guardedRequest('jobAddictionBase', () => api('user', { selections: 'profile,job' }), (body) => {
-            if (!Number(body?.profile?.id) || !body?.job || typeof body.job !== 'object') {
-              throw new Error('Torn returned incomplete profile or job data for the company-addiction check.');
-            }
-            absorbGeneric(body);
-          });
-          if (!baseOkay) {
-            deferApiCheck('jobAddiction', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-            return;
-          }
+          const baseOkay = await guardedRequest('jobAddictionBase', () => api('user', { selections: 'profile,job' }), absorbGeneric);
+          if (!baseOkay) return;
           let complete = true;
           if (state.data.job?.job?.type === 'company') {
-            complete = await guardedRequest('jobAddiction', () => api('company/employees'), (body) => {
-              const employees = body?.employees;
-              const userId = Number(state.data.profile?.profile?.id);
-              const employee = Array.isArray(employees) ? employees.find((item) => Number(item?.id) === userId) : null;
-              const addiction = employee?.effectiveness?.addiction;
-              if (!employee || addiction === null || addiction === undefined || addiction === '' || !Number.isFinite(Number(addiction))) {
-                throw new Error('Torn returned no usable company-addiction value for your employee record.');
-              }
-              state.data.companyEmployees = { ...body, __fetchedAt: Date.now() };
-            });
+            complete = await guardedRequest('jobAddiction', () => api('company/employees'), (body) => { state.data.companyEmployees = body; });
           } else {
             delete state.errors.jobAddiction;
             state.data.companyEmployees = null;
           }
-          if (!complete) {
-            deferApiCheck('jobAddiction', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-            return;
-          }
+          if (!complete) return;
           state.lastJobAddictionUpdated = Date.now();
-          delete state.nextApiChecks.jobAddiction;
           publishAlertGroups(['jobAddiction']);
         })());
       }
@@ -3402,7 +3316,7 @@
         && (state.dom.selfExcluded || Array.isArray(state.data.icons?.icons))) cachedDailyGroups.push('casinoTokens');
       if (!refillsDue && (state.settings.enabled.energyRefill || state.settings.enabled.nerveRefill) && state.data.refills?.refills) cachedDailyGroups.push('refills');
       if (!cityItemsDue && state.settings.enabled.cityItem && state.data.cityItemsNow && state.data.cityItemsAtReset) cachedDailyGroups.push('cityItem');
-      if (!playerAddictionDue && state.settings.enabled.playerAddiction && state.data.battlestats?.battlestats) cachedDailyGroups.push('playerAddiction');
+      if (!playerAddictionDue && state.settings.enabled.playerAddiction && (state.dom.playerAddiction != null || state.data.battlestats?.battlestats)) cachedDailyGroups.push('playerAddiction');
       if (!jobAddictionDue && state.settings.enabled.jobAddiction && state.data.job?.job
         && (state.data.job.job.type !== 'company' || state.data.companyEmployees?.employees)) cachedDailyGroups.push('jobAddiction');
       publishAlertGroups(cachedDailyGroups);
@@ -4274,20 +4188,19 @@
     return TornLib.formatHumanDuration(seconds);
   }
 
-  function addictionPercentFromBattleStats(body) {
-    const stats = body?.battlestats;
-    const statNames = ['strength', 'defense', 'speed', 'dexterity'];
-    if (!stats || !statNames.every((name) => Array.isArray(stats[name]?.modifiers))) return null;
-    const addictionModifiers = statNames.flatMap((name) => stats[name].modifiers
-      .filter((modifier) => /addiction/i.test(`${modifier?.effect || ''} ${modifier?.type || ''}`)));
-    if (addictionModifiers.some((modifier) => modifier?.value === null || modifier?.value === undefined
-      || modifier?.value === '' || !Number.isFinite(Number(modifier.value)))) return null;
-    const values = addictionModifiers.map((modifier) => Math.abs(Number(modifier.value)));
-    return values.length ? Math.max(...values) : 0;
-  }
-
   function playerAddictionPercent() {
-    return addictionPercentFromBattleStats(state.data.battlestats);
+    if (state.dom.playerAddiction != null) return Number(state.dom.playerAddiction);
+    const stats = state.data.battlestats?.battlestats;
+    if (!stats) return null;
+    const values = ['strength', 'defense', 'speed', 'dexterity'].flatMap((name) => {
+      const modifiers = stats[name]?.modifiers;
+      if (!Array.isArray(modifiers)) return [];
+      return modifiers
+        .filter((modifier) => /addiction/i.test(`${modifier?.effect || ''} ${modifier?.type || ''}`))
+        .map((modifier) => Math.abs(Number(modifier?.value)))
+        .filter(Number.isFinite);
+    });
+    return values.length ? Math.max(...values) : 0;
   }
 
   function jobAddictionPenalty() {
@@ -4295,9 +4208,7 @@
     const userId = Number(state.data.profile?.profile?.id);
     if (!Array.isArray(employees) || !userId) return null;
     const employee = employees.find((item) => Number(item?.id) === userId);
-    const rawValue = employee?.effectiveness?.addiction;
-    if (rawValue === null || rawValue === undefined || rawValue === '') return null;
-    const value = Number(rawValue);
+    const value = Number(employee?.effectiveness?.addiction);
     return Number.isFinite(value) ? Math.abs(value) : null;
   }
 
@@ -4450,7 +4361,9 @@
     const apiClusterRingSecurityReady = Array.isArray(jewelrySecurity)
       && Boolean(jewelrySecurity[0]?.disabled)
       && Boolean(jewelrySecurity[1]?.disabled);
-    const clusterRingSecurityReady = apiClusterRingSecurityReady;
+    const clusterRingSecurityReady = state.dom.clusterRingSignalKnown
+      ? Boolean(state.dom.clusterRingReady)
+      : apiClusterRingSecurityReady;
     const shopliftingSkill = Number(state.data.shoplifting?.crimes?.skill);
     const clusterRingSkillEligible = !Number.isFinite(shopliftingSkill) || shopliftingSkill >= 100;
     const crimeUniqueSignal = state.dom.crimeUniqueSignal || {};
@@ -4572,8 +4485,10 @@
       {
         id: 'clusterRing',
         active: clusterRingSecurityReady && clusterRingSkillEligible && !clusterRingAchieved,
-        title: 'Cluster Ring security window is open',
-        detail: 'Torn API reports the Jewelry Store cameras and guard are disabled. The unique still requires Shoplifting skill 100 and 0% Jewelry Store notoriety.',
+        title: state.dom.clusterRingReady ? 'Cluster Ring unique is available' : 'Cluster Ring security window is open',
+        detail: state.dom.clusterRingReady
+          ? 'Jewelry Store shows 0% notoriety, cameras disabled, and the guard off duty. You have one clean attempt.'
+          : 'Jewelry Store cameras and guard are disabled. The unique still requires Shoplifting skill 100 and 0% Jewelry Store notoriety.',
         links: [{ label: 'Shoplift', href: 'https://www.torn.com/page.php?sid=crimes#/shoplifting' }],
         tone: 'urgent',
       },
@@ -5359,7 +5274,6 @@
           <button data-action="reset-position" class="subtle">Reset position</button>
           <button data-action="reset-size" class="subtle">Reset size</button>
           <button data-action="clear-snoozes" class="subtle">Clear snoozes</button>
-          <button data-action="clear-local-cache" class="subtle" ${state.syncing ? 'disabled' : ''}>Clear local cache + refresh</button>
         </div>
         <div class="api-controls">
           <strong>Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
@@ -5398,8 +5312,13 @@
               ${[0, 1, 2, 3, 4, 6, 12, 24].map((hours) => `<option value="${hours}" ${Number(state.settings.boosterThresholdHours) === hours ? 'selected' : ''}>${hours === 0 ? 'When clear' : `${hours} hour${hours === 1 ? '' : 's'}`}</option>`).join('')}
             </select>
           </label>
+          <label class="field compact-field">
+            <span>Other slow-data refresh</span>
+            <select data-field="api-refresh-minutes">
+              ${[5, 10, 15, 30].map((minutes) => `<option value="${minutes}" ${Number(state.settings.apiDailyRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} minutes</option>`).join('')}
+            </select>
+          </label>
           <p><small>Fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Successful responses postpone the next call until their returned full-time, cooldown, education, OC, travel, race, or Torn-reset transition. Bars are combined when due together; cooldowns use Torn's dedicated endpoint.</small></p>
-          <p><small>Daily refills, city-item totals, casino tokens, and player addiction are accepted only after a complete response, then wait until the next Torn reset. Company addiction waits until its next daily check. Missing or unreadable daily data retries after 3 minutes.</small></p>
           <label class="field compact-field">
             <span>Job addiction (points)</span>
             <input type="number" min="0" max="100" step="1" data-field="job-addiction-threshold" value="${escapeHtml(state.settings.jobAddictionThreshold)}">
@@ -5450,7 +5369,7 @@
               `).join('')}
             </div>
             <ul>${crimeProgressRows}</ul>
-            <small>Search for Cash, Disposal, and Arson availability is scraped only while that crime page is focused. Cluster Ring uses Torn's global Jewelry Store API status only and never requires the Shoplifting page. Disposal does not create a general jobs reminder.</small>
+            <small>Search for Cash, Disposal, and Arson availability is scraped only while that crime page is focused. Shoplifting also uses Torn’s global Jewelry Store status. Disposal does not create a general jobs reminder.</small>
           </div>
           <div class="api-controls pickpocket-controls">
             <strong>Pickpocket helper · live page only</strong>
@@ -6129,10 +6048,6 @@
       state.settings.snoozedUntil = {};
       saveSnoozeLedger({ replace: true });
       scheduleNextSnoozeExpiry();
-    } else if (action === 'clear-local-cache') {
-      if (!window.confirm('Clear all ADHD Dashboard cached API, award, catalog, market, and Bazaar data, then request fresh data? Your settings and API key will be kept.')) return;
-      clearDashboardCachesAndRefresh();
-      return;
     } else if (action === 'reset-position') {
       state.settings.position = { mode: 'top-center', x: null, y: 8 };
     } else if (action === 'reset-size') {
@@ -6274,7 +6189,9 @@
       render();
       return;
     }
-    if (event.target.matches('[data-field="award-type-filter"]')) {
+    if (event.target.matches('[data-field="api-refresh-minutes"]')) {
+      state.settings.apiDailyRefreshMinutes = Number(event.target.value);
+    } else if (event.target.matches('[data-field="award-type-filter"]')) {
       state.settings.awardTypeFilter = normalizedAwardTypeFilter(event.target.value);
     } else if (event.target.matches('[data-field="market-refresh-minutes"]')) {
       if (event.target.value === 'cache-aligned') {
@@ -6591,6 +6508,7 @@
         stockReady: state.dom.stockBenefitsReady,
         stockKnown: state.dom.stockBenefitsSignalKnown,
         education: state.dom.educationActive,
+        addiction: state.dom.playerAddiction,
       });
       scrapeActivePage();
       state.pageCheckPending = focusedRouteAwaitingLiveData();
@@ -6610,6 +6528,7 @@
         stockReady: state.dom.stockBenefitsReady,
         stockKnown: state.dom.stockBenefitsSignalKnown,
         education: state.dom.educationActive,
+        addiction: state.dom.playerAddiction,
       });
       if (before === after) return;
       const groups = [];
@@ -6617,6 +6536,8 @@
       if (state.dom.bars?.nerve) groups.push('nerveFull');
       if (state.dom.stockBenefitsSignalKnown) groups.push('stockBenefits');
       if (state.dom.educationActive) groups.push('education');
+      if (state.dom.playerAddiction != null) groups.push('playerAddiction');
+      if (state.dom.clusterRingSignalKnown && state.data.shoplifting) groups.push('clusterRing');
       const beforeCrimeDefinition = crimeUniqueDefinition(beforeCrimeUniqueKey);
       const afterCrimeDefinition = crimeUniqueDefinition(state.dom.crimeUniqueSignal?.key);
       if (beforeCrimeDefinition) groups.push(beforeCrimeDefinition.alertId);
