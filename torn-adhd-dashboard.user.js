@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.29
+// @version      1.4.30
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 3;
+  const CHECK_CACHE_SCHEMA_VERSION = 4;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -433,6 +433,7 @@
     const cachedSchemaVersion = Number(cached.schemaVersion) || 0;
     let tornDayStart = Number(cached.tornDayStart) || 0;
     let lastDailyUpdated = Number(cached.lastDailyUpdated) || 0;
+    let lastCasinoUpdated = Number(cached.lastCasinoUpdated) || 0;
     let lastCooldownsUpdated = Number(cached.lastCooldownsUpdated) || legacyFastUpdated;
     let alertSnapshot = Array.isArray(cached.alertSnapshot) ? cached.alertSnapshot : [];
     let readyAlertGroups = Array.isArray(cached.readyAlertGroups) ? cached.readyAlertGroups.filter(Boolean) : [];
@@ -453,6 +454,16 @@
       alertSnapshot = alertSnapshot.filter((alert) => !dailyAlertIds.has(alert?.id));
       readyAlertGroups = readyAlertGroups.filter((group) => group !== 'refills' && group !== 'cityItem');
     }
+    if (cachedSchemaVersion < 4) {
+      const dailyAlertIds = new Set(['energyRefill', 'nerveRefill', 'cityItem', 'casinoTokens']);
+      ['refills', 'cityItemsNow', 'cityItemsAtReset', 'cityShops', 'casino'].forEach((key) => delete data[key]);
+      ['refills', 'cityItems', 'casinoTokens'].forEach((key) => delete nextApiChecks[key]);
+      tornDayStart = 0;
+      lastDailyUpdated = 0;
+      lastCasinoUpdated = 0;
+      alertSnapshot = alertSnapshot.filter((alert) => !dailyAlertIds.has(alert?.id));
+      readyAlertGroups = readyAlertGroups.filter((group) => !['refills', 'cityItem', 'casinoTokens'].includes(group));
+    }
     return {
       data,
       tornDayStart,
@@ -466,7 +477,7 @@
       lastRaceUpdated: Number(cached.lastRaceUpdated) || 0,
       nextRaceTravelCheckAt: Number(cached.nextRaceTravelCheckAt) || 0,
       lastMissionsUpdated: Number(cached.lastMissionsUpdated) || 0,
-      lastCasinoUpdated: Number(cached.lastCasinoUpdated) || 0,
+      lastCasinoUpdated,
       lastJobAddictionUpdated: Number(cached.lastJobAddictionUpdated) || 0,
       lastClusterUpdated: Number(cached.lastClusterUpdated) || 0,
       nextApiChecks,
@@ -1320,6 +1331,14 @@
     return now >= (scheduled > 0 ? Math.min(scheduled, fallbackAt) : fallbackAt);
   }
 
+  function dailyStatusCheckDue(key, statusKnown, lastUpdated, fallbackMs, now = Date.now()) {
+    if (!statusKnown) {
+      const retryAt = (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
+      return now >= retryAt;
+    }
+    return apiCheckDueAt(key, lastUpdated, fallbackMs, now, { honorScheduled: true });
+  }
+
   function deferApiCheck(key, nextAt) {
     state.nextApiChecks ||= {};
     const value = Number(nextAt);
@@ -1381,6 +1400,20 @@
     if (alertCheckDue('energyRefill')) statuses.push(refillUsedStatus(refills, 'energy'));
     if (alertCheckDue('nerveRefill')) statuses.push(refillUsedStatus(refills, 'nerve'));
     return statuses.length > 0 && statuses.every((used) => used === true);
+  }
+
+  function enabledRefillStatusKnown() {
+    const refills = state.data.refills?.refills;
+    const statuses = [];
+    if (alertCheckDue('energyRefill')) statuses.push(refillUsedStatus(refills, 'energy'));
+    if (alertCheckDue('nerveRefill')) statuses.push(refillUsedStatus(refills, 'nerve'));
+    return statuses.length > 0 && statuses.every((used) => used !== null);
+  }
+
+  function casinoTokenCount(body = state.data.casino) {
+    const value = body?.casino?.tokens;
+    if (value === null || value === undefined || value === '') return null;
+    return Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : null;
   }
 
   function countdownRemainingSeconds(seconds, fetchedAt) {
@@ -1980,12 +2013,14 @@
     if (state.tornDayStart === currentDayStart) return false;
     state.tornDayStart = currentDayStart;
     state.lastDailyUpdated = 0;
+    state.lastCasinoUpdated = 0;
     delete state.data.cityItemsNow;
     delete state.data.cityItemsAtReset;
     delete state.data.refills;
-    ['refills', 'cityItems', 'playerAddiction'].forEach((key) => delete state.nextApiChecks[key]);
-    invalidateAlertGroups(['cityItem', 'refills']);
-    ['cityItem', 'stockBenefits', 'energyRefill', 'nerveRefill'].forEach((id) => delete state.settings.alarmHistory[id]);
+    delete state.data.casino;
+    ['refills', 'cityItems', 'casinoTokens', 'playerAddiction'].forEach((key) => delete state.nextApiChecks[key]);
+    invalidateAlertGroups(['cityItem', 'refills', 'casinoTokens']);
+    ['cityItem', 'stockBenefits', 'energyRefill', 'nerveRefill', 'casinoTokens'].forEach((id) => delete state.settings.alarmHistory[id]);
     saveSettings();
     return true;
   }
@@ -2758,9 +2793,11 @@
     const dailyInterval = dailyRefreshMs();
     const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
     const refillsDue = refillsEnabled && (force || dayChanged || snoozeExpiredFor('energyRefill', 'nerveRefill')
-      || apiCheckDueAt('refills', state.lastDailyUpdated, dailyInterval, now, { honorScheduled: true }));
+      || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, dailyInterval, now));
+    const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
+      && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
     const cityItemsDue = alertCheckDue('cityItem') && (force || dayChanged || snoozeExpiredFor('cityItem')
-      || apiCheckDueAt('cityItems', state.lastDailyUpdated, dailyInterval, now, { honorScheduled: true }));
+      || dailyStatusCheckDue('cityItems', cityItemsStatusKnown, state.lastDailyUpdated, dailyInterval, now));
     const playerAddictionDue = alertCheckDue('playerAddiction') && state.dom.playerAddiction == null
       && (force || dayChanged || snoozeExpiredFor('playerAddiction')
         || apiCheckDueAt('playerAddiction', state.lastDailyUpdated, dailyInterval, now));
@@ -2976,8 +3013,11 @@
 
       const missionsDue = alertCheckDue('missions')
         && (force || snoozeExpiredFor('missions') || scheduledTctCheckDue(state.lastMissionsUpdated, 0, 15, now));
+      const casinoStatusKnown = casinoTokenCount() !== null
+        && (state.dom.selfExcluded || Array.isArray(state.data.icons?.icons));
       const casinoDue = alertCheckDue('casinoTokens')
-        && (force || snoozeExpiredFor('casinoTokens') || scheduledTctCheckDue(state.lastCasinoUpdated, 0, 15, now));
+        && (force || dayChanged || snoozeExpiredFor('casinoTokens')
+          || dailyStatusCheckDue('casinoTokens', casinoStatusKnown, state.lastCasinoUpdated, dailyInterval, now));
       const jobAddictionDue = alertCheckDue('jobAddiction')
         && (force || snoozeExpiredFor('jobAddiction') || scheduledTctCheckDue(state.lastJobAddictionUpdated, 18, 15, now));
       const dailyTasks = [];
@@ -2985,7 +3025,12 @@
       if (needsDaily) {
         if (refillsDue) {
           dailyTasks.push((async () => {
-            const okay = await guardedRequest('dailyRefills', () => api('user/refills'), (body) => { state.data.refills = { ...body, __fetchedAt: Date.now() }; });
+            const okay = await guardedRequest('dailyRefills', () => api('user/refills'), (body) => {
+              if (refillUsedStatus(body?.refills, 'energy') === null || refillUsedStatus(body?.refills, 'nerve') === null) {
+                throw new Error('Torn returned refill data in an unreadable format.');
+              }
+              state.data.refills = { ...body, __fetchedAt: Date.now() };
+            });
             if (!okay) return;
             delete state.errors.legacyDaily;
             deferApiCheck('refills', enabledRefillsComplete() ? nextTornResetAtMs() : Date.now() + dailyInterval);
@@ -3010,7 +3055,14 @@
                 : guardedRequest('cityItemsAtReset', () => api('user/personalstats', { stat: 'cityitemsbought', timestamp: state.tornDayStart }), (body) => { state.data.cityItemsAtReset = body; }),
             ]);
             if (!results.every(Boolean)) return;
-            deferApiCheck('cityItems', cityItemsRemainingToday() === 0 ? nextTornResetAtMs() : Date.now() + dailyInterval);
+            const remaining = cityItemsRemainingToday();
+            if (remaining === null) {
+              state.errors.cityItemsStatus = 'Torn returned city-item totals in an unreadable format.';
+              deferApiCheck('cityItems', Date.now() + dailyInterval);
+              return;
+            }
+            delete state.errors.cityItemsStatus;
+            deferApiCheck('cityItems', remaining === 0 ? nextTornResetAtMs() : Date.now() + dailyInterval);
             publishAlertGroups(['cityItem']);
           })());
         }
@@ -3027,14 +3079,27 @@
 
       if (casinoDue) {
         dailyTasks.push((async () => {
-          const casinoPromise = guardedRequest('casino', () => api('user/casino'), (body) => { state.data.casino = { ...body, __fetchedAt: Date.now() }; });
+          const casinoPromise = guardedRequest('casino', () => api('user/casino'), (body) => {
+            if (casinoTokenCount(body) === null) throw new Error('Torn returned casino-token data in an unreadable format.');
+            state.data.casino = { ...body, __fetchedAt: Date.now() };
+          });
           const iconsPromise = state.dom.selfExcluded
             ? Promise.resolve(true)
-            : guardedRequest('casinoExclusion', () => api('user', { selections: 'icons' }), absorbGeneric);
+            : guardedRequest('casinoExclusion', () => api('user', { selections: 'icons' }), (body) => {
+              if (!Array.isArray(body?.icons)) throw new Error('Torn returned icon data in an unreadable format.');
+              absorbGeneric(body);
+            });
           if (state.dom.selfExcluded) delete state.errors.casinoExclusion;
           const [casinoOkay, iconsOkay] = await Promise.all([casinoPromise, iconsPromise]);
-          if (!casinoOkay || !iconsOkay) return;
+          if (!casinoOkay || !iconsOkay) {
+            state.lastCasinoUpdated = Date.now();
+            deferApiCheck('casinoTokens', Date.now() + dailyInterval);
+            return;
+          }
           state.lastCasinoUpdated = Date.now();
+          deferApiCheck('casinoTokens', casinoTokenCount() === 0 || iconSelfExclusion()
+            ? nextTornResetAtMs()
+            : Date.now() + dailyInterval);
           publishAlertGroups(['casinoTokens']);
         })());
       }
@@ -3106,21 +3171,27 @@
   }
 
   function numberFromPersonalStats(body) {
+    const presentNumber = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+      ? Number(value)
+      : null;
     const stats = body?.personalstats;
     if (Array.isArray(stats)) {
       const row = stats.find((item) => item?.name === 'cityitemsbought');
-      return Number.isFinite(Number(row?.value)) ? Number(row.value) : null;
+      return presentNumber(row?.value);
     }
     const nested = stats?.trading?.items?.bought?.shops;
-    if (Number.isFinite(Number(nested))) return Number(nested);
+    const nestedNumber = presentNumber(nested);
+    if (nestedNumber !== null) return nestedNumber;
 
     const visited = new Set();
     function search(value, depth = 0) {
       if (!value || typeof value !== 'object' || depth > 8 || visited.has(value)) return null;
       visited.add(value);
-      if (Number.isFinite(Number(value.cityitemsbought))) return Number(value.cityitemsbought);
-      if (value.name === 'cityitemsbought' && Number.isFinite(Number(value.value))) {
-        return Number(value.value);
+      const direct = presentNumber(value.cityitemsbought);
+      if (direct !== null) return direct;
+      if (value.name === 'cityitemsbought') {
+        const named = presentNumber(value.value);
+        if (named !== null) return named;
       }
       for (const child of Object.values(value)) {
         const match = search(child, depth + 1);
