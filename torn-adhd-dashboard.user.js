@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.30
+// @version      1.4.31
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 4;
+  const CHECK_CACHE_SCHEMA_VERSION = 5;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -463,6 +463,15 @@
       lastCasinoUpdated = 0;
       alertSnapshot = alertSnapshot.filter((alert) => !dailyAlertIds.has(alert?.id));
       readyAlertGroups = readyAlertGroups.filter((group) => !['refills', 'cityItem', 'casinoTokens'].includes(group));
+    }
+    if (cachedSchemaVersion < 5) {
+      const cooldownAlertIds = new Set(['drugCooldown', 'medicalCooldown', 'boosterCooldown']);
+      delete data.cooldowns;
+      delete data.cooldownObservations;
+      delete nextApiChecks.cooldowns;
+      lastCooldownsUpdated = 0;
+      alertSnapshot = alertSnapshot.filter((alert) => !cooldownAlertIds.has(alert?.id));
+      readyAlertGroups = readyAlertGroups.filter((group) => !cooldownAlertIds.has(group));
     }
     return {
       data,
@@ -1427,16 +1436,27 @@
     return countdownRemainingSeconds(state.data.cooldowns?.cooldowns?.[type], state.data.cooldowns?.__fetchedAt);
   }
 
+  function observedCooldownRemaining(type) {
+    const observation = state.data.cooldownObservations?.[type];
+    return countdownRemainingSeconds(observation?.seconds, observation?.observedAt);
+  }
+
   function resolvedCooldownRemaining(type) {
     const domRemaining = normalizedCooldownSeconds(state.dom.cooldowns?.[type]);
     const apiRemaining = apiCooldownRemaining(type);
+    const observedRemaining = observedCooldownRemaining(type);
     const domFresh = state.dom.source === 'live-page' && Date.now() - Number(state.dom.capturedAt || 0) < 30_000;
     // The focused page updates immediately when an item is used and can cross a
     // configured alert threshold before the shared API cache refreshes. The DOM
     // parser is label-scoped, so a fresh value is safer than an older API value
     // in either direction.
     if (domFresh && domRemaining !== null) return domRemaining;
-    return apiRemaining ?? domRemaining;
+    // Torn's page has occasionally shown a positive cooldown while the API
+    // fallback reports zero. Preserve that trusted observation as a countdown
+    // until it naturally reaches zero instead of issuing a false-clear alert.
+    if (observedRemaining > 0 && apiRemaining === 0) return observedRemaining;
+    if (apiRemaining > 0 && observedRemaining === 0) return apiRemaining;
+    return apiRemaining ?? observedRemaining ?? domRemaining;
   }
 
   function resolvedCooldowns() {
@@ -2662,9 +2682,20 @@
       const parsed = parseCooldownSeconds(nearby);
       return parsed !== null && parsed > 0 ? parsed : null;
     };
+    const capturedAt = Date.now();
+    const liveCooldowns = {
+      drug: readCooldown('drug'),
+      medical: readCooldown('medical'),
+      booster: readCooldown('booster'),
+    };
+    state.data.cooldownObservations ||= {};
+    Object.entries(liveCooldowns).forEach(([type, seconds]) => {
+      if (normalizedCooldownSeconds(seconds) === null) return;
+      state.data.cooldownObservations[type] = { seconds, observedAt: capturedAt };
+    });
     state.dom = {
       bars: { energy: readBar('energy'), nerve: readBar('nerve') },
-      cooldowns: { drug: readCooldown('drug'), medical: readCooldown('medical'), booster: readCooldown('booster') },
+      cooldowns: liveCooldowns,
       educationActive: visibleStatusSignal(root, /\b(?:education|course)\b/i),
       selfExcluded: visibleStatusSignal(root, /self[\s-]*exclu/i),
       away: visibleStatusSignal(root, /\b(?:traveling|travelling|abroad|in flight)\b/i),
@@ -2687,7 +2718,7 @@
       hospitalSeconds: readCooldown('hospital'),
       playerAddiction: visibleStatusPercent(root, /\b(?:addiction|black brain)\b/i),
       pageUrl: location.href,
-      capturedAt: Date.now(),
+      capturedAt,
       source: 'live-page',
     };
     return state.dom;
@@ -2703,6 +2734,17 @@
     Object.entries(wrappers).forEach(([stateKey, property]) => {
       if (Object.hasOwn(body || {}, property)) state.data[stateKey] = { [property]: body[property], __fetchedAt: Date.now() };
     });
+  }
+
+  function absorbCooldowns(body) {
+    const cooldowns = body?.cooldowns;
+    const valid = ['drug', 'medical', 'booster'].every((type) => {
+      const value = cooldowns?.[type];
+      return value !== null && value !== undefined && value !== ''
+        && normalizedCooldownSeconds(value) !== null;
+    });
+    if (!valid) throw new Error('Torn returned cooldown data in an unreadable format.');
+    state.data.cooldowns = { cooldowns: { ...cooldowns }, __fetchedAt: Date.now() };
   }
 
   async function guardedRequest(errorKey, request, onSuccess) {
@@ -2816,19 +2858,25 @@
             || apiCheckDueAt('cooldowns', state.lastCooldownsUpdated, COOLDOWN_REFRESH_MS, now),
         };
         const fastSelections = fastSelectionsNeeded(fastDue);
-        const okay = !fastSelections.length
-          || await guardedRequest('fastFallback', () => api('user', { selections: fastSelections.join(',') }, { priority: 'low' }), absorbGeneric);
-        if (!fastSelections.length) delete state.errors.fastFallback;
-        if (!okay) return;
+        const cooldownRequested = fastSelections.includes('cooldowns');
+        const genericSelections = fastSelections.filter((selection) => selection !== 'cooldowns');
+        const genericPromise = genericSelections.length
+          ? guardedRequest('fastFallback', () => api('user', { selections: genericSelections.join(',') }, { priority: 'low' }), absorbGeneric)
+          : Promise.resolve(true);
+        const cooldownPromise = cooldownRequested
+          ? guardedRequest('cooldowns', () => api('user/cooldowns', {}, { priority: 'low' }), absorbCooldowns)
+          : Promise.resolve(true);
+        if (!genericSelections.length) delete state.errors.fastFallback;
+        const [genericOkay, cooldownOkay] = await Promise.all([genericPromise, cooldownPromise]);
         const updatedAt = Date.now();
-        if (fastSelections.includes('bars')) {
+        if (genericOkay && genericSelections.includes('bars')) {
           if (fastDue.energyDue) state.lastEnergyUpdated = updatedAt;
           if (fastDue.nerveDue) state.lastNerveUpdated = updatedAt;
           const bars = state.data.bars?.bars;
           if (bars?.energy) deferApiCheck('energy', barNextApiCheckAt(bars.energy, updatedAt, ENERGY_REFRESH_MS));
           if (bars?.nerve) deferApiCheck('nerve', barNextApiCheckAt(bars.nerve, updatedAt, NERVE_REFRESH_MS));
         }
-        if (fastSelections.includes('cooldowns') && fastDue.cooldownsDue) {
+        if (cooldownOkay && cooldownRequested && fastDue.cooldownsDue) {
           state.lastCooldownsUpdated = updatedAt;
           const apiCooldowns = state.data.cooldowns?.cooldowns;
           const nextChecks = [
@@ -2840,17 +2888,16 @@
         }
         const groups = [];
         const apiBars = state.data.bars?.bars;
-        const apiCooldowns = state.data.cooldowns?.cooldowns;
         const bars = {
           energy: state.dom.bars?.energy || apiBars?.energy,
           nerve: state.dom.bars?.nerve || apiBars?.nerve,
         };
         const cooldowns = resolvedCooldowns();
-        if (bars?.energy) groups.push('energyFull');
-        if (bars?.nerve) groups.push('nerveFull');
-        if (cooldowns?.drug != null) groups.push('drugCooldown');
-        if (cooldowns?.medical != null) groups.push('medicalCooldown');
-        if (cooldowns?.booster != null) groups.push('boosterCooldown');
+        if ((!genericSelections.includes('bars') || genericOkay) && bars?.energy) groups.push('energyFull');
+        if ((!genericSelections.includes('bars') || genericOkay) && bars?.nerve) groups.push('nerveFull');
+        if ((!cooldownRequested || cooldownOkay) && cooldowns?.drug != null) groups.push('drugCooldown');
+        if ((!cooldownRequested || cooldownOkay) && cooldowns?.medical != null) groups.push('medicalCooldown');
+        if ((!cooldownRequested || cooldownOkay) && cooldowns?.booster != null) groups.push('boosterCooldown');
         publishAlertGroups(groups);
       })());
 
@@ -5071,7 +5118,7 @@
               ${[5, 10, 15, 30].map((minutes) => `<option value="${minutes}" ${Number(state.settings.apiDailyRefreshMinutes) === minutes ? 'selected' : ''}>${minutes} minutes</option>`).join('')}
             </select>
           </label>
-          <p><small>Fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Successful responses postpone the next call until their returned full-time, cooldown, education, OC, travel, race, or Torn-reset transition. Related selections are combined whenever they are due together.</small></p>
+          <p><small>Fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Successful responses postpone the next call until their returned full-time, cooldown, education, OC, travel, race, or Torn-reset transition. Bars are combined when due together; cooldowns use Torn's dedicated endpoint.</small></p>
           <label class="field compact-field">
             <span>Job addiction (points)</span>
             <input type="number" min="0" max="100" step="1" data-field="job-addiction-threshold" value="${escapeHtml(state.settings.jobAddictionThreshold)}">
