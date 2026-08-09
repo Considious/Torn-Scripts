@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.27
+// @version      1.4.28
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -65,7 +65,7 @@
   const API_HARD_LIMIT = 60;
   const API_SLOW_LIMIT = 30;
   const TORN_DAY_MS = 24 * 60 * 60 * 1000;
-  const ITEM_CATALOG_MAX_AGE_MS = 7 * TORN_DAY_MS;
+  const ITEM_CATALOG_MAX_AGE_MS = TORN_DAY_MS;
   const AWARD_CATALOG_MAX_AGE_MS = 7 * TORN_DAY_MS;
   const TRACKED_AWARD_LIMIT = 3;
   const FINISHER_TARGET = 1_000;
@@ -996,11 +996,25 @@
     return id > 0 ? state.itemCatalog.items.find((item) => item.id === id) || null : null;
   }
 
+  function bazaarCardItemName(card) {
+    return String(card?.querySelector?.('[data-testid="name"]')?.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function catalogItemForBazaarCard(card) {
+    return catalogItemById(bazaarCardItemId(card)) || catalogItemBySearch(bazaarCardItemName(card));
+  }
+
+  function itemCatalogHasSellPrices() {
+    return state.itemCatalog.items.some((item) => Object.hasOwn(item, 'sellPrice'));
+  }
+
   function requestBazaarSellPriceCatalog() {
-    if (state.itemCatalog.items.length || state.itemCatalogLoading || !state.settings.apiKey || !ownsDashboardNetworkLease()) return;
+    if ((itemCatalogFresh() && itemCatalogHasSellPrices()) || state.itemCatalogLoading || !state.settings.apiKey || !ownsDashboardNetworkLease()) return;
     if (Date.now() - Number(state.bazaarCatalogRequestedAt || 0) < 5 * 60_000) return;
     state.bazaarCatalogRequestedAt = Date.now();
-    void loadItemCatalog().then(() => scheduleBazaarOneDollarFormatting(0));
+    void loadItemCatalog({ force: true }).then(() => scheduleBazaarOneDollarFormatting(0));
   }
 
   function formatBazaarOneDollarListings() {
@@ -1021,7 +1035,7 @@
     cards.forEach((card) => {
       const price = bazaarCardPrice(card);
       const available = !bazaarCardUnavailable(card);
-      const sellPrice = Number(catalogItemById(bazaarCardItemId(card))?.sellPrice) || 0;
+      const sellPrice = Number(catalogItemForBazaarCard(card)?.sellPrice) || 0;
       const oneDollar = available && price === 1;
       const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
       card.toggleAttribute('data-tdd-bazaar-one-dollar', oneDollar);
@@ -1383,16 +1397,13 @@
   function resolvedCooldownRemaining(type) {
     const domRemaining = normalizedCooldownSeconds(state.dom.cooldowns?.[type]);
     const apiRemaining = apiCooldownRemaining(type);
-    if (apiRemaining === null) return domRemaining;
-    if (domRemaining === null) return apiRemaining;
     const domFresh = state.dom.source === 'live-page' && Date.now() - Number(state.dom.capturedAt || 0) < 30_000;
-    if (!domFresh) return apiRemaining;
-    // A larger live value means the player used another item since the last API
-    // response. A much smaller live value is more likely a mislabeled sidebar
-    // snippet, so retain the authoritative API countdown in that direction.
-    if (domRemaining > apiRemaining + 90) return domRemaining;
-    if (Math.abs(domRemaining - apiRemaining) <= 90) return domRemaining;
-    return apiRemaining;
+    // The focused page updates immediately when an item is used and can cross a
+    // configured alert threshold before the shared API cache refreshes. The DOM
+    // parser is label-scoped, so a fresh value is safer than an older API value
+    // in either direction.
+    if (domFresh && domRemaining !== null) return domRemaining;
+    return apiRemaining ?? domRemaining;
   }
 
   function resolvedCooldowns() {
@@ -2586,6 +2597,18 @@
         }
       } catch {
         // Generated Torn selectors can change; fall through to scoped text.
+      }
+      try {
+        const tooltipSelector = '[role="tooltip"], [class*="tooltip" i], [data-tooltip-content]';
+        for (const tooltip of Array.from(document.querySelectorAll(tooltipSelector)).slice(-80)) {
+          if (!elementVisible(tooltip)) continue;
+          const text = String(tooltip.textContent || '').trim();
+          if (!new RegExp(`\\b${safe}\\b`, 'i').test(text)) continue;
+          const parsed = parseLabeledCooldownSeconds(text, label);
+          if (parsed !== null) return parsed;
+        }
+      } catch {
+        // Some tooltip libraries briefly detach their portal while it updates.
       }
       for (const snippet of labeledSnippets(root, label)) {
         const parsed = parseLabeledCooldownSeconds(snippet, label);
