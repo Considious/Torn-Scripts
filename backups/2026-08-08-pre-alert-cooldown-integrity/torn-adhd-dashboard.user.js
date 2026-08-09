@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.32
+// @version      1.4.31
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -14,7 +14,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.5
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.4
 // @run-at       document-end
 // ==/UserScript==
 
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 6;
+  const CHECK_CACHE_SCHEMA_VERSION = 5;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -67,8 +67,6 @@
   const TORN_DAY_MS = 24 * 60 * 60 * 1000;
   const ITEM_CATALOG_MAX_AGE_MS = TORN_DAY_MS;
   const AWARD_CATALOG_MAX_AGE_MS = 7 * TORN_DAY_MS;
-  const AWARD_PLAYER_MAX_AGE_MS = 30 * 60_000;
-  const AWARD_CACHE_SCHEMA_VERSION = 2;
   const TRACKED_AWARD_LIMIT = 3;
   const FINISHER_TARGET = 1_000;
   const FINISHER_LABELS = Object.freeze({
@@ -178,7 +176,6 @@
     ['energyFull', 'Energy full'],
     ['medicalCooldown', 'Medical / blood bags'],
     ['boosterCooldown', 'Booster ready'],
-    ['cooldownApiError', 'Cooldown API status'],
     ['missions', 'Mission unfinished'],
     ['cityItem', 'Buy 100 city items'],
     ['raceOrFly', 'Race or fly'],
@@ -201,7 +198,6 @@
   const ALERT_ICONS = {
     boosterCooldown: 'B↻',
     stockBenefits: 'STK',
-    cooldownApiError: 'API!',
     drugCooldown: '💊', nerveFull: '🧠', energyFull: '⚡', medicalCooldown: '🩸',
     missions: '🎯', cityItem: '🏙', raceOrFly: '🏁', searchCashUnique: '🔎', clusterRing: '💍',
     disposalUnique: '🗑', arsonUnique: '🔥', landing: '✈', turtle: '🐢',
@@ -337,7 +333,6 @@
     apiQueues: { high: [], normal: [], low: [] },
     apiQueueTimer: null,
     apiLimiterUntil: 0,
-    rejectedApiKey: '',
     windowFocused: document.hasFocus(),
     resizing: null,
     chatShareArm: null,
@@ -473,16 +468,6 @@
       const cooldownAlertIds = new Set(['drugCooldown', 'medicalCooldown', 'boosterCooldown']);
       delete data.cooldowns;
       delete data.cooldownObservations;
-      delete nextApiChecks.cooldowns;
-      lastCooldownsUpdated = 0;
-      alertSnapshot = alertSnapshot.filter((alert) => !cooldownAlertIds.has(alert?.id));
-      readyAlertGroups = readyAlertGroups.filter((group) => !cooldownAlertIds.has(group));
-    }
-    if (cachedSchemaVersion < 6) {
-      const cooldownAlertIds = new Set(['drugCooldown', 'medicalCooldown', 'boosterCooldown', 'cooldownApiError']);
-      delete data.cooldowns;
-      delete data.cooldownObservations;
-      delete data.cooldownApiStatus;
       delete nextApiChecks.cooldowns;
       lastCooldownsUpdated = 0;
       alertSnapshot = alertSnapshot.filter((alert) => !cooldownAlertIds.has(alert?.id));
@@ -654,37 +639,34 @@
       return {
         catalogFetchedAt: 0,
         playerFetchedAt: 0,
-        statsFetchedAt: 0,
         catalogMedals: [],
         catalogHonors: [],
         medals: [],
         honors: [],
         merits: null,
         userId: 0,
-        finishingHits: null,
+        finishingHits: {},
         personalStats: {},
         profile: {},
         error: '',
       };
     }
-    const playerCacheValid = Number(cached.schemaVersion) >= AWARD_CACHE_SCHEMA_VERSION;
     return {
       catalogFetchedAt: Number(cached.catalogFetchedAt) || 0,
-      playerFetchedAt: playerCacheValid ? Number(cached.playerFetchedAt) || 0 : 0,
-      statsFetchedAt: playerCacheValid ? Number(cached.statsFetchedAt) || 0 : 0,
+      playerFetchedAt: Number(cached.playerFetchedAt) || 0,
       catalogMedals: Array.isArray(cached.catalogMedals) ? cached.catalogMedals : [],
       catalogHonors: Array.isArray(cached.catalogHonors) ? cached.catalogHonors : [],
-      medals: playerCacheValid && Array.isArray(cached.medals) ? cached.medals : [],
-      honors: playerCacheValid && Array.isArray(cached.honors) ? cached.honors : [],
-      merits: playerCacheValid && cached.merits && typeof cached.merits === 'object' ? cached.merits : null,
-      userId: playerCacheValid ? Math.max(0, Math.trunc(Number(cached.userId) || 0)) : 0,
-      finishingHits: playerCacheValid && cached.finishingHits && typeof cached.finishingHits === 'object' && !Array.isArray(cached.finishingHits)
+      medals: Array.isArray(cached.medals) ? cached.medals : [],
+      honors: Array.isArray(cached.honors) ? cached.honors : [],
+      merits: cached.merits && typeof cached.merits === 'object' ? cached.merits : null,
+      userId: Math.max(0, Math.trunc(Number(cached.userId) || 0)),
+      finishingHits: cached.finishingHits && typeof cached.finishingHits === 'object' && !Array.isArray(cached.finishingHits)
         ? cached.finishingHits
-        : null,
-      personalStats: playerCacheValid && cached.personalStats && typeof cached.personalStats === 'object' && !Array.isArray(cached.personalStats)
+        : {},
+      personalStats: cached.personalStats && typeof cached.personalStats === 'object' && !Array.isArray(cached.personalStats)
         ? cached.personalStats
         : {},
-      profile: playerCacheValid && cached.profile && typeof cached.profile === 'object' && !Array.isArray(cached.profile)
+      profile: cached.profile && typeof cached.profile === 'object' && !Array.isArray(cached.profile)
         ? cached.profile
         : {},
       error: String(cached.error || ''),
@@ -694,7 +676,6 @@
   function saveAwardCache() {
     GM_setValue(AWARD_CACHE_KEY, {
       ...state.awards,
-      schemaVersion: AWARD_CACHE_SCHEMA_VERSION,
       savedAt: Date.now(),
     });
   }
@@ -822,20 +803,9 @@
     });
   }
 
-  function rejectCurrentApiKey(message) {
-    const errorMessage = String(message || 'Incorrect Torn API key.');
-    state.rejectedApiKey = state.settings.apiKey;
-    state.errors.apiKey = errorMessage;
-    markCooldownApiFailure(errorMessage);
-    invalidateAlertGroups(['drugCooldown', 'medicalCooldown', 'boosterCooldown']);
-    publishAlertGroups(['cooldownApiError']);
-    cancelQueuedApiCalls(new Error('Incorrect Torn API key. Polling stopped until the key is replaced.'));
-  }
-
   function api(path, query = {}, { priority = 'normal', quotaExempt = false, quotaClass = '', waitForQuota = true, maxWaitMs = 65_000 } = {}) {
     if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
-    if (state.rejectedApiKey === state.settings.apiKey) return Promise.reject(new Error('Incorrect Torn API key. Replace it in Settings before polling resumes.'));
     const url = new URL(`${API_ROOT}/${path.replace(/^\/+/, '')}`);
     Object.entries({ ...query, comment: 'DailyDashboard' }).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
@@ -874,9 +844,6 @@
             return;
           }
           if (body?.error) finishQueuedTornApiCall(reservation, `Torn error ${Number(body.error.code) || 0}`, response.status, body.error);
-          if (Number(body?.error?.code) === 2) {
-            rejectCurrentApiKey(body.error.error);
-          }
           const serverRateLimited = Number(response.status) === 429 || Number(body?.error?.code) === 5;
           if (serverRateLimited) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
@@ -899,7 +866,6 @@
   function apiV1(section, query = {}, { priority = 'normal' } = {}) {
     if (!ownsDashboardNetworkLease()) return Promise.reject(dashboardOwnerPauseError());
     if (!state.settings.apiKey) return Promise.reject(new Error('Add a Torn API key in Settings.'));
-    if (state.rejectedApiKey === state.settings.apiKey) return Promise.reject(new Error('Incorrect Torn API key. Replace it in Settings before polling resumes.'));
     const url = new URL(`${API_V1_ROOT}/${String(section).replace(/^\/+|\/+$/g, '')}/`);
     Object.entries({ ...query, key: state.settings.apiKey, comment: 'DailyDashboard' }).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
@@ -934,9 +900,6 @@
             return;
           }
           if (body?.error) finishQueuedTornApiCall(reservation, `Torn error ${Number(body.error.code) || 0}`, response.status, body.error);
-          if (Number(body?.error?.code) === 2) {
-            rejectCurrentApiKey(body.error.error);
-          }
           if (Number(body?.error?.code) === 5) void TornLib.noteTornApiRateLimit({ retryAfterMs: 60_000 });
           if (response.status < 200 || response.status >= 300 || body?.error) {
             reject(new Error(body?.error?.error || `Torn API request failed (${response.status}).`));
@@ -1405,7 +1368,6 @@
   }
 
   function normalizedCooldownSeconds(value) {
-    if (value === null || value === undefined || value === '') return null;
     const seconds = Number(value);
     return Number.isFinite(seconds) && seconds >= 0 ? Math.max(0, Math.trunc(seconds)) : null;
   }
@@ -1423,7 +1385,7 @@
     if (remaining === null || remaining === 0) return fallbackAt;
     const threshold = cooldownThresholdSeconds(type);
     const nextTransitionSeconds = remaining > threshold ? remaining - threshold : remaining;
-    return fetchedAt + nextTransitionSeconds * 1000 + API_TRANSITION_SETTLE_MS;
+    return Math.min(fallbackAt, fetchedAt + nextTransitionSeconds * 1000 + API_TRANSITION_SETTLE_MS);
   }
 
   function educationNextApiCheckAt(education, fetchedAt) {
@@ -1474,9 +1436,27 @@
     return countdownRemainingSeconds(state.data.cooldowns?.cooldowns?.[type], state.data.cooldowns?.__fetchedAt);
   }
 
+  function observedCooldownRemaining(type) {
+    const observation = state.data.cooldownObservations?.[type];
+    return countdownRemainingSeconds(observation?.seconds, observation?.observedAt);
+  }
+
   function resolvedCooldownRemaining(type) {
-    if (state.data.cooldownApiStatus?.ok === false) return null;
-    return apiCooldownRemaining(type);
+    const domRemaining = normalizedCooldownSeconds(state.dom.cooldowns?.[type]);
+    const apiRemaining = apiCooldownRemaining(type);
+    const observedRemaining = observedCooldownRemaining(type);
+    const domFresh = state.dom.source === 'live-page' && Date.now() - Number(state.dom.capturedAt || 0) < 30_000;
+    // The focused page updates immediately when an item is used and can cross a
+    // configured alert threshold before the shared API cache refreshes. The DOM
+    // parser is label-scoped, so a fresh value is safer than an older API value
+    // in either direction.
+    if (domFresh && domRemaining !== null) return domRemaining;
+    // Torn's page has occasionally shown a positive cooldown while the API
+    // fallback reports zero. Preserve that trusted observation as a countdown
+    // until it naturally reaches zero instead of issuing a false-clear alert.
+    if (observedRemaining > 0 && apiRemaining === 0) return observedRemaining;
+    if (apiRemaining > 0 && observedRemaining === 0) return apiRemaining;
+    return apiRemaining ?? observedRemaining ?? domRemaining;
   }
 
   function resolvedCooldowns() {
@@ -2447,6 +2427,7 @@
     if (clock) return Number(clock[1] || 0) * 86400 + Number(clock[2]) * 3600 + Number(clock[3]) * 60 + Number(clock[4]);
     const shortClock = withoutCompletionDates.match(/\b(\d{1,3}):(\d{2})(?!:)\b/);
     if (shortClock) return Number(shortClock[1]) * 3600 + Number(shortClock[2]) * 60;
+    if (/\b(?:ready|clear|no cooldown)\b/i.test(value)) return 0;
     return null;
   }
 
@@ -2464,10 +2445,7 @@
     const afterLabel = scoped.slice(match[0].length);
     const nextStatus = afterLabel.search(/\b(?:drug|medical|energy|nerve|happy|life|hospital|travel|flight|landing|arrival|racing|race|education|booster|casino|stock|organized crime)\b/i);
     if (nextStatus >= 0) scoped = scoped.slice(0, match[0].length + nextStatus);
-    const parsed = parseCooldownSeconds(scoped);
-    if (parsed !== null) return parsed;
-    const explicitClear = new RegExp(`(?:\\b${escaped}\\b\\s*(?:cooldown)?\\s*(?::|-)?\\s*(?:is\\s+)?(?:ready|clear)\\b|\\bno\\s+${escaped}(?:\\s+cooldown)?\\b)`, 'i');
-    return explicitClear.test(scoped) ? 0 : null;
+    return parseCooldownSeconds(scoped);
   }
 
   function visibleStatusSignal(root, pattern) {
@@ -2705,8 +2683,19 @@
       return parsed !== null && parsed > 0 ? parsed : null;
     };
     const capturedAt = Date.now();
+    const liveCooldowns = {
+      drug: readCooldown('drug'),
+      medical: readCooldown('medical'),
+      booster: readCooldown('booster'),
+    };
+    state.data.cooldownObservations ||= {};
+    Object.entries(liveCooldowns).forEach(([type, seconds]) => {
+      if (normalizedCooldownSeconds(seconds) === null) return;
+      state.data.cooldownObservations[type] = { seconds, observedAt: capturedAt };
+    });
     state.dom = {
       bars: { energy: readBar('energy'), nerve: readBar('nerve') },
+      cooldowns: liveCooldowns,
       educationActive: visibleStatusSignal(root, /\b(?:education|course)\b/i),
       selfExcluded: visibleStatusSignal(root, /self[\s-]*exclu/i),
       away: visibleStatusSignal(root, /\b(?:traveling|travelling|abroad|in flight)\b/i),
@@ -2756,20 +2745,6 @@
     });
     if (!valid) throw new Error('Torn returned cooldown data in an unreadable format.');
     state.data.cooldowns = { cooldowns: { ...cooldowns }, __fetchedAt: Date.now() };
-    state.data.cooldownApiStatus = { ok: true, checkedAt: Date.now(), message: '' };
-  }
-
-  function markCooldownApiFailure(message) {
-    // A failed request makes the API state unknown. Never retain an older zero,
-    // because that would turn an authentication/network error into "clear."
-    delete state.data.cooldowns;
-    state.data.cooldownApiStatus = {
-      ok: false,
-      checkedAt: Date.now(),
-      message: String(message || 'Unknown cooldown API error.'),
-    };
-    state.lastCooldownsUpdated = 0;
-    delete state.nextApiChecks.cooldowns;
   }
 
   async function guardedRequest(errorKey, request, onSuccess) {
@@ -2797,7 +2772,10 @@
       ['booster', 'boosterCooldown'],
     ];
     const enabledCooldowns = cooldownTypes.filter(([, alertId]) => alertCheckDue(alertId));
-    const cooldownMissing = enabledCooldowns.some(([type]) => normalizedCooldownSeconds(apiCooldowns?.[type]) === null);
+    const cooldownMissing = enabledCooldowns.some(([type]) => (
+      normalizedCooldownSeconds(state.dom.cooldowns?.[type]) === null
+      && normalizedCooldownSeconds(apiCooldowns?.[type]) === null
+    ));
     if (enabledCooldowns.length && (cooldownsDue || cooldownMissing)) selections.push('cooldowns');
     return selections;
   }
@@ -2835,6 +2813,9 @@
       const liveGroups = ['turtle'];
       if (state.dom.bars?.energy) liveGroups.push('energyFull');
       if (state.dom.bars?.nerve) liveGroups.push('nerveFull');
+      if (state.dom.cooldowns?.drug != null) liveGroups.push('drugCooldown');
+      if (state.dom.cooldowns?.medical != null) liveGroups.push('medicalCooldown');
+      if (state.dom.cooldowns?.booster != null) liveGroups.push('boosterCooldown');
       if (state.dom.stockBenefitsSignalKnown) liveGroups.push('stockBenefits');
       if (state.dom.educationActive) liveGroups.push('education');
       if (state.dom.playerAddiction != null) liveGroups.push('playerAddiction');
@@ -2874,7 +2855,7 @@
           energyDue: force || snoozeExpiredFor('energyFull') || apiCheckDueAt('energy', state.lastEnergyUpdated, ENERGY_REFRESH_MS, now),
           nerveDue: force || snoozeExpiredFor('nerveFull') || apiCheckDueAt('nerve', state.lastNerveUpdated, NERVE_REFRESH_MS, now),
           cooldownsDue: force || snoozeExpiredFor('drugCooldown', 'medicalCooldown', 'boosterCooldown')
-            || apiCheckDueAt('cooldowns', state.lastCooldownsUpdated, COOLDOWN_REFRESH_MS, now, { honorScheduled: true }),
+            || apiCheckDueAt('cooldowns', state.lastCooldownsUpdated, COOLDOWN_REFRESH_MS, now),
         };
         const fastSelections = fastSelectionsNeeded(fastDue);
         const cooldownRequested = fastSelections.includes('cooldowns');
@@ -2888,10 +2869,6 @@
         if (!genericSelections.length) delete state.errors.fastFallback;
         const [genericOkay, cooldownOkay] = await Promise.all([genericPromise, cooldownPromise]);
         const updatedAt = Date.now();
-        if (cooldownRequested && !cooldownOkay && state.errors.cooldowns) {
-          markCooldownApiFailure(state.errors.cooldowns);
-          invalidateAlertGroups(['drugCooldown', 'medicalCooldown', 'boosterCooldown']);
-        }
         if (genericOkay && genericSelections.includes('bars')) {
           if (fastDue.energyDue) state.lastEnergyUpdated = updatedAt;
           if (fastDue.nerveDue) state.lastNerveUpdated = updatedAt;
@@ -2921,7 +2898,6 @@
         if ((!cooldownRequested || cooldownOkay) && cooldowns?.drug != null) groups.push('drugCooldown');
         if ((!cooldownRequested || cooldownOkay) && cooldowns?.medical != null) groups.push('medicalCooldown');
         if ((!cooldownRequested || cooldownOkay) && cooldowns?.booster != null) groups.push('boosterCooldown');
-        if (cooldownRequested || state.data.cooldownApiStatus) groups.push('cooldownApiError');
         publishAlertGroups(groups);
       })());
 
@@ -3321,11 +3297,7 @@
   function finishingHitsFromPersonalStats(body) {
     const direct = body?.personalstats?.finishing_hits;
     if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
-      const complete = Object.keys(FINISHER_LABELS).every((key) => (
-        direct[key] !== null && direct[key] !== undefined && Number.isFinite(Number(direct[key]))
-      ));
-      if (!complete) return null;
-      return Object.fromEntries(Object.keys(FINISHER_LABELS).map((key) => [key, Math.max(0, Math.trunc(Number(direct[key])))]));
+      return Object.fromEntries(Object.keys(FINISHER_LABELS).map((key) => [key, Math.max(0, Math.trunc(Number(direct[key]) || 0))]));
     }
     const legacyNames = {
       heavy_artillery: 'heavyhits', machine_guns: 'machinehits', rifles: 'riflehits', sub_machine_guns: 'smghits',
@@ -3335,12 +3307,6 @@
     const numericStats = numericPersonalStats(body);
     const rows = Array.isArray(body?.personalstats) ? body.personalstats : [];
     const byName = new Map(rows.map((row) => [String(row?.name || ''), Number(row?.value) || 0]));
-    const hasAnyFinishingHit = Object.entries(legacyNames).some(([key, legacyName]) => (
-      Object.hasOwn(numericStats, `finishing_hits.${key}`)
-      || Object.hasOwn(numericStats, legacyName)
-      || byName.has(legacyName)
-    ));
-    if (!hasAnyFinishingHit) return null;
     return Object.fromEntries(Object.entries(legacyNames).map(([key, legacyName]) => [
       key,
       Math.max(0, Math.trunc(Number(numericStats[`finishing_hits.${key}`] ?? numericStats[legacyName] ?? byName.get(legacyName)) || 0)),
@@ -3544,7 +3510,6 @@
   }
 
   function finisherProgress() {
-    if (!state.awards.finishingHits || typeof state.awards.finishingHits !== 'object') return null;
     const rows = Object.entries(FINISHER_LABELS).map(([key, label]) => ({
       key,
       label,
@@ -3806,9 +3771,6 @@
   function awardProgressMarkup(award, { compact = false } = {}) {
     if (isWarMachineAward(award)) {
       const progress = finisherProgress();
-      if (!progress) {
-        return `<div class="award-progress ${compact ? 'compact' : ''} unavailable"><strong>Finishing-hit progress unavailable</strong><small>Refresh awards. If Torn still omits these stats, the API key needs Limited or higher access.</small></div>`;
-      }
       const percent = progress.targetTotal ? Math.min(100, Math.floor(progress.cappedTotal / progress.targetTotal * 100)) : 0;
       const completeCount = progress.rows.length - progress.remaining.length;
       const remainingMarkup = progress.remaining.length
@@ -3932,25 +3894,21 @@
     const catalogDue = forceCatalog || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length
       || Date.now() - Number(state.awards.catalogFetchedAt) >= AWARD_CATALOG_MAX_AGE_MS;
     const requests = [
-      api('user', { selections: 'profile,medals,honors,merits' }, { priority: 'high' }),
+      api('user', { selections: 'profile,medals,honors,merits,personalstats', cat: 'all' }, { priority: 'high' }),
       catalogDue ? api('torn', { selections: 'medals,honors' }, { priority: 'normal' }) : Promise.resolve(null),
-      api('user/personalstats', { cat: 'all' }, { priority: 'high' }),
     ];
-    const [playerResult, catalogResult, statsResult] = await Promise.allSettled(requests);
+    const [playerResult, catalogResult] = await Promise.allSettled(requests);
     const errors = [];
     if (playerResult.status === 'fulfilled') {
       const body = playerResult.value;
-      const profile = awardProfileFromBody(body);
-      if (!Array.isArray(body?.medals) || !Array.isArray(body?.honors) || !profile.id) {
-        errors.push('Torn returned incomplete medal, honor, or profile data; the previous completion state was kept.');
-      } else {
-        state.awards.medals = body.medals;
-        state.awards.honors = body.honors;
-        state.awards.merits = body?.merits && typeof body.merits === 'object' ? body.merits : null;
-        state.awards.profile = profile;
-        state.awards.userId = profile.id;
-        state.awards.playerFetchedAt = Date.now();
-      }
+      state.awards.medals = Array.isArray(body?.medals) ? body.medals : [];
+      state.awards.honors = Array.isArray(body?.honors) ? body.honors : [];
+      state.awards.merits = body?.merits && typeof body.merits === 'object' ? body.merits : null;
+      state.awards.profile = awardProfileFromBody(body);
+      state.awards.userId = state.awards.profile.id;
+      state.awards.personalStats = numericPersonalStats(body);
+      state.awards.finishingHits = finishingHitsFromPersonalStats(body);
+      state.awards.playerFetchedAt = Date.now();
     } else if (!isDashboardOwnerPause(playerResult.reason)) {
       errors.push(playerResult.reason?.message || 'Could not load your completed awards.');
     }
@@ -3961,21 +3919,6 @@
       state.awards.catalogFetchedAt = Date.now();
     } else if (catalogResult.status === 'rejected' && !isDashboardOwnerPause(catalogResult.reason)) {
       errors.push(catalogResult.reason?.message || 'Could not load the award catalog.');
-    }
-    if (statsResult.status === 'fulfilled') {
-      const body = statsResult.value;
-      const personalStats = numericPersonalStats(body);
-      const finishingHits = finishingHitsFromPersonalStats(body);
-      if (!Object.keys(personalStats).length) {
-        errors.push('Torn returned no usable personal-stat counters; progress was not reset to zero.');
-      } else {
-        state.awards.personalStats = personalStats;
-        state.awards.finishingHits = finishingHits;
-        state.awards.statsFetchedAt = Date.now();
-        if (!finishingHits) errors.push('Torn did not include finishing-hit counters. A Limited or higher API key may be required for War Machine progress.');
-      }
-    } else if (!isDashboardOwnerPause(statsResult.reason)) {
-      errors.push(statsResult.reason?.message || 'Could not load personal-stat award progress.');
     }
     state.awards.error = errors.join(' ');
     state.awardsLoading = false;
@@ -4268,18 +4211,8 @@
     const boosterThresholdSeconds = cooldownThresholdSeconds('booster');
     const playerAddiction = playerAddictionPercent();
     const jobAddiction = jobAddictionPenalty();
-    const cooldownApiStatus = state.data.cooldownApiStatus;
 
     const alerts = [
-      {
-        id: 'cooldownApiError',
-        active: cooldownApiStatus?.ok === false,
-        title: 'Cooldown API check failed',
-        detail: cooldownApiStatus?.ok === false
-          ? `${cooldownApiStatus.message || 'Torn did not return usable cooldown data.'} Cooldowns are unknown; the dashboard will not treat this as clear.`
-          : '',
-        tone: 'urgent',
-      },
       {
         id: 'drugCooldown',
         active: cooldowns && cooldowns.drug === 0,
@@ -4930,30 +4863,20 @@
 
   function maybeAlarm() {
     if (!ownsDashboardNetworkLease() || !state.alertSnapshotReady) return;
-    // The mute control is a master alarm mute: visual cards remain visible, but
-    // sound, flashing, and browser popups all stop.
-    if (soundsMuted()) return;
     const active = publishedAlerts().filter(alertVisible);
     if (!active.length) return;
     const now = Date.now();
     let historyChanged = false;
     let needsRender = false;
     const normal = active.filter((alert) => !['landing', 'turtle'].includes(alert.id));
-    const routine = normal.filter((alert) => !/^(?:market|bazaar):/.test(String(alert.id || '')));
-    const market = normal.filter((alert) => /^(?:market|bazaar):/.test(String(alert.id || '')));
     const generalSoundEnabled = state.settings.soundAlarm && !soundsMuted();
     const landingSoundEnabled = state.settings.landingSoundAlarm && !soundsMuted();
     const turtleSoundEnabled = state.settings.turtleSoundAlarm && !soundsMuted();
     if (normal.length && (state.settings.flashAlarm || generalSoundEnabled || browserNotificationsEnabled())) {
       const interval = Math.max(1, Number(state.settings.alarmIntervalMinutes) || 1) * 60_000;
-      const dueMarketAlerts = market.filter((alert) => now - (Number(state.settings.alarmHistory[alert.id]) || 0) >= interval);
-      const routineDue = routine.filter((alert) => now - (Number(state.settings.alarmHistory[alert.id]) || 0) >= interval);
-      const routineWindowOpen = now - (Number(state.settings.alarmHistory.__routine) || 0) >= interval;
-      const dueRoutineAlerts = routineWindowOpen ? routineDue : [];
-      const dueAlerts = [...dueRoutineAlerts, ...dueMarketAlerts];
+      const dueAlerts = normal.filter((alert) => now - (Number(state.settings.alarmHistory[alert.id]) || 0) >= interval);
       if (dueAlerts.length) {
         dueAlerts.forEach((alert) => { state.settings.alarmHistory[alert.id] = now; });
-        if (dueRoutineAlerts.length) state.settings.alarmHistory.__routine = now;
         historyChanged = true;
         if (state.settings.flashAlarm) {
           state.flashUntil = now + 6_000;
@@ -5071,7 +4994,7 @@
     }).join('');
     const mainOpen = state.settings.settingsSections?.apiLedger ? 'open' : '';
     const recentOpen = state.settings.settingsSections?.apiLedgerRecent ? 'open' : '';
-    return `<details class="api-ledger-details" data-settings-section="apiLedger" ${mainOpen}><summary>API request ledger · ${minuteUsage.count} quota reservations last minute</summary><p>Every Dashboard Torn API request, including Item Market checks, reserves a slot in Core's shared limiter. Item Market calls are counted conservatively because the response does not reliably prove that Torn served a quota-free cache hit. API keys and sensitive query values are never stored; safe numeric limits are retained so response sizes can be verified. The detailed endpoint breakdown comes from the diagnostic log so older Core instances cannot erase its metadata.</p>${quotaRows ? `<strong>Quota-counted requests in the last minute</strong><ol class="api-ledger-list">${quotaRows}</ol>` : '<p>No detailed quota-counted requests in the last minute.</p>'}${legacyUnattributed ? `<p><strong>${legacyUnattributed} legacy/unattributed limiter reservation${legacyUnattributed === 1 ? '' : 's'}</strong> are included in the quota total but were written without detailed metadata.</p>` : ''}${cachedRows ? `<strong>Legacy quota-exempt Item Market requests still in the 15-minute log</strong><ol class="api-ledger-list">${cachedRows}</ol>` : ''}${recentRows ? `<details class="api-ledger-recent" data-settings-section="apiLedgerRecent" ${recentOpen}><summary>Most recent 100 requests</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, or non-Torn services such as TornW3B.</small></details>`;
+    return `<details class="api-ledger-details" data-settings-section="apiLedger" ${mainOpen}><summary>API request ledger · ${minuteUsage.count} quota reservations last minute</summary><p>Every Dashboard Torn API request, including Item Market checks, reserves a slot in Core's shared limiter. Item Market calls are counted conservatively because the response does not reliably prove that Torn served a quota-free cache hit. Endpoint query values and API keys are never stored. The detailed endpoint breakdown comes from the diagnostic log so older Core instances cannot erase its metadata.</p>${quotaRows ? `<strong>Quota-counted requests in the last minute</strong><ol class="api-ledger-list">${quotaRows}</ol>` : '<p>No detailed quota-counted requests in the last minute.</p>'}${legacyUnattributed ? `<p><strong>${legacyUnattributed} legacy/unattributed limiter reservation${legacyUnattributed === 1 ? '' : 's'}</strong> are included in the quota total but were written without detailed metadata.</p>` : ''}${cachedRows ? `<strong>Legacy quota-exempt Item Market requests still in the 15-minute log</strong><ol class="api-ledger-list">${cachedRows}</ol>` : ''}${recentRows ? `<details class="api-ledger-recent" data-settings-section="apiLedgerRecent" ${recentOpen}><summary>Most recent 100 requests</summary><ol class="api-ledger-list">${recentRows}</ol></details>` : ''}<div class="settings-actions"><button data-action="export-api-ledger">Export ledger CSV</button><button data-action="clear-api-ledger" class="subtle">Clear 15-minute history</button></div><small>This cannot see calls from extensions, other browsers/devices, or non-Torn services such as TornW3B.</small></details>`;
   }
 
   function settingsMarkup() {
@@ -5079,14 +5002,6 @@
     const errors = Object.entries(state.errors)
       .map(([key, message]) => `<li><strong>${escapeHtml(key)}</strong>: ${escapeHtml(message)}</li>`)
       .join('');
-    const cooldownApiValues = state.data.cooldowns?.cooldowns;
-    const cooldownApiCheckedAt = Number(state.data.cooldownApiStatus?.checkedAt) || 0;
-    const cooldownNextCheckAt = Number(state.nextApiChecks?.cooldowns) || 0;
-    const cooldownApiSummary = state.data.cooldownApiStatus?.ok === false
-      ? `ERROR: ${state.data.cooldownApiStatus.message || 'unknown response'}`
-      : cooldownApiValues
-        ? `Drug ${formatDuration(cooldownApiValues.drug)} / Medical ${formatDuration(cooldownApiValues.medical)} / Booster ${formatDuration(cooldownApiValues.booster)}`
-        : 'awaiting first dedicated cooldown response';
     const catalogItems = catalogItemsForSelectedCategory();
     const catalogOptions = catalogItems.map((item) => {
       const estimate = item.marketPrice ? ` · about $${item.marketPrice.toLocaleString()}` : '';
@@ -5172,7 +5087,6 @@
           <button data-action="pause-api">Pause</button>
           ${Number(state.settings.apiPausedUntil) > Date.now() ? `<button data-action="resume-api">Resume now (${formatDuration(Math.ceil((Number(state.settings.apiPausedUntil) - Date.now()) / 1000))})</button>` : ''}
           <small>Core Lib coordinates Torn API requests made by this dashboard, Ranked War Panel, and Retaliation Monitor on this browser profile and Torn origin. External apps, extensions, other devices, and TornW3B cannot be counted.</small>
-          <small><strong>Cooldown API:</strong> ${escapeHtml(cooldownApiSummary)}${cooldownApiCheckedAt ? ` / checked ${escapeHtml(new Date(cooldownApiCheckedAt).toLocaleString())}` : ''}${cooldownNextCheckAt ? ` / next API check ${escapeHtml(new Date(cooldownNextCheckAt).toLocaleString())}` : ''}</small>
           ${apiLedgerMarkup()}
         </div>
         <details class="settings-group" data-settings-section="alerts" ${sectionOpen('alerts')}>
@@ -5271,9 +5185,9 @@
         </details>
         <details class="settings-group" data-settings-section="alarms" ${sectionOpen('alarms')}>
           <summary>Alarm behavior</summary>
-          <p>Routine reminders share one repeat window, so different cooldown or daily-task cards cannot fire back-to-back. Item Market and Bazaar listings remain independent. Landing and Turtle use their own timing under Thresholds.</p>
+          <p>These options repeat for any active, unsnoozed reminder except Landing and Turtle, which have separate sounds and timing under Thresholds.</p>
           <div class="alarm-settings">
-            <label><input type="checkbox" data-field="mute-sounds" ${state.settings.muteSounds ? 'checked' : ''}> Mute all dashboard alarms and popups</label>
+            <label><input type="checkbox" data-field="mute-sounds" ${state.settings.muteSounds ? 'checked' : ''}> Mute all dashboard sounds</label>
             <label><input type="checkbox" data-field="flash-alarm" ${state.settings.flashAlarm ? 'checked' : ''}> Flash red</label>
             <label><input type="checkbox" data-field="sound-alarm" ${state.settings.soundAlarm ? 'checked' : ''}> Play the general alarm sound</label>
             <label>Repeat while unfinished
@@ -5640,7 +5554,7 @@
           <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
           <button class="view-button ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-awards" title="${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open medals and honors'}">${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Alerts' : 'Awards'}</button>
           <button class="view-button dollar-button ${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-dollar-bazaars" title="${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open Weaver $1 Bazaars'}">${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Alerts' : '$1'}</button>
-          <button class="icon-button" data-action="toggle-mute" title="${state.settings.muteSounds ? 'Unmute dashboard alarms' : 'Mute dashboard alarms'}" aria-label="${state.settings.muteSounds ? 'Unmute dashboard alarms' : 'Mute dashboard alarms'}" aria-pressed="${state.settings.muteSounds ? 'true' : 'false'}">${state.settings.muteSounds ? '🔇' : '🔊'}</button>
+          <button class="icon-button" data-action="toggle-mute" title="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-label="${state.settings.muteSounds ? 'Unmute dashboard sounds' : 'Mute dashboard sounds'}" aria-pressed="${state.settings.muteSounds ? 'true' : 'false'}">${state.settings.muteSounds ? '🔇' : '🔊'}</button>
           <button class="icon-button" data-action="settings" title="Settings" aria-label="Settings">⚙</button>
           <button class="icon-button" data-action="collapse" title="${collapsed ? 'Expand' : 'Minimize'}" aria-label="${collapsed ? 'Expand' : 'Minimize'}">${collapsed ? '▾' : '▴'}</button>
         </header>
@@ -5732,10 +5646,7 @@
       state.settings.collapsed = false;
       saveSettings();
       render();
-      if (openingAwards && (!state.awards.playerFetchedAt || !state.awards.statsFetchedAt
-        || Date.now() - Number(state.awards.playerFetchedAt) >= AWARD_PLAYER_MAX_AGE_MS
-        || Date.now() - Number(state.awards.statsFetchedAt) >= AWARD_PLAYER_MAX_AGE_MS
-        || !Object.keys(state.awards.personalStats || {}).length
+      if (openingAwards && (!state.awards.playerFetchedAt || !Object.keys(state.awards.personalStats || {}).length
         || !state.awards.profile?.id || !state.awards.catalogMedals.length || !state.awards.catalogHonors.length)) {
         refreshAwards();
       }
@@ -5940,7 +5851,6 @@
       state.settings.panelSize = { width: null, height: null };
     } else if (action === 'clear-key') {
       state.settings.apiKey = '';
-      state.rejectedApiKey = '';
       state.data = {};
       state.errors = {};
       invalidateAlertSnapshot();
@@ -5962,12 +5872,11 @@
       state.awards = {
         ...state.awards,
         playerFetchedAt: 0,
-        statsFetchedAt: 0,
         medals: [],
         honors: [],
         merits: null,
         userId: 0,
-        finishingHits: null,
+        finishingHits: {},
         personalStats: {},
         profile: {},
         error: '',
@@ -5979,9 +5888,7 @@
       const key = input?.value.trim();
       if (key && key !== state.settings.apiKey) {
         state.settings.apiKey = key;
-        state.rejectedApiKey = '';
         state.data = {};
-        state.errors = {};
         state.lastDailyUpdated = 0;
         state.lastMarketUpdated = 0;
         state.lastBazaarUpdated = 0;
@@ -5999,12 +5906,11 @@
         state.awards = {
           ...state.awards,
           playerFetchedAt: 0,
-          statsFetchedAt: 0,
           medals: [],
           honors: [],
           merits: null,
           userId: 0,
-          finishingHits: null,
+          finishingHits: {},
           personalStats: {},
           profile: {},
           error: '',
@@ -6381,6 +6287,9 @@
       const before = JSON.stringify({
         energy: state.dom.bars?.energy,
         nerve: state.dom.bars?.nerve,
+        drug: state.dom.cooldowns?.drug,
+        medical: state.dom.cooldowns?.medical,
+        booster: state.dom.cooldowns?.booster,
         raceActive: state.dom.raceActive,
         raceKnown: state.dom.raceSignalKnown,
         raceIcon: state.dom.raceIconLabel,
@@ -6401,6 +6310,9 @@
       const after = JSON.stringify({
         energy: state.dom.bars?.energy,
         nerve: state.dom.bars?.nerve,
+        drug: state.dom.cooldowns?.drug,
+        medical: state.dom.cooldowns?.medical,
+        booster: state.dom.cooldowns?.booster,
         raceActive: state.dom.raceActive,
         raceKnown: state.dom.raceSignalKnown,
         raceIcon: state.dom.raceIconLabel,
@@ -6420,6 +6332,9 @@
       const groups = [];
       if (state.dom.bars?.energy) groups.push('energyFull');
       if (state.dom.bars?.nerve) groups.push('nerveFull');
+      if (state.dom.cooldowns?.drug != null) groups.push('drugCooldown');
+      if (state.dom.cooldowns?.medical != null) groups.push('medicalCooldown');
+      if (state.dom.cooldowns?.booster != null) groups.push('boosterCooldown');
       if (state.dom.stockBenefitsSignalKnown) groups.push('stockBenefits');
       if (state.dom.educationActive) groups.push('education');
       if (state.dom.playerAddiction != null) groups.push('playerAddiction');
