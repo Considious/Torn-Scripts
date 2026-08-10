@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.41
+// @version      1.4.40
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 9;
+  const CHECK_CACHE_SCHEMA_VERSION = 8;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -521,14 +521,6 @@
       lastCasinoUpdated = 0;
       alertSnapshot = alertSnapshot.filter((alert) => !dailyAlertIds.has(alert?.id));
       readyAlertGroups = readyAlertGroups.filter((group) => !['refills', 'casinoTokens'].includes(group));
-    }
-    if (cachedSchemaVersion < 9) {
-      const refillAlertIds = new Set(['energyRefill', 'nerveRefill']);
-      delete data.refills;
-      delete nextApiChecks.refills;
-      lastDailyUpdated = 0;
-      alertSnapshot = alertSnapshot.filter((alert) => !refillAlertIds.has(alert?.id));
-      readyAlertGroups = readyAlertGroups.filter((group) => group !== 'refills');
     }
     return {
       data,
@@ -2085,11 +2077,6 @@
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) + TORN_RESET_SETTLE_MS;
   }
 
-  function nextTornRefillCheckAtMs(now = Date.now()) {
-    const date = new Date(now);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 5);
-  }
-
   function apiCheckDueAt(key, lastUpdated, fallbackMs, now = Date.now(), { honorScheduled = false } = {}) {
     const scheduled = Number(state.nextApiChecks?.[key]) || 0;
     const fallbackAt = (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
@@ -2774,8 +2761,7 @@
     delete state.data.refills;
     delete state.data.casino;
     delete state.data.battlestats;
-    ['cityItems', 'casinoTokens', 'playerAddiction'].forEach((key) => delete state.nextApiChecks[key]);
-    deferApiCheck('refills', currentDayStart * 1000 + 5 * 60_000);
+    ['refills', 'cityItems', 'casinoTokens', 'playerAddiction'].forEach((key) => delete state.nextApiChecks[key]);
     invalidateAlertGroups(['cityItem', 'refills', 'casinoTokens', 'playerAddiction']);
     ['cityItem', 'stockBenefits', 'energyRefill', 'nerveRefill', 'casinoTokens'].forEach((id) => delete state.settings.alarmHistory[id]);
     saveSettings();
@@ -3578,7 +3564,7 @@
     }
     const now = Date.now();
     const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
-    const refillsDue = refillsEnabled && (force || snoozeExpiredFor('energyRefill', 'nerveRefill')
+    const refillsDue = refillsEnabled && (force || dayChanged || snoozeExpiredFor('energyRefill', 'nerveRefill')
       || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
       && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
@@ -3847,7 +3833,7 @@
               return;
             }
             delete state.errors.legacyDaily;
-            deferApiCheck('refills', nextTornRefillCheckAtMs());
+            deferApiCheck('refills', nextTornResetAtMs());
             publishAlertGroups(['refills']);
           })());
         }
@@ -4843,10 +4829,10 @@
         if (available !== null) return !available;
       }
     } else {
-      // Verified against a known-used response from /v2/user/refills:
-      // true means the daily refill was used; false means it remains available.
-      const used = booleanValue(direct);
-      if (used !== null) return used;
+      // Torn API v2 exposes refills.energy / nerve as availability flags:
+      // true means the daily refill remains available, false means it was used.
+      const available = booleanValue(direct);
+      if (available !== null) return !available;
     }
     const usedCandidates = [
       refills[`${type}_refill_used`],
@@ -5998,7 +5984,7 @@
             </select>
           </label>
           <p><small>Fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Successful responses postpone the next call until their returned full-time, cooldown, education, OC, travel, race, or Torn-reset transition. Bars are combined when due together; cooldowns use Torn's dedicated endpoint.</small></p>
-          <p><small>Daily refills are accepted only after a complete response, then wait until 00:05 TCT the next day unless manually refreshed or rechecked after a snooze. City-item totals, casino tokens, and player addiction wait until the next Torn reset. Company addiction waits until its next daily check. Missing or unreadable daily data retries after 3 minutes.</small></p>
+          <p><small>Daily refills, city-item totals, casino tokens, and player addiction are accepted only after a complete response, then wait until the next Torn reset. Company addiction waits until its next daily check. Missing or unreadable daily data retries after 3 minutes.</small></p>
           <label class="field compact-field">
             <span>Job addiction (points)</span>
             <input type="number" min="0" max="100" step="1" data-field="job-addiction-threshold" value="${escapeHtml(state.settings.jobAddictionThreshold)}">
