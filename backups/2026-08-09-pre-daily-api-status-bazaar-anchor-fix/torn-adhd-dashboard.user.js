@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.40
+// @version      1.4.39
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,7 +32,7 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 8;
+  const CHECK_CACHE_SCHEMA_VERSION = 7;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -282,7 +282,6 @@
     lastClusterUpdated: persistedChecks.lastClusterUpdated,
     nextApiChecks: persistedChecks.nextApiChecks,
     syncing: false,
-    forceRefreshPending: false,
     lastUpdated: 0,
     lastDailyUpdated: persistedChecks.lastDailyUpdated,
     tornDayStart: persistedChecks.tornDayStart,
@@ -510,17 +509,6 @@
       lastCooldownsUpdated = 0;
       alertSnapshot = alertSnapshot.filter((alert) => !cooldownAlertIds.has(alert?.id));
       readyAlertGroups = readyAlertGroups.filter((group) => !cooldownAlertIds.has(group));
-    }
-    if (cachedSchemaVersion < 8) {
-      const dailyAlertIds = new Set(['energyRefill', 'nerveRefill', 'casinoTokens']);
-      delete data.refills;
-      delete data.casino;
-      delete nextApiChecks.refills;
-      delete nextApiChecks.casinoTokens;
-      lastDailyUpdated = 0;
-      lastCasinoUpdated = 0;
-      alertSnapshot = alertSnapshot.filter((alert) => !dailyAlertIds.has(alert?.id));
-      readyAlertGroups = readyAlertGroups.filter((group) => !['refills', 'casinoTokens'].includes(group));
     }
     return {
       data,
@@ -1490,13 +1478,6 @@
     )) || null;
   }
 
-  function measurableQuickPurchaseControl(control) {
-    if (!control || !elementVisible(control)) return false;
-    const rect = control.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0
-      && Number.isFinite(rect.left) && Number.isFinite(rect.top);
-  }
-
   function highlightedQuickPurchaseElements(kind) {
     const selector = kind === 'bazaar'
       ? '[data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit]'
@@ -1562,14 +1543,14 @@
   function activeBazaarQuickPurchaseControl(flow, selector) {
     const resolved = resolvedQuickPurchaseListing(flow);
     let native = nativeQuickPurchaseControl(resolved?.element, selector);
-    if (native && !measurableQuickPurchaseControl(native)) native = null;
+    if (native && !elementVisible(native)) native = null;
     if (!native) {
       const candidates = Array.from(document.querySelectorAll(selector)).filter((control) => (
         control.isConnected
         && !control.matches('[data-tdd-quick-buy]')
         && !control.disabled
         && control.getAttribute('aria-disabled') !== 'true'
-        && measurableQuickPurchaseControl(control)
+        && elementVisible(control)
       ));
       native = candidates.find((control) => {
         const card = bazaarListingCards().find((candidate) => candidate.contains(control));
@@ -1654,10 +1635,8 @@
       const opportunity = bazaarPurchaseOpportunity(element);
       if (!opportunity.oneDollar && !opportunity.shopProfit) return;
       const listing = quickPurchaseListing('bazaar', element);
-      const buyCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"]');
-      const activateCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="activate-buy-button"]');
-      const buy = measurableQuickPurchaseControl(buyCandidate) ? buyCandidate : null;
-      const activate = measurableQuickPurchaseControl(activateCandidate) ? activateCandidate : null;
+      const buy = nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"]');
+      const activate = nativeQuickPurchaseControl(element, 'button[data-testid="activate-buy-button"]');
       const native = buy || activate;
       const controlKey = quickPurchaseListingControlKey(listing);
       const existingButton = state.quickPurchaseOverlays.get(controlKey);
@@ -1667,7 +1646,7 @@
         stage: buy ? 'buy' : activate ? 'open' : existingSpec.stage,
         listing,
         native: native || existingSpec.native,
-        anchor: native ? quickPurchaseAnchor(native, listing) : existingSpec.anchor,
+        anchor: existingSpec?.anchor || quickPurchaseAnchor(native, listing),
         controlKey,
         label: buy ? 'Buy max' : activate ? 'Buy' : existingSpec.label,
       });
@@ -3423,6 +3402,7 @@
     state.dom = {
       bars: { energy: readBar('energy'), nerve: readBar('nerve') },
       educationActive: visibleStatusSignal(root, /\b(?:education|course)\b/i),
+      selfExcluded: visibleStatusSignal(root, /self[\s-]*exclu/i),
       away: visibleStatusSignal(root, /\b(?:traveling|travelling|abroad|in flight)\b/i),
       raceActive,
       // A positive page signal is trustworthy. A loaded Raceway page with no
@@ -3538,7 +3518,6 @@
 
   async function refresh({ includeDaily = false, force = false, domOnly = false } = {}) {
     if (state.syncing) {
-      if (force) state.forceRefreshPending = true;
       render();
       return;
     }
@@ -3564,7 +3543,7 @@
     }
     const now = Date.now();
     const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
-    const refillsDue = refillsEnabled && (force || dayChanged || snoozeExpiredFor('energyRefill', 'nerveRefill')
+    const refillsDue = refillsEnabled && (force || dayChanged
       || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
       && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
@@ -3806,9 +3785,10 @@
 
       const missionsDue = alertCheckDue('missions')
         && (force || snoozeExpiredFor('missions') || scheduledTctCheckDue(state.lastMissionsUpdated, 0, 15, now));
-      const casinoStatusKnown = casinoTokenCount() !== null && Array.isArray(state.data.icons?.icons);
+      const casinoStatusKnown = casinoTokenCount() !== null
+        && (state.dom.selfExcluded || Array.isArray(state.data.icons?.icons));
       const casinoDue = alertCheckDue('casinoTokens')
-        && (force || dayChanged || snoozeExpiredFor('casinoTokens')
+        && (force || dayChanged
           || dailyStatusCheckDue('casinoTokens', casinoStatusKnown, state.lastCasinoUpdated, DAILY_UNKNOWN_RETRY_MS, now));
       const jobAddictionRetryAt = Number(state.nextApiChecks?.jobAddiction) || 0;
       const jobAddictionDue = alertCheckDue('jobAddiction')
@@ -3827,9 +3807,7 @@
               state.data.refills = { ...body, __fetchedAt: Date.now() };
             });
             if (!okay) {
-              delete state.data.refills;
               deferApiCheck('refills', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-              invalidateAlertGroups(['refills']);
               return;
             }
             delete state.errors.legacyDaily;
@@ -3900,16 +3878,16 @@
             if (casinoTokenCount(body) === null) throw new Error('Torn returned casino-token data in an unreadable format.');
             state.data.casino = { ...body, __fetchedAt: Date.now() };
           });
-          const iconsPromise = guardedRequest('casinoExclusion', () => api('user', { selections: 'icons' }), (body) => {
-            if (!Array.isArray(body?.icons)) throw new Error('Torn returned icon data in an unreadable format.');
-            absorbGeneric(body);
-          });
+          const iconsPromise = state.dom.selfExcluded
+            ? Promise.resolve(true)
+            : guardedRequest('casinoExclusion', () => api('user', { selections: 'icons' }), (body) => {
+              if (!Array.isArray(body?.icons)) throw new Error('Torn returned icon data in an unreadable format.');
+              absorbGeneric(body);
+            });
+          if (state.dom.selfExcluded) delete state.errors.casinoExclusion;
           const [casinoOkay, iconsOkay] = await Promise.all([casinoPromise, iconsPromise]);
           if (!casinoOkay || !iconsOkay) {
-            if (!casinoOkay) delete state.data.casino;
-            if (!iconsOkay) delete state.data.icons;
             deferApiCheck('casinoTokens', Date.now() + DAILY_UNKNOWN_RETRY_MS);
-            invalidateAlertGroups(['casinoTokens']);
             return;
           }
           state.lastCasinoUpdated = Date.now();
@@ -3963,7 +3941,7 @@
         && Object.hasOwn(state.data.organizedCrime || {}, 'organizedCrime')
         && Object.hasOwn(state.data.profile || {}, 'profile')) cachedDailyGroups.push('organizedCrime');
       if (!casinoDue && state.settings.enabled.casinoTokens && state.data.casino?.casino
-        && Array.isArray(state.data.icons?.icons)) cachedDailyGroups.push('casinoTokens');
+        && (state.dom.selfExcluded || Array.isArray(state.data.icons?.icons))) cachedDailyGroups.push('casinoTokens');
       if (!refillsDue && (state.settings.enabled.energyRefill || state.settings.enabled.nerveRefill) && state.data.refills?.refills) cachedDailyGroups.push('refills');
       if (!cityItemsDue && state.settings.enabled.cityItem && state.data.cityItemsNow && state.data.cityItemsAtReset) cachedDailyGroups.push('cityItem');
       if (!playerAddictionDue && state.settings.enabled.playerAddiction && state.data.battlestats?.battlestats) cachedDailyGroups.push('playerAddiction');
@@ -4000,11 +3978,8 @@
       state.lastUpdated = Date.now();
       saveCheckCache();
     } finally {
-      const rerunForcedRefresh = state.forceRefreshPending;
-      state.forceRefreshPending = false;
       state.syncing = false;
       render();
-      if (rerunForcedRefresh) window.setTimeout(() => refresh({ force: true }), 0);
     }
   }
 
@@ -4811,41 +4786,23 @@
   function refillUsedStatus(refills, type) {
     if (!refills || typeof refills !== 'object') return null;
     const direct = refills[type];
-    const booleanValue = (value) => {
+    const candidates = [
+      direct && typeof direct === 'object' ? direct.used : direct,
+      refills[`${type}_refill_used`],
+      refills[`${type}RefillUsed`],
+    ];
+    for (const value of candidates) {
       if (typeof value === 'boolean') return value;
       if (value === 0 || value === 1) return Boolean(value);
       if (typeof value === 'string' && /^(?:true|false|0|1)$/i.test(value.trim())) {
         return /^(?:true|1)$/i.test(value.trim());
       }
-      return null;
-    };
-    if (direct && typeof direct === 'object') {
-      for (const value of [direct.used, direct.refill_used]) {
-        const used = booleanValue(value);
-        if (used !== null) return used;
-      }
-      for (const value of [direct.available, direct.refill_available]) {
-        const available = booleanValue(value);
-        if (available !== null) return !available;
-      }
-    } else {
-      // Torn API v2 exposes refills.energy / nerve as availability flags:
-      // true means the daily refill remains available, false means it was used.
-      const available = booleanValue(direct);
-      if (available !== null) return !available;
-    }
-    const usedCandidates = [
-      refills[`${type}_refill_used`],
-      refills[`${type}RefillUsed`],
-    ];
-    for (const value of usedCandidates) {
-      const used = booleanValue(value);
-      if (used !== null) return used;
     }
     return null;
   }
 
   function iconSelfExclusion() {
+    if (state.dom.selfExcluded) return { title: 'Visible self-exclusion status', untilMs: 0 };
     const icons = state.data.icons?.icons;
     if (!Array.isArray(icons)) return null;
     const icon = icons.find((item) => /self[\s-]*exclu/i.test(`${item?.title || ''} ${item?.description || ''}`));
