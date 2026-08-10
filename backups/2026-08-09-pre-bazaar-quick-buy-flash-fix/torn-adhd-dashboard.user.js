@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.39
+// @version      1.4.38
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -1151,15 +1151,6 @@
     void loadItemCatalog({ force: true }).then(() => schedulePurchaseOpportunityFormatting(0));
   }
 
-  function bazaarPurchaseOpportunity(card) {
-    const price = bazaarCardPrice(card);
-    const available = !bazaarCardUnavailable(card);
-    const sellPrice = Number(catalogItemForBazaarCard(card)?.sellPrice) || 0;
-    const oneDollar = available && price === 1;
-    const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
-    return { oneDollar, shopProfit };
-  }
-
   function formatBazaarOneDollarListings() {
     if (!onBazaarPage()) {
       document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => card.removeAttribute('data-tdd-bazaar-one-dollar'));
@@ -1176,7 +1167,11 @@
       if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-shop-profit');
     });
     cards.forEach((card) => {
-      const { oneDollar, shopProfit } = bazaarPurchaseOpportunity(card);
+      const price = bazaarCardPrice(card);
+      const available = !bazaarCardUnavailable(card);
+      const sellPrice = Number(catalogItemForBazaarCard(card)?.sellPrice) || 0;
+      const oneDollar = available && price === 1;
+      const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
       card.toggleAttribute('data-tdd-bazaar-one-dollar', oneDollar);
       card.toggleAttribute('data-tdd-bazaar-shop-profit', shopProfit);
     });
@@ -1631,24 +1626,20 @@
       return desired;
     }
 
-    bazaarListingCards().forEach((element) => {
-      const opportunity = bazaarPurchaseOpportunity(element);
-      if (!opportunity.oneDollar && !opportunity.shopProfit) return;
+    highlightedQuickPurchaseElements('bazaar').forEach((element) => {
       const listing = quickPurchaseListing('bazaar', element);
       const buy = nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"]');
       const activate = nativeQuickPurchaseControl(element, 'button[data-testid="activate-buy-button"]');
       const native = buy || activate;
+      if (!native) return;
       const controlKey = quickPurchaseListingControlKey(listing);
-      const existingButton = state.quickPurchaseOverlays.get(controlKey);
-      const existingSpec = existingButton ? state.quickPurchaseControlSpecs.get(existingButton) : null;
-      if (!native && !existingSpec) return;
       desired.set(controlKey, {
-        stage: buy ? 'buy' : activate ? 'open' : existingSpec.stage,
+        stage: buy ? 'buy' : 'open',
         listing,
-        native: native || existingSpec.native,
-        anchor: existingSpec?.anchor || quickPurchaseAnchor(native, listing),
+        native,
+        anchor: quickPurchaseAnchor(native, listing),
         controlKey,
-        label: buy ? 'Buy max' : activate ? 'Buy' : existingSpec.label,
+        label: buy ? 'Buy max' : 'Buy',
       });
     });
     highlightedQuickPurchaseElements('item-market').forEach((element) => {
@@ -7356,14 +7347,7 @@
   window.setTimeout(() => refresh(), 800);
   if (state.settings.settingsOpen && !itemCatalogFresh()) loadItemCatalog();
   if (document.body) {
-    state.domObserver = new MutationObserver((records) => {
-      const pageChanged = records.some((record) => {
-        const target = record.target?.nodeType === Node.ELEMENT_NODE
-          ? record.target
-          : record.target?.parentElement;
-        return !target?.closest?.('#tdd-quick-buy-layer, #tdd-purchase-highlight-styles');
-      });
-      if (!pageChanged) return;
+    state.domObserver = new MutationObserver(() => {
       scheduleVisiblePageSignalRefresh();
       schedulePickpocketFormatting();
       schedulePurchaseOpportunityFormatting();
