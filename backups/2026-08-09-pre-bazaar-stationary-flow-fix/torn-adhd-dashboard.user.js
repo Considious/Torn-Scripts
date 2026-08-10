@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.38
+// @version      1.4.37
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -1384,45 +1384,6 @@
     return normalizedPurchaseText(flow.itemName) === normalizedPurchaseText(listing.itemName);
   }
 
-  function sameBazaarQuickPurchaseIdentity(flow, listing) {
-    if (!flow || !listing || flow.kind !== 'bazaar' || listing.kind !== 'bazaar') return false;
-    let matched = false;
-    const flowItemId = Number(flow.itemId) || 0;
-    const listingItemId = Number(listing.itemId) || 0;
-    if (flowItemId > 0 && listingItemId > 0) {
-      if (flowItemId !== listingItemId) return false;
-      matched = true;
-    }
-    const flowName = normalizedPurchaseText(flow.itemName);
-    const listingName = normalizedPurchaseText(listing.itemName);
-    if (flowName && listingName) {
-      if (flowName !== listingName) return false;
-      matched = true;
-    }
-    const flowHasPrice = flow.price !== null && flow.price !== undefined && flow.price !== '';
-    const listingHasPrice = listing.price !== null && listing.price !== undefined && listing.price !== '';
-    const flowPrice = Number(flow.price);
-    const listingPrice = Number(listing.price);
-    if (flowHasPrice && listingHasPrice && Number.isFinite(flowPrice) && Number.isFinite(listingPrice)) {
-      if (flowPrice !== listingPrice) return false;
-      matched = true;
-    }
-    return matched;
-  }
-
-  function mergedBazaarQuickPurchaseListing(flow, listing) {
-    if (!listing) return flow || null;
-    const listingHasPrice = listing.price !== null && listing.price !== undefined && listing.price !== '';
-    return {
-      ...flow,
-      ...listing,
-      itemId: Number(listing.itemId) > 0 ? listing.itemId : flow?.itemId,
-      itemName: listing.itemName || flow?.itemName || '',
-      price: listingHasPrice && Number.isFinite(Number(listing.price)) ? listing.price : flow?.price,
-      stock: Number(listing.stock) > 0 ? listing.stock : flow?.stock,
-    };
-  }
-
   function highlightedQuickPurchaseListing(kind, element) {
     if (!state.settings.highlightedQuickBuyEnabled || !element?.isConnected) return false;
     if (kind === 'bazaar') {
@@ -1482,29 +1443,12 @@
 
   function resolvedQuickPurchaseListing(flow) {
     if (!flow) return null;
-    if (flow.kind === 'bazaar') {
-      const cards = [...new Set([
-        flow.element?.isConnected ? flow.element : null,
-        ...highlightedQuickPurchaseElements('bazaar'),
-        ...bazaarListingCards(),
-      ].filter(Boolean))];
-      const listing = cards
-        .map((element) => quickPurchaseListing('bazaar', element))
-        .find((candidate) => sameBazaarQuickPurchaseIdentity(flow, candidate));
-      return mergedBazaarQuickPurchaseListing(flow, listing);
-    }
     return highlightedQuickPurchaseElements(flow.kind)
       .map((element) => quickPurchaseListing(flow.kind, element))
       .find((listing) => sameQuickPurchaseListing(flow, listing)) || null;
   }
 
   function quickPurchaseListingControlKey(listing) {
-    if (listing.kind === 'bazaar') {
-      const identity = Number(listing.itemId) > 0
-        ? `item-${Number(listing.itemId)}`
-        : `name-${normalizedPurchaseText(listing.itemName)}`;
-      return `bazaar:${identity}:price-${Number(listing.price) || 0}`;
-    }
     let id = state.quickPurchaseListingIds.get(listing.element);
     if (!id) {
       id = ++state.quickPurchaseListingIdCounter;
@@ -1535,45 +1479,6 @@
       : { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey });
   }
 
-  function activeBazaarQuickPurchaseControl(flow, selector) {
-    const resolved = resolvedQuickPurchaseListing(flow);
-    let native = nativeQuickPurchaseControl(resolved?.element, selector);
-    if (native && !elementVisible(native)) native = null;
-    if (!native) {
-      const candidates = Array.from(document.querySelectorAll(selector)).filter((control) => (
-        control.isConnected
-        && !control.matches('[data-tdd-quick-buy]')
-        && !control.disabled
-        && control.getAttribute('aria-disabled') !== 'true'
-        && elementVisible(control)
-      ));
-      native = candidates.find((control) => {
-        const card = bazaarListingCards().find((candidate) => candidate.contains(control));
-        return card && sameBazaarQuickPurchaseIdentity(flow, quickPurchaseListing('bazaar', card));
-      }) || (candidates.length === 1 ? candidates[0] : null);
-    }
-    if (!native) return { native: null, listing: resolved || flow };
-    const card = bazaarListingCards().find((candidate) => candidate.contains(native))
-      || native.closest('[data-testid="item"]');
-    const listing = card
-      ? mergedBazaarQuickPurchaseListing(flow, quickPurchaseListing('bazaar', card))
-      : resolved || flow;
-    return { native, listing };
-  }
-
-  function desiredBazaarFlowWaitControl(desired, activeFlow, listing) {
-    if (!activeFlow?.lastNative) return;
-    desired.set(activeFlow.controlKey, {
-      stage: 'waiting',
-      listing: listing || activeFlow,
-      native: activeFlow.lastNative,
-      anchor: activeFlow.anchor,
-      controlKey: activeFlow.controlKey,
-      label: 'Wait',
-      disabled: true,
-    });
-  }
-
   function desiredQuickPurchaseControls() {
     const desired = new Map();
     if (!state.settings.highlightedQuickBuyEnabled) return desired;
@@ -1594,32 +1499,19 @@
           label: sending ? 'Sending' : 'Yes',
           disabled: sending,
         });
-      } else if (activeFlow.kind === 'bazaar') {
-        desiredBazaarFlowWaitControl(desired, activeFlow, resolvedQuickPurchaseListing(activeFlow));
       }
       return desired;
     }
 
     if (activeFlow) {
+      const listing = resolvedQuickPurchaseListing(activeFlow);
+      if (!listing) return desired;
       if (activeFlow.kind === 'bazaar') {
-        const buyControl = activeBazaarQuickPurchaseControl(activeFlow, 'button[data-testid="buy-button"]');
-        const activateControl = activeBazaarQuickPurchaseControl(activeFlow, 'button[data-testid="activate-buy-button"]');
-        if (buyControl.native) desiredFlowStageControl(desired, buyControl.native, {
-          stage: 'buy',
-          listing: buyControl.listing,
-          native: buyControl.native,
-          label: 'Buy max',
-        }, activeFlow);
-        else if (activateControl.native) desiredFlowStageControl(desired, activateControl.native, {
-          stage: 'open',
-          listing: activateControl.listing,
-          native: activateControl.native,
-          label: 'Buy',
-        }, activeFlow);
-        else desiredBazaarFlowWaitControl(desired, activeFlow, resolvedQuickPurchaseListing(activeFlow));
+        const buy = nativeQuickPurchaseControl(listing.element, 'button[data-testid="buy-button"]');
+        const activate = nativeQuickPurchaseControl(listing.element, 'button[data-testid="activate-buy-button"]');
+        if (buy) desiredFlowStageControl(desired, buy, { stage: 'buy', listing, native: buy, label: 'Buy max' }, activeFlow);
+        else if (activate) desiredFlowStageControl(desired, activate, { stage: 'open', listing, native: activate, label: 'Buy' }, activeFlow);
       } else {
-        const listing = resolvedQuickPurchaseListing(activeFlow);
-        if (!listing) return desired;
         const buy = nativeQuickPurchaseControl(listing.element, 'button[class*="buyButton___"], button[aria-label^="Buy "]');
         if (buy) desiredFlowStageControl(desired, buy, { stage: 'buy', listing, native: buy, label: 'Buy max' }, activeFlow);
       }
@@ -1675,10 +1567,7 @@
   }
 
   function positionQuickPurchaseButton(button, spec) {
-    const listingElement = spec.listing.element;
-    const useListingPosition = listingElement?.isConnected
-      && (spec.listing.kind !== 'bazaar' || elementVisible(listingElement));
-    const listingRect = useListingPosition ? listingElement.getBoundingClientRect() : null;
+    const listingRect = spec.listing.element?.isConnected ? spec.listing.element.getBoundingClientRect() : null;
     const left = listingRect ? listingRect.left + Number(spec.anchor.offsetLeft || 0) : Number(spec.anchor.viewportLeft || 0);
     const top = listingRect ? listingRect.top + Number(spec.anchor.offsetTop || 0) : Number(spec.anchor.viewportTop || 0);
     const width = Math.max(1, Number(spec.anchor.width) || spec.native.getBoundingClientRect().width || 1);
@@ -1693,25 +1582,16 @@
 
   function syncHighlightedQuickPurchaseControls() {
     const desired = desiredQuickPurchaseControls();
-    const now = Date.now();
     state.quickPurchaseOverlays.forEach((button, controlKey) => {
       if (desired.has(controlKey) && button.isConnected) return;
-      const previous = state.quickPurchaseControlSpecs.get(button);
-      const lastSeenAt = Number(button.dataset.tddQuickBuySeenAt) || 0;
-      const bazaarGraceRemaining = previous?.listing?.kind === 'bazaar' ? 900 - (now - lastSeenAt) : 0;
-      if (bazaarGraceRemaining > 0 && button.isConnected) {
-        scheduleQuickPurchaseControlSync(Math.max(40, bazaarGraceRemaining));
-        return;
-      }
       button.remove();
       state.quickPurchaseOverlays.delete(controlKey);
     });
-    if (!desired.size && !state.quickPurchaseOverlays.size) {
+    if (!desired.size) {
       document.getElementById('tdd-quick-buy-layer')?.remove();
       return;
     }
-    const layer = desired.size ? ensureQuickPurchaseLayer() : document.getElementById('tdd-quick-buy-layer');
-    if (!layer) return;
+    const layer = ensureQuickPurchaseLayer();
     desired.forEach((spec, controlKey) => {
       let button = state.quickPurchaseOverlays.get(controlKey);
       if (!button?.isConnected) {
@@ -1726,7 +1606,6 @@
       if (button.textContent !== spec.label) button.textContent = spec.label;
       if (button.disabled !== (spec.disabled === true)) button.disabled = spec.disabled === true;
       if (button.getAttribute('aria-label') !== ariaLabel) button.setAttribute('aria-label', ariaLabel);
-      button.dataset.tddQuickBuySeenAt = String(now);
       positionQuickPurchaseButton(button, spec);
       state.quickPurchaseControlSpecs.set(button, spec);
     });
@@ -1760,10 +1639,7 @@
     if (spec.stage === 'confirm') {
       const flow = state.quickPurchaseFlow;
       const wrapper = spec.native.closest('[data-testid="buy-confirmation"], [class*="confirmWrapper___"]');
-      const sameListing = flow?.kind === 'bazaar'
-        ? sameBazaarQuickPurchaseIdentity(flow, listing)
-        : sameQuickPurchaseListing(flow, listing);
-      if (!sameListing || !quickPurchaseConfirmationMatches(wrapper, flow)) return;
+      if (!sameQuickPurchaseListing(flow, listing) || !quickPurchaseConfirmationMatches(wrapper, flow)) return;
       button.disabled = true;
       button.textContent = 'Sending';
       const sentAt = Date.now();
@@ -1777,22 +1653,16 @@
       }, 2_050);
       return;
     }
-    const continuingFlow = state.quickPurchaseFlow?.controlKey === spec.controlKey;
-    if (!continuingFlow && !highlightedQuickPurchaseListing(listing.kind, listing.element)) return;
+    if (!highlightedQuickPurchaseListing(listing.kind, listing.element)) return;
     if (spec.stage === 'buy') {
       if (listing.kind === 'bazaar') {
-        const currentCard = bazaarListingCards().find((candidate) => candidate.contains(spec.native))
-          || spec.native.closest('[data-testid="item"]')
-          || listing.element;
-        const currentListing = mergedBazaarQuickPurchaseListing(listing, quickPurchaseListing('bazaar', currentCard));
         const pending = {
-          ...currentListing,
-          card: currentCard,
+          ...listing,
+          card: listing.element,
           clickedAt: Date.now(),
         };
         state.pendingBazaarPurchase = pending;
         fillBazaarPurchaseMaximum(pending);
-        Object.assign(listing, currentListing);
       } else {
         fillItemMarketPurchaseMaximum(listing.element, listing.price);
       }
@@ -1807,7 +1677,6 @@
       startedAt: Number(state.quickPurchaseFlow?.startedAt) || now,
       lastActionAt: now,
       lastStage: spec.stage,
-      lastNative: spec.native,
     };
     button.disabled = true;
     button.textContent = 'Opening';
@@ -1820,9 +1689,7 @@
       if (currentFlow?.lastActionAt === now) {
         const listingNow = resolvedQuickPurchaseListing(currentFlow);
         const advancedToBuy = currentFlow.lastStage === 'open'
-          && (currentFlow.kind === 'bazaar'
-            ? activeBazaarQuickPurchaseControl(currentFlow, 'button[data-testid="buy-button"]').native
-            : nativeQuickPurchaseControl(listingNow?.element, 'button[data-testid="buy-button"]'));
+          && nativeQuickPurchaseControl(listingNow?.element, 'button[data-testid="buy-button"]');
         if (!advancedToBuy && !quickPurchaseConfirmation(currentFlow)) state.quickPurchaseFlow = null;
       }
       refreshPurchaseOpportunityFormattingAfterClick(0);
