@@ -230,7 +230,7 @@
     marketRefreshMinutes: 2,
     marketRefreshMode: 'cache-aligned',
     weav3rBazaarEnabled: false,
-    highlightedQuickBuyEnabled: true,
+    highlightedQuickBuyEnabled: false,
     slowApiMode: false,
     apiPausedUntil: 0,
     marketCatalogCategory: 'All',
@@ -5799,7 +5799,7 @@
             <span>High 10s · Normal 30s · Low 60s; four at a time with rate-limit backoff</span>
           </div>
           <div class="bazaar-controls">
-            <label><input type="checkbox" data-field="highlighted-quick-buy-enabled" ${state.settings.highlightedQuickBuyEnabled !== false ? 'checked' : ''}> Native quick-buy buttons on highlighted listings</label>
+            <label><input type="checkbox" data-field="highlighted-quick-buy-enabled" ${state.settings.highlightedQuickBuyEnabled ? 'checked' : ''}> Native quick-buy buttons on highlighted listings</label>
             <span>Bazaar: Buy → Buy max → Yes. Item Market: Buy max → Yes. Every step requires a manual press.</span>
           </div>
           <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
