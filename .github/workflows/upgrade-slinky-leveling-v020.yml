@@ -14,11 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify staged patch
+      - name: Apply v0.2.0 patch
         run: |
-          sha256sum Slinkies-Leveling-Targets/.tmp/v020.patch.b64.*
           cat Slinkies-Leveling-Targets/.tmp/v020.patch.b64.* > /tmp/v020.patch.b64
-          sha256sum /tmp/v020.patch.b64
+          test "$(sha256sum /tmp/v020.patch.b64 | cut -d' ' -f1)" = "7a168234bde53b351d28fdfb3660f0bc599a3f78b831161a11d5038dc3837e0c"
           base64 -d /tmp/v020.patch.b64 > /tmp/v020.patch
-          sha256sum /tmp/v020.patch
-          git apply --check /tmp/v020.patch
+          test "$(sha256sum /tmp/v020.patch | cut -d' ' -f1)" = "054c2af84db18139dd407f4bc5a41d19aa36ab8a7723680e9bfe8e7847afa4ca"
+          git apply /tmp/v020.patch
+          node --check Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+          git commit -m "Add 7-day activity filter and background target polling"
+          git push
