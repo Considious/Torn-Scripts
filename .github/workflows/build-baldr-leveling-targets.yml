@@ -21,7 +21,7 @@ jobs:
 
       - name: Commit generated CSV
         run: |
-          if git diff --quiet -- Slinkies-Leveling-Targets/Baldrs.csv; then
+          if [ -z "$(git status --porcelain -- Slinkies-Leveling-Targets/Baldrs.csv)" ]; then
             echo "Baldrs.csv is already current."
             exit 0
           fi
