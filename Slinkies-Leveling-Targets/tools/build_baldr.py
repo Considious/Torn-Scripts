@@ -1,3 +1,4 @@
+# Builds the Baldr source CSV used by Slinky's leveling target project.
 import csv
 import json
 import urllib.request
