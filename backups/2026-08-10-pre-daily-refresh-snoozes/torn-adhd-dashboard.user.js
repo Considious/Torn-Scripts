@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.42
+// @version      1.4.41
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -32,8 +32,6 @@
   const WEAV3R_CATEGORY_CACHE_KEY = 'tdd-weav3r-category-cache-v1';
   const AWARD_CACHE_KEY = 'tdd-awards-cache-v1';
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
-  const MANUAL_REFRESH_REQUEST_KEY = 'tdd-manual-refresh-request-v1';
-  const MANUAL_REFRESH_STATUS_KEY = 'tdd-manual-refresh-status-v1';
   const CHECK_CACHE_SCHEMA_VERSION = 9;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
@@ -285,8 +283,6 @@
     nextApiChecks: persistedChecks.nextApiChecks,
     syncing: false,
     forceRefreshPending: false,
-    forceRefreshRequestId: '',
-    manualRefreshStatus: GM_getValue(MANUAL_REFRESH_STATUS_KEY, null),
     lastUpdated: 0,
     lastDailyUpdated: persistedChecks.lastDailyUpdated,
     tornDayStart: persistedChecks.tornDayStart,
@@ -777,33 +773,6 @@
 
   function ownsDashboardNetworkLease() {
     return Boolean(dashboardNetworkLease?.isLeader());
-  }
-
-  function updateManualRefreshStatus(status) {
-    const normalized = status && typeof status === 'object'
-      ? { ...status, updatedAt: Number(status.updatedAt) || Date.now() }
-      : null;
-    state.manualRefreshStatus = normalized;
-    if (normalized) GM_setValue(MANUAL_REFRESH_STATUS_KEY, normalized);
-    render();
-  }
-
-  function requestManualRefresh() {
-    const request = {
-      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-      requestedAt: Date.now(),
-    };
-    updateManualRefreshStatus({
-      requestId: request.id,
-      phase: 'requested',
-      message: 'Manual refresh requested; locating the Dashboard API-owner tab.',
-    });
-    dashboardNetworkLease?.refresh();
-    if (ownsDashboardNetworkLease()) {
-      refresh({ force: true, manualRequestId: request.id });
-      return;
-    }
-    GM_setValue(MANUAL_REFRESH_REQUEST_KEY, request);
   }
 
   function dashboardOwnerPauseError(message = 'ADHD Dashboard polling is owned by another Torn tab.') {
@@ -3581,12 +3550,9 @@
     return false;
   }
 
-  async function refresh({ includeDaily = false, force = false, domOnly = false, manualRequestId = '' } = {}) {
+  async function refresh({ includeDaily = false, force = false, domOnly = false } = {}) {
     if (state.syncing) {
-      if (force) {
-        state.forceRefreshPending = true;
-        if (manualRequestId) state.forceRefreshRequestId = manualRequestId;
-      }
+      if (force) state.forceRefreshPending = true;
       render();
       return;
     }
@@ -3607,36 +3573,16 @@
     }
     const dayChanged = updateTornDayBoundary();
     if (!ownsDashboardNetworkLease() || !state.settings.apiKey || domOnly || Number(state.settings.apiPausedUntil) > Date.now()) {
-      if (manualRequestId && !domOnly) {
-        updateManualRefreshStatus({
-          requestId: manualRequestId,
-          phase: 'waiting',
-          message: !state.settings.apiKey
-            ? 'Manual refresh is waiting for a Torn API key.'
-            : Number(state.settings.apiPausedUntil) > Date.now()
-              ? 'Manual refresh is waiting because Torn API polling is paused.'
-              : 'Manual refresh was handed to the Dashboard API-owner tab.',
-        });
-      }
       render();
       return;
     }
-    if (manualRequestId) {
-      updateManualRefreshStatus({
-        requestId: manualRequestId,
-        phase: 'running',
-        message: 'Manual refresh is running on the Dashboard API-owner tab.',
-      });
-    }
     const now = Date.now();
-    const refillsConfigured = state.settings.enabled.energyRefill !== false || state.settings.enabled.nerveRefill !== false;
-    const refillsEnabled = force ? refillsConfigured : alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
+    const refillsEnabled = alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
     const refillsDue = refillsEnabled && (force || snoozeExpiredFor('energyRefill', 'nerveRefill')
       || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
       && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
-    const cityItemsEnabled = state.settings.enabled.cityItem !== false && (force || alertCheckDue('cityItem'));
-    const cityItemsDue = cityItemsEnabled && (force || dayChanged || snoozeExpiredFor('cityItem')
+    const cityItemsDue = alertCheckDue('cityItem') && (force || dayChanged
       || dailyStatusCheckDue('cityItems', cityItemsStatusKnown, state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const apiPlayerAddictionKnown = addictionPercentFromBattleStats(state.data.battlestats) !== null;
     const playerAddictionDue = alertCheckDue('playerAddiction')
@@ -3875,8 +3821,7 @@
       const missionsDue = alertCheckDue('missions')
         && (force || snoozeExpiredFor('missions') || scheduledTctCheckDue(state.lastMissionsUpdated, 0, 15, now));
       const casinoStatusKnown = casinoTokenCount() !== null && Array.isArray(state.data.icons?.icons);
-      const casinoEnabled = state.settings.enabled.casinoTokens !== false && (force || alertCheckDue('casinoTokens'));
-      const casinoDue = casinoEnabled
+      const casinoDue = alertCheckDue('casinoTokens')
         && (force || dayChanged || snoozeExpiredFor('casinoTokens')
           || dailyStatusCheckDue('casinoTokens', casinoStatusKnown, state.lastCasinoUpdated, DAILY_UNKNOWN_RETRY_MS, now));
       const jobAddictionRetryAt = Number(state.nextApiChecks?.jobAddiction) || 0;
@@ -4070,24 +4015,10 @@
       saveCheckCache();
     } finally {
       const rerunForcedRefresh = state.forceRefreshPending;
-      const rerunRequestId = state.forceRefreshRequestId;
       state.forceRefreshPending = false;
-      state.forceRefreshRequestId = '';
       state.syncing = false;
-      if (manualRequestId) {
-        const dailyWarnings = ['dailyRefills', 'cityItemsNow', 'cityItemsAtReset', 'casino', 'casinoExclusion']
-          .filter((key) => state.errors[key]);
-        updateManualRefreshStatus({
-          requestId: manualRequestId,
-          phase: dailyWarnings.length ? 'warning' : 'complete',
-          completedAt: Date.now(),
-          message: dailyWarnings.length
-            ? `Manual refresh completed with ${dailyWarnings.length} daily-check warning${dailyWarnings.length === 1 ? '' : 's'}; see API status below.`
-            : 'Manual refresh completed; the enabled daily checks accepted their latest API responses.',
-        });
-      }
       render();
-      if (rerunForcedRefresh) window.setTimeout(() => refresh({ force: true, manualRequestId: rerunRequestId }), 0);
+      if (rerunForcedRefresh) window.setTimeout(() => refresh({ force: true }), 0);
     }
   }
 
@@ -5954,21 +5885,6 @@
       : cooldownApiValues
         ? `Drug ${formatDuration(cooldownApiValues.drug)} / Medical ${formatDuration(cooldownApiValues.medical)} / Booster ${formatDuration(cooldownApiValues.booster)}`
         : 'awaiting first dedicated cooldown response';
-    const refillValues = state.data.refills?.refills;
-    const refillEnergyUsed = refillUsedStatus(refillValues, 'energy');
-    const refillNerveUsed = refillUsedStatus(refillValues, 'nerve');
-    const refillFetchedAt = Number(state.data.refills?.__fetchedAt) || 0;
-    const casinoTokens = casinoTokenCount();
-    const casinoFetchedAt = Number(state.data.casino?.__fetchedAt) || 0;
-    const cityNow = numberFromPersonalStats(state.data.cityItemsNow);
-    const cityAtReset = numberFromPersonalStats(state.data.cityItemsAtReset);
-    const cityBought = cityNow !== null && cityAtReset !== null ? Math.max(0, cityNow - cityAtReset) : null;
-    const cityFetchedAt = Number(state.data.cityItemsNow?.__fetchedAt) || 0;
-    const usedLabel = (value) => value === true ? 'used' : value === false ? 'available' : 'unknown';
-    const checkedLabel = (timestamp) => timestamp ? new Date(timestamp).toLocaleString() : 'never';
-    const manualStatus = state.manualRefreshStatus && typeof state.manualRefreshStatus === 'object'
-      ? state.manualRefreshStatus
-      : null;
     const catalogItems = catalogItemsForSelectedCategory();
     const catalogOptions = catalogItems.map((item) => {
       const estimate = item.marketPrice ? ` · about $${item.marketPrice.toLocaleString()}` : '';
@@ -6056,20 +5972,11 @@
           ${Number(state.settings.apiPausedUntil) > Date.now() ? `<button data-action="resume-api">Resume now (${formatDuration(Math.ceil((Number(state.settings.apiPausedUntil) - Date.now()) / 1000))})</button>` : ''}
           <small>Core Lib coordinates Torn API requests made by this dashboard, Ranked War Panel, and Retaliation Monitor on this browser profile and Torn origin. External apps, extensions, other devices, and TornW3B cannot be counted.</small>
           <small><strong>Cooldown API:</strong> ${escapeHtml(cooldownApiSummary)}${cooldownApiCheckedAt ? ` / checked ${escapeHtml(new Date(cooldownApiCheckedAt).toLocaleString())}` : ''}${cooldownNextCheckAt ? ` / next API check ${escapeHtml(new Date(cooldownNextCheckAt).toLocaleString())}` : ''}</small>
-          <div class="daily-api-status">
-            <strong>Last accepted daily API values</strong>
-            <ul>
-              <li><strong>Refills:</strong> energy ${escapeHtml(usedLabel(refillEnergyUsed))}; nerve ${escapeHtml(usedLabel(refillNerveUsed))}; accepted ${escapeHtml(checkedLabel(refillFetchedAt))}; next ${escapeHtml(checkedLabel(state.nextApiChecks?.refills))}</li>
-              <li><strong>Casino:</strong> ${casinoTokens === null ? 'unknown' : `${casinoTokens.toLocaleString()} token${casinoTokens === 1 ? '' : 's'}`}; accepted ${escapeHtml(checkedLabel(casinoFetchedAt))}; next ${escapeHtml(checkedLabel(state.nextApiChecks?.casinoTokens))}</li>
-              <li><strong>City items:</strong> ${cityBought === null ? 'unknown' : `${cityBought.toLocaleString()} / 100 today`}${cityNow === null || cityAtReset === null ? '' : ` (current ${cityNow.toLocaleString()} - reset ${cityAtReset.toLocaleString()})`}; accepted ${escapeHtml(checkedLabel(cityFetchedAt))}; next ${escapeHtml(checkedLabel(state.nextApiChecks?.cityItems))}</li>
-            </ul>
-            ${manualStatus ? `<small><strong>Manual refresh:</strong> ${escapeHtml(manualStatus.message || manualStatus.phase || 'unknown')} Updated ${escapeHtml(checkedLabel(manualStatus.updatedAt))}.</small>` : ''}
-          </div>
           ${apiLedgerMarkup()}
         </div>
         <details class="settings-group" data-settings-section="alerts" ${sectionOpen('alerts')}>
           <summary>Alert toggles</summary>
-          <p>Choose which reminders the dashboard may check and display. Snoozed alerts remain enabled and pause their normal check; Manual Refresh bypasses the snooze for daily status checks.</p>
+          <p>Choose which reminders the dashboard may check and display. Snoozed alerts remain enabled but temporarily stop their API check.</p>
           <div class="toggles">
             ${ALERT_META.filter(([id]) => !CRIME_ALERT_IDS.has(id)).map(([id, label]) => `
               <label><input type="checkbox" data-toggle-alert="${id}" ${state.settings.enabled[id] !== false ? 'checked' : ''}> ${escapeHtml(label)}</label>
@@ -6519,10 +6426,6 @@
         .pawn-candidate strong, .pawn-candidate small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .pawn-candidate small { margin-top: 2px; color: #86948c; font-size: 9px; }
         .pawn-values { text-align: right; }
-        .daily-api-status { margin-top: 7px; padding: 7px; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; background: rgba(0,0,0,.12); color: #bac6bf; font-size: 10px; }
-        .daily-api-status > strong { color: #e4ece7; }
-        .daily-api-status ul { margin: 5px 0; padding-left: 17px; }
-        .daily-api-status li { margin: 3px 0; }
         .privacy, .exclusion { margin: 12px 0 0; padding: 8px; border-radius: 7px; color: #aeb8c1; background: #272c32; font-size: 11px; }
         .exclusion { color: #d7c994; }
         details { margin-top: 10px; color: #dbb184; font-size: 11px; }
@@ -6564,9 +6467,6 @@
                       <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the compact listing and HTML link">Copy</button>
                       <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing directly to Faction Chat' : 'Copy this listing first to unlock Faction Chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to Faction</button>
                     ` : ''}
-                    ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:')
-                      ? `<button data-action="snooze" data-alert-id="${alert.id}" data-duration="300000" title="Snooze 5 minutes">5m</button>`
-                      : ''}
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="3600000" title="Snooze 1 hour">1h</button>
                     <button data-action="snooze" data-alert-id="${alert.id}" data-duration="${TORN_DAY_MS}" title="Snooze 1 day">1d</button>
                     ${alert.noDisable ? '' : `<button data-action="disable" data-alert-id="${alert.id}" title="Turn off until re-enabled in Settings">Off</button>`}
@@ -6658,7 +6558,7 @@
       if (state.settings.settingsOpen && !itemCatalogFresh()) loadItemCatalog();
       return;
     } else if (action === 'refresh') {
-      requestManualRefresh();
+      refresh({ force: true });
       return;
     } else if (action === 'refresh-awards') {
       refreshAwards();
@@ -7384,27 +7284,11 @@
     scheduleMarketPoll(0);
     scheduleBazaarPoll(0);
     if (state.settings.settingsOpen && !itemCatalogFresh()) loadItemCatalog();
-    const pendingRequest = GM_getValue(MANUAL_REFRESH_REQUEST_KEY, null);
-    const refreshStatus = GM_getValue(MANUAL_REFRESH_STATUS_KEY, null);
-    const pendingIsFresh = pendingRequest?.id
-      && Number(pendingRequest.requestedAt) > Date.now() - 2 * 60_000
-      && refreshStatus?.requestId === pendingRequest.id
-      && !['complete', 'warning'].includes(refreshStatus?.phase);
-    refresh(pendingIsFresh ? { force: true, manualRequestId: pendingRequest.id } : undefined);
+    refresh();
     render();
   }
 
   if (typeof GM_addValueChangeListener === 'function') {
-    GM_addValueChangeListener(MANUAL_REFRESH_REQUEST_KEY, (_key, _oldValue, request, remote) => {
-      if (!remote || !ownsDashboardNetworkLease() || !request?.id
-        || Number(request.requestedAt) <= Date.now() - 2 * 60_000) return;
-      refresh({ force: true, manualRequestId: String(request.id) });
-    });
-    GM_addValueChangeListener(MANUAL_REFRESH_STATUS_KEY, (_key, _oldValue, status, remote) => {
-      if (!remote || !status || typeof status !== 'object') return;
-      state.manualRefreshStatus = status;
-      render();
-    });
     GM_addValueChangeListener(CHECK_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote || ownsDashboardNetworkLease()) return;
       applyCheckCache(loadCheckCache());
