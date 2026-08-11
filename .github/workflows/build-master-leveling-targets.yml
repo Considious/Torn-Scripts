@@ -8,6 +8,7 @@ on:
       - 'Slinkies-Leveling-Targets/Slinky-Leveling-Targets.csv'
       - 'Slinkies-Leveling-Targets/Torn-Forum-Leveling-Targets.csv'
       - 'Slinkies-Leveling-Targets/Netgangster-Legacy-Leveling-Targets.csv'
+      - 'Slinkies-Leveling-Targets/Script-Reported-Targets.csv'
       - 'Slinkies-Leveling-Targets/tools/build_master_targets.py'
   workflow_dispatch:
 
