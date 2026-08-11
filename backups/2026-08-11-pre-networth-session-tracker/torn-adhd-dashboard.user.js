@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.43
+// @version      1.4.42
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -34,18 +34,10 @@
   const CHECK_CACHE_KEY = 'tdd-check-cache-v1';
   const MANUAL_REFRESH_REQUEST_KEY = 'tdd-manual-refresh-request-v1';
   const MANUAL_REFRESH_STATUS_KEY = 'tdd-manual-refresh-status-v1';
-  const NETWORTH_STORAGE_KEY = 'tdd-networth-tracker-v1';
-  const NETWORTH_COMMAND_KEY = 'tdd-networth-command-v1';
   const CHECK_CACHE_SCHEMA_VERSION = 9;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
-  const NETWORTH_SESSION_REFRESH_MS = 10 * 60_000;
-  const NETWORTH_SESSION_RETRY_MS = 2 * 60_000;
-  const NETWORTH_PUBLIC_REFRESH_MS = 60 * 60_000;
-  const NETWORTH_TIMER_MS = 30_000;
-  const NETWORTH_HISTORY_LIMIT = 10;
-  const NETWORTH_SNAPSHOT_LIMIT = 200;
   const NERVE_REFRESH_MS = 5 * 60_000;
   const ENERGY_REFRESH_MS = 10 * 60_000;
   const COOLDOWN_RETRY_MS = 10 * 60_000;
@@ -305,11 +297,6 @@
     itemCatalog: loadItemCatalogCache(),
     awards: loadAwardCache(),
     awardsLoading: false,
-    networth: loadNetworthTracker(),
-    networthLoading: false,
-    networthPendingAction: '',
-    networthTimer: null,
-    networthLastCommandId: '',
     bazaarCache: loadBazaarCache(),
     dollarBazaarCache: loadDollarBazaarCache(),
     dollarBazaarLoading: false,
@@ -389,7 +376,7 @@
       snoozedUntil,
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
-      activeView: ['alerts', 'awards', 'dollarBazaars', 'networth'].includes(saved?.activeView) ? saved.activeView : 'alerts',
+      activeView: ['alerts', 'awards', 'dollarBazaars'].includes(saved?.activeView) ? saved.activeView : 'alerts',
       awardTypeFilter: normalizedAwardTypeFilter(saved?.awardTypeFilter),
       trackedAwards: Array.isArray(saved?.trackedAwards)
         ? [...new Set(saved.trackedAwards.map(String).filter((key) => /^(?:medal|honor):\d+$/.test(key)))].slice(0, TRACKED_AWARD_LIMIT)
@@ -404,111 +391,6 @@
         }))
         : [],
     };
-  }
-
-  function emptyNetworthTracker() {
-    return {
-      schemaVersion: 1,
-      publicDaily: null,
-      activeSession: null,
-      sessions: [],
-      status: null,
-      updatedAt: 0,
-    };
-  }
-
-  function networthNumber(value, fallback = 0) {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : fallback;
-  }
-
-  function normalizeStoredNetworthSnapshot(snapshot) {
-    if (!snapshot || typeof snapshot !== 'object' || !Number.isFinite(Number(snapshot.total))) return null;
-    const details = snapshot.details && typeof snapshot.details === 'object'
-      ? Object.fromEntries(Object.entries(snapshot.details)
-        .map(([key, value]) => [String(key), networthNumber(value)])
-        .filter(([key]) => key))
-      : {};
-    const groups = snapshot.groups && typeof snapshot.groups === 'object'
-      ? {
-        money: networthNumber(snapshot.groups.money),
-        items: networthNumber(snapshot.groups.items),
-        assets: networthNumber(snapshot.groups.assets),
-        points: networthNumber(snapshot.groups.points),
-      }
-      : { money: 0, items: 0, assets: 0, points: 0 };
-    return {
-      capturedAt: Math.max(0, networthNumber(snapshot.capturedAt, Date.now())),
-      apiTimestamp: Math.max(0, networthNumber(snapshot.apiTimestamp)),
-      total: networthNumber(snapshot.total),
-      groups,
-      details,
-    };
-  }
-
-  function normalizeStoredNetworthSession(session, { active = false } = {}) {
-    if (!session || typeof session !== 'object') return null;
-    const snapshots = (Array.isArray(session.snapshots) ? session.snapshots : [])
-      .map(normalizeStoredNetworthSnapshot)
-      .filter(Boolean)
-      .slice(-NETWORTH_SNAPSHOT_LIMIT);
-    if (!snapshots.length) return null;
-    const startedAt = Math.max(0, networthNumber(session.startedAt, snapshots[0].capturedAt));
-    const endedAt = active ? 0 : Math.max(startedAt, networthNumber(session.endedAt, snapshots.at(-1).capturedAt));
-    return {
-      id: String(session.id || `session-${startedAt}`),
-      startedAt,
-      endedAt,
-      nextSnapshotAt: active
-        ? Math.max(Date.now(), networthNumber(session.nextSnapshotAt, snapshots.at(-1).capturedAt + NETWORTH_SESSION_REFRESH_MS))
-        : 0,
-      snapshots,
-    };
-  }
-
-  function normalizePublicNetworthPoint(point) {
-    if (!point || typeof point !== 'object' || !Number.isFinite(Number(point.total))) return null;
-    return {
-      total: networthNumber(point.total),
-      timestamp: Math.max(0, networthNumber(point.timestamp)),
-    };
-  }
-
-  function loadNetworthTracker() {
-    const tracker = emptyNetworthTracker();
-    const saved = GM_getValue(NETWORTH_STORAGE_KEY, {});
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return tracker;
-    const current = normalizePublicNetworthPoint(saved.publicDaily?.current);
-    const previous = normalizePublicNetworthPoint(saved.publicDaily?.previous);
-    if (current && previous) {
-      tracker.publicDaily = {
-        current,
-        previous,
-        fetchedAt: Math.max(0, networthNumber(saved.publicDaily?.fetchedAt)),
-      };
-    }
-    tracker.activeSession = normalizeStoredNetworthSession(saved.activeSession, { active: true });
-    tracker.sessions = (Array.isArray(saved.sessions) ? saved.sessions : [])
-      .map((session) => normalizeStoredNetworthSession(session))
-      .filter(Boolean)
-      .sort((a, b) => b.endedAt - a.endedAt)
-      .slice(0, NETWORTH_HISTORY_LIMIT);
-    tracker.status = saved.status && typeof saved.status === 'object'
-      ? {
-        commandId: String(saved.status.commandId || ''),
-        action: String(saved.status.action || ''),
-        phase: ['running', 'complete', 'error'].includes(saved.status.phase) ? saved.status.phase : 'complete',
-        message: String(saved.status.message || ''),
-        updatedAt: Math.max(0, networthNumber(saved.status.updatedAt)),
-      }
-      : null;
-    tracker.updatedAt = Math.max(0, networthNumber(saved.updatedAt));
-    return tracker;
-  }
-
-  function saveNetworthTracker() {
-    state.networth.updatedAt = Date.now();
-    GM_setValue(NETWORTH_STORAGE_KEY, state.networth);
   }
 
   function loadSnoozeLedger() {
@@ -4881,338 +4763,6 @@
     </section>`;
   }
 
-  function formatNetworthMoney(value) {
-    const numeric = networthNumber(value);
-    const rounded = Math.round(Math.abs(numeric));
-    return `${numeric < 0 ? '-$' : '$'}${rounded.toLocaleString()}`;
-  }
-
-  function formatNetworthDelta(value) {
-    const numeric = networthNumber(value);
-    if (numeric === 0) return '$0';
-    return `${numeric > 0 ? '+' : '-'}$${Math.round(Math.abs(numeric)).toLocaleString()}`;
-  }
-
-  function networthDeltaClass(value) {
-    const numeric = networthNumber(value);
-    return numeric > 0 ? 'positive' : numeric < 0 ? 'negative' : 'neutral';
-  }
-
-  function networthPercent(delta, baseline) {
-    const start = networthNumber(baseline);
-    if (!start) return '';
-    const percent = networthNumber(delta) / Math.abs(start) * 100;
-    return `${percent > 0 ? '+' : ''}${percent.toFixed(Math.abs(percent) >= 10 ? 1 : 2)}%`;
-  }
-
-  function networthApiTimestampMs(value) {
-    const numeric = Math.max(0, networthNumber(value));
-    return numeric > 0 && numeric < 10_000_000_000 ? numeric * 1000 : numeric;
-  }
-
-  function sumNetworthObject(group, { liabilities = [] } = {}) {
-    if (!group || typeof group !== 'object') return 0;
-    const liabilityKeys = new Set(liabilities);
-    return Object.entries(group).reduce((total, [key, value]) => {
-      const numeric = networthNumber(value);
-      if (!liabilityKeys.has(key)) return total + numeric;
-      return total + (numeric > 0 ? -numeric : numeric);
-    }, 0);
-  }
-
-  function networthSnapshotFromApi(body) {
-    const networth = body?.networth;
-    if (!networth || typeof networth !== 'object' || !Number.isFinite(Number(networth.total))) {
-      throw new Error('Torn returned an incomplete net worth snapshot. No checkpoint was saved.');
-    }
-    const money = networth.money && typeof networth.money === 'object' ? networth.money : {};
-    const items = networth.items && typeof networth.items === 'object' ? networth.items : {};
-    const assets = networth.assets && typeof networth.assets === 'object' ? networth.assets : {};
-    const details = {};
-    Object.entries(money).forEach(([key, value]) => { details[`money.${key}`] = networthNumber(value); });
-    Object.entries(items).forEach(([key, value]) => { details[`items.${key}`] = networthNumber(value); });
-    Object.entries(assets).forEach(([key, value]) => { details[`assets.${key}`] = networthNumber(value); });
-    details.points = networthNumber(networth.points);
-    return {
-      capturedAt: Date.now(),
-      apiTimestamp: networthApiTimestampMs(networth.timestamp),
-      total: networthNumber(networth.total),
-      groups: {
-        money: sumNetworthObject(money, { liabilities: ['loans', 'unpaid_fees'] }),
-        items: sumNetworthObject(items),
-        assets: sumNetworthObject(assets),
-        points: networthNumber(networth.points),
-      },
-      details,
-    };
-  }
-
-  function historicNetworthPoint(body) {
-    const rows = Array.isArray(body?.personalstats) ? body.personalstats : [];
-    const row = rows.find((entry) => String(entry?.name || '').toLowerCase() === 'networth');
-    if (!row || !Number.isFinite(Number(row.value))) return null;
-    return {
-      total: networthNumber(row.value),
-      timestamp: networthApiTimestampMs(row.timestamp),
-    };
-  }
-
-  async function fetchLiveNetworthSnapshot() {
-    return networthSnapshotFromApi(await api('user/networth', {}, { priority: 'normal' }));
-  }
-
-  async function refreshPublicNetworthData() {
-    const currentRequestAt = Math.floor(Date.now() / 1000);
-    const current = historicNetworthPoint(await api('user/personalstats', {
-      stat: 'networth',
-      timestamp: currentRequestAt,
-    }, { priority: 'low' }));
-    if (!current) throw new Error('Torn did not return the latest public net worth snapshot.');
-    const currentSnapshotSeconds = Math.floor((current.timestamp || Date.now()) / 1000);
-    const previous = historicNetworthPoint(await api('user/personalstats', {
-      stat: 'networth',
-      timestamp: currentSnapshotSeconds - 24 * 60 * 60,
-    }, { priority: 'low' }));
-    if (!previous) throw new Error('Torn did not return the prior public net worth snapshot.');
-    state.networth.publicDaily = { current, previous, fetchedAt: Date.now() };
-  }
-
-  function appendNetworthSnapshot(session, snapshot) {
-    session.snapshots = [...(session.snapshots || []), snapshot].slice(-NETWORTH_SNAPSHOT_LIMIT);
-    session.nextSnapshotAt = snapshot.capturedAt + NETWORTH_SESSION_REFRESH_MS;
-  }
-
-  function networthActionLabel(action) {
-    return ({
-      'refresh-public': 'Refreshing daily net worth',
-      start: 'Starting session',
-      snapshot: 'Saving snapshot',
-      'automatic-snapshot': 'Saving automatic snapshot',
-      end: 'Ending session',
-    })[action] || 'Updating net worth';
-  }
-
-  function setNetworthStatus(action, phase, message, commandId = '') {
-    state.networth.status = {
-      commandId: String(commandId || ''),
-      action: String(action || ''),
-      phase,
-      message: String(message || ''),
-      updatedAt: Date.now(),
-    };
-  }
-
-  async function executeNetworthAction(action, { commandId = '' } = {}) {
-    if (state.networthLoading) return;
-    if (!ownsDashboardNetworkLease()) throw dashboardOwnerPauseError();
-    if (!state.settings.apiKey) {
-      setNetworthStatus(action, 'error', 'Add a Torn API key in Settings before using Net Worth.', commandId);
-      saveNetworthTracker();
-      render();
-      return;
-    }
-    if (Number(state.settings.apiPausedUntil) > Date.now()) {
-      setNetworthStatus(action, 'error', 'Net Worth is waiting because Torn API polling is paused.', commandId);
-      saveNetworthTracker();
-      render();
-      return;
-    }
-    state.networthLoading = true;
-    state.networthPendingAction = '';
-    setNetworthStatus(action, 'running', `${networthActionLabel(action)}...`, commandId);
-    saveNetworthTracker();
-    render();
-    try {
-      let message = '';
-      if (action === 'refresh-public') {
-        await refreshPublicNetworthData();
-        const daily = state.networth.publicDaily;
-        message = `Daily comparison updated: ${formatNetworthDelta(daily.current.total - daily.previous.total)}.`;
-      } else if (action === 'start') {
-        if (state.networth.activeSession) throw new Error('A net worth session is already running.');
-        const snapshot = await fetchLiveNetworthSnapshot();
-        state.networth.activeSession = {
-          id: `networth-${snapshot.capturedAt}-${Math.random().toString(36).slice(2, 8)}`,
-          startedAt: snapshot.capturedAt,
-          endedAt: 0,
-          nextSnapshotAt: snapshot.capturedAt + NETWORTH_SESSION_REFRESH_MS,
-          snapshots: [snapshot],
-        };
-        message = `Session started at ${formatNetworthMoney(snapshot.total)}.`;
-      } else if (action === 'snapshot' || action === 'automatic-snapshot') {
-        const session = state.networth.activeSession;
-        if (!session) throw new Error('Start a net worth session before saving a snapshot.');
-        const snapshot = await fetchLiveNetworthSnapshot();
-        appendNetworthSnapshot(session, snapshot);
-        const delta = snapshot.total - session.snapshots[0].total;
-        message = `${action === 'automatic-snapshot' ? 'Automatic checkpoint' : 'Snapshot'} saved: ${formatNetworthDelta(delta)} this session.`;
-      } else if (action === 'end') {
-        const session = state.networth.activeSession;
-        if (!session) throw new Error('There is no active net worth session to end.');
-        const snapshot = await fetchLiveNetworthSnapshot();
-        appendNetworthSnapshot(session, snapshot);
-        session.endedAt = snapshot.capturedAt;
-        const delta = snapshot.total - session.snapshots[0].total;
-        state.networth.sessions = [session, ...(state.networth.sessions || [])]
-          .sort((a, b) => b.endedAt - a.endedAt)
-          .slice(0, NETWORTH_HISTORY_LIMIT);
-        state.networth.activeSession = null;
-        message = `Session ended: ${formatNetworthDelta(delta)} over ${formatDuration(Math.max(0, Math.round((session.endedAt - session.startedAt) / 1000)))}.`;
-      } else {
-        throw new Error('Unknown Net Worth action.');
-      }
-      setNetworthStatus(action, 'complete', message, commandId);
-    } catch (error) {
-      if (action === 'automatic-snapshot' && state.networth.activeSession) {
-        state.networth.activeSession.nextSnapshotAt = Date.now() + NETWORTH_SESSION_RETRY_MS;
-      }
-      if (!isDashboardOwnerPause(error)) {
-        setNetworthStatus(action, 'error', error?.message || 'Net Worth could not be updated.', commandId);
-      }
-    } finally {
-      state.networthLoading = false;
-      saveNetworthTracker();
-      render();
-    }
-  }
-
-  function requestNetworthAction(action) {
-    dashboardNetworkLease?.refresh?.();
-    if (ownsDashboardNetworkLease()) {
-      executeNetworthAction(action).catch((error) => {
-        if (!isDashboardOwnerPause(error)) {
-          setNetworthStatus(action, 'error', error?.message || 'Net Worth could not be updated.');
-          saveNetworthTracker();
-          render();
-        }
-      });
-      return;
-    }
-    const command = {
-      id: `networth-command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      action,
-      requestedAt: Date.now(),
-    };
-    state.networthPendingAction = action;
-    GM_setValue(NETWORTH_COMMAND_KEY, command);
-    render();
-  }
-
-  function handleNetworthCommand(command) {
-    if (!ownsDashboardNetworkLease() || !command?.id || !command?.action) return;
-    if (Number(command.requestedAt) <= Date.now() - 2 * 60_000) return;
-    if (state.networthLastCommandId === command.id
-      || (state.networth.status?.commandId === command.id && ['complete', 'error'].includes(state.networth.status.phase))) return;
-    if (state.networthLoading) {
-      window.setTimeout(() => handleNetworthCommand(command), 500);
-      return;
-    }
-    state.networthLastCommandId = String(command.id);
-    executeNetworthAction(String(command.action), { commandId: String(command.id) }).catch((error) => {
-      if (!isDashboardOwnerPause(error)) {
-        setNetworthStatus(command.action, 'error', error?.message || 'Net Worth could not be updated.', command.id);
-        saveNetworthTracker();
-        render();
-      }
-    });
-  }
-
-  function maybeCaptureNetworthSession() {
-    const session = state.networth.activeSession;
-    if (!session || state.networthLoading || !ownsDashboardNetworkLease() || !state.settings.apiKey) return;
-    if (Number(state.settings.apiPausedUntil) > Date.now() || Date.now() < Number(session.nextSnapshotAt || 0)) return;
-    executeNetworthAction('automatic-snapshot').catch(() => {});
-  }
-
-  function ensurePublicNetworthFresh() {
-    const fetchedAt = Number(state.networth.publicDaily?.fetchedAt) || 0;
-    if (networthStatusBusy() || (fetchedAt && Date.now() - fetchedAt < NETWORTH_PUBLIC_REFRESH_MS)) return;
-    requestNetworthAction('refresh-public');
-  }
-
-  function networthStatusBusy() {
-    const statusFresh = Number(state.networth.status?.updatedAt) > Date.now() - 2 * 60_000;
-    return state.networthLoading || Boolean(state.networthPendingAction)
-      || (statusFresh && state.networth.status?.phase === 'running');
-  }
-
-  function networthBreakdownMarkup(start, latest) {
-    const groups = [
-      ['money', 'Money'],
-      ['items', 'Items'],
-      ['assets', 'Assets'],
-      ['points', 'Points'],
-    ];
-    return `<div class="networth-breakdown">
-      <div class="networth-breakdown-head"><span>Category</span><span>Start</span><span>Latest</span><span>Change</span></div>
-      ${groups.map(([key, label]) => {
-        const startValue = networthNumber(start?.groups?.[key]);
-        const latestValue = networthNumber(latest?.groups?.[key]);
-        const delta = latestValue - startValue;
-        return `<div class="networth-breakdown-row"><strong>${label}</strong><span>${formatNetworthMoney(startValue)}</span><span>${formatNetworthMoney(latestValue)}</span><span class="${networthDeltaClass(delta)}">${formatNetworthDelta(delta)}</span></div>`;
-      }).join('')}
-    </div>`;
-  }
-
-  function networthSessionMarkup(session, { historical = false } = {}) {
-    const snapshots = session?.snapshots || [];
-    const start = snapshots[0];
-    const latest = snapshots.at(-1);
-    if (!start || !latest) return '';
-    const endAt = historical ? session.endedAt : Date.now();
-    const delta = latest.total - start.total;
-    const percent = networthPercent(delta, start.total);
-    const checkpoints = snapshots.slice(-10).reverse();
-    const checkpointRows = checkpoints.map((snapshot) => {
-      const checkpointDelta = snapshot.total - start.total;
-      return `<span><time>${new Date(snapshot.capturedAt).toLocaleTimeString()}</time><b>${formatNetworthMoney(snapshot.total)}</b><i class="${networthDeltaClass(checkpointDelta)}">${formatNetworthDelta(checkpointDelta)}</i></span>`;
-    }).join('');
-    return `<article class="networth-session-card ${historical ? 'historical' : 'active'}">
-      <div class="networth-session-heading">
-        <div><strong>${historical ? new Date(session.startedAt).toLocaleString() : 'Active session'}</strong><small>${formatDuration(Math.max(0, Math.round((endAt - session.startedAt) / 1000)))} / ${snapshots.length} checkpoint${snapshots.length === 1 ? '' : 's'}</small></div>
-        <strong class="networth-session-delta ${networthDeltaClass(delta)}">${formatNetworthDelta(delta)}${percent ? ` <small>${percent}</small>` : ''}</strong>
-      </div>
-      <div class="networth-session-totals"><span><small>Started</small><strong>${formatNetworthMoney(start.total)}</strong></span><span><small>Latest</small><strong>${formatNetworthMoney(latest.total)}</strong></span>${historical ? `<span><small>Ended</small><strong>${new Date(session.endedAt).toLocaleTimeString()}</strong></span>` : `<span><small>Next auto</small><strong>${new Date(session.nextSnapshotAt).toLocaleTimeString()}</strong></span>`}</div>
-      ${networthBreakdownMarkup(start, latest)}
-      ${historical ? `<details class="networth-checkpoint-history"><summary>View recent checkpoints</summary><div class="networth-checkpoints">${checkpointRows}</div></details>` : `<div class="networth-checkpoints"><strong>Recent checkpoints</strong>${checkpointRows}</div>`}
-    </article>`;
-  }
-
-  function networthMarkup() {
-    const daily = state.networth.publicDaily;
-    const active = state.networth.activeSession;
-    const busy = networthStatusBusy();
-    const status = state.networth.status;
-    const dailyDelta = daily ? daily.current.total - daily.previous.total : 0;
-    const dailyPercent = daily ? networthPercent(dailyDelta, daily.previous.total) : '';
-    const dailyUpdated = daily?.current?.timestamp ? new Date(daily.current.timestamp).toLocaleString() : 'not loaded';
-    const priorUpdated = daily?.previous?.timestamp ? new Date(daily.previous.timestamp).toLocaleString() : 'not loaded';
-    const statusMessage = state.networthPendingAction
-      ? `${networthActionLabel(state.networthPendingAction)} on the API-owner tab...`
-      : status?.message || '';
-    return `<section class="networth-view">
-      <div class="networth-view-head"><div><strong>Net Worth Tracker</strong><small>Daily public change plus live flipping sessions</small></div><button data-action="refresh-networth-public" ${busy ? 'disabled' : ''}>Refresh daily</button></div>
-      ${statusMessage ? `<div class="networth-status ${status?.phase === 'error' ? 'error' : status?.phase === 'complete' ? 'complete' : ''}">${escapeHtml(statusMessage)}</div>` : ''}
-      <section class="networth-daily">
-        <div class="networth-section-title"><strong>Public daily change</strong><small>Torn's daily personal-stat snapshots</small></div>
-        ${daily ? `<div class="networth-summary-grid">
-          <div><small>Prior snapshot</small><strong>${formatNetworthMoney(daily.previous.total)}</strong><span>${escapeHtml(priorUpdated)}</span></div>
-          <div><small>Latest snapshot</small><strong>${formatNetworthMoney(daily.current.total)}</strong><span>${escapeHtml(dailyUpdated)}</span></div>
-          <div class="${networthDeltaClass(dailyDelta)}"><small>Daily change</small><strong>${formatNetworthDelta(dailyDelta)}</strong><span>${dailyPercent || 'No percentage'}</span></div>
-        </div>` : `<div class="empty"><strong>No daily comparison loaded.</strong>Refresh daily to compare Torn's latest public net worth snapshot with the prior one.</div>`}
-      </section>
-      <section class="networth-live">
-        <div class="networth-section-title"><strong>Live session</strong><small>One limited-key snapshot every 10 minutes while running</small></div>
-        ${active ? `${networthSessionMarkup(active)}<div class="networth-session-actions"><button data-action="networth-snapshot" ${busy ? 'disabled' : ''}>Snapshot now</button><button class="end" data-action="end-networth-session" ${busy ? 'disabled' : ''}>End session</button></div>` : `<div class="networth-start"><p>Start before a flipping session. The tracker keeps running when this panel is on Alerts or minimized, but only the single Dashboard API-owner tab makes calls.</p><button data-action="start-networth-session" ${busy || !state.settings.apiKey ? 'disabled' : ''}>Start session</button></div>`}
-      </section>
-      <section class="networth-history">
-        <div class="networth-section-title"><strong>Completed sessions</strong><small>${state.networth.sessions.length}/${NETWORTH_HISTORY_LIMIT} saved locally</small></div>
-        ${state.networth.sessions.length ? `<div class="networth-history-list">${state.networth.sessions.map((session) => networthSessionMarkup(session, { historical: true })).join('')}</div><button class="networth-clear-history" data-action="clear-networth-history">Clear completed sessions</button>` : '<div class="empty"><strong>No completed sessions yet.</strong>End a live session to keep its start, finish, checkpoints, and category changes here.</div>'}
-      </section>
-      <div class="networth-note">Session values come from <code>/v2/user/networth</code>. Item valuation changes can move net worth even when no cash changes hands. Data stays in Tampermonkey storage on this browser.</div>
-    </section>`;
-  }
-
   async function refreshAwards({ forceCatalog = false } = {}) {
     if (state.awardsLoading) return;
     dashboardNetworkLease?.refresh?.();
@@ -6856,59 +6406,6 @@
         .dollar-bazaar-row > small { grid-column: 1 / -1; color: #77858f; font-size: 9px; }
         .dollar-bazaars-source { display: grid; gap: 3px; padding: 9px 10px; color: #8d9aa3; background: #1d2227; font-size: 9px; }
         .dollar-bazaars-source a { color: #8dc8ed; }
-        .networth-view { min-height: 0; }
-        .networth-view-head, .networth-section-title { display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1d2227; }
-        .networth-view-head > div, .networth-section-title > strong { min-width: 0; flex: 1; }
-        .networth-view-head strong, .networth-view-head small, .networth-section-title strong, .networth-section-title small { display: block; }
-        .networth-view-head small, .networth-section-title small { color: #96a2ac; font-size: 9px; }
-        .networth-view-head button { padding: 5px 8px; white-space: nowrap; }
-        .networth-status { margin: 8px 10px 0; padding: 7px 8px; border: 1px solid rgba(102,178,232,.35); border-radius: 7px; color: #c9e9ff; background: #233440; font-size: 10px; }
-        .networth-status.complete { border-color: rgba(101,214,155,.34); color: #c8f3da; background: #203329; }
-        .networth-status.error { border-color: rgba(255,104,104,.35); color: #ffc0c0; background: #3a2525; }
-        .networth-daily, .networth-live, .networth-history { border-bottom: 1px solid rgba(255,255,255,.08); }
-        .networth-summary-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; padding: 10px; }
-        .networth-summary-grid > div { min-width: 0; padding: 8px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: #272d33; }
-        .networth-summary-grid small, .networth-summary-grid strong, .networth-summary-grid span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .networth-summary-grid small { color: #96a2ac; font-size: 9px; text-transform: uppercase; }
-        .networth-summary-grid strong { margin-top: 3px; color: #f3f6f8; font-size: 15px; }
-        .networth-summary-grid span { margin-top: 3px; color: #87949e; font-size: 9px; }
-        .networth-summary-grid .positive strong, .networth-session-delta.positive, .networth-breakdown .positive, .networth-checkpoints .positive { color: #8fe0af; }
-        .networth-summary-grid .negative strong, .networth-session-delta.negative, .networth-breakdown .negative, .networth-checkpoints .negative { color: #ff9b9b; }
-        .networth-summary-grid .neutral strong, .networth-session-delta.neutral, .networth-breakdown .neutral, .networth-checkpoints .neutral { color: #c6d0d8; }
-        .networth-start { display: flex; align-items: center; gap: 10px; padding: 10px; }
-        .networth-start p { min-width: 0; flex: 1; margin: 0; color: #aab5bd; font-size: 10px; }
-        .networth-start button, .networth-session-actions button { padding: 6px 9px; white-space: nowrap; }
-        .networth-session-card { margin: 9px 10px; overflow: hidden; border: 1px solid rgba(102,178,232,.27); border-radius: 8px; background: #202a32; }
-        .networth-session-card.historical { border-color: rgba(255,255,255,.12); background: #24292f; }
-        .networth-session-heading { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.08); }
-        .networth-session-heading > div { min-width: 0; flex: 1; }
-        .networth-session-heading strong, .networth-session-heading small { display: block; }
-        .networth-session-heading small { margin-top: 2px; color: #8f9ca6; font-size: 9px; }
-        .networth-session-delta { text-align: right; white-space: nowrap; }
-        .networth-session-delta small { display: inline; color: inherit; }
-        .networth-session-totals { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 1px; background: rgba(255,255,255,.07); }
-        .networth-session-totals > span { min-width: 0; padding: 7px 8px; background: #252d34; }
-        .networth-session-totals small, .networth-session-totals strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .networth-session-totals small { color: #87949e; font-size: 8px; text-transform: uppercase; }
-        .networth-session-totals strong { margin-top: 2px; color: #e8edf1; font-size: 11px; }
-        .networth-breakdown-head, .networth-breakdown-row { display: grid; grid-template-columns: minmax(75px,1fr) repeat(3,minmax(80px,1fr)); gap: 6px; padding: 5px 8px; text-align: right; }
-        .networth-breakdown-head { color: #71808b; font-size: 8px; text-transform: uppercase; }
-        .networth-breakdown-row { border-top: 1px solid rgba(255,255,255,.055); color: #b8c1c8; font-size: 9px; }
-        .networth-breakdown-head span:first-child, .networth-breakdown-row strong { text-align: left; }
-        .networth-checkpoints { display: grid; gap: 2px; padding: 7px 8px; border-top: 1px solid rgba(255,255,255,.08); }
-        .networth-checkpoints > strong { margin-bottom: 2px; color: #dce4ea; font-size: 9px; }
-        .networth-checkpoints > span { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; color: #8e9aa4; font-size: 9px; }
-        .networth-checkpoints b { color: #cbd3da; font-weight: 650; }
-        .networth-checkpoints i { min-width: 72px; text-align: right; font-style: normal; }
-        .networth-checkpoint-history { margin: 0; padding: 6px 8px; border-top: 1px solid rgba(255,255,255,.08); color: #aebac3; font-size: 9px; }
-        .networth-checkpoint-history summary { cursor: pointer; }
-        .networth-checkpoint-history .networth-checkpoints { margin: 6px -8px -6px; }
-        .networth-session-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 10px 10px; }
-        .networth-session-actions .end { border-color: rgba(255,104,104,.35); color: #ffd0d0; background: #3a2929; }
-        .networth-history-list { padding-bottom: 1px; }
-        .networth-clear-history { margin: 0 10px 10px; padding: 5px 8px; color: #c7cfd6; font-size: 10px; }
-        .networth-note { padding: 9px 10px; color: #87949e; background: #1d2227; font-size: 9px; }
-        .networth-note code { color: #b8cbd8; }
         .award-card { padding: 10px; border-bottom: 1px solid rgba(255,255,255,.075); }
         .award-card.tracked { background: rgba(55,101,132,.16); }
         .award-card-head { display: flex; align-items: flex-start; gap: 8px; }
@@ -7030,7 +6527,7 @@
         .exclusion { color: #d7c994; }
         details { margin-top: 10px; color: #dbb184; font-size: 11px; }
         details ul { margin: 6px 0 0; padding-left: 18px; }
-        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .view-button { width: 28px; padding: 0; overflow: hidden; font-size: 0; } .view-button::before { content: '★'; font-size: 14px; } .view-button.dollar-button::before { content: '$1'; font-size: 11px; } .view-button.networth-button::before { content: 'NW'; font-size: 10px; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .tracked-award-grid { grid-template-columns: 1fr; } .awards-controls { flex-wrap: wrap; } .awards-controls span { order: 3; flex-basis: 100%; text-align: left; } .dollar-bazaar-row { grid-template-columns: minmax(110px,1fr) auto; } .dollar-bazaar-row > strong { grid-column: 2; } .networth-summary-grid { grid-template-columns: 1fr; } .networth-session-totals { grid-template-columns: 1fr 1fr; } .networth-breakdown-head, .networth-breakdown-row { grid-template-columns: minmax(65px,1fr) repeat(3,minmax(62px,1fr)); gap: 3px; font-size: 8px; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
+        @media (max-width: 520px) { .title { flex: 0 0 auto; max-width: 130px; } .header-alerts { flex: 1; max-width: none; } .view-button { width: 28px; padding: 0; overflow: hidden; font-size: 0; } .view-button::before { content: '★'; font-size: 14px; } .view-button.dollar-button::before { content: '$1'; font-size: 11px; } .alert { grid-template-columns: 7px minmax(0,1fr); } .alert-actions { grid-column: 2; flex-wrap: wrap; } .tracked-award-grid { grid-template-columns: 1fr; } .awards-controls { flex-wrap: wrap; } .awards-controls span { order: 3; flex-basis: 100%; text-align: left; } .dollar-bazaar-row { grid-template-columns: minmax(110px,1fr) auto; } .dollar-bazaar-row > strong { grid-column: 2; } .toggles { grid-template-columns: 1fr; } .catalog-controls { flex-wrap: wrap; } .catalog-controls span { order: 3; flex-basis: 100%; text-align: left; } .market-head { display:none; } .market-watch { grid-template-columns: 22px minmax(105px,1fr) 74px 72px 28px; } .pawn-builder-controls { grid-template-columns: 1fr; } .pawn-candidate { grid-template-columns: 20px minmax(100px,1fr); } .pawn-values { grid-column: 2; text-align: left; } }
       </style>
       <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
@@ -7038,7 +6535,6 @@
           <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
           <button class="view-button ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-awards" title="${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open medals and honors'}">${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Alerts' : 'Awards'}</button>
           <button class="view-button dollar-button ${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-dollar-bazaars" title="${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open Weaver $1 Bazaars'}">${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Alerts' : '$1'}</button>
-          <button class="view-button networth-button ${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-networth" title="${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open net worth tracking'}">${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'Alerts' : 'NW'}</button>
           <button class="icon-button" data-action="toggle-mute" title="${state.settings.muteSounds ? 'Unmute dashboard alarms' : 'Mute dashboard alarms'}" aria-label="${state.settings.muteSounds ? 'Unmute dashboard alarms' : 'Mute dashboard alarms'}" aria-pressed="${state.settings.muteSounds ? 'true' : 'false'}">${state.settings.muteSounds ? '🔇' : '🔊'}</button>
           <button class="icon-button" data-action="settings" title="Settings" aria-label="Settings">⚙</button>
           <button class="icon-button" data-action="collapse" title="${collapsed ? 'Expand' : 'Minimize'}" aria-label="${collapsed ? 'Expand' : 'Minimize'}">${collapsed ? '▾' : '▴'}</button>
@@ -7046,7 +6542,7 @@
         ${collapsed ? '' : `
           <div class="body">
             ${state.settings.settingsOpen ? settingsMarkup() : ''}
-            ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? dollarBazaarsMarkup() : state.settings.activeView === 'networth' && !state.settings.settingsOpen ? networthMarkup() : `
+            ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? dollarBazaarsMarkup() : `
               <div class="status"><span>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
               <div class="toolbar">
                 <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
@@ -7151,15 +6647,6 @@
       render();
       if (openingDollarBazaars) refreshDollarBazaars();
       return;
-    } else if (action === 'toggle-networth') {
-      const openingNetworth = state.settings.activeView !== 'networth' || state.settings.settingsOpen;
-      state.settings.activeView = openingNetworth ? 'networth' : 'alerts';
-      state.settings.settingsOpen = false;
-      state.settings.collapsed = false;
-      saveSettings();
-      render();
-      if (openingNetworth) ensurePublicNetworthFresh();
-      return;
     } else if (action === 'collapse') {
       state.settings.collapsed = !state.settings.collapsed;
     } else if (action === 'settings') {
@@ -7178,26 +6665,6 @@
       return;
     } else if (action === 'refresh-dollar-bazaars') {
       refreshDollarBazaars({ force: true });
-      return;
-    } else if (action === 'refresh-networth-public') {
-      requestNetworthAction('refresh-public');
-      return;
-    } else if (action === 'start-networth-session') {
-      requestNetworthAction('start');
-      return;
-    } else if (action === 'networth-snapshot') {
-      requestNetworthAction('snapshot');
-      return;
-    } else if (action === 'end-networth-session') {
-      requestNetworthAction('end');
-      return;
-    } else if (action === 'clear-networth-history') {
-      if (window.confirm('Clear all completed net worth sessions stored in this browser?')) {
-        state.networth.sessions = [];
-        setNetworthStatus('clear-history', 'complete', 'Completed net worth sessions cleared.');
-        saveNetworthTracker();
-        render();
-      }
       return;
     } else if (action === 'track-award') {
       const key = String(button.dataset.awardKey || '');
@@ -7924,10 +7391,6 @@
       && refreshStatus?.requestId === pendingRequest.id
       && !['complete', 'warning'].includes(refreshStatus?.phase);
     refresh(pendingIsFresh ? { force: true, manualRequestId: pendingRequest.id } : undefined);
-    const pendingNetworthCommand = GM_getValue(NETWORTH_COMMAND_KEY, null);
-    handleNetworthCommand(pendingNetworthCommand);
-    maybeCaptureNetworthSession();
-    if (state.settings.activeView === 'networth') ensurePublicNetworthFresh();
     render();
   }
 
@@ -7941,16 +7404,6 @@
       if (!remote || !status || typeof status !== 'object') return;
       state.manualRefreshStatus = status;
       render();
-    });
-    GM_addValueChangeListener(NETWORTH_COMMAND_KEY, (_key, _oldValue, command, remote) => {
-      if (!remote) return;
-      handleNetworthCommand(command);
-    });
-    GM_addValueChangeListener(NETWORTH_STORAGE_KEY, (_key, _oldValue, _newValue, remote) => {
-      if (!remote) return;
-      state.networth = loadNetworthTracker();
-      state.networthPendingAction = '';
-      if (state.settings.activeView === 'networth') render({ force: true });
     });
     GM_addValueChangeListener(CHECK_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote || ownsDashboardNetworkLease()) return;
@@ -8103,11 +7556,6 @@
     else cleanupPickpocketFormatting();
   }, 1_500);
   state.coreTimer = window.setInterval(() => refresh(), CORE_REFRESH_MS);
-  state.networthTimer = window.setInterval(() => {
-    maybeCaptureNetworthSession();
-    if (state.settings.activeView === 'networth') ensurePublicNetworthFresh();
-  }, NETWORTH_TIMER_MS);
-  maybeCaptureNetworthSession();
   scheduleNextSnoozeExpiry();
   scheduleMarketPoll();
   // TornW3B uses a dedicated timer so fast Bazaar polling never triggers Torn
