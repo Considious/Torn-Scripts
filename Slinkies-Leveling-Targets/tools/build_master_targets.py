@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import csv
-import io
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
@@ -10,6 +9,7 @@ FILES = [
     BASE / "Slinky-Leveling-Targets.csv",
     BASE / "Torn-Forum-Leveling-Targets.csv",
     BASE / "Netgangster-Legacy-Leveling-Targets.csv",
+    BASE / "Script-Reported-Targets.csv",
 ]
 OUTPUT = BASE / "Master-Leveling-Targets.csv"
 
@@ -105,17 +105,24 @@ def merge():
                     target["sources"].append(source)
 
     rows = list(targets.values())
-    rows.sort(key=lambda r: (-int(r["level"]) if str(r["level"]).isdigit() else 1, stat_number(r["total"]) or float("inf"), r["name"].lower()))
+    rows.sort(key=lambda r: (
+        -int(r["level"]) if str(r["level"]).isdigit() else 1,
+        stat_number(r["total"]) or float("inf"),
+        r["name"].lower(),
+    ))
 
     with OUTPUT.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["id", "name", "level", "total", "profile_url", "sources"])
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["id", "name", "level", "total", "profile_url", "sources"],
+        )
         writer.writeheader()
         for row in rows:
             row = dict(row)
             row["sources"] = " | ".join(row["sources"])
             writer.writerow(row)
 
-    print(f"Merged {sum(1 for _ in rows)} unique targets into {OUTPUT.name}")
+    print(f"Merged {len(rows)} unique targets into {OUTPUT.name}")
 
 
 if __name__ == "__main__":
