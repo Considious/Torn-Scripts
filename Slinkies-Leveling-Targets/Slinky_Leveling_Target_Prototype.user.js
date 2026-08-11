@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.1.0
-// @description  API-only leveling target prototype using the Slinkies master list, Torn status checks, FFScouter estimates, and local hospitalization history.
+// @version      0.2.0
+// @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
@@ -28,16 +28,21 @@
     const MASTER_URL = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
 
     const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const ACTIVITY_WINDOW_DAYS = 7;
+    const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
     const OKAY_CACHE_MS = 5 * 60 * 1000;
     const NON_OKAY_RECHECK_MS = 5 * 60 * 1000;
     const FF_CACHE_MS = 12 * 60 * 60 * 1000;
     const MASTER_CACHE_MS = 30 * 60 * 1000;
+    const PRIMARY_CHECKS = 40;
+    const BACKGROUND_DEFAULT_CHECKS = 10;
+    const BACKGROUND_POLL_MS = 5 * 60 * 1000;
     const MAX_DISPLAY = 40;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
         ffKey: 'slinkyLeveling.ffApiKey',
-        checksPerCycle: 'slinkyLeveling.checksPerCycle',
+        backgroundChecks: 'slinkyLeveling.backgroundChecks',
         pollSeconds: 'slinkyLeveling.pollSeconds',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
@@ -45,7 +50,8 @@
         hospitalHistory: 'slinkyLeveling.hospitalHistory.v1',
         statusCache: 'slinkyLeveling.statusCache.v1',
         ffCache: 'slinkyLeveling.ffCache.v1',
-        masterCache: 'slinkyLeveling.masterCache.v1'
+        masterCache: 'slinkyLeveling.masterCache.v1',
+        activityCache: 'slinkyLeveling.activityCache.v1'
     };
 
     const state = {
@@ -53,13 +59,18 @@
         statusCache: loadJson(KEYS.statusCache, {}),
         ffCache: loadJson(KEYS.ffCache, {}),
         hospitalHistory: loadJson(KEYS.hospitalHistory, {}),
+        activityCache: loadJson(KEYS.activityCache, { refreshedAt: 0, activeTargets: {}, snapshots: [] }),
         polling: false,
+        backgroundPolling: false,
         lastCycleAt: 0,
         lastCycleChecked: 0,
         lastCycleOkay: 0,
+        lastBackgroundAt: 0,
+        lastBackgroundChecked: 0,
         lastError: '',
         settingsOpen: false,
         timer: null,
+        backgroundTimer: null,
         leader: null
     };
 
@@ -106,7 +117,7 @@
         return {
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
-            checksPerCycle: clamp(Number(GM_getValue(KEYS.checksPerCycle, 40)) || 40, 10, 40),
+            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || BACKGROUND_DEFAULT_CHECKS, 10, 40),
             pollSeconds: clamp(Number(GM_getValue(KEYS.pollSeconds, 90)) || 90, 60, 300),
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 5),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 5),
@@ -121,7 +132,7 @@
     function saveSettings(values) {
         GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
         GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
-        GM_setValue(KEYS.checksPerCycle, clamp(Number(values.checksPerCycle) || 40, 10, 40));
+        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || BACKGROUND_DEFAULT_CHECKS, 10, 40));
         GM_setValue(KEYS.pollSeconds, clamp(Number(values.pollSeconds) || 90, 60, 300));
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 5));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 5));
@@ -225,6 +236,88 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Seven-day activity snapshot cache
+    // ─────────────────────────────────────────────────────────────
+
+    function activitySnapshotTimestamp(daysAgo) {
+        const date = new Date();
+        date.setUTCHours(12, 0, 0, 0);
+        date.setUTCDate(date.getUTCDate() - daysAgo);
+        return Math.floor(date.getTime() / 1000);
+    }
+
+    function parseSnapshotActiveTargets(text, masterIds, snapshotTimestamp, activeTargets) {
+        const lines = String(text || '').split(/\r?\n/);
+
+        for (let index = 1; index < lines.length; index++) {
+            const match = lines[index].match(/^\s*"?(\d+)"?\s*,/);
+            if (!match) continue;
+
+            const id = match[1];
+            if (!masterIds.has(id)) continue;
+
+            activeTargets[id] = Math.max(
+                Number(activeTargets[id]) || 0,
+                snapshotTimestamp
+            );
+        }
+    }
+
+    async function ensureActivitySnapshots(apiKey, force = false) {
+        const cache = state.activityCache || {};
+        const fresh =
+            Number(cache.refreshedAt) > 0 &&
+            Date.now() - Number(cache.refreshedAt) < ACTIVITY_REFRESH_MS &&
+            cache.activeTargets &&
+            typeof cache.activeTargets === 'object';
+
+        if (!force && fresh) return cache;
+        if (!state.master.length) await loadMaster(false);
+
+        const masterIds = new Set(state.master.map(target => target.id));
+        const activeTargets = {};
+        const snapshots = [];
+
+        for (let daysAgo = 0; daysAgo < ACTIVITY_WINDOW_DAYS; daysAgo++) {
+            const timestamp = activitySnapshotTimestamp(daysAgo);
+            const url = `https://api.torn.com/v2/user/snapshot?timestamp=${timestamp}`;
+            const csv = await TornLib.requestText(url, {
+                headers: { Authorization: `ApiKey ${apiKey}` },
+                timeout: 30_000,
+                tornScript: SCRIPT_NAME,
+                tornPriority: 'background',
+                tornLimit: TornLib.TORN_API_DEFAULT_LIMIT,
+                tornWait: true,
+                tornMaxWaitMs: 65_000,
+                networkErrorMessage: 'Could not load Torn daily activity snapshot.'
+            });
+
+            parseSnapshotActiveTargets(csv, masterIds, timestamp, activeTargets);
+            snapshots.push(timestamp);
+        }
+
+        state.activityCache = {
+            refreshedAt: Date.now(),
+            activeTargets,
+            snapshots
+        };
+        saveJson(KEYS.activityCache, state.activityCache);
+        return state.activityCache;
+    }
+
+    function activeWithinSevenDays(id) {
+        return Boolean(state.activityCache?.activeTargets?.[id]);
+    }
+
+    function lastSeenActiveSnapshot(id) {
+        return Number(state.activityCache?.activeTargets?.[id]) || 0;
+    }
+
+    function activeExcludedCount() {
+        return Object.keys(state.activityCache?.activeTargets || {}).length;
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Hospitalization history
     // ─────────────────────────────────────────────────────────────
 
@@ -292,11 +385,11 @@
     // Torn API status polling
     // ─────────────────────────────────────────────────────────────
 
-    async function getUserStatus(apiKey, target) {
+    async function getUserStatus(apiKey, target, priority = 'normal') {
         const url = `https://api.torn.com/v2/user/${encodeURIComponent(target.id)}/basic`;
         const data = await TornLib.tornRequest(url, apiKey, {
             tornScript: SCRIPT_NAME,
-            tornPriority: 'normal',
+            tornPriority: priority,
             tornLimit: TornLib.TORN_API_DEFAULT_LIMIT,
             tornWait: true,
             tornMaxWaitMs: 65_000
@@ -457,15 +550,33 @@
         return a.name.localeCompare(b.name);
     }
 
+    function candidateEligible(target, now = Date.now()) {
+        if (activeWithinSevenDays(target.id)) return false;
+
+        const cached = state.statusCache[target.id];
+        return !cached?.nextEligibleAt || cached.nextEligibleAt <= now;
+    }
+
     function chooseCandidates(limit) {
         const now = Date.now();
 
         return [...state.master]
-            .filter(target => {
-                const cached = state.statusCache[target.id];
-                return !cached?.nextEligibleAt || cached.nextEligibleAt <= now;
-            })
+            .filter(target => candidateEligible(target, now))
             .sort(compareCandidates)
+            .slice(0, limit);
+    }
+
+    function chooseBackgroundCandidates(limit, excludeIds = new Set()) {
+        const now = Date.now();
+
+        return [...state.master]
+            .filter(target => !excludeIds.has(target.id) && candidateEligible(target, now))
+            .sort((a, b) => {
+                const checkedA = Number(state.statusCache[a.id]?.checkedAt) || 0;
+                const checkedB = Number(state.statusCache[b.id]?.checkedAt) || 0;
+                if (checkedA !== checkedB) return checkedA - checkedB;
+                return compareCandidates(a, b);
+            })
             .slice(0, limit);
     }
 
@@ -474,6 +585,8 @@
 
         return state.master
             .filter(target => {
+                if (activeWithinSevenDays(target.id)) return false;
+
                 const status = state.statusCache[target.id];
                 if (!status || now - Number(status.checkedAt || 0) > OKAY_CACHE_MS) return false;
                 if (!statusIsOkay(status.state)) return false;
@@ -534,13 +647,14 @@
         try {
             cleanHospitalHistory();
             if (!state.master.length || force) await loadMaster(force);
+            await ensureActivitySnapshots(settings.tornKey, false);
 
-            const candidates = chooseCandidates(settings.checksPerCycle);
+            const candidates = chooseCandidates(PRIMARY_CHECKS);
             state.lastCycleChecked = candidates.length;
 
             const results = await Promise.allSettled(
                 candidates.map(async target => {
-                    const status = await getUserStatus(settings.tornKey, target);
+                    const status = await getUserStatus(settings.tornKey, target, 'normal');
                     updateStatusCache(target, status);
                     return { target, status };
                 })
@@ -582,6 +696,75 @@
         }
     }
 
+    async function backgroundPoll() {
+        if (state.backgroundPolling || state.polling) {
+            scheduleBackgroundPoll();
+            return;
+        }
+        if (!state.leader?.isLeader()) {
+            scheduleBackgroundPoll();
+            return;
+        }
+
+        const settings = getSettings();
+        if (!settings.tornKey) {
+            scheduleBackgroundPoll();
+            return;
+        }
+
+        state.backgroundPolling = true;
+
+        try {
+            if (!state.master.length) await loadMaster(false);
+            await ensureActivitySnapshots(settings.tornKey, false);
+
+            const primaryIds = new Set(chooseCandidates(PRIMARY_CHECKS).map(target => target.id));
+            const candidates = chooseBackgroundCandidates(settings.backgroundChecks, primaryIds);
+            state.lastBackgroundChecked = candidates.length;
+
+            const results = await Promise.allSettled(
+                candidates.map(async target => {
+                    const status = await getUserStatus(settings.tornKey, target, 'background');
+                    updateStatusCache(target, status);
+                    return { target, status };
+                })
+            );
+
+            const okayTargets = results
+                .filter(result => result.status === 'fulfilled')
+                .map(result => result.value)
+                .filter(result => statusIsOkay(result.status.state))
+                .map(result => result.target);
+
+            if (settings.ffKey && okayTargets.length) {
+                try {
+                    await updateFFScouter(settings.ffKey, okayTargets);
+                } catch (error) {
+                    console.warn('[Slinky Leveling] Background FFScouter update failed:', error);
+                }
+            }
+
+            state.lastBackgroundAt = Date.now();
+            saveJson(KEYS.statusCache, state.statusCache);
+            saveJson(KEYS.hospitalHistory, state.hospitalHistory);
+            saveJson(KEYS.ffCache, state.ffCache);
+        } catch (error) {
+            console.warn('[Slinky Leveling] Background poll failed:', error);
+        } finally {
+            state.backgroundPolling = false;
+            scheduleBackgroundPoll();
+            render();
+        }
+    }
+
+    function scheduleBackgroundPoll() {
+        if (state.backgroundTimer) clearTimeout(state.backgroundTimer);
+
+        state.backgroundTimer = setTimeout(() => {
+            backgroundPoll();
+        }, BACKGROUND_POLL_MS);
+    }
+
     function scheduleNextPoll() {
         if (state.timer) clearTimeout(state.timer);
 
@@ -613,7 +796,7 @@
             .slp-btn { border:1px solid rgba(255,255,255,.14); background:#2b3039; color:#eee; border-radius:5px; padding:4px 7px; cursor:pointer; }
             .slp-btn:hover { background:#3a414d; }
             .slp-body { max-height: calc(100vh - 165px); overflow:auto; }
-            .slp-summary { display:grid; grid-template-columns:repeat(3, 1fr); gap:1px; background:rgba(255,255,255,.08); }
+            .slp-summary { display:grid; grid-template-columns:repeat(4, 1fr); gap:1px; background:rgba(255,255,255,.08); }
             .slp-stat { background:#20242b; padding:6px; text-align:center; }
             .slp-stat b { display:block; font-size:13px; }
             .slp-muted { color:#999; }
@@ -672,7 +855,8 @@
             <div class="slp-body">
                 <div class="slp-summary">
                     <div class="slp-stat"><b>${targets.length}</b><span>Okay cached</span></div>
-                    <div class="slp-stat"><b>${state.lastCycleChecked}</b><span>Checked</span></div>
+                    <div class="slp-stat"><b>${state.lastCycleChecked}</b><span>Primary</span></div>
+                    <div class="slp-stat"><b>${activeExcludedCount()}</b><span>Active &lt;7d</span></div>
                     <div class="slp-stat"><b>${usage.count}/${usage.limit}</b><span>API / min</span></div>
                 </div>
                 ${state.lastError ? `<div class="slp-error">${escapeHtml(state.lastError)}</div>` : ''}
@@ -680,7 +864,7 @@
                 <div id="slp-targets">${targetsHtml(targets)}</div>
             </div>
             <div class="slp-footer">
-                Hospital hits are local observations, rolling 24h. Last cycle: ${state.lastCycleAt ? escapeHtml(humanAgo(state.lastCycleAt)) : 'Never'}.
+                7-day activity snapshots exclude recent players from polling. Hospital hits are local 24h observations. Primary: ${state.lastCycleAt ? escapeHtml(humanAgo(state.lastCycleAt)) : 'Never'} · Background: ${state.lastBackgroundAt ? escapeHtml(humanAgo(state.lastBackgroundAt)) : 'Never'} (${state.lastBackgroundChecked}).
             </div>
         `;
 
@@ -696,8 +880,8 @@
                 <label class="wide">FFScouter API key
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
                 </label>
-                <label>Checks / cycle
-                    <input id="slp-checks" type="number" min="10" max="40" value="${settings.checksPerCycle}">
+                <label>Background checks
+                    <input id="slp-background-checks" type="number" min="10" max="40" value="${settings.backgroundChecks}">
                 </label>
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
@@ -768,7 +952,7 @@
             const values = {
                 tornKey: panel.querySelector('#slp-torn-key')?.value,
                 ffKey: panel.querySelector('#slp-ff-key')?.value,
-                checksPerCycle: panel.querySelector('#slp-checks')?.value,
+                backgroundChecks: panel.querySelector('#slp-background-checks')?.value,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
                 maxFF: panel.querySelector('#slp-max-ff')?.value
@@ -784,10 +968,12 @@
             state.hospitalHistory = {};
             state.statusCache = {};
             state.ffCache = {};
+            state.activityCache = { refreshedAt: 0, activeTargets: {}, snapshots: [] };
 
             saveJson(KEYS.hospitalHistory, {});
             saveJson(KEYS.statusCache, {});
             saveJson(KEYS.ffCache, {});
+            saveJson(KEYS.activityCache, state.activityCache);
             render();
         });
     }
@@ -806,7 +992,10 @@
             isPreferred: () => TornLib.isPageActive({ requireFocus: true }),
             onChange: isLeader => {
                 render();
-                if (isLeader) poll(false);
+                if (isLeader) {
+                    poll(false);
+                    scheduleBackgroundPoll();
+                }
             }
         });
 
@@ -819,8 +1008,13 @@
         if (!getSettings().tornKey) state.settingsOpen = true;
         render();
 
-        if (state.leader.isLeader()) poll(false);
-        else scheduleNextPoll();
+        if (state.leader.isLeader()) {
+            poll(false);
+            scheduleBackgroundPoll();
+        } else {
+            scheduleNextPoll();
+            scheduleBackgroundPoll();
+        }
     }
 
     start();
