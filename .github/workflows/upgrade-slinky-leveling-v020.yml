@@ -18,8 +18,7 @@ jobs:
         run: |
           cat Slinkies-Leveling-Targets/.tmp/v020.patch.b64.* > /tmp/v020.patch.b64
           base64 -d /tmp/v020.patch.b64 > /tmp/v020.patch
-          git apply --reject --whitespace=nowarn /tmp/v020.patch || true
-          test ! -f Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js.rej
+          patch --batch --fuzz=3 -p1 < /tmp/v020.patch
           node --check Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
           grep -q '@version      0.2.0' Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
           grep -q 'ACTIVITY_WINDOW_DAYS = 7' Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
