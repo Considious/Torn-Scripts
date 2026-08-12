@@ -1,5 +1,6 @@
 name: Apply Slinky Hospital Priority
 
+# One-shot branch patch workflow.
 on:
   push:
     branches:
