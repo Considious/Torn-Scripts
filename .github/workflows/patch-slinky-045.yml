@@ -19,6 +19,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      - name: Fix regex replacement helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Slinkies-Leveling-Targets/tools/patch_slinky_045.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              're.subn(pattern, replacement, text, count=1, flags=re.S)',
+              're.subn(pattern, lambda _match: replacement, text, count=1, flags=re.S)'
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Apply scheduler patch
         run: python Slinkies-Leveling-Targets/tools/patch_slinky_045.py
       - name: Syntax check userscript
