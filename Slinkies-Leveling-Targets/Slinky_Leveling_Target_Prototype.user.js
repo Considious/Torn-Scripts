@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.4.0
+// @version      0.4.1
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -27,7 +27,8 @@
     const SCRIPT_NAME = "Slinky Leveling Prototype";
     const MASTER_URL = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
 
-    const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const HOSPITAL_24H_MS = 24 * 60 * 60 * 1000;
+    const HOSPITAL_7D_MS = 7 * 24 * 60 * 60 * 1000;
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
     const OKAY_CACHE_MS = 5 * 60 * 1000;
@@ -399,7 +400,7 @@
     // ─────────────────────────────────────────────────────────────
 
     function cleanHospitalHistory() {
-        const cutoff = Date.now() - HISTORY_WINDOW_MS;
+        const cutoff = Date.now() - HOSPITAL_7D_MS;
 
         for (const [id, record] of Object.entries(state.hospitalHistory)) {
             record.events = Array.isArray(record.events)
@@ -421,7 +422,7 @@
             lastState: ''
         };
 
-        const cutoff = Date.now() - HISTORY_WINDOW_MS;
+        const cutoff = Date.now() - HOSPITAL_7D_MS;
         record.events = Array.isArray(record.events)
             ? record.events.map(Number).filter(timestamp => timestamp >= cutoff)
             : [];
@@ -446,6 +447,11 @@
     }
 
     function hospitalCount24h(id) {
+        const cutoff = Date.now() - HOSPITAL_24H_MS;
+        return getHospitalRecord(id).events.filter(timestamp => timestamp >= cutoff).length;
+    }
+
+    function hospitalCount7d(id) {
         return getHospitalRecord(id).events.length;
     }
 
@@ -516,32 +522,12 @@
             nextEligibleAt: okay ? now : now + NON_OKAY_RECHECK_MS
         };
 
-        const beforeHospitalCount = hospitalCount24h(target.id);
         noteStatusObservation(target.id, status.state);
-        const afterHospitalCount = hospitalCount24h(target.id);
 
-        state.observationLog.push({
-            checkedAt: now,
-            id: target.id,
-            name: target.name,
-            level: target.level,
-            total: target.total,
-            sources: target.sources,
-            status: status.state,
-            description: status.description,
-            until: status.until || 0,
-            hospitalizationObserved: afterHospitalCount > beforeHospitalCount
-        });
-
-        if (state.observationLog.length > MAX_OBSERVATION_LOG) {
-            state.observationLog.splice(0, state.observationLog.length - MAX_OBSERVATION_LOG);
-        }
-
-        // Persist every completed observation immediately so a refresh mid-cycle
-        // cannot throw away data already collected.
+        // Current status remains local operational state. Only hospitalization
+        // transitions are retained as long-term competition intelligence.
         saveJson(KEYS.statusCache, state.statusCache);
         saveJson(KEYS.hospitalHistory, state.hospitalHistory);
-        saveJson(KEYS.observationLog, state.observationLog);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -631,8 +617,9 @@
 
         return {
             blocked: blocked ? 1 : 0,
-            hospitalCount: record.events.length,
-            recentHospitalPenalty: lastHosp ? Math.max(0, HISTORY_WINDOW_MS - (Date.now() - lastHosp)) : 0,
+            hospital24h: hospitalCount24h(target.id),
+            hospital7d: hospitalCount7d(target.id),
+            recentHospitalPenalty: lastHosp ? Math.max(0, HOSPITAL_7D_MS - (Date.now() - lastHosp)) : 0,
             level: target.level,
             total: Number.isFinite(target.totalNumeric) ? target.totalNumeric : Number.MAX_SAFE_INTEGER,
             lastCheckedAt: Number(status?.checkedAt) || 0
@@ -644,7 +631,8 @@
         const B = priorityTuple(b);
 
         if (A.blocked !== B.blocked) return A.blocked - B.blocked;
-        if (A.hospitalCount !== B.hospitalCount) return A.hospitalCount - B.hospitalCount;
+        if (A.hospital24h !== B.hospital24h) return A.hospital24h - B.hospital24h;
+        if (A.hospital7d !== B.hospital7d) return A.hospital7d - B.hospital7d;
         if (A.recentHospitalPenalty !== B.recentHospitalPenalty) return A.recentHospitalPenalty - B.recentHospitalPenalty;
         if (A.level !== B.level) return B.level - A.level;
         if (A.total !== B.total) return A.total - B.total;
@@ -700,9 +688,13 @@
                 return true;
             })
             .sort((a, b) => {
-                const Ah = hospitalCount24h(a.id);
-                const Bh = hospitalCount24h(b.id);
-                if (Ah !== Bh) return Ah - Bh;
+                const A24 = hospitalCount24h(a.id);
+                const B24 = hospitalCount24h(b.id);
+                if (A24 !== B24) return A24 - B24;
+
+                const A7 = hospitalCount7d(a.id);
+                const B7 = hospitalCount7d(b.id);
+                if (A7 !== B7) return A7 - B7;
 
                 const Ala = lastHospitalizedAt(a.id);
                 const Bla = lastHospitalizedAt(b.id);
@@ -1054,7 +1046,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.4.0',
+            scriptVersion: '0.4.1',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             primaryChecksConfigured: getSettings().primaryChecks,
@@ -1066,7 +1058,8 @@
             statusCounts,
             hospitalizationEvents24h,
             ffScouterRecords: Object.keys(state.ffCache || {}).length,
-            observationsLogged: Array.isArray(state.observationLog) ? state.observationLog.length : 0,
+            hospitalizedTargets: Object.keys(state.hospitalHistory || {}).filter(id => hospitalCount7d(id) > 0).length,
+            hospitalizationEvents7d: Object.keys(state.hospitalHistory || {}).reduce((sum, id) => sum + hospitalCount7d(id), 0),
             activitySnapshotRefreshedAt: Number(state.activityCache?.refreshedAt) || 0,
             activitySnapshotCount: Array.isArray(state.activityCache?.snapshots) ? state.activityCache.snapshots.length : 0,
             lastPrimaryPollAt: state.lastCycleAt,
@@ -1105,7 +1098,8 @@
             `  Unknown/Other: ${Math.max(0, data.statusRecords - knownCount)}`,
             `Hospitalization events observed in 24h: ${data.hospitalizationEvents24h}`,
             `FFScouter cached records: ${data.ffScouterRecords}`,
-            `Status observations logged: ${data.observationsLogged}`,
+            `Targets hospitalized in 7d: ${data.hospitalizedTargets}`,
+            `Hospitalization events observed in 7d: ${data.hospitalizationEvents7d}`,
             `Activity snapshots cached: ${data.activitySnapshotCount}`,
             `Activity snapshot refreshed: ${data.activitySnapshotRefreshedAt ? new Date(data.activitySnapshotRefreshedAt).toLocaleString() : 'Never'}`,
             '',
@@ -1144,28 +1138,40 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
-    function exportObservationCsv() {
+    function exportHospitalizationSummaryCsv() {
         refreshCollectedDataFromStorage();
         const headers = [
-            'checked_at', 'id', 'name', 'level', 'total', 'sources',
-            'status', 'description', 'status_until', 'hospitalization_observed'
+            'id', 'name', 'level', 'total', 'sources',
+            'hospitalizations_24h', 'hospitalizations_7d',
+            'last_hospitalized_at', 'last_status', 'last_status_checked_at'
         ];
-        const rows = [...state.observationLog]
-            .sort((a, b) => Number(a.checkedAt || 0) - Number(b.checkedAt || 0))
-            .map(row => ({
-                checked_at: row.checkedAt ? new Date(row.checkedAt).toISOString() : '',
-                id: row.id || '',
-                name: row.name || '',
-                level: row.level ?? '',
-                total: row.total ?? '',
-                sources: row.sources || '',
-                status: row.status || '',
-                description: row.description || '',
-                status_until: row.until ? new Date(Number(row.until) * 1000).toISOString() : '',
-                hospitalization_observed: row.hospitalizationObserved ? 'Yes' : 'No'
-            }));
+        const rows = state.master
+            .map(target => {
+                const count24 = hospitalCount24h(target.id);
+                const count7 = hospitalCount7d(target.id);
+                const lastHosp = lastHospitalizedAt(target.id);
+                const status = state.statusCache[target.id] || {};
+                return {
+                    id: target.id,
+                    name: target.name,
+                    level: target.level,
+                    total: target.total,
+                    sources: target.sources,
+                    hospitalizations_24h: count24,
+                    hospitalizations_7d: count7,
+                    last_hospitalized_at: lastHosp ? new Date(lastHosp).toISOString() : '',
+                    last_status: status.state || '',
+                    last_status_checked_at: status.checkedAt ? new Date(status.checkedAt).toISOString() : ''
+                };
+            })
+            .filter(row => row.hospitalizations_7d > 0)
+            .sort((a, b) =>
+                b.hospitalizations_24h - a.hospitalizations_24h ||
+                b.hospitalizations_7d - a.hospitalizations_7d ||
+                String(b.last_hospitalized_at).localeCompare(String(a.last_hospitalized_at))
+            );
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        downloadCsv(`Slinky-Leveling-Observations-${stamp}.csv`, headers, rows);
+        downloadCsv(`Slinky-Leveling-Hospitalization-Summary-${stamp}.csv`, headers, rows);
     }
 
     function exportTargetCacheCsv() {
@@ -1216,7 +1222,8 @@
                     <div class="slp-debug-line"><span>Active &lt;7d</span><b>${data.activeUnder7Days}</b></div>
                     <div class="slp-debug-line"><span>Status cached</span><b>${data.statusRecords}</b></div>
                     <div class="slp-debug-line"><span>FF cached</span><b>${data.ffScouterRecords}</b></div>
-                    <div class="slp-debug-line"><span>Observations</span><b>${data.observationsLogged}</b></div>
+                    <div class="slp-debug-line"><span>Hosp targets 7d</span><b>${data.hospitalizedTargets}</b></div>
+                    <div class="slp-debug-line"><span>Hosp events 7d</span><b>${data.hospitalizationEvents7d}</b></div>
                     <div class="slp-debug-line"><span>Okay</span><b>${data.statusCounts.Okay || 0}</b></div>
                     <div class="slp-debug-line"><span>Hospital</span><b>${data.statusCounts.Hospital || 0}</b></div>
                     <div class="slp-debug-line"><span>Traveling</span><b>${data.statusCounts.Traveling || 0}</b></div>
@@ -1225,7 +1232,7 @@
                     <div class="slp-debug-line"><span>Snapshots</span><b>${data.activitySnapshotCount}</b></div>
                 </div>
                 <div class="slp-debug-actions">
-                    <button class="slp-btn" id="slp-export-observations">Export Observations CSV</button>
+                    <button class="slp-btn" id="slp-export-hospitalizations">Export Hospitalizations CSV</button>
                     <button class="slp-btn" id="slp-export-target-cache">Export Target Cache CSV</button>
                     <button class="slp-btn" id="slp-copy-debug">Copy Debug Data</button>
                     <button class="slp-btn" id="slp-refresh-debug">Refresh View</button>
@@ -1258,6 +1265,7 @@
                         <span class="slp-badge">FF ${escapeHtml(ffText)}</span>
                         <span class="slp-badge">BS ${escapeHtml(statText)}</span>
                         <span class="slp-badge ${hospCount ? 'slp-hosp-hot' : ''}">Hosp 24h: ${hospCount}</span>
+                        <span class="slp-badge ${hospitalCount7d(target.id) ? 'slp-hosp-hot' : ''}">7d: ${hospitalCount7d(target.id)}</span>
                         <span>Last hosp: ${escapeHtml(lastHosp ? humanAgo(lastHosp) : 'Never seen')}</span>
                     </div>
                     <div class="slp-meta"><span title="${escapeHtml(target.sources)}">Source: ${escapeHtml(target.sources || 'Unknown')}</span></div>
@@ -1283,7 +1291,7 @@
             render();
         });
 
-        panel.querySelector('#slp-export-observations')?.addEventListener('click', () => exportObservationCsv());
+        panel.querySelector('#slp-export-hospitalizations')?.addEventListener('click', () => exportHospitalizationSummaryCsv());
         panel.querySelector('#slp-export-target-cache')?.addEventListener('click', () => exportTargetCacheCsv());
 
         panel.querySelector('#slp-copy-debug')?.addEventListener('click', async event => {
