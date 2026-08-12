@@ -5,7 +5,6 @@ on:
     branches:
       - feature/slinky-smart-scheduler-045
     paths:
-      - 'Slinkies-Leveling-Targets/tools/patch_slinky_045.py'
       - '.github/workflows/patch-slinky-045.yml'
 
 permissions:
@@ -16,26 +15,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      - name: Fix regex replacement helper
+      - name: Refine status detection and rapid competition handling
         run: |
           python - <<'PY'
           from pathlib import Path
-          path = Path('Slinkies-Leveling-Targets/tools/patch_slinky_045.py')
+          path = Path('Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js')
           text = path.read_text(encoding='utf-8')
-          text = text.replace(
-              're.subn(pattern, replacement, text, count=1, flags=re.S)',
-              're.subn(pattern, lambda _match: replacement, text, count=1, flags=re.S)'
-          )
+
+          old = """        return {\n            state: normalizeStatus(stateValue),\n            description: String(status?.description ?? status?.details ?? stateValue ?? 'Unknown'),\n            until: Number(status?.until) || 0\n        };"""
+          new = """        const description = String(status?.description ?? status?.details ?? stateValue ?? 'Unknown');\n        return {\n            state: normalizeStatus(`${stateValue} ${description}`),\n            description,\n            until: Number(status?.until) || 0\n        };"""
+          if old not in text:
+              raise SystemExit('Could not find getUserStatus return block')
+          text = text.replace(old, new, 1)
+
+          old = """    function heavilyContested(id) {\n        const fastestGap = fastestRapidHospitalGap24h(id);\n        return hospitalCount24h(id) >= 8 || (fastestGap > 0 && fastestGap <= 5 * 60 * 1000) || competitionScore(id) >= 80;\n    }"""
+          new = """    function heavilyContested(id) {\n        const rapidWithinFiveMinutes = rapidHospitalEvents24h(id)\n            .some(event => Number(event.gapMs) <= 5 * 60 * 1000);\n        return hospitalCount24h(id) >= 8 || rapidWithinFiveMinutes || competitionScore(id) >= 80;\n    }"""
+          if old not in text:
+              raise SystemExit('Could not find heavilyContested block')
+          text = text.replace(old, new, 1)
+
           path.write_text(text, encoding='utf-8')
           PY
-      - name: Apply scheduler patch
-        run: python Slinkies-Leveling-Targets/tools/patch_slinky_045.py
       - name: Syntax check userscript
         run: node --check Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
-      - name: Commit patched userscript
+      - name: Commit refined userscript
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -43,6 +46,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No userscript changes."
           else
-            git commit -m "Add competition-aware smart target scheduler"
+            git commit -m "Refine smart scheduler status detection"
             git push
           fi
