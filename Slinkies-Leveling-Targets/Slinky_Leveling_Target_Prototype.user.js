@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.2.2
+// @version      0.3.0
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -70,6 +70,7 @@
         lastBackgroundChecked: 0,
         lastError: '',
         settingsOpen: false,
+        debugOpen: false,
         timer: null,
         backgroundTimer: null,
         leader: null
@@ -818,6 +819,12 @@
             .slp-actions { display:flex; gap:4px; margin-top:5px; }
             .slp-actions a { text-decoration:none; }
             .slp-empty { padding:16px; text-align:center; color:#aaa; }
+            .slp-debug { padding:9px; border-bottom:1px solid rgba(255,255,255,.1); background:#181c22; }
+            .slp-debug-grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:5px 10px; margin-bottom:7px; }
+            .slp-debug-line { display:flex; justify-content:space-between; gap:8px; color:#bbb; }
+            .slp-debug-line b { color:#fff; }
+            .slp-debug-actions { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:7px; }
+            .slp-debug textarea { width:100%; min-height:180px; resize:vertical; border:1px solid #454b55; border-radius:5px; background:#0f1216; color:#d8d8d8; padding:7px; font:11px/1.35 Consolas, monospace; }
             .slp-footer { padding:6px 8px; color:#888; border-top:1px solid rgba(255,255,255,.08); font-size:10px; }
             #slinky-leveling-panel.slp-collapsed .slp-body,
             #slinky-leveling-panel.slp-collapsed .slp-footer { display:none; }
@@ -850,6 +857,7 @@
                     <div class="slp-sub">${leader ? 'Polling tab' : 'Standby tab'} · CoreLib ${escapeHtml(TornLib.VERSION)}</div>
                 </div>
                 <button class="slp-btn" id="slp-refresh" ${state.polling ? 'disabled' : ''}>${state.polling ? 'Checking…' : 'Refresh'}</button>
+                <button class="slp-btn" id="slp-debug-btn">Data</button>
                 <button class="slp-btn" id="slp-settings-btn">⚙</button>
                 <button class="slp-btn" id="slp-collapse">${settings.collapsed ? '＋' : '−'}</button>
             </div>
@@ -862,6 +870,7 @@
                 </div>
                 ${state.lastError ? `<div class="slp-error">${escapeHtml(state.lastError)}</div>` : ''}
                 ${state.settingsOpen ? settingsHtml(settings) : ''}
+                ${state.debugOpen ? debugHtml() : ''}
                 <div id="slp-targets">${targetsHtml(targets)}</div>
             </div>
             <div class="slp-footer">
@@ -897,6 +906,122 @@
                     <button class="slp-btn" id="slp-clear-history">Clear local history</button>
                     <button class="slp-btn" id="slp-save-settings">Save</button>
                 </div>
+            </div>
+        `;
+    }
+
+    function buildDebugData() {
+        const statusEntries = Object.values(state.statusCache || {});
+        const statusCounts = {};
+
+        for (const entry of statusEntries) {
+            const status = normalizeStatus(entry?.state || 'Unknown');
+            statusCounts[status] = (statusCounts[status] || 0) + 1;
+        }
+
+        let hospitalizationEvents24h = 0;
+        for (const id of Object.keys(state.hospitalHistory || {})) {
+            hospitalizationEvents24h += hospitalCount24h(id);
+        }
+
+        const recentChecks = Object.entries(state.statusCache || {})
+            .map(([id, record]) => {
+                const target = state.master.find(item => item.id === id);
+                return {
+                    id,
+                    name: target?.name || 'Unknown',
+                    state: normalizeStatus(record?.state || 'Unknown'),
+                    checkedAt: Number(record?.checkedAt) || 0
+                };
+            })
+            .sort((a, b) => b.checkedAt - a.checkedAt)
+            .slice(0, 20);
+
+        return {
+            scriptVersion: '0.3.0',
+            coreLibVersion: TornLib.VERSION,
+            leaderTab: Boolean(state.leader?.isLeader()),
+            masterTargets: state.master.length,
+            activeUnder7Days: activeExcludedCount(),
+            statusRecords: statusEntries.length,
+            statusCounts,
+            hospitalizationEvents24h,
+            ffScouterRecords: Object.keys(state.ffCache || {}).length,
+            activitySnapshotRefreshedAt: Number(state.activityCache?.refreshedAt) || 0,
+            activitySnapshotCount: Array.isArray(state.activityCache?.snapshots) ? state.activityCache.snapshots.length : 0,
+            lastPrimaryPollAt: state.lastCycleAt,
+            lastPrimaryChecked: state.lastCycleChecked,
+            lastPrimaryOkay: state.lastCycleOkay,
+            lastBackgroundPollAt: state.lastBackgroundAt,
+            lastBackgroundChecked: state.lastBackgroundChecked,
+            lastError: state.lastError || '',
+            recentChecks
+        };
+    }
+
+    function debugText() {
+        const data = buildDebugData();
+        const knownStatuses = ['Okay', 'Hospital', 'Traveling', 'Abroad', 'Jail', 'Federal'];
+        const knownCount = Object.entries(data.statusCounts)
+            .filter(([key]) => knownStatuses.includes(key))
+            .reduce((sum, [, count]) => sum + count, 0);
+
+        const lines = [
+            `Slinky Leveling Target Prototype v${data.scriptVersion}`,
+            `CoreLib: ${data.coreLibVersion}`,
+            `Polling tab: ${data.leaderTab ? 'Yes' : 'No'}`,
+            '',
+            `Master targets loaded: ${data.masterTargets}`,
+            `Active <7d excluded: ${data.activeUnder7Days}`,
+            `Cached status records: ${data.statusRecords}`,
+            `  Okay: ${data.statusCounts.Okay || 0}`,
+            `  Hospital: ${data.statusCounts.Hospital || 0}`,
+            `  Traveling: ${data.statusCounts.Traveling || 0}`,
+            `  Abroad: ${data.statusCounts.Abroad || 0}`,
+            `  Jail: ${data.statusCounts.Jail || 0}`,
+            `  Federal: ${data.statusCounts.Federal || 0}`,
+            `  Unknown/Other: ${Math.max(0, data.statusRecords - knownCount)}`,
+            `Hospitalization events observed in 24h: ${data.hospitalizationEvents24h}`,
+            `FFScouter cached records: ${data.ffScouterRecords}`,
+            `Activity snapshots cached: ${data.activitySnapshotCount}`,
+            `Activity snapshot refreshed: ${data.activitySnapshotRefreshedAt ? new Date(data.activitySnapshotRefreshedAt).toLocaleString() : 'Never'}`,
+            '',
+            `Primary poll: ${data.lastPrimaryPollAt ? new Date(data.lastPrimaryPollAt).toLocaleString() : 'Never'} | checked ${data.lastPrimaryChecked} | Okay ${data.lastPrimaryOkay}`,
+            `Background poll: ${data.lastBackgroundPollAt ? new Date(data.lastBackgroundPollAt).toLocaleString() : 'Never'} | checked ${data.lastBackgroundChecked}`,
+            `Last error: ${data.lastError || 'None'}`,
+            '',
+            'Most recent status checks:'
+        ];
+
+        for (const row of data.recentChecks) {
+            lines.push(`${row.checkedAt ? new Date(row.checkedAt).toLocaleString() : 'Never'} | ${row.name} [${row.id}] | ${row.state}`);
+        }
+
+        return lines.join('\n');
+    }
+
+    function debugHtml() {
+        const data = buildDebugData();
+
+        return `
+            <div class="slp-debug">
+                <div class="slp-debug-grid">
+                    <div class="slp-debug-line"><span>Master loaded</span><b>${data.masterTargets}</b></div>
+                    <div class="slp-debug-line"><span>Active &lt;7d</span><b>${data.activeUnder7Days}</b></div>
+                    <div class="slp-debug-line"><span>Status cached</span><b>${data.statusRecords}</b></div>
+                    <div class="slp-debug-line"><span>FF cached</span><b>${data.ffScouterRecords}</b></div>
+                    <div class="slp-debug-line"><span>Okay</span><b>${data.statusCounts.Okay || 0}</b></div>
+                    <div class="slp-debug-line"><span>Hospital</span><b>${data.statusCounts.Hospital || 0}</b></div>
+                    <div class="slp-debug-line"><span>Traveling</span><b>${data.statusCounts.Traveling || 0}</b></div>
+                    <div class="slp-debug-line"><span>Jail</span><b>${data.statusCounts.Jail || 0}</b></div>
+                    <div class="slp-debug-line"><span>Hosp events 24h</span><b>${data.hospitalizationEvents24h}</b></div>
+                    <div class="slp-debug-line"><span>Snapshots</span><b>${data.activitySnapshotCount}</b></div>
+                </div>
+                <div class="slp-debug-actions">
+                    <button class="slp-btn" id="slp-copy-debug">Copy Debug Data</button>
+                    <button class="slp-btn" id="slp-refresh-debug">Refresh View</button>
+                </div>
+                <textarea id="slp-debug-text" readonly>${escapeHtml(debugText())}</textarea>
             </div>
         `;
     }
@@ -939,10 +1064,32 @@
     function bindEvents(panel) {
         panel.querySelector('#slp-refresh')?.addEventListener('click', () => poll(true));
 
+        panel.querySelector('#slp-debug-btn')?.addEventListener('click', () => {
+            state.debugOpen = !state.debugOpen;
+            render();
+        });
+
         panel.querySelector('#slp-settings-btn')?.addEventListener('click', () => {
             state.settingsOpen = !state.settingsOpen;
             render();
         });
+
+        panel.querySelector('#slp-copy-debug')?.addEventListener('click', async event => {
+            const button = event.currentTarget;
+            const original = button.textContent;
+            try {
+                await TornLib.copyText(debugText());
+                button.textContent = 'Copied!';
+            } catch (error) {
+                button.textContent = 'Copy failed';
+                state.lastError = `Debug copy: ${TornLib.errorMessage(error)}`;
+            }
+            setTimeout(() => {
+                if (button.isConnected) button.textContent = original;
+            }, 1400);
+        });
+
+        panel.querySelector('#slp-refresh-debug')?.addEventListener('click', () => render());
 
         panel.querySelector('#slp-collapse')?.addEventListener('click', () => {
             GM_setValue(KEYS.collapsed, !getSettings().collapsed);
