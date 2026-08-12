@@ -1,0 +1,43 @@
+name: Apply Slinky Storage Fix
+
+on:
+  push:
+    branches:
+      - fix/slinky-storage-fallback
+    paths:
+      - '.github/workflows/apply-slinky-storage-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/slinky-storage-fallback
+
+      - name: Patch userscript
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('// @version      0.2.1', '// @version      0.2.2', 1)
+          old = "return TornLib.readJsonStorage(key, { fallback, merge: false }) ?? fallback;"
+          new = "return TornLib.readJsonStorage(key, fallback, { merge: false }) ?? fallback;"
+          if old not in text:
+              raise SystemExit('Expected loadJson call not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+          git commit -m "Fix Slinky JSON storage fallback handling"
+          git push origin HEAD:fix/slinky-storage-fallback
