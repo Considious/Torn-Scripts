@@ -581,8 +581,9 @@
     }
 
     function heavilyContested(id) {
-        const fastestGap = fastestRapidHospitalGap24h(id);
-        return hospitalCount24h(id) >= 8 || (fastestGap > 0 && fastestGap <= 5 * 60 * 1000) || competitionScore(id) >= 80;
+        const rapidWithinFiveMinutes = rapidHospitalEvents24h(id)
+            .some(event => Number(event.gapMs) <= 5 * 60 * 1000);
+        return hospitalCount24h(id) >= 8 || rapidWithinFiveMinutes || competitionScore(id) >= 80;
     }
 
     function okayRecheckInterval(id) {
@@ -648,9 +649,10 @@
             source?.state ??
             'Unknown';
 
+        const description = String(status?.description ?? status?.details ?? stateValue ?? 'Unknown');
         return {
-            state: normalizeStatus(stateValue),
-            description: String(status?.description ?? status?.details ?? stateValue ?? 'Unknown'),
+            state: normalizeStatus(`${stateValue} ${description}`),
+            description,
             until: Number(status?.until) || 0
         };
     }
