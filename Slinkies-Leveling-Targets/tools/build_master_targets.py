@@ -14,6 +14,12 @@ FILES = [
 OUTPUT = BASE / "Master-Leveling-Targets.csv"
 
 UNKNOWN = {"", "unknown", "—", "-", "none", "null"}
+MIN_LEVEL = 10
+MAX_STATS = 2500
+TORN_FORUM_HIGH_STAT_MARKERS = (
+    "Targets 1000-10000 estimated stats",
+    "Targets 10k-100k estimated stats",
+)
 
 
 def known(value):
@@ -29,10 +35,11 @@ def source_label(row, filename):
 
 
 def stat_number(value):
-    """Normalize 1.2k / 2.96m style estimates for comparison only."""
+    """Normalize values such as 1.2k / 2.96m / 1,000 to a number."""
     text = str(value or "").strip().lower().replace(",", "")
     if not known(text):
         return None
+
     multiplier = 1
     if text.endswith("k"):
         multiplier = 1_000
@@ -40,10 +47,22 @@ def stat_number(value):
     elif text.endswith("m"):
         multiplier = 1_000_000
         text = text[:-1]
+    elif text.endswith("b"):
+        multiplier = 1_000_000_000
+        text = text[:-1]
+
     try:
         return float(text) * multiplier
     except ValueError:
         return None
+
+
+def format_stat(value):
+    """Write known stat estimates as plain integers without commas or suffixes."""
+    numeric = stat_number(value)
+    if numeric is None:
+        return "Unknown"
+    return str(int(round(numeric)))
 
 
 def choose_total(existing, candidate):
@@ -72,6 +91,14 @@ def choose_level(existing, candidate):
         new = -1
     best = max(old, new)
     return str(best) if best >= 0 else "Unknown"
+
+
+def forum_source_over_1k(sources):
+    return any(
+        source.startswith("Torn Forum Leveling Targets - ") and
+        any(marker in source for marker in TORN_FORUM_HIGH_STAT_MARKERS)
+        for source in sources
+    )
 
 
 def merge():
@@ -104,7 +131,34 @@ def merge():
                 if source and source not in target["sources"]:
                     target["sources"].append(source)
 
-    rows = list(targets.values())
+    removed_forum = 0
+    removed_high_stats = 0
+    removed_low_level = 0
+    rows = []
+
+    for target in targets.values():
+        try:
+            level = int(target["level"])
+        except (TypeError, ValueError):
+            level = None
+
+        total_numeric = stat_number(target["total"])
+
+        if level is not None and level < MIN_LEVEL:
+            removed_low_level += 1
+            continue
+
+        if forum_source_over_1k(target["sources"]):
+            removed_forum += 1
+            continue
+
+        if total_numeric is not None and total_numeric > MAX_STATS:
+            removed_high_stats += 1
+            continue
+
+        target["total"] = format_stat(target["total"])
+        rows.append(target)
+
     rows.sort(key=lambda r: (
         -int(r["level"]) if str(r["level"]).isdigit() else 1,
         stat_number(r["total"]) or float("inf"),
@@ -122,7 +176,11 @@ def merge():
             row["sources"] = " | ".join(row["sources"])
             writer.writerow(row)
 
-    print(f"Merged {len(rows)} unique targets into {OUTPUT.name}")
+    print(f"Original unique targets: {len(targets)}")
+    print(f"Removed Torn Forum >1k groups: {removed_forum}")
+    print(f"Removed total stats >{MAX_STATS}: {removed_high_stats}")
+    print(f"Removed level <{MIN_LEVEL}: {removed_low_level}")
+    print(f"Remaining targets: {len(rows)}")
 
 
 if __name__ == "__main__":
