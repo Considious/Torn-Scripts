@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.44
+// @version      1.4.43
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -40,7 +40,6 @@
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
-  const REFILL_UNUSED_REFRESH_MS = 10 * 60_000;
   const NETWORTH_SESSION_REFRESH_MS = 10 * 60_000;
   const NETWORTH_SESSION_RETRY_MS = 2 * 60_000;
   const NETWORTH_PUBLIC_REFRESH_MS = 60 * 60_000;
@@ -2240,30 +2239,6 @@
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 5);
   }
 
-  function enabledRefillUsedStatuses(refills) {
-    const enabledStatuses = [];
-    if (state.settings.enabled.energyRefill !== false) enabledStatuses.push(refillUsedStatus(refills, 'energy'));
-    if (state.settings.enabled.nerveRefill !== false) enabledStatuses.push(refillUsedStatus(refills, 'nerve'));
-    return enabledStatuses;
-  }
-
-  function nextRefillApiCheckAt(refills, now = Date.now()) {
-    const enabledStatuses = enabledRefillUsedStatuses(refills);
-    // A completed set is stable until Torn's next daily reset. An available
-    // refill is not stable: the player can use it later, so refresh periodically
-    // until Torn confirms every enabled refill was used.
-    return enabledStatuses.length > 0 && enabledStatuses.every((used) => used === true)
-      ? nextTornRefillCheckAtMs(now)
-      : now + REFILL_UNUSED_REFRESH_MS;
-  }
-
-  function refillCompletionCheckDue(now = Date.now()) {
-    const enabledStatuses = enabledRefillUsedStatuses(state.data.refills?.refills);
-    if (!enabledStatuses.some((used) => used === false)) return false;
-    const fetchedAt = Number(state.data.refills?.__fetchedAt) || 0;
-    return fetchedAt <= 0 || now >= fetchedAt + REFILL_UNUSED_REFRESH_MS;
-  }
-
   function apiCheckDueAt(key, lastUpdated, fallbackMs, now = Date.now(), { honorScheduled = false } = {}) {
     const scheduled = Number(state.nextApiChecks?.[key]) || 0;
     const fallbackAt = (Number(lastUpdated) || 0) + Math.max(1_000, Number(fallbackMs) || 0);
@@ -3775,7 +3750,6 @@
     const refillsConfigured = state.settings.enabled.energyRefill !== false || state.settings.enabled.nerveRefill !== false;
     const refillsEnabled = force ? refillsConfigured : alertCheckDue('energyRefill') || alertCheckDue('nerveRefill');
     const refillsDue = refillsEnabled && (force || snoozeExpiredFor('energyRefill', 'nerveRefill')
-      || refillCompletionCheckDue(now)
       || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
       && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
@@ -4046,7 +4020,7 @@
               return;
             }
             delete state.errors.legacyDaily;
-            deferApiCheck('refills', nextRefillApiCheckAt(state.data.refills?.refills));
+            deferApiCheck('refills', nextTornRefillCheckAtMs());
             publishAlertGroups(['refills']);
           })());
         }
@@ -6567,7 +6541,7 @@
             </select>
           </label>
           <p><small>Fallback cadence: nerve 5 min; energy and cooldowns 10 min; education and organized crime 7 min; race and travel 3 min. Successful responses postpone the next call until their returned full-time, cooldown, education, OC, travel, race, or Torn-reset transition. Bars are combined when due together; cooldowns use Torn's dedicated endpoint.</small></p>
-          <p><small>Daily refills are accepted only after a complete response. When all enabled refills are used they wait until 00:05 TCT the next day; while either remains available they recheck every 10 minutes or after a snooze expires. City-item totals, casino tokens, and player addiction wait until the next Torn reset. Company addiction waits until its next daily check. Missing or unreadable daily data retries after 3 minutes.</small></p>
+          <p><small>Daily refills are accepted only after a complete response, then wait until 00:05 TCT the next day unless manually refreshed or rechecked after a snooze. City-item totals, casino tokens, and player addiction wait until the next Torn reset. Company addiction waits until its next daily check. Missing or unreadable daily data retries after 3 minutes.</small></p>
           <label class="field compact-field">
             <span>Job addiction (points)</span>
             <input type="number" min="0" max="100" step="1" data-field="job-addiction-threshold" value="${escapeHtml(state.settings.jobAddictionThreshold)}">
