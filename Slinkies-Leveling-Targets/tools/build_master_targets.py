@@ -131,9 +131,9 @@ def merge():
                 if source and source not in target["sources"]:
                     target["sources"].append(source)
 
+    removed_low_level = 0
     removed_forum = 0
     removed_high_stats = 0
-    removed_low_level = 0
     rows = []
 
     for target in targets.values():
@@ -141,8 +141,6 @@ def merge():
             level = int(target["level"])
         except (TypeError, ValueError):
             level = None
-
-        total_numeric = stat_number(target["total"])
 
         if level is not None and level < MIN_LEVEL:
             removed_low_level += 1
@@ -152,6 +150,7 @@ def merge():
             removed_forum += 1
             continue
 
+        total_numeric = stat_number(target["total"])
         if total_numeric is not None and total_numeric > MAX_STATS:
             removed_high_stats += 1
             continue
@@ -177,9 +176,9 @@ def merge():
             writer.writerow(row)
 
     print(f"Original unique targets: {len(targets)}")
+    print(f"Removed level <{MIN_LEVEL}: {removed_low_level}")
     print(f"Removed Torn Forum >1k groups: {removed_forum}")
     print(f"Removed total stats >{MAX_STATS}: {removed_high_stats}")
-    print(f"Removed level <{MIN_LEVEL}: {removed_low_level}")
     print(f"Remaining targets: {len(rows)}")
 
 
