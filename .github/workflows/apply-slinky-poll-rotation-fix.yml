@@ -18,7 +18,7 @@ jobs:
         with:
           ref: feature/slinky-poll-rotation-fix
 
-      - name: Fix polling rotation and hospitalization tracking
+      - name: Raise configurable polling limits
         shell: python
         run: |
           from pathlib import Path
@@ -26,51 +26,14 @@ jobs:
           path = Path('Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js')
           text = path.read_text(encoding='utf-8')
 
-          text = text.replace('// @version      0.4.1', '// @version      0.4.2', 1)
-
-          old = '''        const record = state.hospitalHistory[id] || {\n            events: [],\n            lastHospitalizedAt: 0,\n            lastState: ''\n        };'''
-          new = '''        const record = state.hospitalHistory[id] || {\n            events: [],\n            lastHospitalizedAt: 0,\n            lastHospitalUntil: 0,\n            lastState: ''\n        };'''
-          if old not in text:
-              raise SystemExit('hospital record anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''    function noteStatusObservation(id, statusState) {\n        const now = Date.now();\n        const normalized = normalizeStatus(statusState);\n        const record = getHospitalRecord(id);\n        const wasHospital = isHospitalState(record.lastState);\n        const isHospital = isHospitalState(normalized);\n\n        if (isHospital && !wasHospital) {\n            record.events.push(now);\n            record.lastHospitalizedAt = now;\n        }\n\n        record.lastState = normalized;\n        state.hospitalHistory[id] = record;\n    }'''
-          new = '''    function noteStatusObservation(id, statusState, statusUntil = 0) {\n        const now = Date.now();\n        const normalized = normalizeStatus(statusState);\n        const record = getHospitalRecord(id);\n        const wasHospital = isHospitalState(record.lastState);\n        const isHospital = isHospitalState(normalized);\n        const hospitalUntil = Number(statusUntil) || 0;\n\n        // A changed hospital-until timestamp identifies a new hospital stay even\n        // when we never caught the brief Okay state between two hospitalizations.\n        const newHospitalStay = isHospital && (\n            (hospitalUntil > 0 && hospitalUntil !== Number(record.lastHospitalUntil || 0)) ||\n            (hospitalUntil <= 0 && !wasHospital)\n        );\n\n        if (newHospitalStay) {\n            record.events.push(now);\n            record.lastHospitalizedAt = now;\n        }\n\n        if (isHospital && hospitalUntil > 0) {\n            record.lastHospitalUntil = hospitalUntil;\n        }\n\n        record.lastState = normalized;\n        state.hospitalHistory[id] = record;\n    }'''
-          if old not in text:
-              raise SystemExit('noteStatusObservation anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''        state.statusCache[target.id] = {\n            state: status.state,\n            description: status.description,\n            checkedAt: now,\n            nextEligibleAt: okay ? now : now + NON_OKAY_RECHECK_MS\n        };\n\n        noteStatusObservation(target.id, status.state);'''
-          new = '''        const hospital = isHospitalState(status.state);\n        const hospitalUntilMs = hospital && Number(status.until) > 0\n            ? Number(status.until) * 1000\n            : 0;\n\n        state.statusCache[target.id] = {\n            state: status.state,\n            description: status.description,\n            until: Number(status.until) || 0,\n            checkedAt: now,\n            // If Torn already told us exactly when Hospital ends, do not waste\n            // another API call on that target until the stay should be over.\n            nextEligibleAt: hospitalUntilMs > now\n                ? hospitalUntilMs + 5_000\n                : (okay ? now : now + NON_OKAY_RECHECK_MS)\n        };\n\n        noteStatusObservation(target.id, status.state, status.until);'''
-          if old not in text:
-              raise SystemExit('status cache anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''        if (A.recentHospitalPenalty !== B.recentHospitalPenalty) return A.recentHospitalPenalty - B.recentHospitalPenalty;\n        if (A.level !== B.level) return B.level - A.level;\n        if (A.total !== B.total) return A.total - B.total;\n        if (A.lastCheckedAt !== B.lastCheckedAt) return A.lastCheckedAt - B.lastCheckedAt;'''
-          new = '''        if (A.recentHospitalPenalty !== B.recentHospitalPenalty) return A.recentHospitalPenalty - B.recentHospitalPenalty;\n        // Rotation is more important than repeatedly hammering the same highest\n        // level targets. Never-checked and least-recently-checked targets go first.\n        if (A.lastCheckedAt !== B.lastCheckedAt) return A.lastCheckedAt - B.lastCheckedAt;\n        if (A.level !== B.level) return B.level - A.level;\n        if (A.total !== B.total) return A.total - B.total;'''
-          if old not in text:
-              raise SystemExit('candidate comparison anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''                const status = state.statusCache[target.id];\n                if (!status || now - Number(status.checkedAt || 0) > OKAY_CACHE_MS) return false;\n                if (!statusIsOkay(status.state)) return false;\n\n                const ff = getFF(target.id).fairFight;'''
-          new = '''                const status = state.statusCache[target.id];\n                if (!status) return false;\n\n                // Once we have observed a target, keep it visible. Hospital is\n                // useful information, not a reason to hide the target. Members can\n                // decide whether to wait, skip, or attack when the stay ends.\n                const normalized = normalizeStatus(status.state);\n                if (normalized !== 'Okay' && normalized !== 'Hospital') return false;\n\n                const ff = getFF(target.id).fairFight;'''
-          if old not in text:
-              raise SystemExit('display freshness anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''            const okayTargets = successful\n                .filter(result => statusIsOkay(result.status.state))\n                .map(result => result.target);\n\n            state.lastCycleOkay = okayTargets.length;\n\n            if (settings.ffKey && okayTargets.length) {\n                try {\n                    await updateFFScouter(settings.ffKey, okayTargets);'''
-          new = '''            const okayTargets = successful\n                .filter(result => statusIsOkay(result.status.state))\n                .map(result => result.target);\n            const scoutTargets = successful.map(result => result.target);\n\n            state.lastCycleOkay = okayTargets.length;\n\n            if (settings.ffKey && scoutTargets.length) {\n                try {\n                    await updateFFScouter(settings.ffKey, scoutTargets);'''
-          if old not in text:
-              raise SystemExit('primary FF anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''            const okayTargets = results\n                .filter(result => result.status === 'fulfilled')\n                .map(result => result.value)\n                .filter(result => statusIsOkay(result.status.state))\n                .map(result => result.target);\n\n            if (settings.ffKey && okayTargets.length) {\n                try {\n                    await updateFFScouter(settings.ffKey, okayTargets);'''
-          new = '''            const successfulTargets = results\n                .filter(result => result.status === 'fulfilled')\n                .map(result => result.value);\n            const scoutTargets = successfulTargets.map(result => result.target);\n\n            if (settings.ffKey && scoutTargets.length) {\n                try {\n                    await updateFFScouter(settings.ffKey, scoutTargets);'''
-          if old not in text:
-              raise SystemExit('background FF anchor not found')
-          text = text.replace(old, new, 1)
-
-          text = text.replace("            scriptVersion: '0.4.1',", "            scriptVersion: '0.4.2',", 1)
+          text = text.replace('// @version      0.4.2', '// @version      0.4.3', 1)
+          text = text.replace("primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 40)", "primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 80)", 1)
+          text = text.replace("backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 20)", "backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 80)", 1)
+          text = text.replace("GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 40));", "GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 80));", 1)
+          text = text.replace("GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, 20));", "GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, 80));", 1)
+          text = text.replace('id="slp-primary-checks" type="number" min="5" max="40"', 'id="slp-primary-checks" type="number" min="5" max="80"', 1)
+          text = text.replace('id="slp-background-checks" type="number" min="0" max="20"', 'id="slp-background-checks" type="number" min="0" max="80"', 1)
+          text = text.replace("scriptVersion: '0.4.2'", "scriptVersion: '0.4.3'", 1)
 
           path.write_text(text, encoding='utf-8')
 
@@ -80,5 +43,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
-          git commit -m "Fix target polling rotation and hospital tracking"
+          git commit -m "Allow up to 80 target checks per poll"
           git push origin HEAD:feature/slinky-poll-rotation-fix
