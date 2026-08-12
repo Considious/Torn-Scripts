@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.3.0
+// @version      0.3.1
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -52,8 +52,11 @@
         ffCache: 'slinkyLeveling.ffCache.v1',
         masterCache: 'slinkyLeveling.masterCache.v1',
         activityCache: 'slinkyLeveling.activityCache.v1',
-        panelPosition: 'slinkyLeveling.panelPosition.v1'
+        panelPosition: 'slinkyLeveling.panelPosition.v1',
+        runtimeState: 'slinkyLeveling.runtimeState.v1'
     };
+
+    const persistedRuntime = loadJson(KEYS.runtimeState, {});
 
     const state = {
         master: [],
@@ -63,11 +66,11 @@
         activityCache: loadJson(KEYS.activityCache, { refreshedAt: 0, activeTargets: {}, snapshots: [] }),
         polling: false,
         backgroundPolling: false,
-        lastCycleAt: 0,
-        lastCycleChecked: 0,
-        lastCycleOkay: 0,
-        lastBackgroundAt: 0,
-        lastBackgroundChecked: 0,
+        lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
+        lastCycleChecked: Number(persistedRuntime.lastCycleChecked) || 0,
+        lastCycleOkay: Number(persistedRuntime.lastCycleOkay) || 0,
+        lastBackgroundAt: Number(persistedRuntime.lastBackgroundAt) || 0,
+        lastBackgroundChecked: Number(persistedRuntime.lastBackgroundChecked) || 0,
         lastError: '',
         settingsOpen: false,
         debugOpen: false,
@@ -82,18 +85,80 @@
 
     function loadJson(key, fallback) {
         try {
-            return TornLib.readJsonStorage(key, fallback, { merge: false }) ?? fallback;
+            const gmValue = GM_getValue(key, undefined);
+            if (gmValue !== undefined) return gmValue;
         } catch {
-            return fallback;
+            // Fall through to the page-local cache for migration/compatibility.
         }
+
+        try {
+            const localValue = TornLib.readJsonStorage(key, undefined, { merge: false });
+            if (localValue !== undefined) {
+                try {
+                    GM_setValue(key, localValue);
+                } catch {
+                    // Local storage is still usable even if GM storage is unavailable.
+                }
+                return localValue;
+            }
+        } catch {
+            // Use the caller's fallback below.
+        }
+
+        return fallback;
     }
 
     function saveJson(key, value) {
         try {
-            return TornLib.writeJsonStorage(key, value);
+            GM_setValue(key, value);
         } catch {
-            return value;
+            // Keep the CoreLib/localStorage copy below as a fallback.
         }
+
+        try {
+            TornLib.writeJsonStorage(key, value);
+        } catch {
+            // GM storage above is the durable primary copy.
+        }
+
+        return value;
+    }
+
+    function saveRuntimeState() {
+        saveJson(KEYS.runtimeState, {
+            lastCycleAt: state.lastCycleAt,
+            lastCycleChecked: state.lastCycleChecked,
+            lastCycleOkay: state.lastCycleOkay,
+            lastBackgroundAt: state.lastBackgroundAt,
+            lastBackgroundChecked: state.lastBackgroundChecked
+        });
+    }
+
+    function refreshCollectedDataFromStorage() {
+        const storedStatus = loadJson(KEYS.statusCache, {});
+        const storedHospital = loadJson(KEYS.hospitalHistory, {});
+        const storedFF = loadJson(KEYS.ffCache, {});
+        const storedActivity = loadJson(KEYS.activityCache, null);
+        const storedRuntime = loadJson(KEYS.runtimeState, {});
+
+        if (storedStatus && typeof storedStatus === 'object' && !Array.isArray(storedStatus)) {
+            state.statusCache = { ...storedStatus, ...state.statusCache };
+        }
+        if (storedHospital && typeof storedHospital === 'object' && !Array.isArray(storedHospital)) {
+            state.hospitalHistory = { ...storedHospital, ...state.hospitalHistory };
+        }
+        if (storedFF && typeof storedFF === 'object' && !Array.isArray(storedFF)) {
+            state.ffCache = { ...storedFF, ...state.ffCache };
+        }
+        if (storedActivity && Number(storedActivity.refreshedAt) > Number(state.activityCache?.refreshedAt || 0)) {
+            state.activityCache = storedActivity;
+        }
+
+        state.lastCycleAt = Math.max(Number(state.lastCycleAt) || 0, Number(storedRuntime.lastCycleAt) || 0);
+        state.lastCycleChecked = Number(state.lastCycleChecked) || Number(storedRuntime.lastCycleChecked) || 0;
+        state.lastCycleOkay = Number(state.lastCycleOkay) || Number(storedRuntime.lastCycleOkay) || 0;
+        state.lastBackgroundAt = Math.max(Number(state.lastBackgroundAt) || 0, Number(storedRuntime.lastBackgroundAt) || 0);
+        state.lastBackgroundChecked = Number(state.lastBackgroundChecked) || Number(storedRuntime.lastBackgroundChecked) || 0;
     }
 
     function escapeHtml(value) {
@@ -442,6 +507,11 @@
         };
 
         noteStatusObservation(target.id, status.state);
+
+        // Persist every completed observation immediately so a refresh mid-cycle
+        // cannot throw away data already collected.
+        saveJson(KEYS.statusCache, state.statusCache);
+        saveJson(KEYS.hospitalHistory, state.hospitalHistory);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -686,6 +756,7 @@
             }
 
             state.lastCycleAt = Date.now();
+            saveRuntimeState();
             saveJson(KEYS.statusCache, state.statusCache);
             saveJson(KEYS.hospitalHistory, state.hospitalHistory);
             saveJson(KEYS.ffCache, state.ffCache);
@@ -747,6 +818,7 @@
             }
 
             state.lastBackgroundAt = Date.now();
+            saveRuntimeState();
             saveJson(KEYS.statusCache, state.statusCache);
             saveJson(KEYS.hospitalHistory, state.hospitalHistory);
             saveJson(KEYS.ffCache, state.ffCache);
@@ -911,6 +983,11 @@
     }
 
     function buildDebugData() {
+        // Re-read durable storage whenever Data is opened/refreshed. This also
+        // migrates any existing Local Storage data visible in Chrome DevTools
+        // into Tampermonkey's GM storage on first read.
+        refreshCollectedDataFromStorage();
+
         const statusEntries = Object.values(state.statusCache || {});
         const statusCounts = {};
 
@@ -938,7 +1015,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.3.0',
+            scriptVersion: '0.3.1',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             masterTargets: state.master.length,
