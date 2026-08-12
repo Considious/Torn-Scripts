@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.4.2
+// @version      0.4.3
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -193,8 +193,8 @@
         return {
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
-            primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 40),
-            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 20),
+            primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 80),
+            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 80),
             pollSeconds: clamp(Number(GM_getValue(KEYS.pollSeconds, 90)) || 90, 60, 300),
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 5),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 5),
@@ -209,8 +209,8 @@
     function saveSettings(values) {
         GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
         GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
-        GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 40));
-        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, 20));
+        GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 80));
+        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, 80));
         GM_setValue(KEYS.pollSeconds, clamp(Number(values.pollSeconds) || 90, 60, 300));
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 5));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 5));
@@ -1021,10 +1021,10 @@
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
                 </label>
                 <label>Checks per poll
-                    <input id="slp-primary-checks" type="number" min="5" max="40" value="${settings.primaryChecks}">
+                    <input id="slp-primary-checks" type="number" min="5" max="80" value="${settings.primaryChecks}">
                 </label>
                 <label>Background checks / 5m
-                    <input id="slp-background-checks" type="number" min="0" max="20" value="${settings.backgroundChecks}">
+                    <input id="slp-background-checks" type="number" min="0" max="80" value="${settings.backgroundChecks}">
                 </label>
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
@@ -1076,7 +1076,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.4.2',
+            scriptVersion: '0.4.3',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             primaryChecksConfigured: getSettings().primaryChecks,
