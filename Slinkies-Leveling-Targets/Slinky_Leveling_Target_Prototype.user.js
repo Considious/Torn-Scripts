@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.3.1
+// @version      0.3.2
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -34,14 +34,15 @@
     const NON_OKAY_RECHECK_MS = 5 * 60 * 1000;
     const FF_CACHE_MS = 12 * 60 * 60 * 1000;
     const MASTER_CACHE_MS = 30 * 60 * 1000;
-    const PRIMARY_CHECKS = 40;
-    const BACKGROUND_DEFAULT_CHECKS = 10;
+    const PRIMARY_DEFAULT_CHECKS = 10;
+    const BACKGROUND_DEFAULT_CHECKS = 0;
     const BACKGROUND_POLL_MS = 5 * 60 * 1000;
     const MAX_DISPLAY = 40;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
         ffKey: 'slinkyLeveling.ffApiKey',
+        primaryChecks: 'slinkyLeveling.primaryChecks',
         backgroundChecks: 'slinkyLeveling.backgroundChecks',
         pollSeconds: 'slinkyLeveling.pollSeconds',
         minFF: 'slinkyLeveling.minFF',
@@ -184,7 +185,8 @@
         return {
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
-            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || BACKGROUND_DEFAULT_CHECKS, 10, 40),
+            primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 40),
+            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 20),
             pollSeconds: clamp(Number(GM_getValue(KEYS.pollSeconds, 90)) || 90, 60, 300),
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 5),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 5),
@@ -199,7 +201,8 @@
     function saveSettings(values) {
         GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
         GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
-        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || BACKGROUND_DEFAULT_CHECKS, 10, 40));
+        GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 40));
+        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, 20));
         GM_setValue(KEYS.pollSeconds, clamp(Number(values.pollSeconds) || 90, 60, 300));
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 5));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 5));
@@ -721,7 +724,7 @@
             if (!state.master.length || force) await loadMaster(force);
             await ensureActivitySnapshots(settings.tornKey, false);
 
-            const candidates = chooseCandidates(PRIMARY_CHECKS);
+            const candidates = chooseCandidates(settings.primaryChecks);
             state.lastCycleChecked = candidates.length;
 
             const results = await Promise.allSettled(
@@ -791,7 +794,13 @@
             if (!state.master.length) await loadMaster(false);
             await ensureActivitySnapshots(settings.tornKey, false);
 
-            const primaryIds = new Set(chooseCandidates(PRIMARY_CHECKS).map(target => target.id));
+            if (settings.backgroundChecks <= 0) {
+                state.lastBackgroundChecked = 0;
+                scheduleBackgroundPoll();
+                return;
+            }
+
+            const primaryIds = new Set(chooseCandidates(settings.primaryChecks).map(target => target.id));
             const candidates = chooseBackgroundCandidates(settings.backgroundChecks, primaryIds);
             state.lastBackgroundChecked = candidates.length;
 
@@ -962,8 +971,11 @@
                 <label class="wide">FFScouter API key
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
                 </label>
-                <label>Background checks
-                    <input id="slp-background-checks" type="number" min="10" max="40" value="${settings.backgroundChecks}">
+                <label>Checks per poll
+                    <input id="slp-primary-checks" type="number" min="5" max="40" value="${settings.primaryChecks}">
+                </label>
+                <label>Background checks / 5m
+                    <input id="slp-background-checks" type="number" min="0" max="20" value="${settings.backgroundChecks}">
                 </label>
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
@@ -1015,9 +1027,12 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.3.1',
+            scriptVersion: '0.3.2',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
+            primaryChecksConfigured: getSettings().primaryChecks,
+            backgroundChecksConfigured: getSettings().backgroundChecks,
+            pollSecondsConfigured: getSettings().pollSeconds,
             masterTargets: state.master.length,
             activeUnder7Days: activeExcludedCount(),
             statusRecords: statusEntries.length,
@@ -1047,6 +1062,8 @@
             `Slinky Leveling Target Prototype v${data.scriptVersion}`,
             `CoreLib: ${data.coreLibVersion}`,
             `Polling tab: ${data.leaderTab ? 'Yes' : 'No'}`,
+            `Configured polling: ${data.primaryChecksConfigured} checks every ${data.pollSecondsConfigured}s`,
+            `Background sampling: ${data.backgroundChecksConfigured} checks every 5m`,
             '',
             `Master targets loaded: ${data.masterTargets}`,
             `Active <7d excluded: ${data.activeUnder7Days}`,
@@ -1177,6 +1194,7 @@
             const values = {
                 tornKey: panel.querySelector('#slp-torn-key')?.value,
                 ffKey: panel.querySelector('#slp-ff-key')?.value,
+                primaryChecks: panel.querySelector('#slp-primary-checks')?.value,
                 backgroundChecks: panel.querySelector('#slp-background-checks')?.value,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
