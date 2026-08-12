@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.2.0
+// @version      0.2.1
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -51,7 +51,8 @@
         statusCache: 'slinkyLeveling.statusCache.v1',
         ffCache: 'slinkyLeveling.ffCache.v1',
         masterCache: 'slinkyLeveling.masterCache.v1',
-        activityCache: 'slinkyLeveling.activityCache.v1'
+        activityCache: 'slinkyLeveling.activityCache.v1',
+        panelPosition: 'slinkyLeveling.panelPosition.v1'
     };
 
     const state = {
@@ -790,7 +791,7 @@
                 box-shadow: 0 8px 24px rgba(0,0,0,.42);
             }
             #slinky-leveling-panel * { box-sizing: border-box; }
-            .slp-head { display:flex; align-items:center; gap:7px; padding:8px 9px; border-bottom:1px solid rgba(255,255,255,.1); }
+            .slp-head { display:flex; align-items:center; gap:7px; padding:8px 9px; border-bottom:1px solid rgba(255,255,255,.1); cursor:move; user-select:none; }
             .slp-title { font-weight:700; font-size:13px; flex:1; }
             .slp-sub { color:#aaa; font-size:10px; }
             .slp-btn { border:1px solid rgba(255,255,255,.14); background:#2b3039; color:#eee; border-radius:5px; padding:4px 7px; cursor:pointer; }
@@ -984,6 +985,14 @@
 
     async function start() {
         installStyles();
+
+        const panel = ensurePanel();
+        TornLib.makePanelDraggable(panel, {
+            handle: panel,
+            storageKey: KEYS.panelPosition,
+            ignoreSelector: 'button, input, textarea, select, a, .slp-body, .slp-footer, [data-no-drag]',
+            margin: 4
+        });
 
         state.leader = TornLib.createTabLeaderLease('slinky-leveling-targets', {
             leaseMs: 15_000,
