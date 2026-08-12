@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.4.3
+// @version      0.4.4
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -36,7 +36,9 @@
     const FF_CACHE_MS = 12 * 60 * 60 * 1000;
     const MASTER_CACHE_MS = 30 * 60 * 1000;
     const PRIMARY_DEFAULT_CHECKS = 10;
+    const PRIMARY_MAX_CHECKS = 80;
     const BACKGROUND_DEFAULT_CHECKS = 0;
+    const BACKGROUND_MAX_CHECKS = 80;
     const BACKGROUND_POLL_MS = 5 * 60 * 1000;
     const MAX_DISPLAY = 40;
     const MAX_OBSERVATION_LOG = 20_000;
@@ -44,8 +46,8 @@
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
         ffKey: 'slinkyLeveling.ffApiKey',
-        primaryChecks: 'slinkyLeveling.primaryChecks',
-        backgroundChecks: 'slinkyLeveling.backgroundChecks',
+        primaryChecks: 'slinkyLeveling.primaryChecks.v2',
+        backgroundChecks: 'slinkyLeveling.backgroundChecks.v2',
         pollSeconds: 'slinkyLeveling.pollSeconds',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
@@ -193,8 +195,8 @@
         return {
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
-            primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 80),
-            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 80),
+            primaryChecks: clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, PRIMARY_MAX_CHECKS),
+            backgroundChecks: clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, BACKGROUND_MAX_CHECKS),
             pollSeconds: clamp(Number(GM_getValue(KEYS.pollSeconds, 90)) || 90, 60, 300),
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 5),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 5),
@@ -209,8 +211,8 @@
     function saveSettings(values) {
         GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
         GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
-        GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 80));
-        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, 80));
+        GM_setValue(KEYS.primaryChecks, clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, PRIMARY_MAX_CHECKS));
+        GM_setValue(KEYS.backgroundChecks, clamp(Number(values.backgroundChecks) || 0, 0, BACKGROUND_MAX_CHECKS));
         GM_setValue(KEYS.pollSeconds, clamp(Number(values.pollSeconds) || 90, 60, 300));
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 5));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 5));
@@ -674,11 +676,26 @@
 
     function chooseCandidates(limit) {
         const now = Date.now();
+        const eligible = [...state.master]
+            .filter(target => candidateEligible(target, now));
 
-        return [...state.master]
-            .filter(target => candidateEligible(target, now))
-            .sort(compareCandidates)
-            .slice(0, limit);
+        const neverChecked = eligible
+            .filter(target => !state.statusCache[target.id]?.checkedAt)
+            .sort((a, b) => {
+                if (a.level !== b.level) return b.level - a.level;
+                return a.name.localeCompare(b.name);
+            });
+
+        if (neverChecked.length >= limit) {
+            return neverChecked.slice(0, limit);
+        }
+
+        const neverCheckedIds = new Set(neverChecked.map(target => target.id));
+        const revisits = eligible
+            .filter(target => !neverCheckedIds.has(target.id))
+            .sort(compareCandidates);
+
+        return [...neverChecked, ...revisits].slice(0, limit);
     }
 
     function chooseBackgroundCandidates(limit, excludeIds = new Set()) {
@@ -1020,10 +1037,10 @@
                 <label class="wide">FFScouter API key
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
                 </label>
-                <label>Checks per poll
+                <label>Checks per poll (5–80)
                     <input id="slp-primary-checks" type="number" min="5" max="80" value="${settings.primaryChecks}">
                 </label>
-                <label>Background checks / 5m
+                <label>Background checks / 5m (0–80)
                     <input id="slp-background-checks" type="number" min="0" max="80" value="${settings.backgroundChecks}">
                 </label>
                 <label>Poll seconds
@@ -1076,7 +1093,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.4.3',
+            scriptVersion: '0.4.4',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             primaryChecksConfigured: getSettings().primaryChecks,
