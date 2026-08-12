@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.4.1
+// @version      0.4.2
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -419,6 +419,7 @@
         const record = state.hospitalHistory[id] || {
             events: [],
             lastHospitalizedAt: 0,
+            lastHospitalUntil: 0,
             lastState: ''
         };
 
@@ -430,16 +431,28 @@
         return record;
     }
 
-    function noteStatusObservation(id, statusState) {
+    function noteStatusObservation(id, statusState, statusUntil = 0) {
         const now = Date.now();
         const normalized = normalizeStatus(statusState);
         const record = getHospitalRecord(id);
         const wasHospital = isHospitalState(record.lastState);
         const isHospital = isHospitalState(normalized);
+        const hospitalUntil = Number(statusUntil) || 0;
 
-        if (isHospital && !wasHospital) {
+        // A changed hospital-until timestamp identifies a new hospital stay even
+        // when we never caught the brief Okay state between two hospitalizations.
+        const newHospitalStay = isHospital && (
+            (hospitalUntil > 0 && hospitalUntil !== Number(record.lastHospitalUntil || 0)) ||
+            (hospitalUntil <= 0 && !wasHospital)
+        );
+
+        if (newHospitalStay) {
             record.events.push(now);
             record.lastHospitalizedAt = now;
+        }
+
+        if (isHospital && hospitalUntil > 0) {
+            record.lastHospitalUntil = hospitalUntil;
         }
 
         record.lastState = normalized;
@@ -515,14 +528,24 @@
         const now = Date.now();
         const okay = statusIsOkay(status.state);
 
+        const hospital = isHospitalState(status.state);
+        const hospitalUntilMs = hospital && Number(status.until) > 0
+            ? Number(status.until) * 1000
+            : 0;
+
         state.statusCache[target.id] = {
             state: status.state,
             description: status.description,
+            until: Number(status.until) || 0,
             checkedAt: now,
-            nextEligibleAt: okay ? now : now + NON_OKAY_RECHECK_MS
+            // If Torn already told us exactly when Hospital ends, do not waste
+            // another API call on that target until the stay should be over.
+            nextEligibleAt: hospitalUntilMs > now
+                ? hospitalUntilMs + 5_000
+                : (okay ? now : now + NON_OKAY_RECHECK_MS)
         };
 
-        noteStatusObservation(target.id, status.state);
+        noteStatusObservation(target.id, status.state, status.until);
 
         // Current status remains local operational state. Only hospitalization
         // transitions are retained as long-term competition intelligence.
@@ -634,9 +657,11 @@
         if (A.hospital24h !== B.hospital24h) return A.hospital24h - B.hospital24h;
         if (A.hospital7d !== B.hospital7d) return A.hospital7d - B.hospital7d;
         if (A.recentHospitalPenalty !== B.recentHospitalPenalty) return A.recentHospitalPenalty - B.recentHospitalPenalty;
+        // Rotation is more important than repeatedly hammering the same highest
+        // level targets. Never-checked and least-recently-checked targets go first.
+        if (A.lastCheckedAt !== B.lastCheckedAt) return A.lastCheckedAt - B.lastCheckedAt;
         if (A.level !== B.level) return B.level - A.level;
         if (A.total !== B.total) return A.total - B.total;
-        if (A.lastCheckedAt !== B.lastCheckedAt) return A.lastCheckedAt - B.lastCheckedAt;
         return a.name.localeCompare(b.name);
     }
 
@@ -678,8 +703,13 @@
                 if (activeWithinSevenDays(target.id)) return false;
 
                 const status = state.statusCache[target.id];
-                if (!status || now - Number(status.checkedAt || 0) > OKAY_CACHE_MS) return false;
-                if (!statusIsOkay(status.state)) return false;
+                if (!status) return false;
+
+                // Once we have observed a target, keep it visible. Hospital is
+                // useful information, not a reason to hide the target. Members can
+                // decide whether to wait, skip, or attack when the stay ends.
+                const normalized = normalizeStatus(status.state);
+                if (normalized !== 'Okay' && normalized !== 'Hospital') return false;
 
                 const ff = getFF(target.id).fairFight;
                 if (Number.isFinite(ff)) {
@@ -761,12 +791,13 @@
             const okayTargets = successful
                 .filter(result => statusIsOkay(result.status.state))
                 .map(result => result.target);
+            const scoutTargets = successful.map(result => result.target);
 
             state.lastCycleOkay = okayTargets.length;
 
-            if (settings.ffKey && okayTargets.length) {
+            if (settings.ffKey && scoutTargets.length) {
                 try {
-                    await updateFFScouter(settings.ffKey, okayTargets);
+                    await updateFFScouter(settings.ffKey, scoutTargets);
                 } catch (error) {
                     state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
                 }
@@ -831,15 +862,14 @@
                 })
             );
 
-            const okayTargets = results
+            const successfulTargets = results
                 .filter(result => result.status === 'fulfilled')
-                .map(result => result.value)
-                .filter(result => statusIsOkay(result.status.state))
-                .map(result => result.target);
+                .map(result => result.value);
+            const scoutTargets = successfulTargets.map(result => result.target);
 
-            if (settings.ffKey && okayTargets.length) {
+            if (settings.ffKey && scoutTargets.length) {
                 try {
-                    await updateFFScouter(settings.ffKey, okayTargets);
+                    await updateFFScouter(settings.ffKey, scoutTargets);
                 } catch (error) {
                     console.warn('[Slinky Leveling] Background FFScouter update failed:', error);
                 }
@@ -1046,7 +1076,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.4.1',
+            scriptVersion: '0.4.2',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             primaryChecksConfigured: getSettings().primaryChecks,
