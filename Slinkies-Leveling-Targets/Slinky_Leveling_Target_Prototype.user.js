@@ -663,11 +663,11 @@
 
         if (lower.includes('federal')) return 'Federal';
         if (lower.includes('hiding out') || lower.includes('hiding')) return 'Hiding Out';
-        if (lower === 'okay' || lower.includes('okay')) return 'Okay';
         if (lower.includes('hospital')) return 'Hospital';
         if (lower.includes('travel') || lower.includes('flying')) return 'Traveling';
         if (lower.includes('abroad')) return 'Abroad';
         if (lower.includes('jail')) return 'Jail';
+        if (lower === 'okay' || lower.includes('okay')) return 'Okay';
         return text || 'Unknown';
     }
 
