@@ -1,0 +1,36 @@
+name: Patch Slinky Smart Scheduler 0.5.0
+
+on:
+  push:
+    branches:
+      - feature/slinky-smart-scheduler-045
+    paths:
+      - 'Slinkies-Leveling-Targets/tools/patch_slinky_045.py'
+      - '.github/workflows/patch-slinky-045.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Apply scheduler patch
+        run: python Slinkies-Leveling-Targets/tools/patch_slinky_045.py
+      - name: Syntax check userscript
+        run: node --check Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+      - name: Commit patched userscript
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+          if git diff --cached --quiet; then
+            echo "No userscript changes."
+          else
+            git commit -m "Add competition-aware smart target scheduler"
+            git push
+          fi
