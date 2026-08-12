@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.3.2
+// @version      0.4.0
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -38,6 +38,7 @@
     const BACKGROUND_DEFAULT_CHECKS = 0;
     const BACKGROUND_POLL_MS = 5 * 60 * 1000;
     const MAX_DISPLAY = 40;
+    const MAX_OBSERVATION_LOG = 20_000;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
@@ -54,7 +55,8 @@
         masterCache: 'slinkyLeveling.masterCache.v1',
         activityCache: 'slinkyLeveling.activityCache.v1',
         panelPosition: 'slinkyLeveling.panelPosition.v1',
-        runtimeState: 'slinkyLeveling.runtimeState.v1'
+        runtimeState: 'slinkyLeveling.runtimeState.v1',
+        observationLog: 'slinkyLeveling.observationLog.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
@@ -65,6 +67,7 @@
         ffCache: loadJson(KEYS.ffCache, {}),
         hospitalHistory: loadJson(KEYS.hospitalHistory, {}),
         activityCache: loadJson(KEYS.activityCache, { refreshedAt: 0, activeTargets: {}, snapshots: [] }),
+        observationLog: loadJson(KEYS.observationLog, []),
         polling: false,
         backgroundPolling: false,
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
@@ -141,6 +144,7 @@
         const storedFF = loadJson(KEYS.ffCache, {});
         const storedActivity = loadJson(KEYS.activityCache, null);
         const storedRuntime = loadJson(KEYS.runtimeState, {});
+        const storedObservations = loadJson(KEYS.observationLog, []);
 
         if (storedStatus && typeof storedStatus === 'object' && !Array.isArray(storedStatus)) {
             state.statusCache = { ...storedStatus, ...state.statusCache };
@@ -153,6 +157,9 @@
         }
         if (storedActivity && Number(storedActivity.refreshedAt) > Number(state.activityCache?.refreshedAt || 0)) {
             state.activityCache = storedActivity;
+        }
+        if (Array.isArray(storedObservations) && storedObservations.length > state.observationLog.length) {
+            state.observationLog = storedObservations;
         }
 
         state.lastCycleAt = Math.max(Number(state.lastCycleAt) || 0, Number(storedRuntime.lastCycleAt) || 0);
@@ -509,12 +516,32 @@
             nextEligibleAt: okay ? now : now + NON_OKAY_RECHECK_MS
         };
 
+        const beforeHospitalCount = hospitalCount24h(target.id);
         noteStatusObservation(target.id, status.state);
+        const afterHospitalCount = hospitalCount24h(target.id);
+
+        state.observationLog.push({
+            checkedAt: now,
+            id: target.id,
+            name: target.name,
+            level: target.level,
+            total: target.total,
+            sources: target.sources,
+            status: status.state,
+            description: status.description,
+            until: status.until || 0,
+            hospitalizationObserved: afterHospitalCount > beforeHospitalCount
+        });
+
+        if (state.observationLog.length > MAX_OBSERVATION_LOG) {
+            state.observationLog.splice(0, state.observationLog.length - MAX_OBSERVATION_LOG);
+        }
 
         // Persist every completed observation immediately so a refresh mid-cycle
         // cannot throw away data already collected.
         saveJson(KEYS.statusCache, state.statusCache);
         saveJson(KEYS.hospitalHistory, state.hospitalHistory);
+        saveJson(KEYS.observationLog, state.observationLog);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1027,7 +1054,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.3.2',
+            scriptVersion: '0.4.0',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             primaryChecksConfigured: getSettings().primaryChecks,
@@ -1039,6 +1066,7 @@
             statusCounts,
             hospitalizationEvents24h,
             ffScouterRecords: Object.keys(state.ffCache || {}).length,
+            observationsLogged: Array.isArray(state.observationLog) ? state.observationLog.length : 0,
             activitySnapshotRefreshedAt: Number(state.activityCache?.refreshedAt) || 0,
             activitySnapshotCount: Array.isArray(state.activityCache?.snapshots) ? state.activityCache.snapshots.length : 0,
             lastPrimaryPollAt: state.lastCycleAt,
@@ -1077,6 +1105,7 @@
             `  Unknown/Other: ${Math.max(0, data.statusRecords - knownCount)}`,
             `Hospitalization events observed in 24h: ${data.hospitalizationEvents24h}`,
             `FFScouter cached records: ${data.ffScouterRecords}`,
+            `Status observations logged: ${data.observationsLogged}`,
             `Activity snapshots cached: ${data.activitySnapshotCount}`,
             `Activity snapshot refreshed: ${data.activitySnapshotRefreshedAt ? new Date(data.activitySnapshotRefreshedAt).toLocaleString() : 'Never'}`,
             '',
@@ -1094,6 +1123,89 @@
         return lines.join('\n');
     }
 
+    function csvCell(value) {
+        const text = String(value ?? '');
+        return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    function downloadCsv(filename, headers, rows) {
+        const lines = [headers.map(csvCell).join(',')];
+        for (const row of rows) {
+            lines.push(headers.map(header => csvCell(row[header])).join(','));
+        }
+        const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function exportObservationCsv() {
+        refreshCollectedDataFromStorage();
+        const headers = [
+            'checked_at', 'id', 'name', 'level', 'total', 'sources',
+            'status', 'description', 'status_until', 'hospitalization_observed'
+        ];
+        const rows = [...state.observationLog]
+            .sort((a, b) => Number(a.checkedAt || 0) - Number(b.checkedAt || 0))
+            .map(row => ({
+                checked_at: row.checkedAt ? new Date(row.checkedAt).toISOString() : '',
+                id: row.id || '',
+                name: row.name || '',
+                level: row.level ?? '',
+                total: row.total ?? '',
+                sources: row.sources || '',
+                status: row.status || '',
+                description: row.description || '',
+                status_until: row.until ? new Date(Number(row.until) * 1000).toISOString() : '',
+                hospitalization_observed: row.hospitalizationObserved ? 'Yes' : 'No'
+            }));
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadCsv(`Slinky-Leveling-Observations-${stamp}.csv`, headers, rows);
+    }
+
+    function exportTargetCacheCsv() {
+        refreshCollectedDataFromStorage();
+        const headers = [
+            'id', 'name', 'level', 'total', 'sources', 'profile_url',
+            'active_within_7_days', 'last_seen_active_snapshot',
+            'current_status', 'status_description', 'status_checked_at',
+            'hospitalizations_observed_24h', 'last_hospitalized_at',
+            'fair_fight', 'ff_bs_estimate', 'ff_source', 'ff_checked_at'
+        ];
+        const rows = state.master.map(target => {
+            const status = state.statusCache[target.id] || {};
+            const ff = state.ffCache[target.id] || {};
+            const lastActive = lastSeenActiveSnapshot(target.id);
+            const lastHosp = lastHospitalizedAt(target.id);
+            return {
+                id: target.id,
+                name: target.name,
+                level: target.level,
+                total: target.total,
+                sources: target.sources,
+                profile_url: target.profileUrl,
+                active_within_7_days: activeWithinSevenDays(target.id) ? 'Yes' : 'No',
+                last_seen_active_snapshot: lastActive ? new Date(lastActive * 1000).toISOString() : '',
+                current_status: status.state || '',
+                status_description: status.description || '',
+                status_checked_at: status.checkedAt ? new Date(status.checkedAt).toISOString() : '',
+                hospitalizations_observed_24h: hospitalCount24h(target.id),
+                last_hospitalized_at: lastHosp ? new Date(lastHosp).toISOString() : '',
+                fair_fight: Number.isFinite(Number(ff.fairFight)) ? ff.fairFight : '',
+                ff_bs_estimate: ff.bsEstimate ?? '',
+                ff_source: ff.source || '',
+                ff_checked_at: ff.checkedAt ? new Date(ff.checkedAt).toISOString() : ''
+            };
+        });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadCsv(`Slinky-Leveling-Target-Cache-${stamp}.csv`, headers, rows);
+    }
+
     function debugHtml() {
         const data = buildDebugData();
 
@@ -1104,6 +1216,7 @@
                     <div class="slp-debug-line"><span>Active &lt;7d</span><b>${data.activeUnder7Days}</b></div>
                     <div class="slp-debug-line"><span>Status cached</span><b>${data.statusRecords}</b></div>
                     <div class="slp-debug-line"><span>FF cached</span><b>${data.ffScouterRecords}</b></div>
+                    <div class="slp-debug-line"><span>Observations</span><b>${data.observationsLogged}</b></div>
                     <div class="slp-debug-line"><span>Okay</span><b>${data.statusCounts.Okay || 0}</b></div>
                     <div class="slp-debug-line"><span>Hospital</span><b>${data.statusCounts.Hospital || 0}</b></div>
                     <div class="slp-debug-line"><span>Traveling</span><b>${data.statusCounts.Traveling || 0}</b></div>
@@ -1112,6 +1225,8 @@
                     <div class="slp-debug-line"><span>Snapshots</span><b>${data.activitySnapshotCount}</b></div>
                 </div>
                 <div class="slp-debug-actions">
+                    <button class="slp-btn" id="slp-export-observations">Export Observations CSV</button>
+                    <button class="slp-btn" id="slp-export-target-cache">Export Target Cache CSV</button>
                     <button class="slp-btn" id="slp-copy-debug">Copy Debug Data</button>
                     <button class="slp-btn" id="slp-refresh-debug">Refresh View</button>
                 </div>
@@ -1168,6 +1283,9 @@
             render();
         });
 
+        panel.querySelector('#slp-export-observations')?.addEventListener('click', () => exportObservationCsv());
+        panel.querySelector('#slp-export-target-cache')?.addEventListener('click', () => exportTargetCacheCsv());
+
         panel.querySelector('#slp-copy-debug')?.addEventListener('click', async event => {
             const button = event.currentTarget;
             const original = button.textContent;
@@ -1212,11 +1330,13 @@
             state.statusCache = {};
             state.ffCache = {};
             state.activityCache = { refreshedAt: 0, activeTargets: {}, snapshots: [] };
+            state.observationLog = [];
 
             saveJson(KEYS.hospitalHistory, {});
             saveJson(KEYS.statusCache, {});
             saveJson(KEYS.ffCache, {});
             saveJson(KEYS.activityCache, state.activityCache);
+            saveJson(KEYS.observationLog, []);
             render();
         });
     }
