@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.5.0
+// @version      0.5.1
 // @description  Leveling target scheduler using daily activity snapshots, scheduled status checks, FFScouter estimates, and competition-aware hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -49,6 +49,7 @@
     const MAX_DISPLAY = 40;
     const MAX_OBSERVATION_LOG = 20_000;
     const MAX_SCHEDULER_LOG = 5_000;
+    const SHARED_POLL_LOCK_MS = 3 * 60 * 1000;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
@@ -67,9 +68,11 @@
         panelPosition: 'slinkyLeveling.panelPosition.v1',
         runtimeState: 'slinkyLeveling.runtimeState.v1',
         observationLog: 'slinkyLeveling.observationLog.v1',
-        schedulerLog: 'slinkyLeveling.schedulerLog.v1'
+        schedulerLog: 'slinkyLeveling.schedulerLog.v1',
+        pollLock: 'slinkyLeveling.pollLock.v1'
     };
 
+    const INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
 
     const state = {
@@ -140,6 +143,33 @@
         return value;
     }
 
+    function acquireSharedPollLock(kind) {
+        const now = Date.now();
+        const existing = GM_getValue(KEYS.pollLock, null);
+
+        if (existing?.owner && existing.owner !== INSTANCE_ID && Number(existing.expiresAt) > now) {
+            return false;
+        }
+
+        const claim = {
+            owner: INSTANCE_ID,
+            kind: String(kind || 'poll'),
+            claimedAt: now,
+            expiresAt: now + SHARED_POLL_LOCK_MS
+        };
+
+        GM_setValue(KEYS.pollLock, claim);
+        const confirmed = GM_getValue(KEYS.pollLock, null);
+        return confirmed?.owner === INSTANCE_ID;
+    }
+
+    function releaseSharedPollLock() {
+        const existing = GM_getValue(KEYS.pollLock, null);
+        if (existing?.owner === INSTANCE_ID) {
+            GM_setValue(KEYS.pollLock, null);
+        }
+    }
+
     function saveRuntimeState() {
         saveJson(KEYS.runtimeState, {
             lastCycleAt: state.lastCycleAt,
@@ -160,13 +190,13 @@
         const storedSchedulerLog = loadJson(KEYS.schedulerLog, []);
 
         if (storedStatus && typeof storedStatus === 'object' && !Array.isArray(storedStatus)) {
-            state.statusCache = { ...storedStatus, ...state.statusCache };
+            state.statusCache = { ...state.statusCache, ...storedStatus };
         }
         if (storedHospital && typeof storedHospital === 'object' && !Array.isArray(storedHospital)) {
-            state.hospitalHistory = { ...storedHospital, ...state.hospitalHistory };
+            state.hospitalHistory = { ...state.hospitalHistory, ...storedHospital };
         }
         if (storedFF && typeof storedFF === 'object' && !Array.isArray(storedFF)) {
-            state.ffCache = { ...storedFF, ...state.ffCache };
+            state.ffCache = { ...state.ffCache, ...storedFF };
         }
         if (storedActivity && Number(storedActivity.refreshedAt) > Number(state.activityCache?.refreshedAt || 0)) {
             state.activityCache = storedActivity;
@@ -1015,11 +1045,18 @@
             return;
         }
 
+        if (!acquireSharedPollLock('primary')) {
+            scheduleNextPoll();
+            render();
+            return;
+        }
+
         state.polling = true;
         state.lastError = '';
         render();
 
         try {
+            refreshCollectedDataFromStorage();
             cleanHospitalHistory();
             if (!state.master.length || force) await loadMaster(force);
             await ensureActivitySnapshots(settings.tornKey, false);
@@ -1071,6 +1108,7 @@
             state.lastError = TornLib.errorMessage(error);
         } finally {
             state.polling = false;
+            releaseSharedPollLock();
             scheduleNextPoll();
             render();
         }
@@ -1092,9 +1130,15 @@
             return;
         }
 
+        if (!acquireSharedPollLock('background')) {
+            scheduleBackgroundPoll();
+            return;
+        }
+
         state.backgroundPolling = true;
 
         try {
+            refreshCollectedDataFromStorage();
             if (!state.master.length) await loadMaster(false);
             await ensureActivitySnapshots(settings.tornKey, false);
 
@@ -1141,6 +1185,7 @@
             console.warn('[Slinky Leveling] Background poll failed:', error);
         } finally {
             state.backgroundPolling = false;
+            releaseSharedPollLock();
             scheduleBackgroundPoll();
             render();
         }
@@ -1345,7 +1390,7 @@
             .slice(0, 20);
 
         return {
-            scriptVersion: '0.5.0',
+            scriptVersion: '0.5.1',
             coreLibVersion: TornLib.VERSION,
             leaderTab: Boolean(state.leader?.isLeader()),
             primaryChecksConfigured: getSettings().primaryChecks,
