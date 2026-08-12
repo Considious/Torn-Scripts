@@ -1,0 +1,70 @@
+name: Apply Slinky v0.4.4
+
+on:
+  push:
+    branches:
+      - fix/slinky-044-sweep
+    paths:
+      - '.github/workflows/apply-slinky-044.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/slinky-044-sweep
+
+      - name: Patch userscript
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js')
+          text = path.read_text(encoding='utf-8')
+
+          text = text.replace('// @version      0.4.3', '// @version      0.4.4', 1)
+
+          # Make the polling limits explicit and use fresh storage keys so stale
+          # values from earlier capped builds cannot keep forcing 40/20.
+          text = text.replace('    const PRIMARY_DEFAULT_CHECKS = 10;\n    const BACKGROUND_DEFAULT_CHECKS = 0;',
+                              '    const PRIMARY_DEFAULT_CHECKS = 10;\n    const PRIMARY_MAX_CHECKS = 80;\n    const BACKGROUND_DEFAULT_CHECKS = 0;\n    const BACKGROUND_MAX_CHECKS = 80;', 1)
+          text = text.replace("        primaryChecks: 'slinkyLeveling.primaryChecks',\n        backgroundChecks: 'slinkyLeveling.backgroundChecks',",
+                              "        primaryChecks: 'slinkyLeveling.primaryChecks.v2',\n        backgroundChecks: 'slinkyLeveling.backgroundChecks.v2',", 1)
+          text = text.replace('clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, 80)',
+                              'clamp(Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) || PRIMARY_DEFAULT_CHECKS, 5, PRIMARY_MAX_CHECKS)', 1)
+          text = text.replace('clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, 80)',
+                              'clamp(Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0, 0, BACKGROUND_MAX_CHECKS)', 1)
+          text = text.replace('clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, 80)',
+                              'clamp(Number(values.primaryChecks) || PRIMARY_DEFAULT_CHECKS, 5, PRIMARY_MAX_CHECKS)', 1)
+          text = text.replace('clamp(Number(values.backgroundChecks) || 0, 0, 80)',
+                              'clamp(Number(values.backgroundChecks) || 0, 0, BACKGROUND_MAX_CHECKS)', 1)
+
+          # Initial sweep: never-checked eligible targets always come first.
+          old = '''    function chooseCandidates(limit) {\n        const now = Date.now();\n\n        return [...state.master]\n            .filter(target => candidateEligible(target, now))\n            .sort(compareCandidates)\n            .slice(0, limit);\n    }'''
+          new = '''    function chooseCandidates(limit) {\n        const now = Date.now();\n        const eligible = [...state.master]\n            .filter(target => candidateEligible(target, now));\n\n        const neverChecked = eligible\n            .filter(target => !state.statusCache[target.id]?.checkedAt)\n            .sort((a, b) => {\n                if (a.level !== b.level) return b.level - a.level;\n                return a.name.localeCompare(b.name);\n            });\n\n        if (neverChecked.length >= limit) {\n            return neverChecked.slice(0, limit);\n        }\n\n        const neverCheckedIds = new Set(neverChecked.map(target => target.id));\n        const revisits = eligible\n            .filter(target => !neverCheckedIds.has(target.id))\n            .sort(compareCandidates);\n\n        return [...neverChecked, ...revisits].slice(0, limit);\n    }'''
+          if old not in text:
+              raise SystemExit('chooseCandidates anchor not found')
+          text = text.replace(old, new, 1)
+
+          text = text.replace('<label>Checks per poll\n                    <input id="slp-primary-checks" type="number" min="5" max="80" value="${settings.primaryChecks}">',
+                              '<label>Checks per poll (5–80)\n                    <input id="slp-primary-checks" type="number" min="5" max="80" value="${settings.primaryChecks}">', 1)
+          text = text.replace('<label>Background checks / 5m\n                    <input id="slp-background-checks" type="number" min="0" max="80" value="${settings.backgroundChecks}">',
+                              '<label>Background checks / 5m (0–80)\n                    <input id="slp-background-checks" type="number" min="0" max="80" value="${settings.backgroundChecks}">', 1)
+
+          text = text.replace("            scriptVersion: '0.4.3',", "            scriptVersion: '0.4.4',", 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Syntax check and commit
+        shell: bash
+        run: |
+          node --check Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
+          git commit -m 'Fix Slinky polling settings and full-list sweep'
+          git push origin HEAD:fix/slinky-044-sweep
