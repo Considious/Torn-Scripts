@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Prototype
 // @namespace    Considious [3853023]
-// @version      0.2.1
+// @version      0.2.2
 // @description  Leveling target prototype using daily activity snapshots, prioritized Torn status checks, FFScouter estimates, and local hospitalization history.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -81,7 +81,7 @@
 
     function loadJson(key, fallback) {
         try {
-            return TornLib.readJsonStorage(key, { fallback, merge: false }) ?? fallback;
+            return TornLib.readJsonStorage(key, fallback, { merge: false }) ?? fallback;
         } catch {
             return fallback;
         }
