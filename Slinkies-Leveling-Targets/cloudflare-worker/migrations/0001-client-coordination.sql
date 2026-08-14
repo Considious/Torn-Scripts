@@ -1,8 +1,3 @@
--- Slinky Leveling Worker 0.3.0
---
--- Run this once against the existing D1 database before deploying worker.js.
--- The statements are idempotent, so running the complete file again is safe.
-
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS client_check_claims (
