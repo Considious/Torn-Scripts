@@ -23,8 +23,13 @@ describe('Slinky Leveling Worker', () => {
         assert.deepEqual(await rootResponse.json(), {
             ok: true,
             service: 'Slinky Leveling API',
+            version: '0.2.0-member-targets',
             message: 'Worker is running.'
         });
+        assert.equal(
+            rootResponse.headers.get('X-Slinky-Worker-Version'),
+            '0.2.0-member-targets'
+        );
 
         const healthResponse = await worker.fetch(
             new Request('https://worker.example/api/health'),
@@ -34,6 +39,7 @@ describe('Slinky Leveling Worker', () => {
         assert.equal(healthResponse.status, 200);
         assert.deepEqual(await healthResponse.json(), {
             ok: true,
+            version: '0.2.0-member-targets',
             database: 'connected',
             tables: {
                 targets: 725,
@@ -297,6 +303,10 @@ describe('Slinky Leveling Worker', () => {
         assert.equal(
             optionsResponse.headers.get('Access-Control-Allow-Headers'),
             'Content-Type, X-Admin-Token, Authorization'
+        );
+        assert.equal(
+            optionsResponse.headers.get('X-Slinky-Worker-Version'),
+            '0.2.0-member-targets'
         );
     });
 });

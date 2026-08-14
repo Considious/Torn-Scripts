@@ -3,6 +3,22 @@
 This directory versions the authoritative source for the Slinky Leveling API
 Worker. It intentionally contains no deployment credentials or member API keys.
 
+## Release identification
+
+Every deployable source change must update `WORKER_VERSION` near the top of
+`worker.js`. The version uses a readable `major.minor.patch-name` format, such
+as `0.2.0-member-targets`.
+
+The active version appears in three places:
+
+- the comment and `WORKER_VERSION` constant at the top of `worker.js`;
+- the JSON returned by `/` and `/api/health`;
+- the `X-Slinky-Worker-Version` header on every Worker response.
+
+This makes it possible to identify the code serving a request without comparing
+Cloudflare's deployment IDs. Increment the patch number for fixes, the minor
+number for compatible features, and the major number for breaking API changes.
+
 ## Cloudflare configuration
 
 The Worker expects these Cloudflare resources:

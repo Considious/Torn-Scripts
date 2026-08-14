@@ -1,3 +1,15 @@
+/**
+ * Slinky Leveling API Worker
+ *
+ * Release: 0.2.0-member-targets
+ *
+ * Update WORKER_VERSION for every Worker code change that may be deployed.
+ * It is returned by the root and health routes and included in every response
+ * as X-Slinky-Worker-Version, making the active source easy to identify.
+ */
+
+const WORKER_VERSION = '0.2.0-member-targets';
+
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
     'Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
@@ -31,6 +43,7 @@ const worker = {
             return jsonResponse({
                 ok: true,
                 service: 'Slinky Leveling API',
+                version: WORKER_VERSION,
                 message: 'Worker is running.'
             });
         }
@@ -128,6 +141,7 @@ async function handleHealth(env) {
 
         return jsonResponse({
             ok: true,
+            version: WORKER_VERSION,
             database: 'connected',
             tables: {
                 targets: targetCount?.count ?? 0,
@@ -862,7 +876,10 @@ function corsHeaders() {
         'Access-Control-Allow-Headers':
             'Content-Type, X-Admin-Token, Authorization',
         'Access-Control-Allow-Methods':
-            'GET, POST, OPTIONS'
+            'GET, POST, OPTIONS',
+        'Access-Control-Expose-Headers':
+            'X-Slinky-Worker-Version',
+        'X-Slinky-Worker-Version': WORKER_VERSION
     };
 }
 
