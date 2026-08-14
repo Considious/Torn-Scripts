@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.7\.2/);
+        assert.match(client, /@version\s+0\.8\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -77,12 +77,25 @@ describe('SLINK Leveling Service thin client', () => {
     });
 
 
-    it('hydrates recommendation Fair Fight data through the elected collector', () => {
+    it('hydrates recommendation Fair Fight data before scheduled Torn work', () => {
         assert.match(client, /FF_CACHE_MS\s*=\s*12\s*\*\s*60\s*\*\s*60/);
+        assert.match(client, /async function hydrateRecommendationFairFight\(/);
         assert.match(client, /function recommendationsNeedingFairFight\(/);
         assert.match(client, /recommendationsNeedingFairFight\(\s*state\.targets/);
-        assert.match(client, /collectAndReportFairFight\(\s*settings\.ffKey,\s*fairFightTargets/);
-        assert.match(client, /await refreshRecommendations\(\);/);
+        assert.match(client, /reported to SLINK/);
+        assert.match(client, /Asking the SLINK Network for targets/);
+
+        const cycle = client.slice(
+            client.indexOf('async function runCycle('),
+            client.indexOf('async function getUserStatus(')
+        );
+        const firstRecommendations = cycle.indexOf('await refreshRecommendations();');
+        const firstFairFight = cycle.indexOf('await hydrateRecommendationFairFight(');
+        const scheduledTornWork = cycle.indexOf('await syncActivitySnapshots(');
+
+        assert.ok(firstRecommendations >= 0, 'recommendations should load');
+        assert.ok(firstFairFight > firstRecommendations, 'FF should follow targets');
+        assert.ok(scheduledTornWork > firstFairFight, 'Torn checks should follow FF');
         assert.doesNotMatch(
             client,
             /collectAndReportFairFight\(settings\.ffKey, successfulTargets\)/

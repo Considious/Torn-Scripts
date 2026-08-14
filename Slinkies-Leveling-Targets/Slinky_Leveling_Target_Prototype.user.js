@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.7.2
+// @version      0.8.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -24,7 +24,7 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.7.2';
+    const SCRIPT_VERSION = '0.8.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
@@ -32,6 +32,7 @@
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
     const FF_CACHE_MS = 12 * 60 * 60 * 1000;
     const COLLECTOR_HEARTBEAT_MS = 20 * 1000;
+    const MAX_FF_HYDRATION_ROUNDS = 3;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
 
@@ -62,11 +63,15 @@
         workerVersion: '',
         collector: false,
         collectorExpiresAt: 0,
+        cycleStatus: '',
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
         lastCycleChecked: Number(persistedRuntime.lastCycleChecked) || 0,
         lastCycleReported: Number(persistedRuntime.lastCycleReported) || 0,
         lastActivitySyncAt: Number(GM_getValue(KEYS.lastActivitySyncAt, 0)) || 0,
         activeTargetsReported: Number(persistedRuntime.activeTargetsReported) || 0,
+        lastFairFightAt: Number(persistedRuntime.lastFairFightAt) || 0,
+        lastFairFightRequested: Number(persistedRuntime.lastFairFightRequested) || 0,
+        lastFairFightReported: Number(persistedRuntime.lastFairFightReported) || 0,
         clientEvents: loadJson(KEYS.clientEvents, []),
         timer: null,
         collectorTimer: null,
@@ -127,7 +132,10 @@
             lastCycleAt: state.lastCycleAt,
             lastCycleChecked: state.lastCycleChecked,
             lastCycleReported: state.lastCycleReported,
-            activeTargetsReported: state.activeTargetsReported
+            activeTargetsReported: state.activeTargetsReported,
+            lastFairFightAt: state.lastFairFightAt,
+            lastFairFightRequested: state.lastFairFightRequested,
+            lastFairFightReported: state.lastFairFightReported
         });
     }
 
@@ -347,14 +355,19 @@
         state.polling = true;
 
         state.lastError = '';
+        state.cycleStatus = 'Connecting to the SLINK Network…';
         render();
 
         try {
             await ensureWorkerSession(false);
             const collector = await syncCollectorLease();
 
+            state.cycleStatus = 'Asking the SLINK Network for targets…';
+            await refreshRecommendations();
+            render();
+
             if (!collector) {
-                await refreshRecommendations();
+                state.cycleStatus = 'Targets synced from SLINK · Standby device';
                 state.lastCycleAt = Date.now();
                 state.lastCycleChecked = 0;
                 state.lastCycleReported = 0;
@@ -365,6 +378,19 @@
                 return;
             }
 
+            if (settings.ffKey) {
+                try {
+                    await hydrateRecommendationFairFight(settings.ffKey);
+                } catch (error) {
+                    state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
+                }
+            } else {
+                state.cycleStatus = 'Targets ready · Add an FFScouter key for Fair Fight values';
+                state.lastError = 'Add your FFScouter API key in Settings to load Fair Fight values.';
+            }
+
+            state.cycleStatus = 'Running scheduled Torn checks…';
+            render();
             await syncActivitySnapshots(settings.tornKey, forceActivity);
 
             const apiUsage = TornLib.getTornApiUsage({
@@ -409,16 +435,7 @@
 
             if (state.collector && settings.ffKey) {
                 try {
-                    const fairFightTargets = recommendationsNeedingFairFight(
-                        state.targets
-                    );
-                    if (fairFightTargets.length) {
-                        await collectAndReportFairFight(
-                            settings.ffKey,
-                            fairFightTargets
-                        );
-                        await refreshRecommendations();
-                    }
+                    await hydrateRecommendationFairFight(settings.ffKey);
                 } catch (error) {
                     state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
                 }
@@ -426,6 +443,9 @@
 
             state.lastCycleAt = Date.now();
             state.lastCycleChecked = checks.length;
+            state.cycleStatus = state.lastFairFightAt
+                ? `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values ready · Last SLINK report ${formatDateTime(state.lastFairFightAt)}`
+                : 'Targets ready';
 
             logClientEvent('cycle_completed', {
                 apiCapacity: capacity,
@@ -504,9 +524,53 @@
     }
 
 
+    async function hydrateRecommendationFairFight(apiKey) {
+        const attemptedIds = new Set();
+        let requestedCount = 0;
+        let reportedCount = 0;
+        let cachedAt = 0;
+
+        for (let round = 0; round < MAX_FF_HYDRATION_ROUNDS; round++) {
+            const targets = recommendationsNeedingFairFight(state.targets)
+                .filter(target => !attemptedIds.has(String(target.id)));
+            if (!targets.length) break;
+
+            for (const target of targets) attemptedIds.add(String(target.id));
+            requestedCount += targets.length;
+            state.cycleStatus = `Checking Fair Fight for ${targets.length} target${targets.length === 1 ? '' : 's'}…`;
+            render();
+            logClientEvent('fair_fight_started', {
+                round: round + 1,
+                requested: targets.length
+            });
+
+            const report = await collectAndReportFairFight(apiKey, targets);
+            reportedCount += report.acceptedCount;
+            cachedAt = Math.max(cachedAt, report.cachedAt);
+            state.lastFairFightAt = cachedAt || Date.now();
+            state.lastFairFightRequested = requestedCount;
+            state.lastFairFightReported = reportedCount;
+            state.cycleStatus = `${reportedCount} Fair Fight record${reportedCount === 1 ? '' : 's'} reported to SLINK · Refreshing targets…`;
+            saveRuntimeState();
+            render();
+            logClientEvent('fair_fight_reported', {
+                round: round + 1,
+                requested: targets.length,
+                accepted: report.acceptedCount,
+                cachedAt: report.cachedAt
+            });
+
+            await refreshRecommendations();
+            render();
+        }
+
+        return { requestedCount, reportedCount, cachedAt };
+    }
+
+
     async function collectAndReportFairFight(apiKey, targets) {
         const uniqueIds = [...new Set(targets.map(target => String(target.id)))];
-        if (!uniqueIds.length) return 0;
+        if (!uniqueIds.length) return { acceptedCount: 0, cachedAt: 0 };
 
         const url =
             'https://ffscouter.com/api/v1/get-stats' +
@@ -553,10 +617,13 @@
                 method: 'POST',
                 body: { targets: reports.slice(0, 200) }
             });
-            return Number(response?.accepted_count) || 0;
+            return {
+                acceptedCount: Number(response?.accepted_count) || 0,
+                cachedAt: Number(response?.cached_at) || 0
+            };
         }
 
-        return 0;
+        return { acceptedCount: 0, cachedAt: 0 };
     }
 
 
@@ -566,6 +633,17 @@
             const checkedAt = Number(target?.fair_fight_checked_at) || 0;
             return checkedAt <= 0 || now - checkedAt >= FF_CACHE_MS;
         });
+    }
+
+
+    function fairFightReadyCount(targets) {
+        return targets.filter(target => {
+            if (target?.fair_fight === null || target?.fair_fight === undefined) {
+                return false;
+            }
+            const value = Number(target.fair_fight);
+            return Number.isFinite(value) && value > 0;
+        }).length;
     }
 
 
@@ -838,6 +916,10 @@
             lastPrimaryReported: state.lastCycleReported,
             lastActivitySyncAt: state.lastActivitySyncAt,
             activeTargetsReported: state.activeTargetsReported,
+            cycleStatus: state.cycleStatus,
+            lastFairFightAt: state.lastFairFightAt,
+            lastFairFightRequested: state.lastFairFightRequested,
+            lastFairFightReported: state.lastFairFightReported,
             lastError: state.lastError || '',
             recentEvents: state.clientEvents.slice(-20).reverse()
         };
@@ -860,6 +942,8 @@
             `Polling: Core Lib remaining quota every ${data.pollSecondsConfigured}s`,
             `Last primary: ${formatDateTime(data.lastPrimaryPollAt)} | assigned ${data.lastPrimaryChecked} | reported ${data.lastPrimaryReported}`,
             `Activity sync: ${formatDateTime(data.lastActivitySyncAt)} | active matches ${data.activeTargetsReported}`,
+            `Fair Fight: requested ${data.lastFairFightRequested} | reported to SLINK ${data.lastFairFightReported} | confirmed ${formatDateTime(data.lastFairFightAt)}`,
+            `Current work: ${data.cycleStatus || 'Idle'}`,
             `Last error: ${data.lastError || 'None'}`,
             '',
             'Recent client events:'
@@ -894,10 +978,11 @@
             .slp-btn:hover { background:#3a414d; }
             .slp-btn:disabled { opacity:.55; cursor:default; }
             .slp-body { max-height:calc(100vh - 165px); overflow:auto; }
-            .slp-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:rgba(255,255,255,.08); }
+            .slp-summary { display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:rgba(255,255,255,.08); }
             .slp-stat { background:#20242b; padding:6px; text-align:center; }
             .slp-stat b { display:block; font-size:13px; }
             .slp-error { padding:7px 9px; color:#ffb4b4; border-bottom:1px solid rgba(255,255,255,.08); }
+            .slp-phase { padding:6px 9px; color:#a9d5ff; border-bottom:1px solid rgba(255,255,255,.08); }
             .slp-settings { padding:9px; border-bottom:1px solid rgba(255,255,255,.1); display:grid; grid-template-columns:1fr 1fr; gap:7px; }
             .slp-settings label { display:flex; flex-direction:column; gap:3px; color:#bbb; }
             .slp-settings .wide { grid-column:1 / -1; }
@@ -962,8 +1047,10 @@
                     <div class="slp-stat"><b>${state.targets.length}</b><span>Targets</span></div>
                     <div class="slp-stat"><b>${state.lastCycleChecked}</b><span>Assigned</span></div>
                     <div class="slp-stat"><b>${state.lastCycleReported}</b><span>Reported</span></div>
+                    <div class="slp-stat"><b>${fairFightReadyCount(state.targets)}/${state.targets.length}</b><span>FF ready</span></div>
                     <div class="slp-stat"><b>${usage.count}/${usage.limit}</b><span>API / min</span></div>
                 </div>
+                ${state.cycleStatus ? `<div class="slp-phase">${escapeHtml(state.cycleStatus)}</div>` : ''}
                 ${state.lastError ? `<div class="slp-error">${escapeHtml(state.lastError)}</div>` : ''}
                 ${state.settingsOpen ? settingsHtml(settings) : ''}
                 ${state.debugOpen ? debugHtml() : ''}
@@ -1020,14 +1107,18 @@
 
     function targetsHtml(targets) {
         if (!targets.length) {
-            return `<div class="slp-empty">${state.polling ? 'Asking Cloudflare for targets…' : 'No recommendations are currently assigned.'}</div>`;
+            return `<div class="slp-empty">${state.polling ? 'Asking the SLINK Network for targets…' : 'No recommendations are currently assigned.'}</div>`;
         }
 
         return targets.map(target => {
             const profileUrl = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(target.id)}`;
             const attackUrl = TornLib.attackLink(target.id);
-            const fairFight = Number(target.fair_fight);
-            const ffText = Number.isFinite(fairFight) ? fairFight.toFixed(2) : '?';
+            const fairFight = target.fair_fight === null || target.fair_fight === undefined
+                ? Number.NaN
+                : Number(target.fair_fight);
+            const ffText = Number.isFinite(fairFight) && fairFight > 0
+                ? fairFight.toFixed(2)
+                : '?';
             const battleStats = Number(target.bs_estimate);
             const statsText = Number.isFinite(battleStats) && battleStats > 0
                 ? TornLib.shortNumber(battleStats)

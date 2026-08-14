@@ -8,7 +8,7 @@ contains no deployment credentials or member API keys.
 
 Every deployable source change must update `WORKER_VERSION` near the top of
 `worker.js`. The version uses a readable `major.minor.patch-name` format, such
-as `0.4.0-multi-device-collector`.
+as `0.5.0-user-fair-fight`.
 
 The active version appears in three places:
 
@@ -31,7 +31,7 @@ The Worker expects these Cloudflare resources:
 
 Keep both secret values in Cloudflare. Do not add them to this repository.
 
-## Deploying 0.4.x
+## Deploying 0.5.x
 
 The existing four-table database remains the source of target, status,
 hospitalization, and scheduler data. Before deploying `worker.js`, run the
@@ -42,9 +42,8 @@ migrations/0001-client-coordination.sql
 ```
 
 in the D1 Console. It adds the short-lived check claims, per-member target
-leases, activity exclusions, and shared Fair Fight cache used by the thin
-client. The migration uses `CREATE TABLE/INDEX IF NOT EXISTS`; rerunning the
-whole file is safe.
+leases, activity exclusions, and the original Fair Fight table. The migration
+uses `CREATE TABLE/INDEX IF NOT EXISTS`; rerunning the whole file is safe.
 
 Then run the complete contents of:
 
@@ -57,7 +56,19 @@ devices for the same Torn user share recommendations, while only the elected
 collector receives routine Torn API work. A standby device takes over after the
 active collector stops renewing its lease.
 
-Deploy the Worker only after both migrations succeed. Update the userscript
+Then run:
+
+```text
+migrations/0003-user-fair-fight-cache.sql
+```
+
+This adds a Fair Fight cache keyed by authenticated Torn user and target. It
+prevents one member's relative score from being shown to another member while
+still sharing the same member's results between their PC and mobile sessions.
+The original `target_fair_fight` table remains for rollback compatibility but
+is not used by Worker 0.5.x recommendations.
+
+Deploy the Worker only after all three migrations succeed. Update the userscript
 after the new endpoints respond successfully.
 
 ## Routes
@@ -74,7 +85,7 @@ after the new endpoints respond successfully.
 | `POST` | `/api/checks/claim` | Member session | Claim globally coordinated Torn status checks |
 | `POST` | `/api/observations` | Member session | Submit a bounded batch of status observations |
 | `POST` | `/api/activity` | Member session | Share recent activity-snapshot matches |
-| `POST` | `/api/fair-fight` | Member session | Share bounded FFScouter results |
+| `POST` | `/api/fair-fight` | Member session | Cache bounded FFScouter results for the authenticated user |
 | `POST` | `/api/admin/bootstrap-targets` | Admin token | Refresh targets from the master CSV |
 | `GET` | `/api/admin/targets` | Admin token | Inspect paginated leveling targets |
 
@@ -97,10 +108,11 @@ mobile, home, or work sessions for the same user therefore receive the same
 leased target data. Collector election remains keyed by unique signed session
 ID so Cloudflare can fail over between those devices without sharing tokens.
 
-The elected collector sends its current recommendation IDs to FFScouter when
-their shared Fair Fight record is missing or older than 12 hours, then reports
-the derived values to D1. Standby devices read those shared values without
-making duplicate FFScouter requests.
+The elected collector receives recommendations first, then sends only missing
+or stale recommendation IDs to FFScouter before starting slower Torn status
+work. Derived values are cached for 12 hours under the authenticated user ID.
+Standby devices belonging to that same user read the cache without making
+duplicate FFScouter requests; other users have independent values.
 
 Ordinary member Torn and FFScouter keys are not stored in D1. The Torn key is
 sent to `/api/auth` only for faction verification, then remains in userscript
@@ -118,5 +130,5 @@ npm test
 
 The test suite uses only Node's built-in test runner. It covers the existing
 health/admin/auth/session behavior, protected member routes, per-user target
-sharing, collector failover, session expiry and tampering, CSV parsing,
-pagination bounds, and CORS preflight.
+sharing, per-user Fair Fight isolation, collector failover, session expiry and
+tampering, CSV parsing, pagination bounds, and CORS preflight.

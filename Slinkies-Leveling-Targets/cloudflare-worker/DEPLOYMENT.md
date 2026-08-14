@@ -1,7 +1,7 @@
 # Cloudflare deployment checklist
 
-Use this order. Do not merge or install userscript `0.7.2` before all three
-checks at the bottom succeed.
+Use this order. Do not install userscript `0.8.0` until the health check in step
+3 reports Worker `0.5.0-user-fair-fight`.
 
 ## 1. Add the D1 coordination tables
 
@@ -21,8 +21,14 @@ Next, run the complete contents of:
 migrations/0002-user-collector-leases.sql
 ```
 
-This second file is also safe to run again. Run both migrations before changing
-the Worker source.
+Then run the complete contents of:
+
+```text
+migrations/0003-user-fair-fight-cache.sql
+```
+
+All three files are safe to run again. Migration 0003 adds the per-user Fair
+Fight cache required by Worker 0.5.x. Run it before changing the Worker source.
 
 Verify the new tables with:
 
@@ -35,12 +41,13 @@ WHERE type = 'table'
     'client_target_leases',
     'client_user_collectors',
     'target_activity',
-    'target_fair_fight'
+    'target_fair_fight',
+    'user_target_fair_fight'
   )
 ORDER BY name;
 ```
 
-Cloudflare should return five rows.
+Cloudflare should return six rows.
 
 ## 2. Deploy the Worker source
 
@@ -51,7 +58,7 @@ binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 The new release is:
 
 ```text
-0.4.0-multi-device-collector
+0.5.0-user-fair-fight
 ```
 
 ## 3. Smoke-test the protected API
@@ -67,45 +74,20 @@ The JSON should contain:
 ```json
 {
   "ok": true,
-  "version": "0.4.0-multi-device-collector",
+  "version": "0.5.0-user-fair-fight",
   "database": "connected"
 }
 ```
 
-Authenticate through `POST /api/auth` exactly as before. Then use the returned
-session token for these three tests.
+No manual session-token tests are required. Install userscript `0.8.0`, reload
+Torn, and click **Refresh**. The panel itself should show this progression:
 
 ```text
-POST /api/collector/heartbeat
-Authorization: Bearer YOUR_SESSION_TOKEN
-Content-Type: application/json
-
-{}
+Asking the SLINK Network for targets…
+Checking Fair Fight for 40 targets…
+40 Fair Fight records reported to SLINK…
+Running scheduled Torn checks…
 ```
 
-The first active session for your Torn user should receive
-`"collector": true`.
-
-```text
-POST /api/checks/claim
-Authorization: Bearer YOUR_SESSION_TOKEN
-Content-Type: application/json
-
-{"capacity":1}
-```
-
-```text
-GET /api/recommendations?limit=5&min_ff=1&max_ff=3
-Authorization: Bearer YOUR_SESSION_TOKEN
-```
-
-All three responses should contain `"ok": true`. The check response may contain
-one assigned check; the recommendation response should contain up to five
-targets.
-
-If the same Torn user authenticates on another device, that session remains a
-standby while the first device renews its collector lease. If the first device
-stops, the standby can take over after about one minute and will continue using
-the same D1-backed recommendations.
-
-Once those requests work, userscript `0.7.2` can be installed for a live test.
+The **FF ready** counter and the timestamp in **Data** confirm the values were
+written to the authenticated user's D1 cache and read back by the panel.

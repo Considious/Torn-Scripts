@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.4.0-multi-device-collector';
+const WORKER_VERSION = '0.5.0-user-fair-fight';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 
-describe('Slinky Leveling Worker', () => {
+describe('SLINK Leveling Worker', () => {
     it('preserves root, health, admin, and CORS behavior', async () => {
         const db = createDatabase();
         const env = {
@@ -32,7 +32,7 @@ describe('Slinky Leveling Worker', () => {
         assert.equal(rootResponse.status, 200);
         assert.deepEqual(await rootResponse.json(), {
             ok: true,
-            service: 'Slinky Leveling API',
+                service: 'SLINK Leveling API',
             version: WORKER_VERSION,
             message: 'Worker is running.'
         });
@@ -424,7 +424,105 @@ describe('Slinky Leveling Worker', () => {
         assert.ok(!firstIds.includes(1), 'recently active target must be excluded');
         assert.ok(!firstIds.includes(2), 'out-of-range known FF target must be excluded');
         assert.ok(firstIds.includes(3), 'in-range FF target should be eligible');
+        assert.ok(
+            secondIds.includes(2),
+            'one user\'s out-of-range FF value must not exclude another user'
+        );
+        assert.equal(
+            firstBody.targets.find(row => row.id === 3)?.fair_fight,
+            2
+        );
+        assert.equal(
+            secondBody.targets.find(row => row.id === 2)?.fair_fight,
+            null
+        );
         assert.deepEqual(firstIds.filter(id => secondIds.includes(id)), []);
+    });
+
+
+    it('replaces a lease after the user reports an out-of-range FF value', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(4201);
+        const recommendationUrl =
+            'https://worker.example/api/recommendations?limit=1&min_ff=1&max_ff=3';
+
+        const initialResponse = await worker.fetch(
+            authenticatedRequest(recommendationUrl, token),
+            env
+        );
+        const initialTarget = (await initialResponse.json()).targets[0];
+        assert.ok(initialTarget);
+
+        await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/fair-fight',
+                token,
+                {
+                    targets: [{
+                        target_id: initialTarget.id,
+                        fair_fight: 4.5,
+                        bs_estimate: 5000
+                    }]
+                }
+            ),
+            env
+        );
+
+        const refreshedResponse = await worker.fetch(
+            authenticatedRequest(recommendationUrl, token),
+            env
+        );
+        const refreshedTarget = (await refreshedResponse.json()).targets[0];
+
+        assert.ok(refreshedTarget);
+        assert.notEqual(refreshedTarget.id, initialTarget.id);
+    });
+
+
+    it('keeps Fair Fight values private to each Torn user', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const firstToken = await sessionToken(4101);
+        const secondToken = await sessionToken(4102);
+
+        for (const [token, fairFight] of [
+            [firstToken, 1.5],
+            [secondToken, 4.5]
+        ]) {
+            const response = await worker.fetch(
+                authenticatedJsonRequest(
+                    'https://worker.example/api/fair-fight',
+                    token,
+                    {
+                        targets: [{
+                            target_id: 3,
+                            fair_fight: fairFight,
+                            bs_estimate: 3000
+                        }]
+                    }
+                ),
+                env
+            );
+            const body = await response.json();
+            assert.equal(response.status, 200);
+            assert.equal(body.cache_scope, 'user');
+            assert.ok(body.cached_at > 0);
+        }
+
+        const rows = db.sqlite
+            .prepare(`
+                SELECT user_id, target_id, fair_fight
+                FROM user_target_fair_fight
+                WHERE target_id = 3
+                ORDER BY user_id
+            `)
+            .all();
+
+        assert.deepEqual(rows.map(row => ({ ...row })), [
+            { user_id: 4101, target_id: 3, fair_fight: 1.5 },
+            { user_id: 4102, target_id: 3, fair_fight: 4.5 }
+        ]);
     });
 
 
@@ -446,8 +544,14 @@ describe('Slinky Leveling Worker', () => {
         );
 
         const validToken = await sessionToken(3853023);
+        const [payload, signature] = validToken.split('.');
+        const tamperedSignature =
+            `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
         assert.equal(
-            await testing.verifySessionToken(`${validToken.slice(0, -1)}x`, SESSION_SECRET),
+            await testing.verifySessionToken(
+                `${payload}.${tamperedSignature}`,
+                SESSION_SECRET
+            ),
             null
         );
 
@@ -475,6 +579,12 @@ function createDatabase() {
     sqlite.exec(
         readFileSync(
             new URL('./migrations/0002-user-collector-leases.sql', import.meta.url),
+            'utf8'
+        )
+    );
+    sqlite.exec(
+        readFileSync(
+            new URL('./migrations/0003-user-fair-fight-cache.sql', import.meta.url),
             'utf8'
         )
     );
