@@ -1,7 +1,7 @@
 # Cloudflare deployment checklist
 
 Use this order. Install userscript 0.8.0 only after the health check reports
-Worker `0.5.0-efficient-coordination`.
+Worker `0.5.1-efficient-coordination`.
 
 ## 1. Remove the unused experimental Fair Fight table
 
@@ -30,7 +30,7 @@ binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 Open:
 
 ```text
-https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.5.0
+https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.5.1
 ```
 
 The JSON should include:
@@ -38,7 +38,7 @@ The JSON should include:
 ```json
 {
   "ok": true,
-  "version": "0.5.0-efficient-coordination",
+  "version": "0.5.1-efficient-coordination",
   "database": "connected"
 }
 ```
@@ -58,6 +58,13 @@ Running scheduled Torn checks…
 The browser reuses each Fair Fight result for seven days. It does not send Fair
 Fight values to Cloudflare.
 
-There is no separate 20-second collector heartbeat. Collector election is part
-of the normal recommendation refresh, so a standby panel generally makes one
-Worker request per configured 60–300 second polling interval.
+There is no separate 20-second collector heartbeat or redundant second target
+refresh. Collector election is part of the normal recommendation load. The
+default interval is 300 seconds, so a standby panel generally makes six Worker
+requests per 30 minutes. The collector receives a larger scheduled-check batch
+after Core Lib's shared allowance has had time to refill.
+
+The collector lease covers two configured intervals. With the 300-second
+default, a second device can take over after roughly ten minutes without data
+from the active device. Existing users who previously saved a different interval
+can leave it in place or change it to 300 in the panel settings.

@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.5.0-efficient-coordination';
+const WORKER_VERSION = '0.5.1-efficient-coordination';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -284,13 +284,15 @@ describe('SLINK Leveling Worker', () => {
 
         const pcRecommendations = await worker.fetch(
             authenticatedRequest(
-                'https://worker.example/api/recommendations?limit=2',
+                'https://worker.example/api/recommendations?limit=2&poll_seconds=90',
                 pcToken
             ),
             env
         );
         const pcLease = await pcRecommendations.json();
         assert.equal(pcLease.collector, true);
+        assert.equal(pcLease.poll_seconds, 90);
+        assert.equal(pcLease.collector_lease_seconds, 180);
 
         const mobileRecommendations = await worker.fetch(
             authenticatedRequest(
@@ -310,7 +312,7 @@ describe('SLINK Leveling Worker', () => {
             authenticatedJsonRequest(
                 'https://worker.example/api/checks/claim',
                 pcToken,
-                { capacity: 2 }
+                { capacity: 2, poll_seconds: 90 }
             ),
             env
         );
@@ -320,7 +322,7 @@ describe('SLINK Leveling Worker', () => {
             authenticatedJsonRequest(
                 'https://worker.example/api/checks/claim',
                 mobileToken,
-                { capacity: 2 }
+                { capacity: 2, poll_seconds: 90 }
             ),
             env
         );

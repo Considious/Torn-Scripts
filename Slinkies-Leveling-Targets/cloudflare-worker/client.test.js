@@ -49,6 +49,8 @@ describe('SLINK Leveling Service thin client', () => {
     it('supports one active collector with automatic device failover', () => {
         assert.match(client, /response\?\.collector === true/);
         assert.match(client, /cycle_standby/);
+        assert.match(client, /DEFAULT_POLL_SECONDS\s*=\s*300/);
+        assert.match(client, /poll_seconds:\s*settings\.pollSeconds/);
         assert.doesNotMatch(client, /COLLECTOR_HEARTBEAT_MS/);
         assert.doesNotMatch(client, /syncCollectorLease/);
         assert.doesNotMatch(client, /scheduleCollectorHeartbeat/);
@@ -58,7 +60,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses Core Lib as the single Torn API polling limiter', () => {
         assert.match(client, /TornLib\.getTornApiUsage\(/);
-        assert.match(client, /body:\s*\{\s*capacity\s*\}/);
+        assert.match(client, /capacity,\s*poll_seconds:\s*settings\.pollSeconds/);
         assert.match(client, /TornLib\.TORN_API_DEFAULT_LIMIT/);
         assert.match(client, /TornLib\.reserveTornApiSlot\(/);
 
@@ -96,10 +98,16 @@ describe('SLINK Leveling Service thin client', () => {
         const firstRecommendations = cycle.indexOf('await refreshRecommendations();');
         const firstFairFight = cycle.indexOf('await hydrateRecommendationFairFight(');
         const scheduledTornWork = cycle.indexOf('await syncActivitySnapshots(');
+        const recommendationLoads = cycle.match(/await refreshRecommendations\(\);/g) || [];
 
         assert.ok(firstRecommendations >= 0, 'recommendations should load');
         assert.ok(firstFairFight > firstRecommendations, 'FF should follow targets');
         assert.ok(scheduledTornWork > firstFairFight, 'Torn checks should follow FF');
+        assert.equal(
+            recommendationLoads.length,
+            1,
+            'each routine cycle should make only one recommendation request'
+        );
         assert.doesNotMatch(client, /collectAndReportFairFight/);
     });
 

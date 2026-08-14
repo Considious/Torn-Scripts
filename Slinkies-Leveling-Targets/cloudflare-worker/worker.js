@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.5.0-efficient-coordination
+ * Release: 0.5.1-efficient-coordination
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.5.0-efficient-coordination';
+const WORKER_VERSION = '0.5.1-efficient-coordination';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -27,7 +27,12 @@ const MAX_JSON_BODY_BYTES = 256 * 1024;
 
 const ALLOWED_FACTION_ID = 46978;
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
-const COLLECTOR_LEASE_LIFETIME_MS = 6 * 60 * 1000;
+const DEFAULT_CLIENT_POLL_SECONDS = 300;
+const MIN_CLIENT_POLL_SECONDS = 60;
+const MAX_CLIENT_POLL_SECONDS = 300;
+// The normal recommendation/check exchange is the heartbeat. Another session
+// may take over after the active collector misses two configured exchanges.
+const COLLECTOR_MISSED_INTERVALS = 2;
 const CHECK_CLAIM_LIFETIME_MS = 3 * 60 * 1000;
 const TARGET_LEASE_LIFETIME_MS = 10 * 60 * 1000;
 const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -700,7 +705,12 @@ async function handleListTargets(url, env) {
 
 async function handleCollectorHeartbeat(env, session) {
     try {
-        const lease = await claimUserCollector(env, session, Date.now());
+        const lease = await claimUserCollector(
+            env,
+            session,
+            Date.now(),
+            DEFAULT_CLIENT_POLL_SECONDS
+        );
         return collectorLeaseResponse(lease);
     } catch (error) {
         return workerErrorResponse('Could not renew the collector lease.', error);
@@ -708,8 +718,16 @@ async function handleCollectorHeartbeat(env, session) {
 }
 
 
-async function claimUserCollector(env, session, now) {
-    const expiresAt = now + COLLECTOR_LEASE_LIFETIME_MS;
+async function claimUserCollector(env, session, now, pollSeconds) {
+    const boundedPollSeconds = boundedInteger(
+        pollSeconds,
+        DEFAULT_CLIENT_POLL_SECONDS,
+        MIN_CLIENT_POLL_SECONDS,
+        MAX_CLIENT_POLL_SECONDS
+    );
+    const expiresAt = now + (
+        boundedPollSeconds * COLLECTOR_MISSED_INTERVALS * 1000
+    );
 
     await env.DB
         .prepare(`
@@ -754,7 +772,12 @@ async function claimUserCollector(env, session, now) {
         collector: current?.session_id === session.session_id,
         claimedAt: Number(current?.claimed_at) || 0,
         lastSeenAt: Number(current?.last_seen_at) || 0,
-        expiresAt: Number(current?.expires_at) || 0
+        expiresAt: Number(current?.expires_at) || 0,
+        lifetimeMs: Math.max(
+            0,
+            (Number(current?.expires_at) || 0) -
+                (Number(current?.last_seen_at) || 0)
+        )
     };
 }
 
@@ -763,9 +786,7 @@ function collectorLeaseResponse(lease, extra = {}) {
     return jsonResponse({
         ok: true,
         collector: lease.collector,
-        collector_lease_seconds: Math.floor(
-            COLLECTOR_LEASE_LIFETIME_MS / 1000
-        ),
+        collector_lease_seconds: Math.floor(lease.lifetimeMs / 1000),
         collector_claimed_at: lease.collector ? lease.claimedAt : 0,
         collector_expires_at: lease.expiresAt,
         ...extra
@@ -776,12 +797,23 @@ function collectorLeaseResponse(lease, extra = {}) {
 async function handleRecommendations(url, env, session) {
     try {
         const now = Date.now();
-        const collectorLease = await claimUserCollector(env, session, now);
         const limit = boundedIntegerQueryParameter(
             url.searchParams.get('limit'),
             DEFAULT_RECOMMENDATION_LIMIT,
             1,
             MAX_RECOMMENDATION_LIMIT
+        );
+        const pollSeconds = boundedIntegerQueryParameter(
+            url.searchParams.get('poll_seconds'),
+            DEFAULT_CLIENT_POLL_SECONDS,
+            MIN_CLIENT_POLL_SECONDS,
+            MAX_CLIENT_POLL_SECONDS
+        );
+        const collectorLease = await claimUserCollector(
+            env,
+            session,
+            now,
+            pollSeconds
         );
         const minFairFight = boundedNumberQueryParameter(
             url.searchParams.get('min_ff'),
@@ -974,6 +1006,7 @@ async function handleRecommendations(url, env, session) {
             version: WORKER_VERSION,
             count: result.results?.length ?? 0,
             limit,
+            poll_seconds: pollSeconds,
             min_fair_fight: minFairFight,
             max_fair_fight: maxFairFight,
             lease_seconds: Math.floor(TARGET_LEASE_LIFETIME_MS / 1000),
@@ -994,10 +1027,21 @@ async function handleClaimChecks(request, env, session) {
             0,
             MAX_MEMBER_BATCH_ROWS
         );
+        const pollSeconds = boundedInteger(
+            body?.poll_seconds,
+            DEFAULT_CLIENT_POLL_SECONDS,
+            MIN_CLIENT_POLL_SECONDS,
+            MAX_CLIENT_POLL_SECONDS
+        );
         const now = Date.now();
 
         await cleanExpiredCoordinationRows(env, now);
-        const collectorLease = await claimUserCollector(env, session, now);
+        const collectorLease = await claimUserCollector(
+            env,
+            session,
+            now,
+            pollSeconds
+        );
 
         if (!collectorLease.collector) {
             return collectorLeaseResponse(collectorLease, {

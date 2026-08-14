@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.5.0 is identified as `0.5.0-efficient-coordination`.
+version. Release 0.5.1 is identified as `0.5.1-efficient-coordination`.
 
 ## Cloudflare configuration
 
@@ -40,8 +40,14 @@ no-op for compatibility with an older client. It does not write anything.
 `GET /api/recommendations` elects or renews the active collector while returning
 the target list. This avoids a separate heartbeat request. One signed session
 per Torn user receives routine Torn API work, while other sessions remain
-standby. The collector lease lasts six minutes, which covers the maximum
-five-minute client polling interval with failover slack.
+standby. The normal client interval defaults to 300 seconds and remains
+configurable from 60 to 300 seconds.
+
+The collector lease is twice the calling client's configured interval. At the
+300-second default, another device can take over after roughly two missed loads,
+or ten minutes. At a 90-second interval, failover takes roughly three minutes.
+Expired rows are replaced or cleaned up by the next request. They do not run
+background work while every device is offline.
 
 Recommendation leases are keyed by Torn user ID, so a user's PC and mobile
 sessions see the same target set. Collector ownership is keyed by signed session
@@ -68,8 +74,10 @@ ID, allowing another device to take over after the lease expires.
 Member routes use `Authorization: Bearer <session token>`. Admin routes use
 `X-Admin-Token: <admin token>`.
 
-The client gets its live Torn API capacity from Considious Torn Core Lib. The
-Worker's batch ceilings protect request payloads; they are not polling limits.
+The client gets its live Torn API capacity from Considious Torn Core Lib. A
+five-minute interval lets that shared allowance refill, so the collector can
+receive a larger batch of scheduled checks in each exchange. The Worker's batch
+ceilings protect request payloads; they are not polling limits.
 
 ## Migrations
 

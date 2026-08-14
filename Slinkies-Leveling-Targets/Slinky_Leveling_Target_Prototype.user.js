@@ -31,6 +31,7 @@
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
     const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+    const DEFAULT_POLL_SECONDS = 300;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
 
@@ -113,7 +114,8 @@
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
             pollSeconds: clamp(
-                Number(GM_getValue(KEYS.pollSeconds, 90)) || 90,
+                Number(GM_getValue(KEYS.pollSeconds, DEFAULT_POLL_SECONDS)) ||
+                    DEFAULT_POLL_SECONDS,
                 60,
                 300
             ),
@@ -129,7 +131,11 @@
         GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
         GM_setValue(
             KEYS.pollSeconds,
-            clamp(Number(values.pollSeconds) || 90, 60, 300)
+            clamp(
+                Number(values.pollSeconds) || DEFAULT_POLL_SECONDS,
+                60,
+                300
+            )
         );
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 0, 0, 10));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 0, 0, 10));
@@ -384,7 +390,10 @@
 
             const claim = await workerRequest('/api/checks/claim', {
                 method: 'POST',
-                body: { capacity }
+                body: {
+                    capacity,
+                    poll_seconds: settings.pollSeconds
+                }
             });
             state.collector = claim?.collector === true;
             state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
@@ -413,16 +422,6 @@
             const failures = results.filter(result => result.status === 'rejected');
             if (failures.length && !state.lastError) {
                 state.lastError = `${failures.length} assigned Torn check${failures.length === 1 ? '' : 's'} failed.`;
-            }
-
-            await refreshRecommendations();
-
-            if (settings.ffKey) {
-                try {
-                    await hydrateRecommendationFairFight(settings.ffKey);
-                } catch (error) {
-                    state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
-                }
             }
 
             state.lastCycleAt = Date.now();
@@ -729,6 +728,7 @@
         const settings = getSettings();
         const query = new URLSearchParams({
             limit: String(MAX_DISPLAY),
+            poll_seconds: String(settings.pollSeconds),
             min_ff: String(Math.min(settings.minFF, settings.maxFF)),
             max_ff: String(Math.max(settings.minFF, settings.maxFF))
         });
