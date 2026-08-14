@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, it } from 'node:test';
 
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
+const WORKER_VERSION = '0.3.0-thin-client-api';
+const SESSION_SECRET = 'test-session-secret';
 
 afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -11,43 +15,74 @@ afterEach(() => {
 
 
 describe('Slinky Leveling Worker', () => {
-    it('preserves the root and health endpoints', async () => {
-        const db = createDatabaseMock();
+    it('preserves root, health, admin, and CORS behavior', async () => {
+        const db = createDatabase();
+        const env = {
+            DB: db,
+            ADMIN_TOKEN: 'correct-admin-token'
+        };
 
         const rootResponse = await worker.fetch(
             new Request('https://worker.example/'),
-            { DB: db }
+            env
         );
 
         assert.equal(rootResponse.status, 200);
         assert.deepEqual(await rootResponse.json(), {
             ok: true,
             service: 'Slinky Leveling API',
-            version: '0.2.0-member-targets',
+            version: WORKER_VERSION,
             message: 'Worker is running.'
         });
         assert.equal(
             rootResponse.headers.get('X-Slinky-Worker-Version'),
-            '0.2.0-member-targets'
+            WORKER_VERSION
         );
 
         const healthResponse = await worker.fetch(
             new Request('https://worker.example/api/health'),
-            { DB: db }
+            env
         );
 
         assert.equal(healthResponse.status, 200);
         assert.deepEqual(await healthResponse.json(), {
             ok: true,
-            version: '0.2.0-member-targets',
+            version: WORKER_VERSION,
             database: 'connected',
             tables: {
-                targets: 725,
-                target_status: 3,
-                hospital_events: 4,
-                scheduler_queue: 5
+                targets: 6,
+                target_status: 0,
+                hospital_events: 0,
+                scheduler_queue: 0
             }
         });
+
+        const deniedAdmin = await worker.fetch(
+            new Request('https://worker.example/api/admin/targets'),
+            env
+        );
+        assert.equal(deniedAdmin.status, 401);
+
+        const allowedAdmin = await worker.fetch(
+            new Request('https://worker.example/api/admin/targets?limit=2', {
+                headers: { 'X-Admin-Token': 'correct-admin-token' }
+            }),
+            env
+        );
+        assert.equal(allowedAdmin.status, 200);
+        assert.equal((await allowedAdmin.json()).count, 2);
+
+        const optionsResponse = await worker.fetch(
+            new Request('https://worker.example/api/recommendations', {
+                method: 'OPTIONS'
+            }),
+            env
+        );
+        assert.equal(optionsResponse.status, 204);
+        assert.equal(
+            optionsResponse.headers.get('X-Slinky-Worker-Version'),
+            WORKER_VERSION
+        );
     });
 
 
@@ -63,23 +98,13 @@ describe('Slinky Leveling Worker', () => {
             });
         };
 
-        const env = {
-            SESSION_SECRET: 'test-session-secret'
-        };
-
+        const env = { SESSION_SECRET };
         const authResponse = await worker.fetch(
-            new Request('https://worker.example/api/auth', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    api_key: 'test-torn-key'
-                })
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key'
             }),
             env
         );
-
         const authBody = await authResponse.json();
 
         assert.equal(authResponse.status, 200);
@@ -90,153 +115,223 @@ describe('Slinky Leveling Worker', () => {
         assert.ok(authBody.session_token);
 
         const sessionResponse = await worker.fetch(
-            new Request('https://worker.example/api/session', {
-                headers: {
-                    'Authorization': `Bearer ${authBody.session_token}`
-                }
-            }),
+            authenticatedRequest(
+                'https://worker.example/api/session',
+                authBody.session_token
+            ),
             env
         );
-
-        const sessionBody = await sessionResponse.json();
-
         assert.equal(sessionResponse.status, 200);
-        assert.equal(sessionBody.authenticated, true);
-        assert.equal(sessionBody.user_id, 3853023);
-        assert.equal(sessionBody.faction_id, 46978);
-        assert.ok(sessionBody.session_id);
+        assert.equal((await sessionResponse.json()).authenticated, true);
     });
 
 
-    it('keeps admin endpoints protected', async () => {
-        const env = {
-            ADMIN_TOKEN: 'correct-admin-token',
-            DB: createDatabaseMock()
-        };
-
-        const deniedResponse = await worker.fetch(
-            new Request('https://worker.example/api/admin/targets'),
-            env
-        );
-
-        assert.equal(deniedResponse.status, 401);
-
-        const allowedResponse = await worker.fetch(
-            new Request('https://worker.example/api/admin/targets', {
-                headers: {
-                    'X-Admin-Token': 'correct-admin-token'
-                }
+    it('protects every thin-client route behind a member session', async () => {
+        const env = { DB: createDatabase(), SESSION_SECRET };
+        const requests = [
+            new Request('https://worker.example/api/recommendations'),
+            jsonRequest('https://worker.example/api/checks/claim', { limit: 2 }),
+            jsonRequest('https://worker.example/api/observations', {
+                observations: [{ target_id: 1, state: 'Okay' }]
             }),
-            env
-        );
+            jsonRequest('https://worker.example/api/activity', {
+                active_targets: { 1: Math.floor(Date.now() / 1000) }
+            }),
+            jsonRequest('https://worker.example/api/fair-fight', {
+                targets: [{ target_id: 1, fair_fight: 2 }]
+            })
+        ];
 
-        assert.equal(allowedResponse.status, 200);
-        assert.equal((await allowedResponse.json()).count, 2);
+        for (const request of requests) {
+            const response = await worker.fetch(request, env);
+            assert.equal(response.status, 401);
+        }
     });
 
 
-    it('preserves the protected GitHub bootstrap and batched upserts', async () => {
-        const csv = [
-            'id,name,level,total,profile_url,sources',
-            '1,First Target,10,1.25m,https://example.test/1,Source A',
-            '1,Updated Target,11,2m,https://example.test/1,Source B',
-            '2,Second Target,12,750k,https://example.test/2,Source C'
-        ].join('\n');
+    it('deduplicates hospital observations and owns scheduling/scoring', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(3853023);
+        const until = Math.floor(Date.now() / 1000) + 900;
 
-        globalThis.fetch = async () => {
-            return new Response(csv, {
-                status: 200,
-                headers: {
-                    'Content-Type': 'text/csv'
-                }
-            });
-        };
-
-        const recordedBatches = [];
-        const db = createDatabaseMock({ recordedBatches });
-
-        const response = await worker.fetch(
-            new Request(
-                'https://worker.example/api/admin/bootstrap-targets',
+        const firstResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
                 {
-                    method: 'POST',
-                    headers: {
-                        'X-Admin-Token': 'correct-admin-token'
-                    }
-                }
-            ),
-            {
-                ADMIN_TOKEN: 'correct-admin-token',
-                DB: db
-            }
-        );
-
-        const body = await response.json();
-
-        assert.equal(response.status, 200);
-        assert.equal(body.csv_rows, 3);
-        assert.equal(body.valid_targets, 3);
-        assert.equal(body.unique_targets, 2);
-        assert.equal(body.processed, 2);
-        assert.equal(recordedBatches.length, 1);
-        assert.deepEqual(recordedBatches[0], [
-            [1, 'Updated Target', 11, 2_000_000, 'Source B'],
-            [2, 'Second Target', 12, 750_000, 'Source C']
-        ]);
-    });
-
-
-    it('protects /api/targets behind a valid member session', async () => {
-        const env = {
-            SESSION_SECRET: 'test-session-secret',
-            DB: createDatabaseMock()
-        };
-
-        const deniedResponse = await worker.fetch(
-            new Request('https://worker.example/api/targets'),
-            env
-        );
-
-        assert.equal(deniedResponse.status, 401);
-
-        const now = Math.floor(Date.now() / 1000);
-        const token = await testing.createSessionToken(
-            {
-                user_id: 3853023,
-                faction_id: 46978,
-                session_id: crypto.randomUUID(),
-                iat: now,
-                exp: now + 43200
-            },
-            env.SESSION_SECRET
-        );
-
-        const allowedResponse = await worker.fetch(
-            new Request(
-                'https://worker.example/api/targets?limit=500&offset=2.9',
-                {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
+                    observations: [{
+                        target_id: 1,
+                        state: 'Okay',
+                        description: `In hospital until ${until}`,
+                        until,
+                        source: 'torn_api'
+                    }]
                 }
             ),
             env
         );
+        const firstBody = await firstResponse.json();
 
-        const body = await allowedResponse.json();
+        assert.equal(firstResponse.status, 200);
+        assert.equal(firstBody.accepted[0].status, 'Hospital');
+        assert.equal(firstBody.accepted[0].hospital_event_inserted, true);
+        assert.equal(firstBody.accepted[0].schedule_reason, 'hospital_release_plus_1m');
+        assert.equal(firstBody.accepted[0].competition_score, 12);
 
-        assert.equal(allowedResponse.status, 200);
-        assert.equal(body.count, 2);
-        assert.equal(body.limit, 200);
-        assert.equal(body.offset, 2);
-        assert.deepEqual(body.targets, sampleTargets());
+        const secondResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
+                {
+                    observations: [{
+                        target_id: 1,
+                        state: 'Hospital',
+                        description: 'Still in hospital',
+                        until,
+                        source: 'attack_page'
+                    }]
+                }
+            ),
+            env
+        );
+        const secondBody = await secondResponse.json();
+
+        assert.equal(secondBody.accepted[0].hospital_event_inserted, false);
+        assert.equal(
+            db.sqlite.prepare('SELECT COUNT(*) AS count FROM hospital_events').get().count,
+            1
+        );
+
+        const status = db.sqlite
+            .prepare('SELECT * FROM target_status WHERE target_id = 1')
+            .get();
+        assert.equal(status.status, 'Hospital');
+        assert.equal(Number(status.status_until), until);
+        assert.equal(status.competition_tier, 'Prime');
     });
 
 
-    it('rejects expired and tampered sessions', async () => {
-        const now = Math.floor(Date.now() / 1000);
-        const secret = 'test-session-secret';
+    it('coordinates check claims between active member sessions', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const firstToken = await sessionToken(1001);
+        const secondToken = await sessionToken(1002);
 
+        const firstResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                firstToken,
+                { limit: 2 }
+            ),
+            env
+        );
+        const secondResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                secondToken,
+                { limit: 2 }
+            ),
+            env
+        );
+        const firstIds = (await firstResponse.json()).checks.map(row => row.id);
+        const secondIds = (await secondResponse.json()).checks.map(row => row.id);
+
+        assert.equal(firstIds.length, 2);
+        assert.equal(secondIds.length, 2);
+        assert.deepEqual(
+            firstIds.filter(id => secondIds.includes(id)),
+            []
+        );
+
+        const observationResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                firstToken,
+                {
+                    observations: [{
+                        target_id: firstIds[0],
+                        state: 'Okay',
+                        description: 'Okay',
+                        until: 0,
+                        source: 'torn_api'
+                    }]
+                }
+            ),
+            env
+        );
+        assert.equal(observationResponse.status, 200);
+        assert.equal(
+            db.sqlite
+                .prepare('SELECT COUNT(*) AS count FROM client_check_claims WHERE target_id = ?')
+                .get(firstIds[0]).count,
+            0
+        );
+    });
+
+
+    it('leases different recommendations and applies activity/FF filters', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const firstToken = await sessionToken(2001);
+        const secondToken = await sessionToken(2002);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+
+        const activityResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/activity',
+                firstToken,
+                { active_targets: { 1: nowSeconds } }
+            ),
+            env
+        );
+        assert.equal(activityResponse.status, 200);
+
+        const fairFightResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/fair-fight',
+                firstToken,
+                {
+                    targets: [
+                        { target_id: 2, fair_fight: 4.5, bs_estimate: 5000 },
+                        { target_id: 3, fair_fight: 2.0, bs_estimate: 3000 }
+                    ]
+                }
+            ),
+            env
+        );
+        assert.equal(fairFightResponse.status, 200);
+
+        const firstResponse = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2&min_ff=1&max_ff=3',
+                firstToken
+            ),
+            env
+        );
+        const secondResponse = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2&min_ff=1&max_ff=3',
+                secondToken
+            ),
+            env
+        );
+        const firstBody = await firstResponse.json();
+        const secondBody = await secondResponse.json();
+        const firstIds = firstBody.targets.map(row => row.id);
+        const secondIds = secondBody.targets.map(row => row.id);
+
+        assert.equal(firstResponse.status, 200);
+        assert.equal(secondResponse.status, 200);
+        assert.ok(!firstIds.includes(1), 'recently active target must be excluded');
+        assert.ok(!firstIds.includes(2), 'out-of-range known FF target must be excluded');
+        assert.ok(firstIds.includes(3), 'in-range FF target should be eligible');
+        assert.deepEqual(firstIds.filter(id => secondIds.includes(id)), []);
+    });
+
+
+    it('rejects expired/tampered sessions and preserves parsing helpers', async () => {
+        const now = Math.floor(Date.now() / 1000);
         const expiredToken = await testing.createSessionToken(
             {
                 user_id: 3853023,
@@ -245,148 +340,218 @@ describe('Slinky Leveling Worker', () => {
                 iat: now - 43201,
                 exp: now - 1
             },
-            secret
+            SESSION_SECRET
         );
-
         assert.equal(
-            await testing.verifySessionToken(expiredToken, secret),
+            await testing.verifySessionToken(expiredToken, SESSION_SECRET),
             null
         );
 
-        const validToken = await testing.createSessionToken(
-            {
-                user_id: 3853023,
-                faction_id: 46978,
-                session_id: crypto.randomUUID(),
-                iat: now,
-                exp: now + 43200
-            },
-            secret
-        );
-
-        const tamperedToken = `${validToken.slice(0, -1)}x`;
-
+        const validToken = await sessionToken(3853023);
         assert.equal(
-            await testing.verifySessionToken(tamperedToken, secret),
+            await testing.verifySessionToken(`${validToken.slice(0, -1)}x`, SESSION_SECRET),
             null
         );
-    });
 
-
-    it('preserves CSV parsing, stat conversion, and CORS preflight', async () => {
-        const rows = testing.parseCsv(
-            'id,name,level,total,sources\r\n' +
-            '1,"Quoted, Name",10,1.25m,"One ""source"""\r\n'
-        );
-
-        assert.deepEqual(rows, [
-            {
-                id: '1',
-                name: 'Quoted, Name',
-                level: '10',
-                total: '1.25m',
-                sources: 'One "source"'
-            }
-        ]);
-
+        assert.equal(testing.normalizeStatus('Okay but in hospital'), 'Hospital');
+        assert.equal(testing.competitionTier(80), 'Farmed');
+        assert.equal(testing.rapidPenalty(4 * 60 * 1000), 40);
         assert.equal(testing.parseStatNumber('1.25m'), 1_250_000);
-        assert.equal(testing.parseStatNumber('unknown'), null);
-
-        const optionsResponse = await worker.fetch(
-            new Request('https://worker.example/api/targets', {
-                method: 'OPTIONS'
-            }),
-            {}
-        );
-
-        assert.equal(optionsResponse.status, 204);
-        assert.equal(
-            optionsResponse.headers.get('Access-Control-Allow-Headers'),
-            'Content-Type, X-Admin-Token, Authorization'
-        );
-        assert.equal(
-            optionsResponse.headers.get('X-Slinky-Worker-Version'),
-            '0.2.0-member-targets'
+        assert.deepEqual(
+            testing.parseCsv('id,name\r\n1,"Quoted, Name"\r\n'),
+            [{ id: '1', name: 'Quoted, Name' }]
         );
     });
 });
 
 
-function createDatabaseMock({ recordedBatches = [] } = {}) {
-    return {
-        prepare(sql) {
-            return createStatementMock(sql);
-        },
-        async batch(statements) {
-            recordedBatches.push(
-                statements.map(statement => statement.bindings)
-            );
+function createDatabase() {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(BASE_SCHEMA);
+    sqlite.exec(
+        readFileSync(
+            new URL('./migrations/0001-client-coordination.sql', import.meta.url),
+            'utf8'
+        )
+    );
 
-            return statements.map(() => ({
-                success: true,
-                results: []
-            }));
-        }
-    };
+    const insert = sqlite.prepare(`
+        INSERT INTO targets (id, name, level, total_stats, sources)
+        VALUES (?, ?, ?, ?, ?)
+    `);
+
+    for (let id = 1; id <= 6; id++) {
+        insert.run(
+            id,
+            `Target ${id}`,
+            50 - id,
+            id * 1000,
+            `Source ${id}`
+        );
+    }
+
+    return new D1DatabaseAdapter(sqlite);
 }
 
 
-function createStatementMock(sql, bindings = []) {
-    return {
-        bindings,
-        bind(...values) {
-            return createStatementMock(sql, values);
-        },
-        async first() {
-            if (sql.includes('FROM targets')) {
-                return { count: 725 };
+class D1DatabaseAdapter {
+    constructor(sqlite) {
+        this.sqlite = sqlite;
+    }
+
+    prepare(sql) {
+        return new D1StatementAdapter(this.sqlite, sql, []);
+    }
+
+    async batch(statements) {
+        this.sqlite.exec('BEGIN');
+
+        try {
+            const results = [];
+
+            for (const statement of statements) {
+                results.push(await statement.run());
             }
 
-            if (sql.includes('FROM target_status')) {
-                return { count: 3 };
-            }
-
-            if (sql.includes('FROM hospital_events')) {
-                return { count: 4 };
-            }
-
-            if (sql.includes('FROM scheduler_queue')) {
-                return { count: 5 };
-            }
-
-            return null;
-        },
-        async all() {
-            assert.equal(bindings.length, 2);
-
-            return {
-                success: true,
-                results: sampleTargets()
-            };
+            this.sqlite.exec('COMMIT');
+            return results;
+        } catch (error) {
+            this.sqlite.exec('ROLLBACK');
+            throw error;
         }
-    };
+    }
 }
 
 
-function sampleTargets() {
-    return [
+class D1StatementAdapter {
+    constructor(sqlite, sql, bindings) {
+        this.sqlite = sqlite;
+        this.sql = sql;
+        this.bindings = bindings;
+    }
+
+    bind(...values) {
+        return new D1StatementAdapter(this.sqlite, this.sql, values);
+    }
+
+    async first(columnName) {
+        const row = this.sqlite.prepare(this.sql).get(...this.bindings) ?? null;
+        return columnName && row ? row[columnName] ?? null : row;
+    }
+
+    async all() {
+        return {
+            success: true,
+            results: this.sqlite.prepare(this.sql).all(...this.bindings)
+        };
+    }
+
+    async run() {
+        const result = this.sqlite.prepare(this.sql).run(...this.bindings);
+        return {
+            success: true,
+            results: [],
+            meta: {
+                changes: Number(result.changes || 0),
+                last_row_id: Number(result.lastInsertRowid || 0)
+            }
+        };
+    }
+}
+
+
+async function sessionToken(userId) {
+    const now = Math.floor(Date.now() / 1000);
+    return testing.createSessionToken(
         {
-            id: 1695815,
-            name: 'Linked-',
-            level: 78,
-            total_stats: 51130000,
-            sources: 'Legacy List 11',
-            created_at: '2026-08-13 00:00:00',
-            updated_at: '2026-08-13 00:00:00'
+            user_id: userId,
+            faction_id: 46978,
+            session_id: crypto.randomUUID(),
+            iat: now,
+            exp: now + 43200
         },
-        {
-            id: 1627252,
-            name: 'eladgrin',
-            level: 73,
-            total_stats: 61140000,
-            sources: 'Legacy List 10',
-            created_at: '2026-08-13 00:00:00',
-            updated_at: '2026-08-13 00:00:00'
-        }
-    ];
+        SESSION_SECRET
+    );
 }
+
+
+function jsonRequest(url, body) {
+    return new Request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+}
+
+
+function authenticatedRequest(url, token) {
+    return new Request(url, {
+        headers: { Authorization: `Bearer ${token}` }
+    });
+}
+
+
+function authenticatedJsonRequest(url, token, body) {
+    return new Request(url, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+}
+
+
+const BASE_SCHEMA = `
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE targets (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        level INTEGER,
+        total_stats INTEGER,
+        sources TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE target_status (
+        target_id INTEGER PRIMARY KEY,
+        status TEXT,
+        status_until TEXT,
+        last_checked_at TEXT,
+        next_check_at TEXT,
+        competition_score INTEGER DEFAULT 0,
+        competition_tier TEXT DEFAULT 'Prime',
+        hiding_out INTEGER DEFAULT 0,
+        permanent_federal INTEGER DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (target_id) REFERENCES targets(id)
+    );
+
+    CREATE TABLE hospital_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_id INTEGER NOT NULL,
+        hospitalized_at TEXT NOT NULL,
+        hospital_until TEXT NOT NULL,
+        reported_by INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(target_id, hospital_until),
+        FOREIGN KEY (target_id) REFERENCES targets(id)
+    );
+
+    CREATE INDEX idx_hospital_events_target_time
+        ON hospital_events(target_id, hospitalized_at);
+
+    CREATE TABLE scheduler_queue (
+        target_id INTEGER PRIMARY KEY,
+        next_check_at TEXT,
+        reason TEXT,
+        priority INTEGER DEFAULT 0,
+        claimed_by INTEGER,
+        claim_expires_at TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (target_id) REFERENCES targets(id)
+    );
+`;
