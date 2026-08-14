@@ -7,7 +7,7 @@ Worker. It intentionally contains no deployment credentials or member API keys.
 
 Every deployable source change must update `WORKER_VERSION` near the top of
 `worker.js`. The version uses a readable `major.minor.patch-name` format, such
-as `0.3.0-thin-client-api`.
+as `0.3.1-core-lib-limiter`.
 
 The active version appears in three places:
 
@@ -30,7 +30,7 @@ The Worker expects these Cloudflare resources:
 
 Keep both secret values in Cloudflare. Do not add them to this repository.
 
-## Deploying 0.3.0
+## Deploying 0.3.x
 
 The existing four-table database remains the source of target, status,
 hospitalization, and scheduler data. Before deploying `worker.js`, run the
@@ -73,14 +73,17 @@ Both target-list routes accept `limit` (default `50`, maximum `200`) and
 
 `/api/recommendations` accepts `limit` (maximum `40`), `min_ff`, and `max_ff`.
 The Worker leases returned targets for ten minutes so simultaneously active
-members normally receive different target sets. `/api/checks/claim` accepts a
-JSON `limit` from `0` through `80`; a claim expires after three minutes if its
-client does not report a result.
+members normally receive different target sets. `/api/checks/claim` accepts the
+client's JSON `capacity`, calculated from Core Lib's shared live Torn API quota.
+A claim expires after three minutes if its client does not report a result. The
+Worker's generic member-batch ceiling is payload-abuse protection only; it does
+not set the client's Torn polling allowance.
 
 Ordinary member Torn and FFScouter keys are not stored in D1. The Torn key is
 sent to `/api/auth` only for faction verification, then remains in userscript
 storage for client-side Torn requests. Clients submit only derived observations
-to the Worker.
+to the Worker. The userscript records authentication and every direct Torn API
+request through Core Lib's shared limiter.
 
 ## Test
 

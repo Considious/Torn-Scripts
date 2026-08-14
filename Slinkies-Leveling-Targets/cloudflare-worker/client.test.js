@@ -25,7 +25,7 @@ describe('Slinky Leveling thin client', () => {
 
 
     it('uses the protected Worker API for shared decisions and state', () => {
-        assert.match(client, /@version\s+0\.6\.0/);
+        assert.match(client, /@version\s+0\.6\.1/);
         assert.match(
             client,
             /@connect\s+slinkyleveling\.richard-johnson554\.workers\.dev/
@@ -41,6 +41,26 @@ describe('Slinky Leveling thin client', () => {
             '/api/fair-fight'
         ]) {
             assert.ok(client.includes(endpoint), `missing ${endpoint}`);
+        }
+    });
+
+
+    it('uses Core Lib as the single Torn API polling limiter', () => {
+        assert.match(client, /TornLib\.getTornApiUsage\(/);
+        assert.match(client, /body:\s*\{\s*capacity\s*\}/);
+        assert.match(client, /TornLib\.TORN_API_DEFAULT_LIMIT/);
+        assert.match(client, /TornLib\.reserveTornApiSlot\(/);
+
+        for (const testingOnlyControl of [
+            'PRIMARY_MAX_CHECKS',
+            'BACKGROUND_MAX_CHECKS',
+            'slp-primary-checks',
+            'slp-background-checks'
+        ]) {
+            assert.ok(
+                !client.includes(testingOnlyControl),
+                `${testingOnlyControl} should not control live polling`
+            );
         }
     });
 

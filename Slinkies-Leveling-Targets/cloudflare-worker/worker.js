@@ -1,14 +1,14 @@
 /**
  * Slinky Leveling API Worker
  *
- * Release: 0.3.0-thin-client-api
+ * Release: 0.3.1-core-lib-limiter
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.3.0-thin-client-api';
+const WORKER_VERSION = '0.3.1-core-lib-limiter';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -19,9 +19,9 @@ const DEFAULT_TARGET_LIMIT = 50;
 const MAX_TARGET_LIMIT = 200;
 const DEFAULT_RECOMMENDATION_LIMIT = 40;
 const MAX_RECOMMENDATION_LIMIT = 40;
-const DEFAULT_CHECK_LIMIT = 10;
-const MAX_CHECK_LIMIT = 80;
-const MAX_OBSERVATIONS_PER_REQUEST = 80;
+// This is payload-abuse protection, not a Torn polling allowance. The client
+// supplies its live request capacity from Considious Torn Core Lib.
+const MAX_MEMBER_BATCH_ROWS = 200;
 const MAX_ACTIVITY_TARGETS_PER_REQUEST = 1_000;
 const MAX_FAIR_FIGHT_ROWS_PER_REQUEST = 200;
 const MAX_JSON_BODY_BYTES = 256 * 1024;
@@ -911,11 +911,11 @@ async function handleRecommendations(url, env, session) {
 async function handleClaimChecks(request, env, session) {
     try {
         const body = await readJsonBody(request);
-        const limit = boundedInteger(
-            body?.limit,
-            DEFAULT_CHECK_LIMIT,
+        const capacity = boundedInteger(
+            body?.capacity,
             0,
-            MAX_CHECK_LIMIT
+            0,
+            MAX_MEMBER_BATCH_ROWS
         );
         const now = Date.now();
 
@@ -931,7 +931,7 @@ async function handleClaimChecks(request, env, session) {
             .bind(session.session_id, now)
             .first();
 
-        const needed = Math.max(0, limit - Number(existing?.count || 0));
+        const needed = Math.max(0, capacity - Number(existing?.count || 0));
 
         if (needed > 0) {
             const candidates = await env.DB
@@ -1036,13 +1036,13 @@ async function handleClaimChecks(request, env, session) {
                 ORDER BY claim.claimed_at ASC, t.id ASC
                 LIMIT ?3
             `)
-            .bind(session.session_id, now, limit)
+            .bind(session.session_id, now, capacity)
             .all();
 
         return jsonResponse({
             ok: true,
             count: claims.results?.length ?? 0,
-            limit,
+            capacity,
             claim_seconds: Math.floor(CHECK_CLAIM_LIFETIME_MS / 1000),
             checks: claims.results ?? []
         });
@@ -1065,9 +1065,9 @@ async function handleObservations(request, env, session) {
             );
         }
 
-        if (observations.length > MAX_OBSERVATIONS_PER_REQUEST) {
+        if (observations.length > MAX_MEMBER_BATCH_ROWS) {
             throw new RequestValidationError(
-                `A maximum of ${MAX_OBSERVATIONS_PER_REQUEST} observations is allowed.`
+                `A maximum of ${MAX_MEMBER_BATCH_ROWS} rows is allowed per request.`
             );
         }
 

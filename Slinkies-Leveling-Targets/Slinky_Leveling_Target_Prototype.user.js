@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Panel
 // @namespace    Considious [3853023]
-// @version      0.6.0
+// @version      0.6.1
 // @description  Authenticated thin client for Slinky's shared Cloudflare leveling-target service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -24,25 +24,18 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.6.0';
+    const SCRIPT_VERSION = '0.6.1';
     const SCRIPT_NAME = 'Slinky Leveling Panel';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
-    const BACKGROUND_POLL_MS = 5 * 60 * 1000;
-    const PRIMARY_DEFAULT_CHECKS = 10;
-    const PRIMARY_MAX_CHECKS = 80;
-    const BACKGROUND_DEFAULT_CHECKS = 0;
-    const BACKGROUND_MAX_CHECKS = 80;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
         ffKey: 'slinkyLeveling.ffApiKey',
-        primaryChecks: 'slinkyLeveling.primaryChecks.v2',
-        backgroundChecks: 'slinkyLeveling.backgroundChecks.v2',
         pollSeconds: 'slinkyLeveling.pollSeconds',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
@@ -60,7 +53,6 @@
     const state = {
         targets: [],
         polling: false,
-        backgroundPolling: false,
         authenticating: false,
         settingsOpen: false,
         debugOpen: false,
@@ -69,13 +61,10 @@
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
         lastCycleChecked: Number(persistedRuntime.lastCycleChecked) || 0,
         lastCycleReported: Number(persistedRuntime.lastCycleReported) || 0,
-        lastBackgroundAt: Number(persistedRuntime.lastBackgroundAt) || 0,
-        lastBackgroundChecked: Number(persistedRuntime.lastBackgroundChecked) || 0,
         lastActivitySyncAt: Number(GM_getValue(KEYS.lastActivitySyncAt, 0)) || 0,
         activeTargetsReported: Number(persistedRuntime.activeTargetsReported) || 0,
         clientEvents: loadJson(KEYS.clientEvents, []),
         timer: null,
-        backgroundTimer: null,
         leader: null
     };
 
@@ -104,17 +93,6 @@
         return {
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
-            primaryChecks: clamp(
-                Number(GM_getValue(KEYS.primaryChecks, PRIMARY_DEFAULT_CHECKS)) ||
-                    PRIMARY_DEFAULT_CHECKS,
-                0,
-                PRIMARY_MAX_CHECKS
-            ),
-            backgroundChecks: clamp(
-                Number(GM_getValue(KEYS.backgroundChecks, BACKGROUND_DEFAULT_CHECKS)) || 0,
-                0,
-                BACKGROUND_MAX_CHECKS
-            ),
             pollSeconds: clamp(
                 Number(GM_getValue(KEYS.pollSeconds, 90)) || 90,
                 60,
@@ -131,14 +109,6 @@
         GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
         GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
         GM_setValue(
-            KEYS.primaryChecks,
-            clamp(Number(values.primaryChecks) || 0, 0, PRIMARY_MAX_CHECKS)
-        );
-        GM_setValue(
-            KEYS.backgroundChecks,
-            clamp(Number(values.backgroundChecks) || 0, 0, BACKGROUND_MAX_CHECKS)
-        );
-        GM_setValue(
             KEYS.pollSeconds,
             clamp(Number(values.pollSeconds) || 90, 60, 300)
         );
@@ -152,8 +122,6 @@
             lastCycleAt: state.lastCycleAt,
             lastCycleChecked: state.lastCycleChecked,
             lastCycleReported: state.lastCycleReported,
-            lastBackgroundAt: state.lastBackgroundAt,
-            lastBackgroundChecked: state.lastBackgroundChecked,
             activeTargetsReported: state.activeTargetsReported
         });
     }
@@ -194,12 +162,34 @@
         state.authenticating = true;
 
         try {
-            const response = await workerRequest('/api/auth', {
-                method: 'POST',
-                auth: false,
-                retryAuthentication: false,
-                body: { api_key: apiKey }
+            const reservation = await TornLib.reserveTornApiSlot({
+                url: 'https://api.torn.com/v2/key/info',
+                method: 'GET',
+                script: SCRIPT_NAME,
+                priority: 'authentication',
+                limit: TornLib.TORN_API_DEFAULT_LIMIT,
+                wait: true,
+                maxWaitMs: 65_000
             });
+            let response;
+
+            try {
+                response = await workerRequest('/api/auth', {
+                    method: 'POST',
+                    auth: false,
+                    retryAuthentication: false,
+                    body: { api_key: apiKey }
+                });
+                await TornLib.finishTornApiLog(reservation, {
+                    status: 200,
+                    result: 'Authenticated through Cloudflare'
+                });
+            } catch (error) {
+                await TornLib.finishTornApiLog(reservation, {
+                    result: 'Authentication failed'
+                });
+                throw error;
+            }
 
             if (!response?.session_token) {
                 throw new Error('Cloudflare did not return a session token.');
@@ -308,14 +298,13 @@
     // Browser-side data collection assigned by Cloudflare
     // ================================================================
 
-    async function runCycle(checkLimit, cycleKind, forceActivity = false) {
-        if (state.polling || state.backgroundPolling) return;
+    async function runCycle(forceActivity = false) {
+        if (state.polling) return;
         if (!state.leader?.isLeader()) {
             render();
             return;
         }
 
-        const isBackground = cycleKind === 'background';
         const settings = getSettings();
 
         if (!settings.tornKey) {
@@ -325,8 +314,7 @@
             return;
         }
 
-        if (isBackground) state.backgroundPolling = true;
-        else state.polling = true;
+        state.polling = true;
 
         state.lastError = '';
         render();
@@ -335,9 +323,14 @@
             await ensureWorkerSession(false);
             await syncActivitySnapshots(settings.tornKey, forceActivity);
 
+            const apiUsage = TornLib.getTornApiUsage({
+                limit: TornLib.TORN_API_DEFAULT_LIMIT
+            });
+            const capacity = Math.max(0, Number(apiUsage.remaining) || 0);
+
             const claim = await workerRequest('/api/checks/claim', {
                 method: 'POST',
-                body: { limit: clamp(Number(checkLimit) || 0, 0, 80) }
+                body: { capacity }
             });
             const checks = Array.isArray(claim?.checks) ? claim.checks : [];
             const observations = [];
@@ -347,7 +340,7 @@
                     const observed = await getUserStatus(
                         settings.tornKey,
                         target,
-                        isBackground ? 'background' : 'normal'
+                        'normal'
                     );
                     observations.push(observed);
                     return target;
@@ -380,16 +373,11 @@
 
             await refreshRecommendations();
 
-            if (isBackground) {
-                state.lastBackgroundAt = Date.now();
-                state.lastBackgroundChecked = checks.length;
-            } else {
-                state.lastCycleAt = Date.now();
-                state.lastCycleChecked = checks.length;
-            }
+            state.lastCycleAt = Date.now();
+            state.lastCycleChecked = checks.length;
 
             logClientEvent('cycle_completed', {
-                kind: cycleKind,
+                apiCapacity: capacity,
                 assigned: checks.length,
                 reported: observations.length,
                 failures: failures.length
@@ -402,10 +390,8 @@
                 error: state.lastError
             });
         } finally {
-            if (isBackground) state.backgroundPolling = false;
-            else state.polling = false;
+            state.polling = false;
             scheduleNextPoll();
-            scheduleBackgroundPoll();
             render();
         }
     }
@@ -443,10 +429,28 @@
 
 
     async function submitObservations(observations) {
-        return workerRequest('/api/observations', {
-            method: 'POST',
-            body: { observations }
-        });
+        const batchSize = TornLib.TORN_API_DEFAULT_LIMIT;
+        const combined = {
+            ok: true,
+            accepted_count: 0,
+            rejected_count: 0,
+            accepted: [],
+            rejected: []
+        };
+
+        for (let offset = 0; offset < observations.length; offset += batchSize) {
+            const response = await workerRequest('/api/observations', {
+                method: 'POST',
+                body: { observations: observations.slice(offset, offset + batchSize) }
+            });
+            combined.ok = combined.ok && response.ok !== false;
+            combined.accepted_count += Number(response.accepted_count) || 0;
+            combined.rejected_count += Number(response.rejected_count) || 0;
+            combined.accepted.push(...(Array.isArray(response.accepted) ? response.accepted : []));
+            combined.rejected.push(...(Array.isArray(response.rejected) ? response.rejected : []));
+        }
+
+        return combined;
     }
 
 
@@ -702,23 +706,11 @@
         if (state.timer) clearTimeout(state.timer);
         state.timer = setTimeout(() => {
             if (state.leader?.isLeader()) {
-                runCycle(getSettings().primaryChecks, 'primary', false);
+                runCycle(false);
             } else {
                 scheduleNextPoll();
             }
         }, getSettings().pollSeconds * 1000);
-    }
-
-
-    function scheduleBackgroundPoll() {
-        if (state.backgroundTimer) clearTimeout(state.backgroundTimer);
-        state.backgroundTimer = setTimeout(() => {
-            if (state.leader?.isLeader() && getSettings().backgroundChecks > 0) {
-                runCycle(getSettings().backgroundChecks, 'background', false);
-            } else {
-                scheduleBackgroundPoll();
-            }
-        }, BACKGROUND_POLL_MS);
     }
 
 
@@ -745,14 +737,10 @@
             sessionExpiresAt,
             leaderTab: Boolean(state.leader?.isLeader()),
             recommendations: state.targets.length,
-            primaryChecksConfigured: getSettings().primaryChecks,
-            backgroundChecksConfigured: getSettings().backgroundChecks,
             pollSecondsConfigured: getSettings().pollSeconds,
             lastPrimaryPollAt: state.lastCycleAt,
             lastPrimaryChecked: state.lastCycleChecked,
             lastPrimaryReported: state.lastCycleReported,
-            lastBackgroundPollAt: state.lastBackgroundAt,
-            lastBackgroundChecked: state.lastBackgroundChecked,
             lastActivitySyncAt: state.lastActivitySyncAt,
             activeTargetsReported: state.activeTargetsReported,
             lastError: state.lastError || '',
@@ -772,10 +760,8 @@
             `Polling tab: ${data.leaderTab ? 'Yes' : 'No'}`,
             '',
             `Recommendations: ${data.recommendations}`,
-            `Primary contribution: ${data.primaryChecksConfigured} every ${data.pollSecondsConfigured}s`,
-            `Background contribution: ${data.backgroundChecksConfigured} every 5m`,
+            `Polling: Core Lib remaining quota every ${data.pollSecondsConfigured}s`,
             `Last primary: ${formatDateTime(data.lastPrimaryPollAt)} | assigned ${data.lastPrimaryChecked} | reported ${data.lastPrimaryReported}`,
-            `Last background: ${formatDateTime(data.lastBackgroundPollAt)} | assigned ${data.lastBackgroundChecked}`,
             `Activity sync: ${formatDateTime(data.lastActivitySyncAt)} | active matches ${data.activeTargetsReported}`,
             `Last error: ${data.lastError || 'None'}`,
             '',
@@ -856,7 +842,7 @@
         const panel = ensurePanel();
         const settings = getSettings();
         const leader = Boolean(state.leader?.isLeader());
-        const busy = state.polling || state.backgroundPolling || state.authenticating;
+        const busy = state.polling || state.authenticating;
         const usage = TornLib.getTornApiUsage({ limit: TornLib.TORN_API_DEFAULT_LIMIT });
 
         panel.classList.toggle('slp-collapsed', settings.collapsed);
@@ -900,12 +886,6 @@
                 <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. The key is stored locally and is not retained by Cloudflare.</div>
                 <label class="wide">FFScouter API key
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
-                </label>
-                <label>Checks per poll (0–80)
-                    <input id="slp-primary-checks" type="number" min="0" max="80" value="${settings.primaryChecks}">
-                </label>
-                <label>Background / 5m (0–80)
-                    <input id="slp-background-checks" type="number" min="0" max="80" value="${settings.backgroundChecks}">
                 </label>
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
@@ -985,7 +965,7 @@
 
     function bindEvents(panel) {
         panel.querySelector('#slp-refresh')?.addEventListener('click', () => {
-            runCycle(getSettings().primaryChecks, 'primary', false);
+            runCycle(false);
         });
         panel.querySelector('#slp-debug-btn')?.addEventListener('click', () => {
             state.debugOpen = !state.debugOpen;
@@ -1023,8 +1003,6 @@
             saveSettings({
                 tornKey: panel.querySelector('#slp-torn-key')?.value,
                 ffKey: panel.querySelector('#slp-ff-key')?.value,
-                primaryChecks: panel.querySelector('#slp-primary-checks')?.value,
-                backgroundChecks: panel.querySelector('#slp-background-checks')?.value,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
                 maxFF: panel.querySelector('#slp-max-ff')?.value
@@ -1032,7 +1010,7 @@
             clearWorkerSession();
             state.settingsOpen = false;
             scheduleNextPoll();
-            await runCycle(getSettings().primaryChecks, 'primary', false);
+            await runCycle(false);
         });
     }
 
@@ -1090,7 +1068,7 @@
             onChange: isLeader => {
                 render();
                 if (isLeader) {
-                    runCycle(getSettings().primaryChecks, 'primary', false);
+                    runCycle(false);
                 }
             }
         });
@@ -1100,10 +1078,9 @@
         scheduleAttackPageScrape();
 
         if (state.leader.isLeader()) {
-            await runCycle(getSettings().primaryChecks, 'primary', false);
+            await runCycle(false);
         } else {
             scheduleNextPoll();
-            scheduleBackgroundPoll();
         }
     }
 

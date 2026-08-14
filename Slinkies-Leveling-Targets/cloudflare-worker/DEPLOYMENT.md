@@ -1,6 +1,6 @@
 # Cloudflare deployment checklist
 
-Use this order. Do not merge or install userscript `0.6.0` before all three
+Use this order. Do not merge or install userscript `0.6.1` before all three
 checks at the bottom succeed.
 
 ## 1. Add the D1 coordination tables
@@ -41,7 +41,7 @@ binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 The new release is:
 
 ```text
-0.3.0-thin-client-api
+0.3.1-core-lib-limiter
 ```
 
 ## 3. Smoke-test the protected API
@@ -57,7 +57,7 @@ The JSON should contain:
 ```json
 {
   "ok": true,
-  "version": "0.3.0-thin-client-api",
+  "version": "0.3.1-core-lib-limiter",
   "database": "connected"
 }
 ```
@@ -70,7 +70,7 @@ POST /api/checks/claim
 Authorization: Bearer YOUR_SESSION_TOKEN
 Content-Type: application/json
 
-{"limit":1}
+{"capacity":1}
 ```
 
 ```text
@@ -81,4 +81,4 @@ Authorization: Bearer YOUR_SESSION_TOKEN
 Both responses should contain `"ok": true`. The check response may contain one
 assigned check; the recommendation response should contain up to five targets.
 
-Once those requests work, userscript `0.6.0` can be installed for a live test.
+Once those requests work, userscript `0.6.1` can be installed for a live test.

@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.3.0-thin-client-api';
+const WORKER_VERSION = '0.3.1-core-lib-limiter';
 const SESSION_SECRET = 'test-session-secret';
 
 afterEach(() => {
@@ -130,7 +130,7 @@ describe('Slinky Leveling Worker', () => {
         const env = { DB: createDatabase(), SESSION_SECRET };
         const requests = [
             new Request('https://worker.example/api/recommendations'),
-            jsonRequest('https://worker.example/api/checks/claim', { limit: 2 }),
+            jsonRequest('https://worker.example/api/checks/claim', { capacity: 2 }),
             jsonRequest('https://worker.example/api/observations', {
                 observations: [{ target_id: 1, state: 'Okay' }]
             }),
@@ -222,7 +222,7 @@ describe('Slinky Leveling Worker', () => {
             authenticatedJsonRequest(
                 'https://worker.example/api/checks/claim',
                 firstToken,
-                { limit: 2 }
+                { capacity: 2 }
             ),
             env
         );
@@ -230,7 +230,7 @@ describe('Slinky Leveling Worker', () => {
             authenticatedJsonRequest(
                 'https://worker.example/api/checks/claim',
                 secondToken,
-                { limit: 2 }
+                { capacity: 2 }
             ),
             env
         );
