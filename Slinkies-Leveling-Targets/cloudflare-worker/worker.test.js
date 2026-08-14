@@ -6,11 +6,13 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.3.1-core-lib-limiter';
+const WORKER_VERSION = '0.4.0-multi-device-collector';
 const SESSION_SECRET = 'test-session-secret';
+const originalDateNow = Date.now;
 
 afterEach(() => {
     globalThis.fetch = originalFetch;
+    Date.now = originalDateNow;
 });
 
 
@@ -130,6 +132,7 @@ describe('Slinky Leveling Worker', () => {
         const env = { DB: createDatabase(), SESSION_SECRET };
         const requests = [
             new Request('https://worker.example/api/recommendations'),
+            jsonRequest('https://worker.example/api/collector/heartbeat', {}),
             jsonRequest('https://worker.example/api/checks/claim', { capacity: 2 }),
             jsonRequest('https://worker.example/api/observations', {
                 observations: [{ target_id: 1, state: 'Okay' }]
@@ -270,6 +273,101 @@ describe('Slinky Leveling Worker', () => {
     });
 
 
+    it('elects one collector per user and fails over between devices', async () => {
+        let now = 1_800_000_000_000;
+        Date.now = () => now;
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const pcToken = await sessionToken(3001, 'pc-session');
+        const mobileToken = await sessionToken(3001, 'mobile-session');
+
+        const pcHeartbeat = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/collector/heartbeat',
+                pcToken,
+                {}
+            ),
+            env
+        );
+        const pcLease = await pcHeartbeat.json();
+        assert.equal(pcLease.collector, true);
+
+        const mobileHeartbeat = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/collector/heartbeat',
+                mobileToken,
+                {}
+            ),
+            env
+        );
+        assert.equal((await mobileHeartbeat.json()).collector, false);
+
+        const pcChecks = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                pcToken,
+                { capacity: 2 }
+            ),
+            env
+        );
+        assert.equal((await pcChecks.json()).count, 2);
+
+        const mobileChecks = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                mobileToken,
+                { capacity: 2 }
+            ),
+            env
+        );
+        const mobileStandby = await mobileChecks.json();
+        assert.equal(mobileStandby.collector, false);
+        assert.equal(mobileStandby.count, 0);
+
+        const pcRecommendations = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2',
+                pcToken
+            ),
+            env
+        );
+        const mobileRecommendations = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2',
+                mobileToken
+            ),
+            env
+        );
+        assert.deepEqual(
+            (await pcRecommendations.json()).targets.map(row => row.id),
+            (await mobileRecommendations.json()).targets.map(row => row.id)
+        );
+
+        now += (pcLease.collector_lease_seconds * 1000) + 1;
+
+        const mobileTakeover = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/collector/heartbeat',
+                mobileToken,
+                {}
+            ),
+            env
+        );
+        assert.equal((await mobileTakeover.json()).collector, true);
+
+        const pcAfterTakeover = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/collector/heartbeat',
+                pcToken,
+                {}
+            ),
+            env
+        );
+        assert.equal((await pcAfterTakeover.json()).collector, false);
+    });
+
+
     it('leases different recommendations and applies activity/FF filters', async () => {
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
@@ -374,6 +472,12 @@ function createDatabase() {
             'utf8'
         )
     );
+    sqlite.exec(
+        readFileSync(
+            new URL('./migrations/0002-user-collector-leases.sql', import.meta.url),
+            'utf8'
+        )
+    );
 
     const insert = sqlite.prepare(`
         INSERT INTO targets (id, name, level, total_stats, sources)
@@ -460,13 +564,13 @@ class D1StatementAdapter {
 }
 
 
-async function sessionToken(userId) {
+async function sessionToken(userId, sessionId = crypto.randomUUID()) {
     const now = Math.floor(Date.now() / 1000);
     return testing.createSessionToken(
         {
             user_id: userId,
             faction_id: 46978,
-            session_id: crypto.randomUUID(),
+            session_id: sessionId,
             iat: now,
             exp: now + 43200
         },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slinky's Leveling Target Panel
 // @namespace    Considious [3853023]
-// @version      0.6.1
+// @version      0.7.0
 // @description  Authenticated thin client for Slinky's shared Cloudflare leveling-target service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -24,12 +24,13 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.6.1';
+    const SCRIPT_VERSION = '0.7.0';
     const SCRIPT_NAME = 'Slinky Leveling Panel';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
+    const COLLECTOR_HEARTBEAT_MS = 20 * 1000;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
 
@@ -58,6 +59,8 @@
         debugOpen: false,
         lastError: '',
         workerVersion: '',
+        collector: false,
+        collectorExpiresAt: 0,
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
         lastCycleChecked: Number(persistedRuntime.lastCycleChecked) || 0,
         lastCycleReported: Number(persistedRuntime.lastCycleReported) || 0,
@@ -65,6 +68,7 @@
         activeTargetsReported: Number(persistedRuntime.activeTargetsReported) || 0,
         clientEvents: loadJson(KEYS.clientEvents, []),
         timer: null,
+        collectorTimer: null,
         leader: null
     };
 
@@ -130,6 +134,8 @@
     function clearWorkerSession() {
         GM_setValue(KEYS.sessionToken, '');
         GM_setValue(KEYS.sessionExpiresAt, 0);
+        state.collector = false;
+        state.collectorExpiresAt = 0;
     }
 
 
@@ -260,6 +266,29 @@
     }
 
 
+    async function syncCollectorLease() {
+        if (!state.leader?.isLeader()) return false;
+
+        const wasCollector = state.collector;
+        const response = await workerRequest('/api/collector/heartbeat', {
+            method: 'POST',
+            body: {}
+        });
+
+        state.collector = response?.collector === true;
+        state.collectorExpiresAt = Number(response?.collector_expires_at) || 0;
+
+        if (state.collector !== wasCollector) {
+            logClientEvent(
+                state.collector ? 'collector_acquired' : 'collector_standby',
+                { expiresAt: state.collectorExpiresAt }
+            );
+        }
+
+        return state.collector;
+    }
+
+
     function gmRequest(options) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -321,6 +350,20 @@
 
         try {
             await ensureWorkerSession(false);
+            const collector = await syncCollectorLease();
+
+            if (!collector) {
+                await refreshRecommendations();
+                state.lastCycleAt = Date.now();
+                state.lastCycleChecked = 0;
+                state.lastCycleReported = 0;
+                logClientEvent('cycle_standby', {
+                    collectorExpiresAt: state.collectorExpiresAt
+                });
+                saveRuntimeState();
+                return;
+            }
+
             await syncActivitySnapshots(settings.tornKey, forceActivity);
 
             const apiUsage = TornLib.getTornApiUsage({
@@ -332,6 +375,8 @@
                 method: 'POST',
                 body: { capacity }
             });
+            state.collector = claim?.collector === true;
+            state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
             const checks = Array.isArray(claim?.checks) ? claim.checks : [];
             const observations = [];
 
@@ -386,7 +431,6 @@
         } catch (error) {
             state.lastError = TornLib.errorMessage(error);
             logClientEvent('cycle_failed', {
-                kind: cycleKind,
                 error: state.lastError
             });
         } finally {
@@ -706,11 +750,41 @@
         if (state.timer) clearTimeout(state.timer);
         state.timer = setTimeout(() => {
             if (state.leader?.isLeader()) {
-                runCycle(false);
+                void runCycle(false);
             } else {
                 scheduleNextPoll();
             }
         }, getSettings().pollSeconds * 1000);
+    }
+
+
+    function scheduleCollectorHeartbeat() {
+        if (state.collectorTimer) clearTimeout(state.collectorTimer);
+        state.collectorTimer = setTimeout(async () => {
+            let becameCollector = false;
+
+            try {
+                if (state.leader?.isLeader()) {
+                    const wasCollector = state.collector;
+                    const isCollector = await syncCollectorLease();
+                    becameCollector = isCollector && !wasCollector;
+                }
+            } catch (error) {
+                if (state.collectorExpiresAt <= Date.now()) {
+                    state.collector = false;
+                }
+                logClientEvent('collector_heartbeat_failed', {
+                    error: TornLib.errorMessage(error)
+                });
+            } finally {
+                scheduleCollectorHeartbeat();
+                render();
+            }
+
+            if (becameCollector && !state.polling) {
+                void runCycle(false);
+            }
+        }, COLLECTOR_HEARTBEAT_MS);
     }
 
 
@@ -736,6 +810,8 @@
             authenticated: sessionExpiresAt > Date.now(),
             sessionExpiresAt,
             leaderTab: Boolean(state.leader?.isLeader()),
+            collector: state.collector,
+            collectorExpiresAt: state.collectorExpiresAt,
             recommendations: state.targets.length,
             pollSecondsConfigured: getSettings().pollSeconds,
             lastPrimaryPollAt: state.lastCycleAt,
@@ -758,6 +834,8 @@
             `Authenticated: ${data.authenticated ? 'Yes' : 'No'}`,
             `Session expires: ${data.sessionExpiresAt ? new Date(data.sessionExpiresAt).toLocaleString() : 'None'}`,
             `Polling tab: ${data.leaderTab ? 'Yes' : 'No'}`,
+            `API collector: ${data.collector ? 'Yes' : 'Standby device'}`,
+            `Collector lease: ${formatDateTime(data.collectorExpiresAt)}`,
             '',
             `Recommendations: ${data.recommendations}`,
             `Polling: Core Lib remaining quota every ${data.pollSecondsConfigured}s`,
@@ -844,13 +922,16 @@
         const leader = Boolean(state.leader?.isLeader());
         const busy = state.polling || state.authenticating;
         const usage = TornLib.getTornApiUsage({ limit: TornLib.TORN_API_DEFAULT_LIMIT });
+        const clientRole = !leader
+            ? 'Standby tab'
+            : (state.collector ? 'API collector' : 'Standby device');
 
         panel.classList.toggle('slp-collapsed', settings.collapsed);
         panel.innerHTML = `
             <div class="slp-head">
                 <div>
                     <div class="slp-title">Slinky Leveling Targets</div>
-                    <div class="slp-sub">${leader ? 'Active client' : 'Standby tab'} · Worker ${escapeHtml(state.workerVersion || 'connecting')}</div>
+                    <div class="slp-sub">${clientRole} · Worker ${escapeHtml(state.workerVersion || 'connecting')}</div>
                 </div>
                 <button class="slp-btn" id="slp-refresh" ${busy ? 'disabled' : ''}>${busy ? 'Syncing…' : 'Refresh'}</button>
                 <button class="slp-btn" id="slp-debug-btn">Data</button>
@@ -870,7 +951,7 @@
                 <div id="slp-targets">${targetsHtml(state.targets)}</div>
             </div>
             <div class="slp-footer">
-                Cloudflare owns target ranking, check scheduling, shared status, competition scoring, and per-member distribution. This client only performs assigned browser/API work and renders the result.
+                Cloudflare owns target ranking, check scheduling, shared status, competition scoring, per-user distribution, and multi-device failover. Only the elected device performs routine Torn API work.
             </div>
         `;
         bindEvents(panel);
@@ -965,7 +1046,7 @@
 
     function bindEvents(panel) {
         panel.querySelector('#slp-refresh')?.addEventListener('click', () => {
-            runCycle(false);
+            void runCycle(false);
         });
         panel.querySelector('#slp-debug-btn')?.addEventListener('click', () => {
             state.debugOpen = !state.debugOpen;
@@ -1066,16 +1147,20 @@
             isEligible: () => true,
             isPreferred: () => TornLib.isPageActive({ requireFocus: true }),
             onChange: isLeader => {
-                render();
                 if (isLeader) {
-                    runCycle(false);
+                    void runCycle(false);
+                } else {
+                    state.collector = false;
+                    state.collectorExpiresAt = 0;
                 }
+                render();
             }
         });
 
         if (!getSettings().tornKey) state.settingsOpen = true;
         render();
         scheduleAttackPageScrape();
+        scheduleCollectorHeartbeat();
 
         if (state.leader.isLeader()) {
             await runCycle(false);

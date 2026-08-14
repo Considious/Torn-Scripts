@@ -25,7 +25,7 @@ describe('Slinky Leveling thin client', () => {
 
 
     it('uses the protected Worker API for shared decisions and state', () => {
-        assert.match(client, /@version\s+0\.6\.1/);
+        assert.match(client, /@version\s+0\.7\.0/);
         assert.match(
             client,
             /@connect\s+slinkyleveling\.richard-johnson554\.workers\.dev/
@@ -35,6 +35,7 @@ describe('Slinky Leveling thin client', () => {
             '/api/auth',
             '/api/targets',
             '/api/recommendations',
+            '/api/collector/heartbeat',
             '/api/checks/claim',
             '/api/observations',
             '/api/activity',
@@ -42,6 +43,15 @@ describe('Slinky Leveling thin client', () => {
         ]) {
             assert.ok(client.includes(endpoint), `missing ${endpoint}`);
         }
+    });
+
+
+    it('supports one active collector with automatic device failover', () => {
+        assert.match(client, /COLLECTOR_HEARTBEAT_MS/);
+        assert.match(client, /async function syncCollectorLease\(/);
+        assert.match(client, /function scheduleCollectorHeartbeat\(/);
+        assert.match(client, /response\?\.collector === true/);
+        assert.match(client, /cycle_standby/);
     });
 
 

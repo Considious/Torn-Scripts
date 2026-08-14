@@ -1,14 +1,14 @@
 /**
  * Slinky Leveling API Worker
  *
- * Release: 0.3.1-core-lib-limiter
+ * Release: 0.4.0-multi-device-collector
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.3.1-core-lib-limiter';
+const WORKER_VERSION = '0.4.0-multi-device-collector';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -28,6 +28,7 @@ const MAX_JSON_BODY_BYTES = 256 * 1024;
 
 const ALLOWED_FACTION_ID = 46978;
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
+const COLLECTOR_LEASE_LIFETIME_MS = 60 * 1000;
 const CHECK_CLAIM_LIFETIME_MS = 3 * 60 * 1000;
 const TARGET_LEASE_LIFETIME_MS = 10 * 60 * 1000;
 const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -114,6 +115,19 @@ const worker = {
             }
 
             return handleRecommendations(url, env, session);
+        }
+
+        if (
+            url.pathname === '/api/collector/heartbeat' &&
+            request.method === 'POST'
+        ) {
+            const session = await getAuthenticatedSession(request, env);
+
+            if (!session) {
+                return memberAuthenticationRequired();
+            }
+
+            return handleCollectorHeartbeat(env, session);
         }
 
         if (
@@ -685,6 +699,81 @@ async function handleListTargets(url, env) {
 // Thin-client recommendations and distributed checks
 // ================================================================
 
+async function handleCollectorHeartbeat(env, session) {
+    try {
+        const lease = await claimUserCollector(env, session, Date.now());
+        return collectorLeaseResponse(lease);
+    } catch (error) {
+        return workerErrorResponse('Could not renew the collector lease.', error);
+    }
+}
+
+
+async function claimUserCollector(env, session, now) {
+    const expiresAt = now + COLLECTOR_LEASE_LIFETIME_MS;
+
+    await env.DB
+        .prepare(`
+            INSERT INTO client_user_collectors (
+                user_id,
+                session_id,
+                claimed_at,
+                last_seen_at,
+                expires_at
+            )
+            VALUES (?1, ?2, ?3, ?3, ?4)
+            ON CONFLICT(user_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                claimed_at = CASE
+                    WHEN client_user_collectors.session_id = excluded.session_id
+                        THEN client_user_collectors.claimed_at
+                    ELSE excluded.claimed_at
+                END,
+                last_seen_at = excluded.last_seen_at,
+                expires_at = excluded.expires_at
+            WHERE client_user_collectors.session_id = excluded.session_id
+               OR client_user_collectors.expires_at <= excluded.last_seen_at
+        `)
+        .bind(
+            session.user_id,
+            session.session_id,
+            now,
+            expiresAt
+        )
+        .run();
+
+    const current = await env.DB
+        .prepare(`
+            SELECT session_id, claimed_at, last_seen_at, expires_at
+            FROM client_user_collectors
+            WHERE user_id = ?1
+        `)
+        .bind(session.user_id)
+        .first();
+
+    return {
+        collector: current?.session_id === session.session_id,
+        claimedAt: Number(current?.claimed_at) || 0,
+        lastSeenAt: Number(current?.last_seen_at) || 0,
+        expiresAt: Number(current?.expires_at) || 0
+    };
+}
+
+
+function collectorLeaseResponse(lease, extra = {}) {
+    return jsonResponse({
+        ok: true,
+        collector: lease.collector,
+        collector_lease_seconds: Math.floor(
+            COLLECTOR_LEASE_LIFETIME_MS / 1000
+        ),
+        collector_claimed_at: lease.collector ? lease.claimedAt : 0,
+        collector_expires_at: lease.expiresAt,
+        ...extra
+    });
+}
+
+
 async function handleRecommendations(url, env, session) {
     try {
         const now = Date.now();
@@ -711,7 +800,7 @@ async function handleRecommendations(url, env, session) {
         await env.DB
             .prepare(`
                 DELETE FROM client_target_leases
-                WHERE session_id = ?1
+                WHERE user_id = ?1
                   AND (
                     expires_at <= ?2
                     OR EXISTS (
@@ -734,7 +823,7 @@ async function handleRecommendations(url, env, session) {
                   )
             `)
             .bind(
-                session.session_id,
+                session.user_id,
                 now,
                 Math.floor((now - ACTIVITY_WINDOW_MS) / 1000)
             )
@@ -744,10 +833,10 @@ async function handleRecommendations(url, env, session) {
             .prepare(`
                 SELECT COUNT(*) AS count
                 FROM client_target_leases
-                WHERE session_id = ?1
+                WHERE user_id = ?1
                   AND expires_at > ?2
             `)
-            .bind(session.session_id, now)
+            .bind(session.user_id, now)
             .first();
 
         const needed = Math.max(0, limit - Number(existing?.count || 0));
@@ -874,7 +963,7 @@ async function handleRecommendations(url, env, session) {
                     ON ts.target_id = t.id
                 LEFT JOIN target_fair_fight AS ff
                     ON ff.target_id = t.id
-                WHERE lease.session_id = ?1
+                WHERE lease.user_id = ?1
                   AND lease.expires_at > ?2
                 ORDER BY
                     COALESCE(ts.competition_score, 0) ASC,
@@ -884,7 +973,7 @@ async function handleRecommendations(url, env, session) {
                 LIMIT ?5
             `)
             .bind(
-                session.session_id,
+                session.user_id,
                 now,
                 now - HOSPITAL_24H_MS,
                 now - HOSPITAL_7D_MS,
@@ -920,6 +1009,16 @@ async function handleClaimChecks(request, env, session) {
         const now = Date.now();
 
         await cleanExpiredCoordinationRows(env, now);
+        const collectorLease = await claimUserCollector(env, session, now);
+
+        if (!collectorLease.collector) {
+            return collectorLeaseResponse(collectorLease, {
+                count: 0,
+                capacity: 0,
+                claim_seconds: Math.floor(CHECK_CLAIM_LIFETIME_MS / 1000),
+                checks: []
+            });
+        }
 
         const existing = await env.DB
             .prepare(`
@@ -1039,8 +1138,7 @@ async function handleClaimChecks(request, env, session) {
             .bind(session.session_id, now, capacity)
             .all();
 
-        return jsonResponse({
-            ok: true,
+        return collectorLeaseResponse(collectorLease, {
             count: claims.results?.length ?? 0,
             capacity,
             claim_seconds: Math.floor(CHECK_CLAIM_LIFETIME_MS / 1000),
@@ -1457,6 +1555,9 @@ async function cleanExpiredCoordinationRows(env, now) {
             .bind(now),
         env.DB
             .prepare('DELETE FROM client_target_leases WHERE expires_at <= ?1')
+            .bind(now),
+        env.DB
+            .prepare('DELETE FROM client_user_collectors WHERE expires_at <= ?1')
             .bind(now)
     ]);
 }
