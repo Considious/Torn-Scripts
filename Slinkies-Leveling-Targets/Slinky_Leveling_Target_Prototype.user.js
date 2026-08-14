@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.7.1
+// @version      0.7.2
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -24,12 +24,13 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.7.1';
+    const SCRIPT_VERSION = '0.7.2';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
+    const FF_CACHE_MS = 12 * 60 * 60 * 1000;
     const COLLECTOR_HEARTBEAT_MS = 20 * 1000;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
@@ -399,24 +400,29 @@
                 state.lastCycleReported = 0;
             }
 
-            const successfulTargets = results
-                .filter(result => result.status === 'fulfilled')
-                .map(result => result.value);
-
-            if (settings.ffKey && successfulTargets.length) {
-                try {
-                    await collectAndReportFairFight(settings.ffKey, successfulTargets);
-                } catch (error) {
-                    state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
-                }
-            }
-
             const failures = results.filter(result => result.status === 'rejected');
             if (failures.length && !state.lastError) {
                 state.lastError = `${failures.length} assigned Torn check${failures.length === 1 ? '' : 's'} failed.`;
             }
 
             await refreshRecommendations();
+
+            if (state.collector && settings.ffKey) {
+                try {
+                    const fairFightTargets = recommendationsNeedingFairFight(
+                        state.targets
+                    );
+                    if (fairFightTargets.length) {
+                        await collectAndReportFairFight(
+                            settings.ffKey,
+                            fairFightTargets
+                        );
+                        await refreshRecommendations();
+                    }
+                } catch (error) {
+                    state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
+                }
+            }
 
             state.lastCycleAt = Date.now();
             state.lastCycleChecked = checks.length;
@@ -500,7 +506,7 @@
 
     async function collectAndReportFairFight(apiKey, targets) {
         const uniqueIds = [...new Set(targets.map(target => String(target.id)))];
-        if (!uniqueIds.length) return;
+        if (!uniqueIds.length) return 0;
 
         const url =
             'https://ffscouter.com/api/v1/get-stats' +
@@ -543,11 +549,23 @@
         }
 
         if (reports.length) {
-            await workerRequest('/api/fair-fight', {
+            const response = await workerRequest('/api/fair-fight', {
                 method: 'POST',
                 body: { targets: reports.slice(0, 200) }
             });
+            return Number(response?.accepted_count) || 0;
         }
+
+        return 0;
+    }
+
+
+    function recommendationsNeedingFairFight(targets) {
+        const now = Date.now();
+        return targets.filter(target => {
+            const checkedAt = Number(target?.fair_fight_checked_at) || 0;
+            return checkedAt <= 0 || now - checkedAt >= FF_CACHE_MS;
+        });
     }
 
 
@@ -645,6 +663,7 @@
 
 
     function finiteNumberOrNull(value) {
+        if (value === null || value === undefined || value === '') return null;
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : null;
     }

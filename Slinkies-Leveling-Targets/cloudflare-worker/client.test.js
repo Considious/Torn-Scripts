@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.7\.1/);
+        assert.match(client, /@version\s+0\.7\.2/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -74,6 +74,19 @@ describe('SLINK Leveling Service thin client', () => {
                 `${testingOnlyControl} should not control live polling`
             );
         }
+    });
+
+
+    it('hydrates recommendation Fair Fight data through the elected collector', () => {
+        assert.match(client, /FF_CACHE_MS\s*=\s*12\s*\*\s*60\s*\*\s*60/);
+        assert.match(client, /function recommendationsNeedingFairFight\(/);
+        assert.match(client, /recommendationsNeedingFairFight\(\s*state\.targets/);
+        assert.match(client, /collectAndReportFairFight\(\s*settings\.ffKey,\s*fairFightTargets/);
+        assert.match(client, /await refreshRecommendations\(\);/);
+        assert.doesNotMatch(
+            client,
+            /collectAndReportFairFight\(settings\.ffKey, successfulTargets\)/
+        );
     });
 
 
