@@ -16,7 +16,7 @@ const client = readFileSync(clientUrl, 'utf8');
 const backup = readFileSync(backupUrl, 'utf8');
 
 
-describe('Slinky Leveling thin client', () => {
+describe('SLINK Leveling Service thin client', () => {
     it('keeps the pre-refactor 0.5.1 backup intact', () => {
         assert.match(backup, /@version\s+0\.5\.1/);
         assert.match(backup, /function chooseCandidates\(/);
@@ -25,7 +25,9 @@ describe('Slinky Leveling thin client', () => {
 
 
     it('uses the protected Worker API for shared decisions and state', () => {
-        assert.match(client, /@version\s+0\.7\.0/);
+        assert.match(client, /@name\s+SLINK Leveling Service/);
+        assert.match(client, /@version\s+0\.7\.1/);
+        assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
             /@connect\s+slinkyleveling\.richard-johnson554\.workers\.dev/

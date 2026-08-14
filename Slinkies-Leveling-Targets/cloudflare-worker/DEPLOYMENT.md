@@ -1,6 +1,6 @@
 # Cloudflare deployment checklist
 
-Use this order. Do not merge or install userscript `0.7.0` before all three
+Use this order. Do not merge or install userscript `0.7.1` before all three
 checks at the bottom succeed.
 
 ## 1. Add the D1 coordination tables
@@ -108,4 +108,4 @@ standby while the first device renews its collector lease. If the first device
 stops, the standby can take over after about one minute and will continue using
 the same D1-backed recommendations.
 
-Once those requests work, userscript `0.7.0` can be installed for a live test.
+Once those requests work, userscript `0.7.1` can be installed for a live test.

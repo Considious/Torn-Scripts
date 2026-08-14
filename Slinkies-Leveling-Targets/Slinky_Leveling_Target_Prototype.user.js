@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Slinky's Leveling Target Panel
+// @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.7.0
-// @description  Authenticated thin client for Slinky's shared Cloudflare leveling-target service.
+// @version      0.7.1
+// @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
@@ -24,8 +24,8 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.7.0';
-    const SCRIPT_NAME = 'Slinky Leveling Panel';
+    const SCRIPT_VERSION = '0.7.1';
+    const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
     const ACTIVITY_WINDOW_DAYS = 7;
@@ -828,7 +828,7 @@
     function debugText() {
         const data = buildDebugData();
         const lines = [
-            `Slinky Leveling Panel v${data.scriptVersion}`,
+            `SLINK Leveling Service v${data.scriptVersion}`,
             `CoreLib: ${data.coreLibVersion}`,
             `Worker: ${data.workerVersion}`,
             `Authenticated: ${data.authenticated ? 'Yes' : 'No'}`,
@@ -930,7 +930,7 @@
         panel.innerHTML = `
             <div class="slp-head">
                 <div>
-                    <div class="slp-title">Slinky Leveling Targets</div>
+                    <div class="slp-title">SLINK Leveling Service</div>
                     <div class="slp-sub">${clientRole} · Worker ${escapeHtml(state.workerVersion || 'connecting')}</div>
                 </div>
                 <button class="slp-btn" id="slp-refresh" ${busy ? 'disabled' : ''}>${busy ? 'Syncing…' : 'Refresh'}</button>

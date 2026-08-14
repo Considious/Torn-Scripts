@@ -1,7 +1,8 @@
-# Slinky Leveling Cloudflare Worker
+# SLINK Leveling Service Cloudflare Worker
 
-This directory versions the authoritative source for the Slinky Leveling API
-Worker. It intentionally contains no deployment credentials or member API keys.
+SLINK means **Shared Live Intelligence NetworK**. This directory versions the
+authoritative source for the SLINK Leveling Service API Worker. It intentionally
+contains no deployment credentials or member API keys.
 
 ## Release identification
 
