@@ -1,93 +1,63 @@
 # Cloudflare deployment checklist
 
-Use this order. Do not install userscript `0.8.0` until the health check in step
-3 reports Worker `0.5.0-user-fair-fight`.
+Use this order. Install userscript 0.8.0 only after the health check reports
+Worker `0.5.0-efficient-coordination`.
 
-## 1. Add the D1 coordination tables
+## 1. Remove the unused experimental Fair Fight table
 
-Open the existing Slinky D1 database in Cloudflare, select **Console**, and run
-the complete contents of:
-
-```text
-migrations/0001-client-coordination.sql
-```
-
-The script is safe to run again if Cloudflare or the browser interrupts the
-first attempt.
-
-Next, run the complete contents of:
+You already created the experimental per-user Fair Fight table. Open the D1
+database **Console** and run the one-line contents of:
 
 ```text
-migrations/0002-user-collector-leases.sql
+migrations/0003-remove-unused-user-fair-fight-cache.sql
 ```
 
-Then run the complete contents of:
+That statement only removes `user_target_fair_fight`. It does not touch targets,
+status, hospital history, scheduler data, or the coordination tables. It is also
+safe to run if the experimental table does not exist.
 
-```text
-migrations/0003-user-fair-fight-cache.sql
-```
+No new D1 table is required for this release. Migrations 0001 and 0002 should
+already be present.
 
-All three files are safe to run again. Migration 0003 adds the per-user Fair
-Fight cache required by Worker 0.5.x. Run it before changing the Worker source.
+## 2. Deploy the Worker
 
-Verify the new tables with:
-
-```sql
-SELECT name
-FROM sqlite_master
-WHERE type = 'table'
-  AND name IN (
-    'client_check_claims',
-    'client_target_leases',
-    'client_user_collectors',
-    'target_activity',
-    'target_fair_fight',
-    'user_target_fair_fight'
-  )
-ORDER BY name;
-```
-
-Cloudflare should return six rows.
-
-## 2. Deploy the Worker source
-
-Open the `slinkyleveling` Worker, choose **Edit code**, replace the Worker source
-with the complete repository `worker.js`, and deploy it. Keep the existing `DB`
+Open the `slinkyleveling` Worker, choose **Edit code**, replace the source with
+the complete repository `worker.js`, and deploy it. Keep the existing `DB`
 binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 
-The new release is:
+## 3. Check the version
+
+Open:
 
 ```text
-0.5.0-user-fair-fight
+https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.5.0
 ```
 
-## 3. Smoke-test the protected API
-
-First open:
-
-```text
-GET https://slinkyleveling.richard-johnson554.workers.dev/api/health
-```
-
-The JSON should contain:
+The JSON should include:
 
 ```json
 {
   "ok": true,
-  "version": "0.5.0-user-fair-fight",
+  "version": "0.5.0-efficient-coordination",
   "database": "connected"
 }
 ```
 
-No manual session-token tests are required. Install userscript `0.8.0`, reload
-Torn, and click **Refresh**. The panel itself should show this progression:
+## 4. Update Tampermonkey
+
+Install or update userscript 0.8.0, reload Torn, and click **Refresh**. The panel
+should progress through:
 
 ```text
 Asking the SLINK Network for targets…
 Checking Fair Fight for 40 targets…
-40 Fair Fight records reported to SLINK…
+40 Fair Fight records saved locally
 Running scheduled Torn checks…
 ```
 
-The **FF ready** counter and the timestamp in **Data** confirm the values were
-written to the authenticated user's D1 cache and read back by the panel.
+The browser reuses each Fair Fight result for seven days. It does not send Fair
+Fight values to Cloudflare.
+
+There is no separate 20-second collector heartbeat. Collector election is part
+of the normal recommendation refresh, so a standby panel generally makes one
+Worker request per configured 60–300 second polling interval.

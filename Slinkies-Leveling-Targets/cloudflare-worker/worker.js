@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.5.0-user-fair-fight
+ * Release: 0.5.0-efficient-coordination
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.5.0-user-fair-fight';
+const WORKER_VERSION = '0.5.0-efficient-coordination';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -23,15 +23,13 @@ const MAX_RECOMMENDATION_LIMIT = 40;
 // supplies its live request capacity from Considious Torn Core Lib.
 const MAX_MEMBER_BATCH_ROWS = 200;
 const MAX_ACTIVITY_TARGETS_PER_REQUEST = 1_000;
-const MAX_FAIR_FIGHT_ROWS_PER_REQUEST = 200;
 const MAX_JSON_BODY_BYTES = 256 * 1024;
 
 const ALLOWED_FACTION_ID = 46978;
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
-const COLLECTOR_LEASE_LIFETIME_MS = 60 * 1000;
+const COLLECTOR_LEASE_LIFETIME_MS = 6 * 60 * 1000;
 const CHECK_CLAIM_LIFETIME_MS = 3 * 60 * 1000;
 const TARGET_LEASE_LIFETIME_MS = 10 * 60 * 1000;
-const FAIR_FIGHT_CACHE_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const HOSPITAL_24H_MS = 24 * 60 * 60 * 1000;
 const HOSPITAL_7D_MS = 7 * 24 * 60 * 60 * 1000;
@@ -180,7 +178,7 @@ const worker = {
                 return memberAuthenticationRequired();
             }
 
-            return handleFairFightReport(request, env, session);
+            return handleDeprecatedFairFightReport();
         }
 
         if (
@@ -778,6 +776,7 @@ function collectorLeaseResponse(lease, extra = {}) {
 async function handleRecommendations(url, env, session) {
     try {
         const now = Date.now();
+        const collectorLease = await claimUserCollector(env, session, now);
         const limit = boundedIntegerQueryParameter(
             url.searchParams.get('limit'),
             DEFAULT_RECOMMENDATION_LIMIT,
@@ -821,24 +820,12 @@ async function handleRecommendations(url, env, session) {
                         WHERE active_target.target_id = client_target_leases.target_id
                           AND active_target.last_seen_at >= ?3
                     )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM user_target_fair_fight AS user_ff
-                        WHERE user_ff.user_id = ?1
-                          AND user_ff.target_id = client_target_leases.target_id
-                          AND user_ff.checked_at >= ?4
-                          AND user_ff.fair_fight IS NOT NULL
-                          AND user_ff.fair_fight NOT BETWEEN ?5 AND ?6
-                    )
                   )
             `)
             .bind(
                 session.user_id,
                 now,
-                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
-                now - FAIR_FIGHT_CACHE_LIFETIME_MS,
-                minFairFight,
-                maxFairFight
+                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000)
             )
             .run();
 
@@ -861,10 +848,6 @@ async function handleRecommendations(url, env, session) {
                     FROM targets AS t
                     LEFT JOIN target_status AS ts
                         ON ts.target_id = t.id
-                    LEFT JOIN user_target_fair_fight AS ff
-                        ON ff.target_id = t.id
-                       AND ff.user_id = ?3
-                       AND ff.checked_at >= ?4
                     LEFT JOIN target_activity AS activity
                         ON activity.target_id = t.id
                     LEFT JOIN client_target_leases AS lease
@@ -882,10 +865,6 @@ async function handleRecommendations(url, env, session) {
                         OR LOWER(COALESCE(ts.status, 'unknown'))
                             IN ('unknown', 'okay')
                       )
-                      AND (
-                        ff.fair_fight IS NULL
-                        OR ff.fair_fight BETWEEN ?5 AND ?6
-                      )
                     ORDER BY
                         COALESCE(ts.competition_score, 0) ASC,
                         CASE
@@ -896,15 +875,11 @@ async function handleRecommendations(url, env, session) {
                         t.level DESC,
                         COALESCE(t.total_stats, 9223372036854775807) ASC,
                         t.id ASC
-                    LIMIT ?7
+                    LIMIT ?3
                 `)
                 .bind(
                     now,
                     Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
-                    session.user_id,
-                    now - FAIR_FIGHT_CACHE_LIFETIME_MS,
-                    minFairFight,
-                    maxFairFight,
                     needed
                 )
                 .all();
@@ -951,10 +926,10 @@ async function handleRecommendations(url, env, session) {
                     CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) AS next_check_at,
                     COALESCE(ts.competition_score, 0) AS competition_score,
                     COALESCE(ts.competition_tier, 'Prime') AS competition_tier,
-                    ff.fair_fight,
-                    ff.bs_estimate,
-                    ff.source AS fair_fight_source,
-                    ff.checked_at AS fair_fight_checked_at,
+                    NULL AS fair_fight,
+                    NULL AS bs_estimate,
+                    NULL AS fair_fight_source,
+                    0 AS fair_fight_checked_at,
                     (
                         SELECT COUNT(*)
                         FROM hospital_events AS recent_hospital
@@ -978,15 +953,11 @@ async function handleRecommendations(url, env, session) {
                     ON t.id = lease.target_id
                 LEFT JOIN target_status AS ts
                     ON ts.target_id = t.id
-                LEFT JOIN user_target_fair_fight AS ff
-                    ON ff.target_id = t.id
-                   AND ff.user_id = ?1
                 WHERE lease.user_id = ?1
                   AND lease.expires_at > ?2
                 ORDER BY
                     COALESCE(ts.competition_score, 0) ASC,
                     t.level DESC,
-                    COALESCE(ff.fair_fight, 999) ASC,
                     t.id ASC
                 LIMIT ?5
             `)
@@ -999,8 +970,7 @@ async function handleRecommendations(url, env, session) {
             )
             .all();
 
-        return jsonResponse({
-            ok: true,
+        return collectorLeaseResponse(collectorLease, {
             version: WORKER_VERSION,
             count: result.results?.length ?? 0,
             limit,
@@ -1478,92 +1448,14 @@ async function handleActivityReport(request, env, session) {
 }
 
 
-async function handleFairFightReport(request, env, session) {
-    try {
-        const body = await readJsonBody(request);
-        const rows = Array.isArray(body?.targets) ? body.targets : [];
-
-        if (!rows.length) {
-            throw new RequestValidationError(
-                'At least one Fair Fight target is required.'
-            );
-        }
-
-        if (rows.length > MAX_FAIR_FIGHT_ROWS_PER_REQUEST) {
-            throw new RequestValidationError(
-                `A maximum of ${MAX_FAIR_FIGHT_ROWS_PER_REQUEST} Fair Fight rows is allowed.`
-            );
-        }
-
-        const now = Date.now();
-        const accepted = rows.map(row => {
-            const targetId = positiveIntegerOrNull(
-                row?.target_id ?? row?.player_id ?? row?.id
-            );
-            const fairFight = nullableBoundedNumber(row?.fair_fight, 0, 10);
-            const battleStats = nullableNonNegativeInteger(
-                row?.bs_estimate
-            );
-
-            if (!targetId) {
-                throw new RequestValidationError(
-                    'Every Fair Fight row must contain a valid target_id.'
-                );
-            }
-
-            return {
-                targetId,
-                fairFight,
-                battleStats,
-                source: String(row?.source || 'FFScouter').trim().slice(0, 100)
-            };
-        });
-
-        for (let index = 0; index < accepted.length; index += IMPORT_BATCH_SIZE) {
-            const chunk = accepted.slice(index, index + IMPORT_BATCH_SIZE);
-            const statements = chunk.map(row => {
-                return env.DB
-                    .prepare(`
-                        INSERT INTO user_target_fair_fight (
-                            user_id,
-                            target_id,
-                            fair_fight,
-                            bs_estimate,
-                            source,
-                            checked_at
-                        )
-                        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                        ON CONFLICT(user_id, target_id) DO UPDATE SET
-                            fair_fight = excluded.fair_fight,
-                            bs_estimate = excluded.bs_estimate,
-                            source = excluded.source,
-                            checked_at = excluded.checked_at
-                    `)
-                    .bind(
-                        session.user_id,
-                        row.targetId,
-                        row.fairFight,
-                        row.battleStats,
-                        row.source,
-                        now
-                    );
-            });
-
-            await env.DB.batch(statements);
-        }
-
-        return jsonResponse({
-            ok: true,
-            accepted_count: accepted.length,
-            cache_scope: 'user',
-            cached_at: now
-        });
-    } catch (error) {
-        return requestOrWorkerErrorResponse(
-            'Could not process Fair Fight data.',
-            error
-        );
-    }
+function handleDeprecatedFairFightReport() {
+    return jsonResponse({
+        ok: true,
+        accepted_count: 0,
+        cache_scope: 'client',
+        deprecated: true,
+        message: 'Fair Fight data is stored only in the member browser.'
+    });
 }
 
 
@@ -2025,36 +1917,6 @@ function boundedInteger(value, fallback, minimum, maximum) {
 function positiveIntegerOrNull(value) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-
-function nullableBoundedNumber(value, minimum, maximum) {
-    if (value === null || value === undefined || value === '') {
-        return null;
-    }
-
-    const parsed = Number(value);
-
-    if (!Number.isFinite(parsed)) {
-        return null;
-    }
-
-    return Math.min(Math.max(parsed, minimum), maximum);
-}
-
-
-function nullableNonNegativeInteger(value) {
-    if (value === null || value === undefined || value === '') {
-        return null;
-    }
-
-    const parsed = Number(value);
-
-    if (!Number.isFinite(parsed) || parsed < 0) {
-        return null;
-    }
-
-    return Math.trunc(parsed);
 }
 
 

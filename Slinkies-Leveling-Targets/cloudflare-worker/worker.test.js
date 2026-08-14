@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.5.0-user-fair-fight';
+const WORKER_VERSION = '0.5.0-efficient-coordination';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -282,26 +282,29 @@ describe('SLINK Leveling Worker', () => {
         const pcToken = await sessionToken(3001, 'pc-session');
         const mobileToken = await sessionToken(3001, 'mobile-session');
 
-        const pcHeartbeat = await worker.fetch(
-            authenticatedJsonRequest(
-                'https://worker.example/api/collector/heartbeat',
-                pcToken,
-                {}
+        const pcRecommendations = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2',
+                pcToken
             ),
             env
         );
-        const pcLease = await pcHeartbeat.json();
+        const pcLease = await pcRecommendations.json();
         assert.equal(pcLease.collector, true);
 
-        const mobileHeartbeat = await worker.fetch(
-            authenticatedJsonRequest(
-                'https://worker.example/api/collector/heartbeat',
-                mobileToken,
-                {}
+        const mobileRecommendations = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2',
+                mobileToken
             ),
             env
         );
-        assert.equal((await mobileHeartbeat.json()).collector, false);
+        const mobileLease = await mobileRecommendations.json();
+        assert.equal(mobileLease.collector, false);
+        assert.deepEqual(
+            pcLease.targets.map(row => row.id),
+            mobileLease.targets.map(row => row.id)
+        );
 
         const pcChecks = await worker.fetch(
             authenticatedJsonRequest(
@@ -325,42 +328,21 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(mobileStandby.collector, false);
         assert.equal(mobileStandby.count, 0);
 
-        const pcRecommendations = await worker.fetch(
-            authenticatedRequest(
-                'https://worker.example/api/recommendations?limit=2',
-                pcToken
-            ),
-            env
-        );
-        const mobileRecommendations = await worker.fetch(
+        now += (pcLease.collector_lease_seconds * 1000) + 1;
+
+        const mobileTakeover = await worker.fetch(
             authenticatedRequest(
                 'https://worker.example/api/recommendations?limit=2',
                 mobileToken
             ),
             env
         );
-        assert.deepEqual(
-            (await pcRecommendations.json()).targets.map(row => row.id),
-            (await mobileRecommendations.json()).targets.map(row => row.id)
-        );
-
-        now += (pcLease.collector_lease_seconds * 1000) + 1;
-
-        const mobileTakeover = await worker.fetch(
-            authenticatedJsonRequest(
-                'https://worker.example/api/collector/heartbeat',
-                mobileToken,
-                {}
-            ),
-            env
-        );
         assert.equal((await mobileTakeover.json()).collector, true);
 
         const pcAfterTakeover = await worker.fetch(
-            authenticatedJsonRequest(
-                'https://worker.example/api/collector/heartbeat',
-                pcToken,
-                {}
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2',
+                pcToken
             ),
             env
         );
@@ -368,7 +350,7 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
-    it('leases different recommendations and applies activity/FF filters', async () => {
+    it('leases different recommendations and applies shared activity filters', async () => {
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
         const firstToken = await sessionToken(2001);
@@ -384,21 +366,6 @@ describe('SLINK Leveling Worker', () => {
             env
         );
         assert.equal(activityResponse.status, 200);
-
-        const fairFightResponse = await worker.fetch(
-            authenticatedJsonRequest(
-                'https://worker.example/api/fair-fight',
-                firstToken,
-                {
-                    targets: [
-                        { target_id: 2, fair_fight: 4.5, bs_estimate: 5000 },
-                        { target_id: 3, fair_fight: 2.0, bs_estimate: 3000 }
-                    ]
-                }
-            ),
-            env
-        );
-        assert.equal(fairFightResponse.status, 200);
 
         const firstResponse = await worker.fetch(
             authenticatedRequest(
@@ -422,45 +389,23 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(firstResponse.status, 200);
         assert.equal(secondResponse.status, 200);
         assert.ok(!firstIds.includes(1), 'recently active target must be excluded');
-        assert.ok(!firstIds.includes(2), 'out-of-range known FF target must be excluded');
-        assert.ok(firstIds.includes(3), 'in-range FF target should be eligible');
-        assert.ok(
-            secondIds.includes(2),
-            'one user\'s out-of-range FF value must not exclude another user'
-        );
-        assert.equal(
-            firstBody.targets.find(row => row.id === 3)?.fair_fight,
-            2
-        );
-        assert.equal(
-            secondBody.targets.find(row => row.id === 2)?.fair_fight,
-            null
-        );
+        assert.ok(firstBody.targets.every(row => row.fair_fight === null));
+        assert.ok(secondBody.targets.every(row => row.fair_fight === null));
         assert.deepEqual(firstIds.filter(id => secondIds.includes(id)), []);
     });
 
 
-    it('replaces a lease after the user reports an out-of-range FF value', async () => {
+    it('keeps the legacy Fair Fight route as an authenticated no-op', async () => {
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
         const token = await sessionToken(4201);
-        const recommendationUrl =
-            'https://worker.example/api/recommendations?limit=1&min_ff=1&max_ff=3';
-
-        const initialResponse = await worker.fetch(
-            authenticatedRequest(recommendationUrl, token),
-            env
-        );
-        const initialTarget = (await initialResponse.json()).targets[0];
-        assert.ok(initialTarget);
-
-        await worker.fetch(
+        const response = await worker.fetch(
             authenticatedJsonRequest(
                 'https://worker.example/api/fair-fight',
                 token,
                 {
                     targets: [{
-                        target_id: initialTarget.id,
+                        target_id: 1,
                         fair_fight: 4.5,
                         bs_estimate: 5000
                     }]
@@ -468,61 +413,21 @@ describe('SLINK Leveling Worker', () => {
             ),
             env
         );
+        const body = await response.json();
 
-        const refreshedResponse = await worker.fetch(
-            authenticatedRequest(recommendationUrl, token),
-            env
+        assert.equal(response.status, 200);
+        assert.equal(body.accepted_count, 0);
+        assert.equal(body.cache_scope, 'client');
+        assert.equal(body.deprecated, true);
+        assert.equal(
+            db.sqlite.prepare(`
+                SELECT COUNT(*) AS count
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = 'user_target_fair_fight'
+            `).get().count,
+            0
         );
-        const refreshedTarget = (await refreshedResponse.json()).targets[0];
-
-        assert.ok(refreshedTarget);
-        assert.notEqual(refreshedTarget.id, initialTarget.id);
-    });
-
-
-    it('keeps Fair Fight values private to each Torn user', async () => {
-        const db = createDatabase();
-        const env = { DB: db, SESSION_SECRET };
-        const firstToken = await sessionToken(4101);
-        const secondToken = await sessionToken(4102);
-
-        for (const [token, fairFight] of [
-            [firstToken, 1.5],
-            [secondToken, 4.5]
-        ]) {
-            const response = await worker.fetch(
-                authenticatedJsonRequest(
-                    'https://worker.example/api/fair-fight',
-                    token,
-                    {
-                        targets: [{
-                            target_id: 3,
-                            fair_fight: fairFight,
-                            bs_estimate: 3000
-                        }]
-                    }
-                ),
-                env
-            );
-            const body = await response.json();
-            assert.equal(response.status, 200);
-            assert.equal(body.cache_scope, 'user');
-            assert.ok(body.cached_at > 0);
-        }
-
-        const rows = db.sqlite
-            .prepare(`
-                SELECT user_id, target_id, fair_fight
-                FROM user_target_fair_fight
-                WHERE target_id = 3
-                ORDER BY user_id
-            `)
-            .all();
-
-        assert.deepEqual(rows.map(row => ({ ...row })), [
-            { user_id: 4101, target_id: 3, fair_fight: 1.5 },
-            { user_id: 4102, target_id: 3, fair_fight: 4.5 }
-        ]);
     });
 
 
@@ -584,7 +489,7 @@ function createDatabase() {
     );
     sqlite.exec(
         readFileSync(
-            new URL('./migrations/0003-user-fair-fight-cache.sql', import.meta.url),
+            new URL('./migrations/0003-remove-unused-user-fair-fight-cache.sql', import.meta.url),
             'utf8'
         )
     );

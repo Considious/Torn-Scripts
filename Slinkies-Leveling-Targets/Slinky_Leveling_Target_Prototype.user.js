@@ -30,9 +30,7 @@
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
-    const FF_CACHE_MS = 12 * 60 * 60 * 1000;
-    const COLLECTOR_HEARTBEAT_MS = 20 * 1000;
-    const MAX_FF_HYDRATION_ROUNDS = 3;
+    const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
 
@@ -47,14 +45,18 @@
         sessionToken: 'slinkyLeveling.workerSession.v1',
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
+        ffCache: 'slinkyLeveling.ffCache.v1',
         runtimeState: 'slinkyLeveling.clientRuntime.v1',
         clientEvents: 'slinkyLeveling.clientEvents.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
+    const persistedFairFightCache = loadJson(KEYS.ffCache, {});
 
     const state = {
         targets: [],
+        recommendationTargets: [],
+        ffCache: persistedFairFightCache,
         polling: false,
         authenticating: false,
         settingsOpen: false,
@@ -69,12 +71,12 @@
         lastCycleReported: Number(persistedRuntime.lastCycleReported) || 0,
         lastActivitySyncAt: Number(GM_getValue(KEYS.lastActivitySyncAt, 0)) || 0,
         activeTargetsReported: Number(persistedRuntime.activeTargetsReported) || 0,
-        lastFairFightAt: Number(persistedRuntime.lastFairFightAt) || 0,
+        lastFairFightAt: Number(persistedRuntime.lastFairFightAt) ||
+            latestFairFightCacheTime(persistedFairFightCache),
         lastFairFightRequested: Number(persistedRuntime.lastFairFightRequested) || 0,
-        lastFairFightReported: Number(persistedRuntime.lastFairFightReported) || 0,
+        lastFairFightSaved: Number(persistedRuntime.lastFairFightSaved) || 0,
         clientEvents: loadJson(KEYS.clientEvents, []),
         timer: null,
-        collectorTimer: null,
         leader: null
     };
 
@@ -96,6 +98,13 @@
     function saveJson(key, value) {
         GM_setValue(key, value);
         return value;
+    }
+
+
+    function latestFairFightCacheTime(cache) {
+        return Object.values(cache || {}).reduce((latest, row) => {
+            return Math.max(latest, Number(row?.checkedAt) || 0);
+        }, 0);
     }
 
 
@@ -135,7 +144,7 @@
             activeTargetsReported: state.activeTargetsReported,
             lastFairFightAt: state.lastFairFightAt,
             lastFairFightRequested: state.lastFairFightRequested,
-            lastFairFightReported: state.lastFairFightReported
+            lastFairFightSaved: state.lastFairFightSaved
         });
     }
 
@@ -275,29 +284,6 @@
     }
 
 
-    async function syncCollectorLease() {
-        if (!state.leader?.isLeader()) return false;
-
-        const wasCollector = state.collector;
-        const response = await workerRequest('/api/collector/heartbeat', {
-            method: 'POST',
-            body: {}
-        });
-
-        state.collector = response?.collector === true;
-        state.collectorExpiresAt = Number(response?.collector_expires_at) || 0;
-
-        if (state.collector !== wasCollector) {
-            logClientEvent(
-                state.collector ? 'collector_acquired' : 'collector_standby',
-                { expiresAt: state.collectorExpiresAt }
-            );
-        }
-
-        return state.collector;
-    }
-
-
     function gmRequest(options) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -360,23 +346,9 @@
 
         try {
             await ensureWorkerSession(false);
-            const collector = await syncCollectorLease();
-
             state.cycleStatus = 'Asking the SLINK Network for targets…';
             await refreshRecommendations();
             render();
-
-            if (!collector) {
-                state.cycleStatus = 'Targets synced from SLINK · Standby device';
-                state.lastCycleAt = Date.now();
-                state.lastCycleChecked = 0;
-                state.lastCycleReported = 0;
-                logClientEvent('cycle_standby', {
-                    collectorExpiresAt: state.collectorExpiresAt
-                });
-                saveRuntimeState();
-                return;
-            }
 
             if (settings.ffKey) {
                 try {
@@ -387,6 +359,18 @@
             } else {
                 state.cycleStatus = 'Targets ready · Add an FFScouter key for Fair Fight values';
                 state.lastError = 'Add your FFScouter API key in Settings to load Fair Fight values.';
+            }
+
+            if (!state.collector) {
+                state.cycleStatus = 'Targets ready · Standby device';
+                state.lastCycleAt = Date.now();
+                state.lastCycleChecked = 0;
+                state.lastCycleReported = 0;
+                logClientEvent('cycle_standby', {
+                    collectorExpiresAt: state.collectorExpiresAt
+                });
+                saveRuntimeState();
+                return;
             }
 
             state.cycleStatus = 'Running scheduled Torn checks…';
@@ -433,7 +417,7 @@
 
             await refreshRecommendations();
 
-            if (state.collector && settings.ffKey) {
+            if (settings.ffKey) {
                 try {
                     await hydrateRecommendationFairFight(settings.ffKey);
                 } catch (error) {
@@ -444,7 +428,7 @@
             state.lastCycleAt = Date.now();
             state.lastCycleChecked = checks.length;
             state.cycleStatus = state.lastFairFightAt
-                ? `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values ready · Last SLINK report ${formatDateTime(state.lastFairFightAt)}`
+                ? `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values ready · Cached locally ${formatDateTime(state.lastFairFightAt)}`
                 : 'Targets ready';
 
             logClientEvent('cycle_completed', {
@@ -525,52 +509,43 @@
 
 
     async function hydrateRecommendationFairFight(apiKey) {
-        const attemptedIds = new Set();
-        let requestedCount = 0;
-        let reportedCount = 0;
-        let cachedAt = 0;
-
-        for (let round = 0; round < MAX_FF_HYDRATION_ROUNDS; round++) {
-            const targets = recommendationsNeedingFairFight(state.targets)
-                .filter(target => !attemptedIds.has(String(target.id)));
-            if (!targets.length) break;
-
-            for (const target of targets) attemptedIds.add(String(target.id));
-            requestedCount += targets.length;
-            state.cycleStatus = `Checking Fair Fight for ${targets.length} target${targets.length === 1 ? '' : 's'}…`;
-            render();
-            logClientEvent('fair_fight_started', {
-                round: round + 1,
-                requested: targets.length
-            });
-
-            const report = await collectAndReportFairFight(apiKey, targets);
-            reportedCount += report.acceptedCount;
-            cachedAt = Math.max(cachedAt, report.cachedAt);
-            state.lastFairFightAt = cachedAt || Date.now();
-            state.lastFairFightRequested = requestedCount;
-            state.lastFairFightReported = reportedCount;
-            state.cycleStatus = `${reportedCount} Fair Fight record${reportedCount === 1 ? '' : 's'} reported to SLINK · Refreshing targets…`;
-            saveRuntimeState();
-            render();
-            logClientEvent('fair_fight_reported', {
-                round: round + 1,
-                requested: targets.length,
-                accepted: report.acceptedCount,
-                cachedAt: report.cachedAt
-            });
-
-            await refreshRecommendations();
-            render();
+        const targets = recommendationsNeedingFairFight(
+            state.recommendationTargets
+        );
+        if (!targets.length) {
+            applyLocalFairFightToRecommendations();
+            return { requestedCount: 0, savedCount: 0, cachedAt: 0 };
         }
 
-        return { requestedCount, reportedCount, cachedAt };
+        state.cycleStatus = `Checking Fair Fight for ${targets.length} target${targets.length === 1 ? '' : 's'}…`;
+        render();
+        logClientEvent('fair_fight_started', { requested: targets.length });
+
+        const result = await collectAndCacheFairFight(apiKey, targets);
+        state.lastFairFightAt = result.cachedAt || Date.now();
+        state.lastFairFightRequested = targets.length;
+        state.lastFairFightSaved = result.savedCount;
+        state.cycleStatus = `${result.savedCount} Fair Fight record${result.savedCount === 1 ? '' : 's'} saved locally`;
+        applyLocalFairFightToRecommendations();
+        saveRuntimeState();
+        render();
+        logClientEvent('fair_fight_cached_locally', {
+            requested: targets.length,
+            saved: result.savedCount,
+            cachedAt: result.cachedAt
+        });
+
+        return {
+            requestedCount: targets.length,
+            savedCount: result.savedCount,
+            cachedAt: result.cachedAt
+        };
     }
 
 
-    async function collectAndReportFairFight(apiKey, targets) {
+    async function collectAndCacheFairFight(apiKey, targets) {
         const uniqueIds = [...new Set(targets.map(target => String(target.id)))];
-        if (!uniqueIds.length) return { acceptedCount: 0, cachedAt: 0 };
+        if (!uniqueIds.length) return { savedCount: 0, cachedAt: 0 };
 
         const url =
             'https://ffscouter.com/api/v1/get-stats' +
@@ -588,51 +563,73 @@
                     ? data.data
                     : [];
         const returned = new Set();
-        const reports = [];
+        const cachedAt = Date.now();
 
         for (const row of rows) {
             const id = Number(row?.player_id ?? row?.id);
             if (!Number.isInteger(id) || id <= 0) continue;
             returned.add(String(id));
-            reports.push({
-                target_id: id,
-                fair_fight: finiteNumberOrNull(row?.fair_fight),
-                bs_estimate: finiteNumberOrNull(row?.bs_estimate),
+            state.ffCache[id] = {
+                fairFight: finiteNumberOrNull(row?.fair_fight),
+                bsEstimate: finiteNumberOrNull(row?.bs_estimate),
+                bsEstimateHuman: String(row?.bs_estimate_human || ''),
                 source: String(row?.source || 'FFScouter')
-            });
+                    .slice(0, 100),
+                lastUpdated: String(row?.last_updated || ''),
+                noData: Boolean(row?.no_data),
+                checkedAt: cachedAt
+            };
         }
 
         for (const id of uniqueIds) {
             if (returned.has(id)) continue;
-            reports.push({
-                target_id: Number(id),
-                fair_fight: null,
-                bs_estimate: null,
-                source: 'FFScouter'
-            });
-        }
-
-        if (reports.length) {
-            const response = await workerRequest('/api/fair-fight', {
-                method: 'POST',
-                body: { targets: reports.slice(0, 200) }
-            });
-            return {
-                acceptedCount: Number(response?.accepted_count) || 0,
-                cachedAt: Number(response?.cached_at) || 0
+            state.ffCache[id] = {
+                fairFight: null,
+                bsEstimate: null,
+                bsEstimateHuman: '',
+                source: 'FFScouter',
+                lastUpdated: '',
+                noData: true,
+                checkedAt: cachedAt
             };
         }
 
-        return { acceptedCount: 0, cachedAt: 0 };
+        saveJson(KEYS.ffCache, state.ffCache);
+        return { savedCount: uniqueIds.length, cachedAt };
     }
 
 
     function recommendationsNeedingFairFight(targets) {
         const now = Date.now();
         return targets.filter(target => {
-            const checkedAt = Number(target?.fair_fight_checked_at) || 0;
+            const checkedAt = Number(state.ffCache[String(target.id)]?.checkedAt) || 0;
             return checkedAt <= 0 || now - checkedAt >= FF_CACHE_MS;
         });
+    }
+
+
+    function applyLocalFairFightToRecommendations() {
+        const settings = getSettings();
+        const minFairFight = Math.min(settings.minFF, settings.maxFF);
+        const maxFairFight = Math.max(settings.minFF, settings.maxFF);
+
+        state.targets = state.recommendationTargets
+            .map(target => {
+                const cached = state.ffCache[String(target.id)] || {};
+                return {
+                    ...target,
+                    fair_fight: finiteNumberOrNull(cached.fairFight),
+                    bs_estimate: finiteNumberOrNull(cached.bsEstimate),
+                    fair_fight_source: String(cached.source || ''),
+                    fair_fight_checked_at: Number(cached.checkedAt) || 0
+                };
+            })
+            .filter(target => {
+                const fairFight = finiteNumberOrNull(target.fair_fight);
+                return fairFight === null || (
+                    fairFight >= minFairFight && fairFight <= maxFairFight
+                );
+            });
     }
 
 
@@ -728,6 +725,7 @@
 
 
     async function refreshRecommendations() {
+        const wasCollector = state.collector;
         const settings = getSettings();
         const query = new URLSearchParams({
             limit: String(MAX_DISPLAY),
@@ -735,8 +733,20 @@
             max_ff: String(Math.max(settings.minFF, settings.maxFF))
         });
         const response = await workerRequest(`/api/recommendations?${query}`);
-        state.targets = Array.isArray(response?.targets) ? response.targets : [];
+        state.collector = response?.collector === true;
+        state.collectorExpiresAt = Number(response?.collector_expires_at) || 0;
+        state.recommendationTargets = Array.isArray(response?.targets)
+            ? response.targets
+            : [];
+        applyLocalFairFightToRecommendations();
         state.workerVersion = response?.version || state.workerVersion;
+
+        if (state.collector !== wasCollector) {
+            logClientEvent(
+                state.collector ? 'collector_acquired' : 'collector_standby',
+                { expiresAt: state.collectorExpiresAt }
+            );
+        }
     }
 
 
@@ -855,36 +865,6 @@
     }
 
 
-    function scheduleCollectorHeartbeat() {
-        if (state.collectorTimer) clearTimeout(state.collectorTimer);
-        state.collectorTimer = setTimeout(async () => {
-            let becameCollector = false;
-
-            try {
-                if (state.leader?.isLeader()) {
-                    const wasCollector = state.collector;
-                    const isCollector = await syncCollectorLease();
-                    becameCollector = isCollector && !wasCollector;
-                }
-            } catch (error) {
-                if (state.collectorExpiresAt <= Date.now()) {
-                    state.collector = false;
-                }
-                logClientEvent('collector_heartbeat_failed', {
-                    error: TornLib.errorMessage(error)
-                });
-            } finally {
-                scheduleCollectorHeartbeat();
-                render();
-            }
-
-            if (becameCollector && !state.polling) {
-                void runCycle(false);
-            }
-        }, COLLECTOR_HEARTBEAT_MS);
-    }
-
-
     function logClientEvent(event, details = {}) {
         state.clientEvents.push({
             at: Date.now(),
@@ -919,7 +899,7 @@
             cycleStatus: state.cycleStatus,
             lastFairFightAt: state.lastFairFightAt,
             lastFairFightRequested: state.lastFairFightRequested,
-            lastFairFightReported: state.lastFairFightReported,
+            lastFairFightSaved: state.lastFairFightSaved,
             lastError: state.lastError || '',
             recentEvents: state.clientEvents.slice(-20).reverse()
         };
@@ -942,7 +922,7 @@
             `Polling: Core Lib remaining quota every ${data.pollSecondsConfigured}s`,
             `Last primary: ${formatDateTime(data.lastPrimaryPollAt)} | assigned ${data.lastPrimaryChecked} | reported ${data.lastPrimaryReported}`,
             `Activity sync: ${formatDateTime(data.lastActivitySyncAt)} | active matches ${data.activeTargetsReported}`,
-            `Fair Fight: requested ${data.lastFairFightRequested} | reported to SLINK ${data.lastFairFightReported} | confirmed ${formatDateTime(data.lastFairFightAt)}`,
+            `Fair Fight: requested ${data.lastFairFightRequested} | saved locally ${data.lastFairFightSaved} | cached ${formatDateTime(data.lastFairFightAt)}`,
             `Current work: ${data.cycleStatus || 'Idle'}`,
             `Last error: ${data.lastError || 'None'}`,
             '',
@@ -1270,8 +1250,6 @@
         if (!getSettings().tornKey) state.settingsOpen = true;
         render();
         scheduleAttackPageScrape();
-        scheduleCollectorHeartbeat();
-
         if (state.leader.isLeader()) {
             await runCycle(false);
         } else {

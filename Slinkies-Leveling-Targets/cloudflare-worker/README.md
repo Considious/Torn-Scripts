@@ -1,75 +1,51 @@
 # SLINK Leveling Service Cloudflare Worker
 
-SLINK means **Shared Live Intelligence NetworK**. This directory versions the
-authoritative source for the SLINK Leveling Service API Worker. It intentionally
-contains no deployment credentials or member API keys.
+SLINK means **Shared Live Intelligence NetworK**. This directory contains the
+versioned source for the SLINK Leveling Service API Worker. It contains no
+deployment credentials or member API keys.
 
 ## Release identification
 
-Every deployable source change must update `WORKER_VERSION` near the top of
-`worker.js`. The version uses a readable `major.minor.patch-name` format, such
-as `0.5.0-user-fair-fight`.
-
-The active version appears in three places:
-
-- the comment and `WORKER_VERSION` constant at the top of `worker.js`;
-- the JSON returned by `/` and `/api/health`;
-- the `X-Slinky-Worker-Version` header on every Worker response.
-
-This makes it possible to identify the code serving a request without comparing
-Cloudflare's deployment IDs. Increment the patch number for fixes, the minor
-number for compatible features, and the major number for breaking API changes.
+Every deployable source change updates `WORKER_VERSION` near the top of
+`worker.js`. The root route, health route, and every response header expose that
+version. Release 0.5.0 is identified as `0.5.0-efficient-coordination`.
 
 ## Cloudflare configuration
 
-The Worker expects these Cloudflare resources:
+The Worker expects:
 
-- `DB`: D1 binding containing `targets`, `target_status`, `hospital_events`, and
-  `scheduler_queue` tables.
-- `ADMIN_TOKEN`: secret used by the two `/api/admin/*` endpoints.
-- `SESSION_SECRET`: secret used to sign individual 12-hour member sessions.
+- `DB`: the existing D1 database;
+- `ADMIN_TOKEN`: the secret protecting `/api/admin/*`;
+- `SESSION_SECRET`: the secret signing individual 12-hour member sessions.
 
-Keep both secret values in Cloudflare. Do not add them to this repository.
+Keep both secrets in Cloudflare and out of this repository.
 
-## Deploying 0.5.x
+## Data ownership
 
-The existing four-table database remains the source of target, status,
-hospitalization, and scheduler data. Before deploying `worker.js`, run the
-complete contents of:
+D1 stores shared service facts: targets, status observations, hospital events,
+scheduling, activity exclusions, target leases, check claims, and per-user
+collector leases.
 
-```text
-migrations/0001-client-coordination.sql
-```
+Fair Fight is not a shared service fact. The userscript requests it directly
+from FFScouter and stores it in Tampermonkey/browser storage for seven days.
+Fair Fight values are not uploaded to the Worker and are not used by D1 target
+selection. The panel applies each member's minimum and maximum Fair Fight
+settings locally.
 
-in the D1 Console. It adds the short-lived check claims, per-member target
-leases, activity exclusions, and the original Fair Fight table. The migration
-uses `CREATE TABLE/INDEX IF NOT EXISTS`; rerunning the whole file is safe.
+The old authenticated `POST /api/fair-fight` route remains temporarily as a
+no-op for compatibility with an older client. It does not write anything.
 
-Then run the complete contents of:
+## Multi-device coordination
 
-```text
-migrations/0002-user-collector-leases.sql
-```
+`GET /api/recommendations` elects or renews the active collector while returning
+the target list. This avoids a separate heartbeat request. One signed session
+per Torn user receives routine Torn API work, while other sessions remain
+standby. The collector lease lasts six minutes, which covers the maximum
+five-minute client polling interval with failover slack.
 
-This adds the short-lived per-user collector lease. Multiple authenticated
-devices for the same Torn user share recommendations, while only the elected
-collector receives routine Torn API work. A standby device takes over after the
-active collector stops renewing its lease.
-
-Then run:
-
-```text
-migrations/0003-user-fair-fight-cache.sql
-```
-
-This adds a Fair Fight cache keyed by authenticated Torn user and target. It
-prevents one member's relative score from being shown to another member while
-still sharing the same member's results between their PC and mobile sessions.
-The original `target_fair_fight` table remains for rollback compatibility but
-is not used by Worker 0.5.x recommendations.
-
-Deploy the Worker only after all three migrations succeed. Update the userscript
-after the new endpoints respond successfully.
+Recommendation leases are keyed by Torn user ID, so a user's PC and mobile
+sessions see the same target set. Collector ownership is keyed by signed session
+ID, allowing another device to take over after the lease expires.
 
 ## Routes
 
@@ -78,57 +54,32 @@ after the new endpoints respond successfully.
 | `GET` | `/` | Public | Worker identity check |
 | `GET` | `/api/health` | Public | D1 connectivity and table counts |
 | `POST` | `/api/auth` | Public | Verify a Torn key once and issue a session |
-| `GET` | `/api/session` | Member session | Inspect the current signed session |
+| `GET` | `/api/session` | Member session | Inspect the signed session |
 | `GET` | `/api/targets` | Member session | Read paginated leveling targets |
-| `GET` | `/api/recommendations` | Member session | Receive a leased, member-specific target list |
-| `POST` | `/api/collector/heartbeat` | Member session | Elect or renew the active API-collector device |
-| `POST` | `/api/checks/claim` | Member session | Claim globally coordinated Torn status checks |
-| `POST` | `/api/observations` | Member session | Submit a bounded batch of status observations |
-| `POST` | `/api/activity` | Member session | Share recent activity-snapshot matches |
-| `POST` | `/api/fair-fight` | Member session | Cache bounded FFScouter results for the authenticated user |
+| `GET` | `/api/recommendations` | Member session | Return targets and renew collector coordination |
+| `POST` | `/api/collector/heartbeat` | Member session | Backward-compatible manual collector renewal |
+| `POST` | `/api/checks/claim` | Member session | Claim coordinated Torn status checks |
+| `POST` | `/api/observations` | Member session | Submit status observations |
+| `POST` | `/api/activity` | Member session | Share activity-snapshot matches |
+| `POST` | `/api/fair-fight` | Member session | Deprecated no-op; Fair Fight stays local |
 | `POST` | `/api/admin/bootstrap-targets` | Admin token | Refresh targets from the master CSV |
-| `GET` | `/api/admin/targets` | Admin token | Inspect paginated leveling targets |
+| `GET` | `/api/admin/targets` | Admin token | Inspect paginated targets |
 
-Member routes require `Authorization: Bearer <session token>`. Admin routes
-require `X-Admin-Token: <admin token>`.
+Member routes use `Authorization: Bearer <session token>`. Admin routes use
+`X-Admin-Token: <admin token>`.
 
-Both target-list routes accept `limit` (default `50`, maximum `200`) and
-`offset` (default `0`) query parameters.
+The client gets its live Torn API capacity from Considious Torn Core Lib. The
+Worker's batch ceilings protect request payloads; they are not polling limits.
 
-`/api/recommendations` accepts `limit` (maximum `40`), `min_ff`, and `max_ff`.
-The Worker leases returned targets for ten minutes so simultaneously active
-members normally receive different target sets. `/api/checks/claim` accepts the
-client's JSON `capacity`, calculated from Core Lib's shared live Torn API quota.
-A claim expires after three minutes if its client does not report a result. The
-Worker's generic member-batch ceiling is payload-abuse protection only; it does
-not set the client's Torn polling allowance.
+## Migrations
 
-Recommendation leases are keyed by authenticated Torn user ID. Separate PC,
-mobile, home, or work sessions for the same user therefore receive the same
-leased target data. Collector election remains keyed by unique signed session
-ID so Cloudflare can fail over between those devices without sharing tokens.
-
-The elected collector receives recommendations first, then sends only missing
-or stale recommendation IDs to FFScouter before starting slower Torn status
-work. Derived values are cached for 12 hours under the authenticated user ID.
-Standby devices belonging to that same user read the cache without making
-duplicate FFScouter requests; other users have independent values.
-
-Ordinary member Torn and FFScouter keys are not stored in D1. The Torn key is
-sent to `/api/auth` only for faction verification, then remains in userscript
-storage for client-side Torn requests. Clients submit only derived observations
-to the Worker. The userscript records authentication and every direct Torn API
-request through Core Lib's shared limiter.
+Migrations 0001 and 0002 create the shared coordination tables. Migration 0003
+only removes the unused experimental `user_target_fair_fight` table if it was
+manually created while 0.5.0 was being developed. It is safe when the table does
+not exist.
 
 ## Test
 
-With Node.js available, run:
-
-```text
-npm test
-```
-
-The test suite uses only Node's built-in test runner. It covers the existing
-health/admin/auth/session behavior, protected member routes, per-user target
-sharing, per-user Fair Fight isolation, collector failover, session expiry and
-tampering, CSV parsing, pagination bounds, and CORS preflight.
+Run `npm test` in this directory. The test suite uses Node's built-in test
+runner and covers auth/session protection, coordination, scheduling, activity,
+local-only Fair Fight boundaries, collector failover, parsing, and CORS.
