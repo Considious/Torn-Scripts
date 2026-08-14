@@ -97,6 +97,11 @@ mobile, home, or work sessions for the same user therefore receive the same
 leased target data. Collector election remains keyed by unique signed session
 ID so Cloudflare can fail over between those devices without sharing tokens.
 
+The elected collector sends its current recommendation IDs to FFScouter when
+their shared Fair Fight record is missing or older than 12 hours, then reports
+the derived values to D1. Standby devices read those shared values without
+making duplicate FFScouter requests.
+
 Ordinary member Torn and FFScouter keys are not stored in D1. The Torn key is
 sent to `/api/auth` only for faction verification, then remains in userscript
 storage for client-side Torn requests. Clients submit only derived observations
