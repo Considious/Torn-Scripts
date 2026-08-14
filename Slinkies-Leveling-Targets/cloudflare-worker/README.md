@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.5.1 is identified as `0.5.1-efficient-coordination`.
+version. Release 0.5.2 is identified as `0.5.2-assigned-targets-last`.
 
 ## Cloudflare configuration
 
@@ -78,6 +78,13 @@ The client gets its live Torn API capacity from Considious Torn Core Lib. A
 five-minute interval lets that shared allowance refill, so the collector can
 receive a larger batch of scheduled checks in each exchange. The Worker's batch
 ceilings protect request payloads; they are not polling limits.
+
+Targets currently assigned in a member recommendation list sort behind
+unassigned targets when the Worker creates scheduled Torn API check batches.
+Opening an assigned target through the panel starts the userscript in that attack
+tab; visible status and hospital time are submitted as an attack-page observation
+and enter the same server-side scheduling routine. Assigned targets remain a
+fallback for API checks if no unassigned due work is available.
 
 ## Migrations
 

@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.5.1-efficient-coordination';
+const WORKER_VERSION = '0.5.2-assigned-targets-last';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -220,6 +220,18 @@ describe('SLINK Leveling Worker', () => {
         const env = { DB: db, SESSION_SECRET };
         const firstToken = await sessionToken(1001);
         const secondToken = await sessionToken(1002);
+        const assignedToken = await sessionToken(9001);
+
+        const assignedResponse = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=2',
+                assignedToken
+            ),
+            env
+        );
+        const assignedIds = (await assignedResponse.json())
+            .targets
+            .map(row => row.id);
 
         const firstResponse = await worker.fetch(
             authenticatedJsonRequest(
@@ -242,6 +254,16 @@ describe('SLINK Leveling Worker', () => {
 
         assert.equal(firstIds.length, 2);
         assert.equal(secondIds.length, 2);
+        assert.deepEqual(
+            firstIds.filter(id => assignedIds.includes(id)),
+            [],
+            'currently assigned targets should be scheduled after unassigned targets'
+        );
+        assert.deepEqual(
+            secondIds.filter(id => assignedIds.includes(id)),
+            [],
+            'assigned targets should remain last while unassigned work exists'
+        );
         assert.deepEqual(
             firstIds.filter(id => secondIds.includes(id)),
             []

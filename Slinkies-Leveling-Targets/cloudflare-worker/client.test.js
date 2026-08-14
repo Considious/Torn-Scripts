@@ -112,6 +112,21 @@ describe('SLINK Leveling Service thin client', () => {
     });
 
 
+    it('reports attack-page hospital timing without another target refresh', () => {
+        assert.match(client, /function parseVisibleRemainingMs\(/);
+        assert.match(client, /async function scrapeAndReportAttackPage\(/);
+
+        const attackAdapter = client.slice(
+            client.indexOf('async function scrapeAndReportAttackPage('),
+            client.indexOf('function scheduleAttackPageScrape(')
+        );
+
+        assert.match(attackAdapter, /source:\s*'attack_page'/);
+        assert.match(attackAdapter, /await submitObservations\(/);
+        assert.doesNotMatch(attackAdapter, /refreshRecommendations\(/);
+    });
+
+
     it('does not retain the local scheduler, scoring, or shared caches', () => {
         for (const removedName of [
             'MASTER_URL',

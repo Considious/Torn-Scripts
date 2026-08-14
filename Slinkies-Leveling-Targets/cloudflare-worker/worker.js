@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.5.1-efficient-coordination
+ * Release: 0.5.2-assigned-targets-last
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.5.1-efficient-coordination';
+const WORKER_VERSION = '0.5.2-assigned-targets-last';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -1076,6 +1076,9 @@ async function handleClaimChecks(request, env, session) {
                     LEFT JOIN client_check_claims AS claim
                         ON claim.target_id = t.id
                        AND claim.expires_at > ?1
+                    LEFT JOIN client_target_leases AS assigned_target
+                        ON assigned_target.target_id = t.id
+                       AND assigned_target.expires_at > ?1
                     WHERE claim.target_id IS NULL
                       AND (
                         activity.last_seen_at IS NULL
@@ -1088,6 +1091,10 @@ async function handleClaimChecks(request, env, session) {
                         OR CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?1
                       )
                     ORDER BY
+                        CASE
+                            WHEN assigned_target.target_id IS NULL THEN 0
+                            ELSE 1
+                        END ASC,
                         CASE
                             WHEN LOWER(COALESCE(ts.status, '')) IN ('hospital', 'federal')
                                 THEN 0

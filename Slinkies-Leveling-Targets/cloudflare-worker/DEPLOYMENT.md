@@ -1,7 +1,7 @@
 # Cloudflare deployment checklist
 
 Use this order. Install userscript 0.8.0 only after the health check reports
-Worker `0.5.1-efficient-coordination`.
+Worker `0.5.2-assigned-targets-last`.
 
 ## 1. Remove the unused experimental Fair Fight table
 
@@ -30,7 +30,7 @@ binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 Open:
 
 ```text
-https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.5.1
+https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.5.2
 ```
 
 The JSON should include:
@@ -38,7 +38,7 @@ The JSON should include:
 ```json
 {
   "ok": true,
-  "version": "0.5.1-efficient-coordination",
+  "version": "0.5.2-assigned-targets-last",
   "database": "connected"
 }
 ```

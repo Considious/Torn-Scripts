@@ -820,7 +820,6 @@
                     until,
                     source: 'attack_page'
                 }]);
-                await refreshRecommendations();
                 logClientEvent('attack_page_observation', { targetId, status });
                 render();
                 return true;
