@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.5.2-assigned-targets-last';
+const WORKER_VERSION = '0.6.0-personal-stat-fit';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -416,6 +416,35 @@ describe('SLINK Leveling Worker', () => {
         assert.ok(firstBody.targets.every(row => row.fair_fight === null));
         assert.ok(secondBody.targets.every(row => row.fair_fight === null));
         assert.deepEqual(firstIds.filter(id => secondIds.includes(id)), []);
+    });
+
+
+    it('ignores source labels and honors the local strength range', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(2050);
+
+        db.sqlite.prepare(`
+            UPDATE targets
+            SET sources = ?
+            WHERE id = 2
+        `).run("Baldr's Extra List 1");
+
+        const response = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations' +
+                    '?limit=3&min_target_stats=1500&max_target_stats=4500',
+                token
+            ),
+            env
+        );
+        const body = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.deepEqual(body.targets.map(row => row.id), [2, 3, 4]);
+        assert.equal(body.targets[0].sources, "Baldr's Extra List 1");
+        assert.equal(body.min_target_stats, 1500);
+        assert.equal(body.max_target_stats, 4500);
     });
 
 

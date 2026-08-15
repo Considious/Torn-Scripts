@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.8.0
+// @version      0.9.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,16 +21,19 @@
 (function () {
     'use strict';
 
+    // Release: 0.9.0-local-fair-fight-preview
+
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.8.0';
+    const SCRIPT_VERSION = '0.9.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
     const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+    const BATTLE_STATS_CACHE_MS = 24 * 60 * 60 * 1000;
     const DEFAULT_POLL_SECONDS = 300;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
@@ -47,17 +50,20 @@
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
         ffCache: 'slinkyLeveling.ffCache.v1',
+        battleStats: 'slinkyLeveling.localBattleStats.v1',
         runtimeState: 'slinkyLeveling.clientRuntime.v1',
         clientEvents: 'slinkyLeveling.clientEvents.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
     const persistedFairFightCache = loadJson(KEYS.ffCache, {});
+    const persistedBattleStats = loadJson(KEYS.battleStats, {});
 
     const state = {
         targets: [],
         recommendationTargets: [],
         ffCache: persistedFairFightCache,
+        battleStats: persistedBattleStats,
         polling: false,
         authenticating: false,
         settingsOpen: false,
@@ -67,6 +73,7 @@
         collector: false,
         collectorExpiresAt: 0,
         cycleStatus: '',
+        fairFightStatus: '',
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
         lastCycleChecked: Number(persistedRuntime.lastCycleChecked) || 0,
         lastCycleReported: Number(persistedRuntime.lastCycleReported) || 0,
@@ -119,16 +126,20 @@
                 60,
                 300
             ),
-            minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 0, 10),
-            maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 0, 10),
+            minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 3),
+            maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 3),
             collapsed: Boolean(GM_getValue(KEYS.collapsed, false))
         };
     }
 
 
     function saveSettings(values) {
-        GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
-        GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
+        const previous = getSettings();
+        const tornKey = String(values.tornKey || '').trim();
+        const ffKey = String(values.ffKey || '').trim();
+
+        GM_setValue(KEYS.tornKey, tornKey);
+        GM_setValue(KEYS.ffKey, ffKey);
         GM_setValue(
             KEYS.pollSeconds,
             clamp(
@@ -137,8 +148,18 @@
                 300
             )
         );
-        GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 0, 0, 10));
-        GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 0, 0, 10));
+        GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 3));
+        GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 3));
+
+        if (tornKey !== previous.tornKey) {
+            state.battleStats = {};
+            saveJson(KEYS.battleStats, state.battleStats);
+        }
+
+        if (ffKey !== previous.ffKey) {
+            state.ffCache = {};
+            saveJson(KEYS.ffCache, state.ffCache);
+        }
     }
 
 
@@ -325,6 +346,127 @@
 
 
     // ================================================================
+    // Local-only player strength and immediate Fair Fight estimates
+    // ================================================================
+
+    async function ensureLocalBattleStats(apiKey, force = false) {
+        const cachedAt = Number(state.battleStats?.checkedAt) || 0;
+        const cachedScore = Number(state.battleStats?.score) || 0;
+        const fresh = (
+            cachedScore > 0 &&
+            cachedAt > 0 &&
+            Date.now() - cachedAt < BATTLE_STATS_CACHE_MS
+        );
+
+        if (!force && fresh) return state.battleStats;
+
+        const data = await TornLib.tornRequest(
+            'https://api.torn.com/v2/user/battlestats',
+            apiKey,
+            {
+                tornScript: SCRIPT_NAME,
+                tornPriority: 'normal',
+                tornLimit: TornLib.TORN_API_DEFAULT_LIMIT,
+                tornWait: true,
+                tornMaxWaitMs: 65_000
+            }
+        );
+        const stats = data?.battlestats ?? data;
+        const values = [
+            battleStatValue(stats?.strength),
+            battleStatValue(stats?.defense),
+            battleStatValue(stats?.speed),
+            battleStatValue(stats?.dexterity)
+        ];
+
+        if (values.some(value => value === null)) {
+            throw new Error('Torn returned incomplete battle stats.');
+        }
+
+        const score = values.reduce((sum, value) => sum + Math.sqrt(value), 0);
+        const total = finiteNumberOrNull(stats?.total) ??
+            values.reduce((sum, value) => sum + value, 0);
+
+        if (!Number.isFinite(score) || score <= 0 || total <= 0) {
+            throw new Error('Torn returned unusable battle stats.');
+        }
+
+        state.battleStats = {
+            score,
+            total,
+            checkedAt: Date.now()
+        };
+        saveJson(KEYS.battleStats, state.battleStats);
+        logClientEvent('local_strength_cached', {
+            checkedAt: state.battleStats.checkedAt
+        });
+        return state.battleStats;
+    }
+
+
+    function battleStatValue(stat) {
+        const value = finiteNumberOrNull(stat?.value ?? stat);
+        return value !== null && value >= 0 ? value : null;
+    }
+
+
+    function localTargetStatRange(settings = getSettings()) {
+        const attackerScore = Number(state.battleStats?.score) || 0;
+        if (attackerScore <= 0) return null;
+
+        const minFairFight = Math.min(settings.minFF, settings.maxFF);
+        const maxFairFight = Math.max(settings.minFF, settings.maxFF);
+        const minScoreRatio = fairFightToScoreRatio(minFairFight);
+        const maxScoreRatio = fairFightToScoreRatio(maxFairFight);
+        const minimum = balancedTotalFromScore(attackerScore * minScoreRatio);
+        const maximum = balancedTotalFromScore(attackerScore * maxScoreRatio);
+
+        return {
+            min: minScoreRatio > 0 ? Math.max(1, Math.floor(minimum)) : 0,
+            max: Math.max(1, Math.ceil(maximum))
+        };
+    }
+
+
+    function fairFightToScoreRatio(fairFight) {
+        return clamp(((clamp(fairFight, 1, 3) - 1) * 3) / 8, 0, 0.75);
+    }
+
+
+    function balancedTotalFromScore(score) {
+        return Math.min(Number.MAX_SAFE_INTEGER, Math.pow(score / 2, 2));
+    }
+
+
+    function balancedScoreFromTotal(totalStats) {
+        const total = finiteNumberOrNull(totalStats);
+        return total !== null && total > 0 ? 2 * Math.sqrt(total) : null;
+    }
+
+
+    function estimateLocalFairFight(totalStats) {
+        const attackerScore = Number(state.battleStats?.score) || 0;
+        const defenderScore = balancedScoreFromTotal(totalStats);
+        if (attackerScore <= 0 || defenderScore === null) return null;
+
+        return clamp(1 + (8 / 3) * (defenderScore / attackerScore), 1, 3);
+    }
+
+
+    function localDifficulty(totalStats) {
+        const attackerScore = Number(state.battleStats?.score) || 0;
+        const defenderScore = balancedScoreFromTotal(totalStats);
+        if (attackerScore <= 0 || defenderScore === null) return null;
+
+        const ratio = defenderScore / attackerScore;
+        if (ratio <= 0.35) return { label: 'Easy', className: 'slp-easy' };
+        if (ratio <= 0.6) return { label: 'Good', className: 'slp-good' };
+        if (ratio <= 0.75) return { label: 'Fair', className: 'slp-fair' };
+        return { label: 'Risky', className: 'slp-risky' };
+    }
+
+
+    // ================================================================
     // Browser-side data collection assigned by Cloudflare
     // ================================================================
 
@@ -352,22 +494,36 @@
 
         try {
             await ensureWorkerSession(false);
+
+            state.cycleStatus = 'Reading your locally cached strength range…';
+            render();
+            try {
+                await ensureLocalBattleStats(settings.tornKey);
+            } catch (error) {
+                state.lastError = `Local Fair Fight estimate: ${TornLib.errorMessage(error)}`;
+            }
+
             state.cycleStatus = 'Asking the SLINK Network for targets…';
             await refreshRecommendations();
             render();
 
+            let fairFightTask = Promise.resolve(null);
             if (settings.ffKey) {
-                try {
-                    await hydrateRecommendationFairFight(settings.ffKey);
-                } catch (error) {
-                    state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
-                }
+                fairFightTask = hydrateRecommendationFairFight(settings.ffKey)
+                    .catch(error => {
+                        state.fairFightStatus = 'FFScouter refinement failed; local estimates remain available';
+                        state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
+                        render();
+                        return null;
+                    });
             } else {
-                state.cycleStatus = 'Targets ready · Add an FFScouter key for Fair Fight values';
-                state.lastError = 'Add your FFScouter API key in Settings to load Fair Fight values.';
+                state.fairFightStatus = state.battleStats?.score
+                    ? 'Approximate Fair Fight is ready · Add FFScouter to refine it'
+                    : 'Add FFScouter for Fair Fight values';
             }
 
             if (!state.collector) {
+                await fairFightTask;
                 state.cycleStatus = 'Targets ready · Standby device';
                 state.lastCycleAt = Date.now();
                 state.lastCycleChecked = 0;
@@ -424,11 +580,11 @@
                 state.lastError = `${failures.length} assigned Torn check${failures.length === 1 ? '' : 's'} failed.`;
             }
 
+            await fairFightTask;
+
             state.lastCycleAt = Date.now();
             state.lastCycleChecked = checks.length;
-            state.cycleStatus = state.lastFairFightAt
-                ? `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values ready · Cached locally ${formatDateTime(state.lastFairFightAt)}`
-                : 'Targets ready';
+            state.cycleStatus = `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values shown · Targets ready`;
 
             logClientEvent('cycle_completed', {
                 apiCapacity: capacity,
@@ -513,10 +669,11 @@
         );
         if (!targets.length) {
             applyLocalFairFightToRecommendations();
+            state.fairFightStatus = 'Fair Fight values loaded from local cache';
             return { requestedCount: 0, savedCount: 0, cachedAt: 0 };
         }
 
-        state.cycleStatus = `Checking Fair Fight for ${targets.length} target${targets.length === 1 ? '' : 's'}…`;
+        state.fairFightStatus = `Refining ${targets.length} Fair Fight estimate${targets.length === 1 ? '' : 's'} in the background…`;
         render();
         logClientEvent('fair_fight_started', { requested: targets.length });
 
@@ -524,7 +681,7 @@
         state.lastFairFightAt = result.cachedAt || Date.now();
         state.lastFairFightRequested = targets.length;
         state.lastFairFightSaved = result.savedCount;
-        state.cycleStatus = `${result.savedCount} Fair Fight record${result.savedCount === 1 ? '' : 's'} saved locally`;
+        state.fairFightStatus = `${result.savedCount} Fair Fight value${result.savedCount === 1 ? '' : 's'} refined · Cached locally for 7 days`;
         applyLocalFairFightToRecommendations();
         saveRuntimeState();
         render();
@@ -615,12 +772,24 @@
         state.targets = state.recommendationTargets
             .map(target => {
                 const cached = state.ffCache[String(target.id)] || {};
+                const refinedFairFight = finiteNumberOrNull(cached.fairFight);
+                const estimatedFairFight = estimateLocalFairFight(target.total_stats);
+                const useEstimate = refinedFairFight === null && estimatedFairFight !== null;
                 return {
                     ...target,
-                    fair_fight: finiteNumberOrNull(cached.fairFight),
-                    bs_estimate: finiteNumberOrNull(cached.bsEstimate),
-                    fair_fight_source: String(cached.source || ''),
-                    fair_fight_checked_at: Number(cached.checkedAt) || 0
+                    fair_fight: refinedFairFight ?? estimatedFairFight,
+                    fair_fight_estimated: useEstimate,
+                    bs_estimate: finiteNumberOrNull(cached.bsEstimate) ??
+                        finiteNumberOrNull(target.total_stats),
+                    fair_fight_source: refinedFairFight !== null
+                        ? String(cached.source || 'FFScouter')
+                        : useEstimate
+                            ? 'Local estimate'
+                            : '',
+                    fair_fight_checked_at: refinedFairFight !== null
+                        ? Number(cached.checkedAt) || 0
+                        : 0,
+                    local_difficulty: localDifficulty(target.total_stats)
                 };
             })
             .filter(target => {
@@ -732,6 +901,11 @@
             min_ff: String(Math.min(settings.minFF, settings.maxFF)),
             max_ff: String(Math.max(settings.minFF, settings.maxFF))
         });
+        const targetRange = localTargetStatRange(settings);
+        if (targetRange) {
+            query.set('min_target_stats', String(targetRange.min));
+            query.set('max_target_stats', String(targetRange.max));
+        }
         const response = await workerRequest(`/api/recommendations?${query}`);
         state.collector = response?.collector === true;
         state.collectorExpiresAt = Number(response?.collector_expires_at) || 0;
@@ -896,6 +1070,8 @@
             lastActivitySyncAt: state.lastActivitySyncAt,
             activeTargetsReported: state.activeTargetsReported,
             cycleStatus: state.cycleStatus,
+            fairFightStatus: state.fairFightStatus,
+            localStrengthCachedAt: Number(state.battleStats?.checkedAt) || 0,
             lastFairFightAt: state.lastFairFightAt,
             lastFairFightRequested: state.lastFairFightRequested,
             lastFairFightSaved: state.lastFairFightSaved,
@@ -921,7 +1097,9 @@
             `Polling: Core Lib remaining quota every ${data.pollSecondsConfigured}s`,
             `Last primary: ${formatDateTime(data.lastPrimaryPollAt)} | assigned ${data.lastPrimaryChecked} | reported ${data.lastPrimaryReported}`,
             `Activity sync: ${formatDateTime(data.lastActivitySyncAt)} | active matches ${data.activeTargetsReported}`,
+            `Local strength cached: ${formatDateTime(data.localStrengthCachedAt)}`,
             `Fair Fight: requested ${data.lastFairFightRequested} | saved locally ${data.lastFairFightSaved} | cached ${formatDateTime(data.lastFairFightAt)}`,
+            `Fair Fight work: ${data.fairFightStatus || 'Idle'}`,
             `Current work: ${data.cycleStatus || 'Idle'}`,
             `Last error: ${data.lastError || 'None'}`,
             '',
@@ -976,6 +1154,10 @@
             .slp-meta { display:flex; gap:8px; margin-top:3px; color:#aaa; flex-wrap:wrap; }
             .slp-badge { padding:1px 5px; border-radius:8px; background:#303641; color:#ddd; }
             .slp-hosp-hot { background:#5a2828; color:#ffd0d0; }
+            .slp-easy { background:#234a32; color:#c9f7d6; }
+            .slp-good { background:#24445a; color:#ccecff; }
+            .slp-fair { background:#5a4a24; color:#ffe9ad; }
+            .slp-risky { background:#5a2828; color:#ffd0d0; }
             .slp-actions { display:flex; gap:4px; margin-top:5px; }
             .slp-actions a { text-decoration:none; }
             .slp-empty { padding:16px; text-align:center; color:#aaa; }
@@ -1030,6 +1212,7 @@
                     <div class="slp-stat"><b>${usage.count}/${usage.limit}</b><span>API / min</span></div>
                 </div>
                 ${state.cycleStatus ? `<div class="slp-phase">${escapeHtml(state.cycleStatus)}</div>` : ''}
+                ${state.fairFightStatus ? `<div class="slp-phase">${escapeHtml(state.fairFightStatus)}</div>` : ''}
                 ${state.lastError ? `<div class="slp-error">${escapeHtml(state.lastError)}</div>` : ''}
                 ${state.settingsOpen ? settingsHtml(settings) : ''}
                 ${state.debugOpen ? debugHtml() : ''}
@@ -1049,7 +1232,7 @@
                 <label class="wide">Torn API key
                     <input id="slp-torn-key" type="password" value="${escapeHtml(settings.tornKey)}" autocomplete="off">
                 </label>
-                <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. The key is stored locally and is not retained by Cloudflare.</div>
+                <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
                 <label class="wide">FFScouter API key
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
                 </label>
@@ -1057,10 +1240,10 @@
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
                 </label>
                 <label>Min FF
-                    <input id="slp-min-ff" type="number" min="0" max="10" step=".1" value="${settings.minFF}">
+                    <input id="slp-min-ff" type="number" min="1" max="3" step=".1" value="${settings.minFF}">
                 </label>
                 <label>Max FF
-                    <input id="slp-max-ff" type="number" min="0" max="10" step=".1" value="${settings.maxFF}">
+                    <input id="slp-max-ff" type="number" min="1" max="3" step=".1" value="${settings.maxFF}">
                 </label>
                 <div class="slp-settings-actions">
                     <button class="slp-btn" id="slp-clear-session">Clear local session</button>
@@ -1096,14 +1279,18 @@
                 ? Number.NaN
                 : Number(target.fair_fight);
             const ffText = Number.isFinite(fairFight) && fairFight > 0
-                ? fairFight.toFixed(2)
+                ? `${target.fair_fight_estimated ? '~' : ''}${fairFight.toFixed(2)}`
                 : '?';
+            const ffTitle = target.fair_fight_estimated
+                ? 'Immediate local estimate; FFScouter will refine this in the background.'
+                : target.fair_fight_source || 'Fair Fight unavailable';
             const battleStats = Number(target.bs_estimate);
             const statsText = Number.isFinite(battleStats) && battleStats > 0
                 ? TornLib.shortNumber(battleStats)
                 : shortNumber(target.total_stats);
             const hospitalCount = Number(target.hospitalizations_24h) || 0;
             const nextCheckAt = Number(target.next_check_at) || 0;
+            const difficulty = target.local_difficulty || null;
 
             return `
                 <article class="slp-row">
@@ -1113,7 +1300,8 @@
                     </div>
                     <div class="slp-meta">
                         <span class="slp-badge">${escapeHtml(target.status || 'Unknown')}</span>
-                        <span class="slp-badge">FF ${escapeHtml(ffText)}</span>
+                        <span class="slp-badge" title="${escapeHtml(ffTitle)}">FF ${escapeHtml(ffText)}</span>
+                        ${difficulty ? `<span class="slp-badge ${escapeHtml(difficulty.className)}">${escapeHtml(difficulty.label)}</span>` : ''}
                         <span class="slp-badge">BS ${escapeHtml(statsText)}</span>
                         <span class="slp-badge ${hospitalCount ? 'slp-hosp-hot' : ''}">Hosp 24h: ${hospitalCount}</span>
                         <span class="slp-badge">${escapeHtml(target.competition_tier || 'Prime')} ${Number(target.competition_score) || 0}</span>

@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.5.2-assigned-targets-last
+ * Release: 0.6.0-personal-stat-fit
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.5.2-assigned-targets-last';
+const WORKER_VERSION = '0.6.0-personal-stat-fit';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -19,6 +19,7 @@ const DEFAULT_TARGET_LIMIT = 50;
 const MAX_TARGET_LIMIT = 200;
 const DEFAULT_RECOMMENDATION_LIMIT = 40;
 const MAX_RECOMMENDATION_LIMIT = 40;
+const MAX_TARGET_STATS_FILTER = Number.MAX_SAFE_INTEGER;
 // This is payload-abuse protection, not a Torn polling allowance. The client
 // supplies its live request capacity from Considious Torn Core Lib.
 const MAX_MEMBER_BATCH_ROWS = 200;
@@ -818,14 +819,26 @@ async function handleRecommendations(url, env, session) {
         const minFairFight = boundedNumberQueryParameter(
             url.searchParams.get('min_ff'),
             1,
-            0,
-            10
+            1,
+            3
         );
         const maxFairFight = boundedNumberQueryParameter(
             url.searchParams.get('max_ff'),
             3,
             minFairFight,
-            10
+            3
+        );
+        const minTargetStats = boundedIntegerQueryParameter(
+            url.searchParams.get('min_target_stats'),
+            0,
+            0,
+            MAX_TARGET_STATS_FILTER
+        );
+        const maxTargetStats = boundedIntegerQueryParameter(
+            url.searchParams.get('max_target_stats'),
+            MAX_TARGET_STATS_FILTER,
+            minTargetStats,
+            MAX_TARGET_STATS_FILTER
         );
 
         await cleanExpiredCoordinationRows(env, now);
@@ -852,12 +865,38 @@ async function handleRecommendations(url, env, session) {
                         WHERE active_target.target_id = client_target_leases.target_id
                           AND active_target.last_seen_at >= ?3
                     )
+                    OR (
+                        ?4 > 0
+                        AND EXISTS (
+                            SELECT 1
+                            FROM targets AS weak_target
+                            WHERE weak_target.id = client_target_leases.target_id
+                              AND (
+                                weak_target.total_stats IS NULL
+                                OR weak_target.total_stats < ?4
+                              )
+                        )
+                    )
+                    OR (
+                        ?5 < ${MAX_TARGET_STATS_FILTER}
+                        AND EXISTS (
+                            SELECT 1
+                            FROM targets AS strong_target
+                            WHERE strong_target.id = client_target_leases.target_id
+                              AND (
+                                strong_target.total_stats IS NULL
+                                OR strong_target.total_stats > ?5
+                              )
+                        )
+                    )
                   )
             `)
             .bind(
                 session.user_id,
                 now,
-                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000)
+                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
+                minTargetStats,
+                maxTargetStats
             )
             .run();
 
@@ -897,6 +936,20 @@ async function handleRecommendations(url, env, session) {
                         OR LOWER(COALESCE(ts.status, 'unknown'))
                             IN ('unknown', 'okay')
                       )
+                      AND (
+                        ?3 = 0
+                        OR (
+                            t.total_stats IS NOT NULL
+                            AND t.total_stats >= ?3
+                        )
+                      )
+                      AND (
+                        ?4 = ${MAX_TARGET_STATS_FILTER}
+                        OR (
+                            t.total_stats IS NOT NULL
+                            AND t.total_stats <= ?4
+                        )
+                      )
                     ORDER BY
                         COALESCE(ts.competition_score, 0) ASC,
                         CASE
@@ -907,11 +960,13 @@ async function handleRecommendations(url, env, session) {
                         t.level DESC,
                         COALESCE(t.total_stats, 9223372036854775807) ASC,
                         t.id ASC
-                    LIMIT ?3
+                    LIMIT ?5
                 `)
                 .bind(
                     now,
                     Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
+                    minTargetStats,
+                    maxTargetStats,
                     needed
                 )
                 .all();
@@ -987,17 +1042,33 @@ async function handleRecommendations(url, env, session) {
                     ON ts.target_id = t.id
                 WHERE lease.user_id = ?1
                   AND lease.expires_at > ?2
+                  AND (
+                    ?5 = 0
+                    OR (
+                        t.total_stats IS NOT NULL
+                        AND t.total_stats >= ?5
+                    )
+                  )
+                  AND (
+                    ?6 = ${MAX_TARGET_STATS_FILTER}
+                    OR (
+                        t.total_stats IS NOT NULL
+                        AND t.total_stats <= ?6
+                    )
+                  )
                 ORDER BY
                     COALESCE(ts.competition_score, 0) ASC,
                     t.level DESC,
                     t.id ASC
-                LIMIT ?5
+                LIMIT ?7
             `)
             .bind(
                 session.user_id,
                 now,
                 now - HOSPITAL_24H_MS,
                 now - HOSPITAL_7D_MS,
+                minTargetStats,
+                maxTargetStats,
                 limit
             )
             .all();
@@ -1009,6 +1080,10 @@ async function handleRecommendations(url, env, session) {
             poll_seconds: pollSeconds,
             min_fair_fight: minFairFight,
             max_fair_fight: maxFairFight,
+            min_target_stats: minTargetStats || null,
+            max_target_stats: maxTargetStats === MAX_TARGET_STATS_FILTER
+                ? null
+                : maxTargetStats,
             lease_seconds: Math.floor(TARGET_LEASE_LIFETIME_MS / 1000),
             targets: (result.results || []).map(normalizeRecommendationRow)
         });

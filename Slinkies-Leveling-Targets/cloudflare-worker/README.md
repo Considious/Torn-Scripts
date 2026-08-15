@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.5.2 is identified as `0.5.2-assigned-targets-last`.
+version. Release 0.6.0 is identified as `0.6.0-personal-stat-fit`.
 
 ## Cloudflare configuration
 
@@ -26,11 +26,16 @@ D1 stores shared service facts: targets, status observations, hospital events,
 scheduling, activity exclusions, target leases, check claims, and per-user
 collector leases.
 
-Fair Fight is not a shared service fact. The userscript requests it directly
-from FFScouter and stores it in Tampermonkey/browser storage for seven days.
-Fair Fight values are not uploaded to the Worker and are not used by D1 target
-selection. The panel applies each member's minimum and maximum Fair Fight
-settings locally.
+Fair Fight is not a shared service fact. The userscript reads the member's own
+battle stats from Torn once per day and stores only a local score and total in
+Tampermonkey. It immediately estimates Fair Fight from that score and the
+master target estimate. Exact member battle stats and Fair Fight values are not
+uploaded or stored in D1.
+
+The browser sends only a temporary minimum and maximum target-stat range with
+the recommendation request. The Worker uses that range for assignment without
+persisting it. FFScouter then refines displayed values in one background batch,
+and those results remain in local browser storage for seven days.
 
 The old authenticated `POST /api/fair-fight` route remains temporarily as a
 no-op for compatibility with an older client. It does not write anything.
@@ -52,6 +57,14 @@ background work while every device is offline.
 Recommendation leases are keyed by Torn user ID, so a user's PC and mobile
 sessions see the same target set. Collector ownership is keyed by signed session
 ID, allowing another device to take over after the lease expires.
+
+Recommendation ranking is source-neutral. Baldr, Legacy, Extra, and every other
+source label are metadata only and never boost or penalize a target. The
+member's locally derived stat range removes obvious strength mismatches before
+assignment. Inside that range, the Worker favors low competition, useful target
+level, lower estimated target stats, and targets that are not already leased to
+another member. This gives different members their own lists whenever the
+available pool permits it.
 
 ## Routes
 
@@ -97,4 +110,5 @@ not exist.
 
 Run `npm test` in this directory. The test suite uses Node's built-in test
 runner and covers auth/session protection, coordination, scheduling, activity,
-local-only Fair Fight boundaries, collector failover, parsing, and CORS.
+personal target-stat ranges, source-neutral ranking, unique target leasing,
+local-only Fair Fight estimates, collector failover, parsing, and CORS.

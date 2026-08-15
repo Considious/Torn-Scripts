@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.8\.0/);
+        assert.match(client, /@version\s+0\.9\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -78,15 +78,23 @@ describe('SLINK Leveling Service thin client', () => {
     });
 
 
-    it('hydrates recommendation Fair Fight data before scheduled Torn work', () => {
+    it('shows local Fair Fight estimates while FFScouter refines in the background', () => {
         assert.match(client, /FF_CACHE_MS\s*=\s*7\s*\*\s*24\s*\*\s*60\s*\*\s*60/);
+        assert.match(client, /BATTLE_STATS_CACHE_MS\s*=\s*24\s*\*\s*60\s*\*\s*60/);
         assert.match(client, /ffCache:\s*'slinkyLeveling\.ffCache\.v1'/);
+        assert.match(client, /battleStats:\s*'slinkyLeveling\.localBattleStats\.v1'/);
+        assert.match(client, /https:\/\/api\.torn\.com\/v2\/user\/battlestats/);
+        assert.match(client, /function estimateLocalFairFight\(/);
+        assert.match(client, /function localTargetStatRange\(/);
+        assert.match(client, /fair_fight_estimated:\s*useEstimate/);
+        assert.match(client, /min_target_stats/);
+        assert.match(client, /max_target_stats/);
         assert.match(client, /async function hydrateRecommendationFairFight\(/);
         assert.match(client, /async function collectAndCacheFairFight\(/);
         assert.match(client, /function recommendationsNeedingFairFight\(/);
         assert.match(client, /recommendationsNeedingFairFight\(\s*state\.recommendationTargets/);
         assert.match(client, /saveJson\(KEYS\.ffCache, state\.ffCache\)/);
-        assert.match(client, /saved locally/);
+        assert.match(client, /Cached locally for 7 days/);
         assert.match(client, /Asking the SLINK Network for targets/);
         assert.doesNotMatch(client, /workerRequest\('\/api\/fair-fight'/);
         assert.doesNotMatch(client, /reported to SLINK/);
@@ -96,13 +104,18 @@ describe('SLINK Leveling Service thin client', () => {
             client.indexOf('async function getUserStatus(')
         );
         const firstRecommendations = cycle.indexOf('await refreshRecommendations();');
-        const firstFairFight = cycle.indexOf('await hydrateRecommendationFairFight(');
+        const firstFairFight = cycle.indexOf('fairFightTask = hydrateRecommendationFairFight(');
         const scheduledTornWork = cycle.indexOf('await syncActivitySnapshots(');
+        const waitForFairFight = cycle.indexOf('await fairFightTask;', scheduledTornWork);
         const recommendationLoads = cycle.match(/await refreshRecommendations\(\);/g) || [];
 
         assert.ok(firstRecommendations >= 0, 'recommendations should load');
         assert.ok(firstFairFight > firstRecommendations, 'FF should follow targets');
-        assert.ok(scheduledTornWork > firstFairFight, 'Torn checks should follow FF');
+        assert.ok(scheduledTornWork > firstFairFight, 'FF refinement should start after targets');
+        assert.ok(
+            waitForFairFight > scheduledTornWork,
+            'scheduled Torn work should not wait for FFScouter refinement'
+        );
         assert.equal(
             recommendationLoads.length,
             1,
