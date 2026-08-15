@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "slinkyleveling",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-15",
+  "keep_vars": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "slinkies-leveling-data",
+      "database_id": "dd27a42b-a344-4169-8212-b2ca12e4cc2e"
+    },
+    {
+      "binding": "CONSENT_DB",
+      "database_name": "slink-consent-ledger",
+      "database_id": "283aee6d-a1b9-44eb-8b3b-f48aa7274711"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "ADMIN_TOKEN",
+      "SESSION_SECRET",
+      "FFSCOUTER_API_KEY"
+    ]
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
+}
