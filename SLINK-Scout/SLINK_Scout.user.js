@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Scout
 // @namespace    Considious [3853023]
-// @version      0.2.0
+// @version      0.2.1
 // @description  Local FFScouter discovery companion for finding possible SLINK targets.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,12 +19,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.2.0-duplicate-aware-auto-collection
+    // Release: 0.2.1-persistent-minimized-completion-alert
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.2.0';
+    const SCRIPT_VERSION = '0.2.1';
     const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
     const REQUEST_COOLDOWN_MS = 12_500;
     const AUTO_INTERVAL_MS = 15_000;
@@ -84,7 +84,6 @@
         autoStopRequested: false,
         attention: false,
         originalTitle: document.title,
-        attentionTimer: null,
         titleTimer: null,
         autoApiKey: '',
         autoFilters: null
@@ -475,9 +474,7 @@
 
     function clearAttention() {
         state.attention = false;
-        clearTimeout(state.attentionTimer);
         clearInterval(state.titleTimer);
-        state.attentionTimer = null;
         state.titleTimer = null;
         document.title = state.originalTitle;
     }
@@ -485,18 +482,17 @@
 
     function flashAttention(message) {
         clearAttention();
-        state.attention = true;
-        let showWarning = true;
-        const warningTitle = '⚠ SLINK Scout: adjust filters';
-        document.title = warningTitle;
-        state.titleTimer = setInterval(() => {
-            showWarning = !showWarning;
-            document.title = showWarning ? warningTitle : state.originalTitle;
-        }, 900);
-        state.attentionTimer = setTimeout(() => {
-            clearAttention();
-            render();
-        }, 20_000);
+        const minimized = Boolean(GM_getValue(KEYS.collapsed, false));
+        state.attention = minimized;
+        if (minimized) {
+            let showWarning = true;
+            const warningTitle = '⚠ SLINK Scout: collection stopped';
+            document.title = warningTitle;
+            state.titleTimer = setInterval(() => {
+                showWarning = !showWarning;
+                document.title = showWarning ? warningTitle : state.originalTitle;
+            }, 900);
+        }
         setTimeout(() => globalThis.alert(`SLINK Scout stopped\n\n${message}`), 0);
     }
 
@@ -778,6 +774,8 @@
             #slink-scout-panel.sls-dragging .sls-bubble { cursor:grabbing; }
             .sls-bubble-dot { position:absolute; right:2px; bottom:3px; width:11px; height:11px; border:2px solid #152522; border-radius:50%; background:#60dd89; }
             .sls-bubble-dot.sls-bubble-error { background:#ff7373; }
+            .sls-bubble-badge { position:absolute; top:-5px; right:-6px; min-width:22px; height:22px; padding:0 5px; display:flex; align-items:center; justify-content:center; border:2px solid #152522; border-radius:11px; background:#287b69; color:#fff; font:700 10px/1 Arial,sans-serif; }
+            .sls-bubble-badge.sls-bubble-badge-alert { background:#d84d4d; }
             @keyframes sls-attention-pulse {
                 0%,100% { box-shadow:0 8px 24px rgba(0,0,0,.44),0 0 0 0 rgba(255,93,93,.2); }
                 50% { box-shadow:0 8px 24px rgba(0,0,0,.44),0 0 0 7px rgba(255,93,93,.55); }
@@ -953,9 +951,11 @@
         panel.classList.toggle('sls-attention', state.attention);
 
         if (collapsed) {
+            const collectionBadge = state.results.length > 999 ? '999+' : String(state.results.length);
             panel.innerHTML = `
-                <div class="sls-bubble" id="sls-expand" role="button" tabindex="0" title="Open SLINK Scout" aria-label="Open SLINK Scout">
+                <div class="sls-bubble" id="sls-expand" role="button" tabindex="0" title="Open SLINK Scout — ${state.results.length} collected" aria-label="Open SLINK Scout; ${state.results.length} targets collected">
                     <span>SS</span>
+                    <span class="sls-bubble-badge ${state.attention ? 'sls-bubble-badge-alert' : ''}" aria-hidden="true">${collectionBadge}</span>
                     <span class="sls-bubble-dot ${state.error || state.attention ? 'sls-bubble-error' : ''}" aria-hidden="true"></span>
                 </div>
             `;
