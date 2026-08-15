@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.9.0-ffscouter-leveling-catalog
+ * Release: 0.9.1-configurable-leveling-filters
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.9.0-ffscouter-leveling-catalog';
+const WORKER_VERSION = '0.9.1-configurable-leveling-filters';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -39,9 +39,9 @@ const LEVELING_TERMS_SUMMARY =
 
 const IMPORT_BATCH_SIZE = 50;
 const FFSCOUTER_DISCOVERY_LIMIT = 50;
-const FFSCOUTER_LEVELING_MIN_LEVEL = 20;
-const FFSCOUTER_LEVELING_MAX_LEVEL = 100;
-const FFSCOUTER_LEVELING_MAX_STATS = 5_000;
+const DEFAULT_FFSCOUTER_LEVELING_MIN_LEVEL = 30;
+const DEFAULT_FFSCOUTER_LEVELING_MAX_LEVEL = 100;
+const DEFAULT_FFSCOUTER_LEVELING_MAX_STATS = 2_000;
 const FFSCOUTER_SOURCE_LABEL = 'FFScouter discovery';
 const DEFAULT_TARGET_LIMIT = 50;
 const MAX_TARGET_LIMIT = 200;
@@ -367,6 +367,7 @@ async function handleHealth(env) {
             ffscouter_collector: env.FFSCOUTER_API_KEY
                 ? 'configured'
                 : 'not_configured',
+            ffscouter_filters: levelingDiscoveryFilters(env),
             terms: {
                 version: TERMS_VERSION,
                 effective_at: TERMS_EFFECTIVE_AT
@@ -1014,6 +1015,7 @@ async function handleDiscoverLevelingTargets(env) {
 
 async function discoverLevelingTargets(env) {
     const apiKey = String(env.FFSCOUTER_API_KEY || '').trim();
+    const filters = levelingDiscoveryFilters(env);
 
     if (!/^[A-Za-z0-9]{16}$/.test(apiKey)) {
         throw new Error(
@@ -1064,7 +1066,7 @@ async function discoverLevelingTargets(env) {
     const candidates = deduplicateTargets(
         returnedTargets
             .map(normalizeFFScouterTarget)
-            .filter(isLevelingDiscoveryCandidate)
+            .filter(target => isLevelingDiscoveryCandidate(target, filters))
     );
 
     const upsertStatement = env.DB.prepare(`
@@ -1128,12 +1130,7 @@ async function discoverLevelingTargets(env) {
         qualified: candidates.length,
         inserted_or_updated: changed,
         unchanged: candidates.length - changed,
-        filters: {
-            minimum_level: FFSCOUTER_LEVELING_MIN_LEVEL,
-            maximum_level: FFSCOUTER_LEVELING_MAX_LEVEL,
-            maximum_battle_stats: FFSCOUTER_LEVELING_MAX_STATS,
-            inactive_only: true
-        }
+        filters
     };
 }
 
@@ -1155,15 +1152,44 @@ function normalizeFFScouterTarget(target) {
 }
 
 
-function isLevelingDiscoveryCandidate(target) {
+function levelingDiscoveryFilters(env) {
+    const minimumLevel = boundedInteger(
+        env.FFSCOUTER_LEVELING_MIN_LEVEL,
+        DEFAULT_FFSCOUTER_LEVELING_MIN_LEVEL,
+        1,
+        100
+    );
+    const maximumLevel = boundedInteger(
+        env.FFSCOUTER_LEVELING_MAX_LEVEL,
+        DEFAULT_FFSCOUTER_LEVELING_MAX_LEVEL,
+        minimumLevel,
+        100
+    );
+    const maximumBattleStats = boundedInteger(
+        env.FFSCOUTER_LEVELING_MAX_STATS,
+        DEFAULT_FFSCOUTER_LEVELING_MAX_STATS,
+        1,
+        Number.MAX_SAFE_INTEGER
+    );
+
+    return {
+        minimum_level: minimumLevel,
+        maximum_level: maximumLevel,
+        maximum_battle_stats: maximumBattleStats,
+        inactive_only: true
+    };
+}
+
+
+function isLevelingDiscoveryCandidate(target, filters) {
     return (
         target.id > 0 &&
         target.name &&
-        target.level >= FFSCOUTER_LEVELING_MIN_LEVEL &&
-        target.level <= FFSCOUTER_LEVELING_MAX_LEVEL &&
+        target.level >= filters.minimum_level &&
+        target.level <= filters.maximum_level &&
         Number.isInteger(target.totalStats) &&
         target.totalStats > 0 &&
-        target.totalStats <= FFSCOUTER_LEVELING_MAX_STATS
+        target.totalStats <= filters.maximum_battle_stats
     );
 }
 
