@@ -1,18 +1,19 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.8.0-versioned-terms-consent
+ * Release: 0.9.0-ffscouter-leveling-catalog
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.8.0-versioned-terms-consent';
+const WORKER_VERSION = '0.9.0-ffscouter-leveling-catalog';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
     'Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
+const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
 
 const TERMS_VERSION = '2026-08-14';
 const TERMS_EFFECTIVE_AT = '2026-08-14';
@@ -37,6 +38,11 @@ const LEVELING_TERMS_SUMMARY =
     'are retained in SLINK\'s separate consent ledger.';
 
 const IMPORT_BATCH_SIZE = 50;
+const FFSCOUTER_DISCOVERY_LIMIT = 50;
+const FFSCOUTER_LEVELING_MIN_LEVEL = 20;
+const FFSCOUTER_LEVELING_MAX_LEVEL = 100;
+const FFSCOUTER_LEVELING_MAX_STATS = 5_000;
+const FFSCOUTER_SOURCE_LABEL = 'FFScouter discovery';
 const DEFAULT_TARGET_LIMIT = 50;
 const MAX_TARGET_LIMIT = 200;
 const DEFAULT_RECOMMENDATION_LIMIT = 40;
@@ -230,6 +236,17 @@ const worker = {
         }
 
         if (
+            url.pathname === '/api/admin/discover-targets' &&
+            request.method === 'POST'
+        ) {
+            if (!await isAdminRequest(request, env)) {
+                return unauthorizedAdminResponse();
+            }
+
+            return handleDiscoverLevelingTargets(env);
+        }
+
+        if (
             url.pathname === '/api/admin/targets' &&
             request.method === 'GET'
         ) {
@@ -247,6 +264,26 @@ const worker = {
             },
             404
         );
+    },
+
+    async scheduled(controller, env) {
+        try {
+            const result = await discoverLevelingTargets(env);
+            console.log(JSON.stringify({
+                event: 'ffscouter_leveling_discovery',
+                version: WORKER_VERSION,
+                scheduled_at: controller.scheduledTime,
+                ...result
+            }));
+        } catch (error) {
+            controller.noRetry?.();
+            console.error(JSON.stringify({
+                event: 'ffscouter_leveling_discovery_failed',
+                version: WORKER_VERSION,
+                scheduled_at: controller.scheduledTime,
+                error: errorMessage(error)
+            }));
+        }
     }
 };
 
@@ -273,6 +310,15 @@ async function handleHealth(env) {
 
         const queueCount = await env.DB
             .prepare('SELECT COUNT(*) AS count FROM scheduler_queue')
+            .first();
+
+        const ffscouterTargetCount = await env.DB
+            .prepare(`
+                SELECT COUNT(*) AS count
+                FROM targets
+                WHERE INSTR(COALESCE(sources, ''), ?1) > 0
+            `)
+            .bind(FFSCOUTER_SOURCE_LABEL)
             .first();
 
         if (!env.CONSENT_DB) {
@@ -318,6 +364,9 @@ async function handleHealth(env) {
             version: WORKER_VERSION,
             database: 'connected',
             consent_database: 'connected',
+            ffscouter_collector: env.FFSCOUTER_API_KEY
+                ? 'configured'
+                : 'not_configured',
             terms: {
                 version: TERMS_VERSION,
                 effective_at: TERMS_EFFECTIVE_AT
@@ -326,7 +375,8 @@ async function handleHealth(env) {
                 targets: targetCount?.count ?? 0,
                 target_status: statusCount?.count ?? 0,
                 hospital_events: hospitalCount?.count ?? 0,
-                scheduler_queue: queueCount?.count ?? 0
+                scheduler_queue: queueCount?.count ?? 0,
+                ffscouter_targets: ffscouterTargetCount?.count ?? 0
             }
         });
     } catch (error) {
@@ -939,6 +989,182 @@ async function handleCollectorHeartbeat(env, session) {
     } catch (error) {
         return workerErrorResponse('Could not renew the collector lease.', error);
     }
+}
+
+
+// ================================================================
+// Scheduled FFScouter leveling-catalog discovery
+// ================================================================
+
+async function handleDiscoverLevelingTargets(env) {
+    try {
+        return jsonResponse({
+            ok: true,
+            version: WORKER_VERSION,
+            ...await discoverLevelingTargets(env)
+        });
+    } catch (error) {
+        return workerErrorResponse(
+            'Could not discover FFScouter leveling targets.',
+            error
+        );
+    }
+}
+
+
+async function discoverLevelingTargets(env) {
+    const apiKey = String(env.FFSCOUTER_API_KEY || '').trim();
+
+    if (!/^[A-Za-z0-9]{16}$/.test(apiKey)) {
+        throw new Error(
+            'The FFSCOUTER_API_KEY secret is missing or invalid.'
+        );
+    }
+
+    // Supplying only key and limit keeps FFScouter's randomized inactive
+    // discovery mode. Level and battle-stat filtering happens locally so rare
+    // high-level, low-stat outliers are not hidden by a ranked top-50 query.
+    const discoveryUrl = new URL(FFSCOUTER_TARGETS_URL);
+    discoveryUrl.search = new URLSearchParams({
+        key: apiKey,
+        limit: String(FFSCOUTER_DISCOVERY_LIMIT)
+    }).toString();
+
+    const response = await fetch(discoveryUrl, {
+        headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'SLINK-Leveling-Catalog'
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(
+            `FFScouter discovery failed with HTTP ${response.status}.`
+        );
+    }
+
+    let payload;
+
+    try {
+        payload = await response.json();
+    } catch {
+        throw new Error('FFScouter returned an unreadable discovery response.');
+    }
+
+    if (payload?.error) {
+        const code = Number.isInteger(Number(payload.code))
+            ? ` (code ${Number(payload.code)})`
+            : '';
+        throw new Error(`FFScouter rejected the discovery request${code}.`);
+    }
+
+    const returnedTargets = Array.isArray(payload?.targets)
+        ? payload.targets
+        : [];
+    const candidates = deduplicateTargets(
+        returnedTargets
+            .map(normalizeFFScouterTarget)
+            .filter(isLevelingDiscoveryCandidate)
+    );
+
+    const upsertStatement = env.DB.prepare(`
+        INSERT INTO targets (
+            id,
+            name,
+            level,
+            total_stats,
+            sources,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            level = excluded.level,
+            total_stats = excluded.total_stats,
+            sources = CASE
+                WHEN INSTR(
+                    COALESCE(targets.sources, ''),
+                    '${FFSCOUTER_SOURCE_LABEL}'
+                ) > 0 THEN targets.sources
+                WHEN TRIM(COALESCE(targets.sources, '')) = ''
+                    THEN '${FFSCOUTER_SOURCE_LABEL}'
+                ELSE targets.sources || ' | ${FFSCOUTER_SOURCE_LABEL}'
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE targets.name IS NOT excluded.name
+           OR targets.level IS NOT excluded.level
+           OR targets.total_stats IS NOT excluded.total_stats
+           OR INSTR(
+                COALESCE(targets.sources, ''),
+                '${FFSCOUTER_SOURCE_LABEL}'
+           ) = 0
+    `);
+
+    let changed = 0;
+
+    for (
+        let index = 0;
+        index < candidates.length;
+        index += IMPORT_BATCH_SIZE
+    ) {
+        const chunk = candidates.slice(index, index + IMPORT_BATCH_SIZE);
+        const results = await env.DB.batch(
+            chunk.map(target => upsertStatement.bind(
+                target.id,
+                target.name,
+                target.level,
+                target.totalStats,
+                FFSCOUTER_SOURCE_LABEL
+            ))
+        );
+
+        changed += results.reduce((total, result) => {
+            return total + Number(result.meta?.changes || 0);
+        }, 0);
+    }
+
+    return {
+        returned: returnedTargets.length,
+        qualified: candidates.length,
+        inserted_or_updated: changed,
+        unchanged: candidates.length - changed,
+        filters: {
+            minimum_level: FFSCOUTER_LEVELING_MIN_LEVEL,
+            maximum_level: FFSCOUTER_LEVELING_MAX_LEVEL,
+            maximum_battle_stats: FFSCOUTER_LEVELING_MAX_STATS,
+            inactive_only: true
+        }
+    };
+}
+
+
+function normalizeFFScouterTarget(target) {
+    const id = Number(target?.player_id);
+    const level = Number(target?.level);
+    const totalStats = Number(target?.bs_estimate);
+
+    return {
+        id: Number.isInteger(id) ? id : 0,
+        name: String(target?.name || '').trim().slice(0, 100),
+        level: Number.isInteger(level) ? level : 0,
+        totalStats: Number.isFinite(totalStats)
+            ? Math.round(totalStats)
+            : null,
+        sources: FFSCOUTER_SOURCE_LABEL
+    };
+}
+
+
+function isLevelingDiscoveryCandidate(target) {
+    return (
+        target.id > 0 &&
+        target.name &&
+        target.level >= FFSCOUTER_LEVELING_MIN_LEVEL &&
+        target.level <= FFSCOUTER_LEVELING_MAX_LEVEL &&
+        Number.isInteger(target.totalStats) &&
+        target.totalStats > 0 &&
+        target.totalStats <= FFSCOUTER_LEVELING_MAX_STATS
+    );
 }
 
 
@@ -2516,6 +2742,7 @@ export const testing = {
     calculateNextCheck,
     competitionTier,
     createSessionToken,
+    discoverLevelingTargets,
     normalizeStatus,
     parseCsv,
     parseStatNumber,

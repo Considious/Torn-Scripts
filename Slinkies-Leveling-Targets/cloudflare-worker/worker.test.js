@@ -7,7 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.8.0-versioned-terms-consent';
+const WORKER_VERSION = '0.9.0-ffscouter-leveling-catalog';
 const TERMS_VERSION = '2026-08-14';
 const TERMS_DOCUMENT_SHA256 =
     '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
@@ -60,6 +60,7 @@ describe('SLINK Leveling Worker', () => {
             version: WORKER_VERSION,
             database: 'connected',
             consent_database: 'connected',
+            ffscouter_collector: 'not_configured',
             terms: {
                 version: TERMS_VERSION,
                 effective_at: TERMS_VERSION
@@ -68,7 +69,8 @@ describe('SLINK Leveling Worker', () => {
                 targets: 6,
                 target_status: 0,
                 hospital_events: 0,
-                scheduler_queue: 0
+                scheduler_queue: 0,
+                ffscouter_targets: 0
             }
         });
 
@@ -437,6 +439,118 @@ describe('SLINK Leveling Worker', () => {
                 .get(firstIds[0]).count,
             0
         );
+    });
+
+
+    it('discovers only changed high-level low-stat FFScouter targets', async () => {
+        const db = createDatabase();
+        const env = {
+            DB: db,
+            FFSCOUTER_API_KEY: 'abc123def456ghij'
+        };
+        let requests = 0;
+
+        globalThis.fetch = async request => {
+            requests++;
+            const url = new URL(
+                request instanceof Request ? request.url : request
+            );
+            assert.equal(url.origin, 'https://ffscouter.com');
+            assert.equal(url.pathname, '/api/v1/get-targets');
+            assert.equal(url.searchParams.get('key'), env.FFSCOUTER_API_KEY);
+            assert.equal(url.searchParams.get('limit'), '50');
+            assert.equal(url.searchParams.has('minlevel'), false);
+            assert.equal(url.searchParams.has('maxff'), false);
+            return Response.json({
+                targets: [
+                    {
+                        player_id: 1,
+                        name: 'Updated Target 1',
+                        level: 60,
+                        bs_estimate: 250
+                    },
+                    {
+                        player_id: 7001,
+                        name: 'Rare Outlier',
+                        level: 95,
+                        bs_estimate: 4999
+                    },
+                    {
+                        player_id: 7002,
+                        name: 'Too Strong',
+                        level: 100,
+                        bs_estimate: 5001
+                    },
+                    {
+                        player_id: 7003,
+                        name: 'Too Low Level',
+                        level: 19,
+                        bs_estimate: 100
+                    }
+                ]
+            });
+        };
+
+        const first = await testing.discoverLevelingTargets(env);
+        assert.deepEqual(first, {
+            returned: 4,
+            qualified: 2,
+            inserted_or_updated: 2,
+            unchanged: 0,
+            filters: {
+                minimum_level: 20,
+                maximum_level: 100,
+                maximum_battle_stats: 5000,
+                inactive_only: true
+            }
+        });
+
+        const existing = db.sqlite
+            .prepare('SELECT * FROM targets WHERE id = 1')
+            .get();
+        assert.equal(existing.name, 'Updated Target 1');
+        assert.equal(existing.level, 60);
+        assert.equal(existing.total_stats, 250);
+        assert.equal(existing.sources, 'Source 1 | FFScouter discovery');
+
+        const discovered = db.sqlite
+            .prepare('SELECT * FROM targets WHERE id = 7001')
+            .get();
+        assert.equal(discovered.name, 'Rare Outlier');
+        assert.equal(discovered.level, 95);
+        assert.equal(discovered.total_stats, 4999);
+        assert.equal(discovered.sources, 'FFScouter discovery');
+
+        const second = await testing.discoverLevelingTargets(env);
+        assert.equal(second.inserted_or_updated, 0);
+        assert.equal(second.unchanged, 2);
+        assert.equal(requests, 2);
+
+        const adminResponse = await worker.fetch(
+            new Request(
+                'https://worker.example/api/admin/discover-targets',
+                {
+                    method: 'POST',
+                    headers: { 'X-Admin-Token': 'correct-admin-token' }
+                }
+            ),
+            { ...env, ADMIN_TOKEN: 'correct-admin-token' }
+        );
+        assert.equal(adminResponse.status, 200);
+        assert.equal((await adminResponse.json()).inserted_or_updated, 0);
+
+        let retrySuppressed = false;
+        await worker.scheduled(
+            {
+                scheduledTime: 1_800_000_000_000,
+                noRetry() {
+                    retrySuppressed = true;
+                }
+            },
+            env
+        );
+        assert.equal(retrySuppressed, false);
+        assert.equal(requests, 4);
     });
 
 
