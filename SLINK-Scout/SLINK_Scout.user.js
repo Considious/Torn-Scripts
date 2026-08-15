@@ -79,7 +79,6 @@
         autoLeaseTimer: null,
         autoRuns: 0,
         autoDuplicateStreak: 0,
-        autoEmptyStreak: 0,
         autoNextAt: 0,
         autoStopRequested: false,
         attention: false,
@@ -576,20 +575,9 @@
             state.autoDuplicateStreak = batch.eligibleCount > 0 && batch.duplicateRatio >= SATURATION_OVERLAP
                 ? state.autoDuplicateStreak + 1
                 : 0;
-            state.autoEmptyStreak = batch.eligibleCount === 0
-                ? state.autoEmptyStreak + 1
-                : 0;
-
             if (state.autoDuplicateStreak >= SATURATION_STREAK_LIMIT) {
                 stopAutomatic(
                     `At least 80% of qualified results were already seen for ${SATURATION_STREAK_LIMIT} searches in a row. Lower the minimum level or widen the filters, then start again.`,
-                    { needsAttention: true, exportCollection: true }
-                );
-                return;
-            }
-            if (state.autoEmptyStreak >= SATURATION_STREAK_LIMIT) {
-                stopAutomatic(
-                    `${SATURATION_STREAK_LIMIT} searches in a row found no candidates matching these filters. Lower the minimum level or widen the filters, then start again.`,
                     { needsAttention: true, exportCollection: true }
                 );
                 return;
@@ -621,7 +609,6 @@
             state.autoFilters = filters;
             state.autoRuns = 0;
             state.autoDuplicateStreak = 0;
-            state.autoEmptyStreak = 0;
             state.autoStopRequested = false;
             state.message = 'Automatic collection started. Filters are locked until it stops.';
             state.autoLeaseTimer = setInterval(() => {
@@ -896,9 +883,9 @@
                     <label><input id="sls-factionless" type="checkbox" ${filters.factionlessOnly ? 'checked' : ''} ${controlsDisabled}> Factionless only</label>
                 </div>
                 <div class="sls-filter-note">
-                    Random discovery is recommended. Automatic mode waits 15 seconds after each completed request, remembers every unique candidate locally, and stops after three 80%+ duplicate batches or three empty batches. When it stops, lower the minimum level or widen the filters.
+                    Random discovery is recommended. Automatic mode waits 15 seconds after each completed request, remembers every unique candidate locally, and stops only after three batches in a row have 80%+ overlap with previously seen qualified targets. Empty filtered batches do not stop an outlier search.
                 </div>
-                ${state.autoRunning ? `<div class="sls-filter-note">Automatic run ${state.autoRuns} · duplicate streak ${state.autoDuplicateStreak}/${SATURATION_STREAK_LIMIT} · empty streak ${state.autoEmptyStreak}/${SATURATION_STREAK_LIMIT}${nextRun ? ` · next request ${escapeHtml(nextRun)}` : ' · request in progress'}</div>` : ''}
+                ${state.autoRunning ? `<div class="sls-filter-note">Automatic run ${state.autoRuns} · overlap streak ${state.autoDuplicateStreak}/${SATURATION_STREAK_LIMIT}${nextRun ? ` · next request ${escapeHtml(nextRun)}` : ' · request in progress'}</div>` : ''}
                 <div class="sls-actions">
                     <button class="sls-btn" id="sls-clear-collection" ${state.autoRunning ? 'disabled' : ''}>Clear collection + seen</button>
                     <button class="sls-btn" id="sls-export" ${state.results.length ? '' : 'disabled'}>Export collection CSV</button>
