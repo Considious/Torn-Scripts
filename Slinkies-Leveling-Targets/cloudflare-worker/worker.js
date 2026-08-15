@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.10.0-low-write-coordination
+ * Release: 0.11.0-batched-observations
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.10.0-low-write-coordination';
+const WORKER_VERSION = '0.11.0-batched-observations';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -54,6 +54,12 @@ const MAX_MEMBER_BATCH_ROWS = 200;
 const MAX_CHECK_PLAN_ROWS = 300;
 const MAX_ACTIVITY_TARGETS_PER_REQUEST = 1_000;
 const MAX_JSON_BODY_BYTES = 256 * 1024;
+// D1 allows 100 bound parameters and 50 queries per Free-plan invocation.
+// These sizes keep a worst-case 200-row observation upload within both limits.
+const OBSERVATION_READ_CHUNK_SIZE = 50;
+const STATUS_WRITE_CHUNK_SIZE = 10;
+const HOSPITAL_WRITE_CHUNK_SIZE = 25;
+const LEASE_DELETE_CHUNK_SIZE = 50;
 
 const ALLOWED_FACTION_ID = 46978;
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
@@ -1776,18 +1782,22 @@ async function handleObservations(request, env, session) {
             );
         }
 
+        const now = Date.now();
+        const context = await loadObservationContext(env, observations, now);
         const accepted = [];
+        const acceptedPlans = [];
         const rejected = [];
 
         for (let index = 0; index < observations.length; index++) {
             try {
-                accepted.push(
-                    await applyTargetObservation(
-                        env,
-                        session,
-                        observations[index]
-                    )
+                const plan = prepareTargetObservation(
+                    session,
+                    observations[index],
+                    context,
+                    now
                 );
+                accepted.push(plan.response);
+                acceptedPlans.push(plan);
             } catch (error) {
                 rejected.push({
                     index,
@@ -1798,6 +1808,8 @@ async function handleObservations(request, env, session) {
                 });
             }
         }
+
+        await persistTargetObservations(env, acceptedPlans);
 
         return jsonResponse({
             ok: rejected.length === 0,
@@ -1815,23 +1827,88 @@ async function handleObservations(request, env, session) {
 }
 
 
-async function applyTargetObservation(env, session, observation) {
+async function loadObservationContext(env, observations, now) {
+    const targetIds = [...new Set(
+        observations
+            .map(observation => positiveIntegerOrNull(observation?.target_id))
+            .filter(Boolean)
+    )];
+    const targetById = new Map();
+    const statusById = new Map();
+    const eventsById = new Map(targetIds.map(targetId => [targetId, []]));
+
+    for (
+        let index = 0;
+        index < targetIds.length;
+        index += OBSERVATION_READ_CHUNK_SIZE
+    ) {
+        const chunk = targetIds.slice(index, index + OBSERVATION_READ_CHUNK_SIZE);
+        const placeholders = orderedSqlParameters(chunk.length);
+        const [targetResult, statusResult, eventResult] = await env.DB.batch([
+            env.DB
+                .prepare(`
+                    SELECT id, name
+                    FROM targets
+                    WHERE id IN (${placeholders})
+                `)
+                .bind(...chunk),
+            env.DB
+                .prepare(`
+                    SELECT target_id, status, status_until
+                    FROM target_status
+                    WHERE target_id IN (${placeholders})
+                `)
+                .bind(...chunk),
+            env.DB
+                .prepare(`
+                    SELECT target_id, hospitalized_at, hospital_until
+                    FROM hospital_events
+                    WHERE target_id IN (${placeholders})
+                      AND hospitalized_at >= ?${chunk.length + 1}
+                    ORDER BY target_id, hospitalized_at ASC
+                `)
+                .bind(...chunk, now - HOSPITAL_7D_MS)
+        ]);
+
+        for (const target of targetResult.results || []) {
+            targetById.set(Number(target.id), target);
+        }
+
+        for (const statusRow of statusResult.results || []) {
+            statusById.set(Number(statusRow.target_id), {
+                status: statusRow.status,
+                status_until: statusRow.status_until
+            });
+        }
+
+        for (const eventRow of eventResult.results || []) {
+            const targetId = Number(eventRow.target_id);
+            const targetEvents = eventsById.get(targetId) || [];
+            targetEvents.push({
+                at: Number(eventRow.hospitalized_at) || 0,
+                until: Number(eventRow.hospital_until) || 0
+            });
+            eventsById.set(targetId, targetEvents);
+        }
+    }
+
+    return { targetById, statusById, eventsById };
+}
+
+
+function prepareTargetObservation(session, observation, context, now) {
     const targetId = positiveIntegerOrNull(observation?.target_id);
 
     if (!targetId) {
         throw new RequestValidationError('target_id must be a positive integer.');
     }
 
-    const target = await env.DB
-        .prepare('SELECT id, name FROM targets WHERE id = ?1')
-        .bind(targetId)
-        .first();
+    const target = context.targetById.get(targetId);
 
     if (!target) {
         throw new RequestValidationError('The target is not in the master list.');
     }
 
-    const now = Date.now();
     const nowSeconds = Math.floor(now / 1000);
     const stateText = `${observation?.state || ''} ${observation?.description || ''}`;
     const status = normalizeStatus(stateText);
@@ -1846,14 +1923,7 @@ async function applyTargetObservation(env, session, observation) {
     );
     const source = normalizeObservationSource(observation?.source);
 
-    const previous = await env.DB
-        .prepare(`
-            SELECT status, status_until
-            FROM target_status
-            WHERE target_id = ?1
-        `)
-        .bind(targetId)
-        .first();
+    const previous = context.statusById.get(targetId);
 
     const previousStatus = normalizeStatus(previous?.status || 'Unknown');
     const previousUntil = Number(previous?.status_until) || 0;
@@ -1862,34 +1932,27 @@ async function applyTargetObservation(env, session, observation) {
         (until === 0 && previousStatus !== 'Hospital')
     );
 
-    let hospitalEventInserted = false;
+    const targetEvents = context.eventsById.get(targetId) || [];
+    let hospitalEvent = null;
 
     if (newHospitalStay) {
         const deduplicationUntil = until > 0
             ? until
             : -Math.floor(now / 60_000);
-        const insertResult = await env.DB
-            .prepare(`
-                INSERT OR IGNORE INTO hospital_events (
-                    target_id,
-                    hospitalized_at,
-                    hospital_until,
-                    reported_by
-                )
-                VALUES (?1, ?2, ?3, ?4)
-            `)
-            .bind(
-                targetId,
-                now,
-                deduplicationUntil,
-                session.user_id
-            )
-            .run();
 
-        hospitalEventInserted = Number(insertResult.meta?.changes || 0) > 0;
+        if (!targetEvents.some(event => event.until === deduplicationUntil)) {
+            hospitalEvent = {
+                targetId,
+                hospitalizedAt: now,
+                hospitalUntil: deduplicationUntil,
+                reportedBy: session.user_id
+            };
+            targetEvents.push({ at: now, until: deduplicationUntil });
+            context.eventsById.set(targetId, targetEvents);
+        }
     }
 
-    const competition = await calculateCompetition(env, targetId, now);
+    const competition = calculateCompetitionFromEvents(targetEvents, now);
     const schedule = calculateNextCheck({
         status,
         description,
@@ -1898,65 +1961,168 @@ async function applyTargetObservation(env, session, observation) {
         now
     });
 
-    await env.DB.batch([
-        env.DB
-            .prepare(`
-                INSERT INTO target_status (
-                    target_id,
-                    status,
-                    status_until,
-                    last_checked_at,
-                    next_check_at,
-                    competition_score,
-                    competition_tier,
-                    hiding_out,
-                    permanent_federal,
-                    updated_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
-                ON CONFLICT(target_id) DO UPDATE SET
-                    status = excluded.status,
-                    status_until = excluded.status_until,
-                    last_checked_at = excluded.last_checked_at,
-                    next_check_at = excluded.next_check_at,
-                    competition_score = excluded.competition_score,
-                    competition_tier = excluded.competition_tier,
-                    hiding_out = excluded.hiding_out,
-                    permanent_federal = excluded.permanent_federal,
-                    updated_at = CURRENT_TIMESTAMP
-            `)
-            .bind(
-                targetId,
-                status,
-                until,
-                now,
-                schedule.nextCheckAt,
-                competition.score,
-                competition.tier,
-                schedule.hidingOut ? 1 : 0,
-                schedule.permanentFederal ? 1 : 0
-            ),
-        env.DB
-            .prepare(`
-                DELETE FROM client_target_leases
-                WHERE target_id = ?1
-                  AND ?2 NOT IN ('Okay', 'Unknown')
-            `)
-            .bind(targetId, status)
-    ]);
+    context.statusById.set(targetId, { status, status_until: until });
 
     return {
-        target_id: targetId,
-        name: target.name,
-        status,
-        status_until: until,
-        next_check_at: schedule.nextCheckAt,
-        schedule_reason: schedule.reason,
-        competition_score: competition.score,
-        competition_tier: competition.tier,
-        hospital_event_inserted: hospitalEventInserted,
-        source
+        statusRow: {
+            targetId,
+            status,
+            until,
+            lastCheckedAt: now,
+            nextCheckAt: schedule.nextCheckAt,
+            competitionScore: competition.score,
+            competitionTier: competition.tier,
+            hidingOut: schedule.hidingOut ? 1 : 0,
+            permanentFederal: schedule.permanentFederal ? 1 : 0
+        },
+        hospitalEvent,
+        releaseLease: status !== 'Okay' && status !== 'Unknown',
+        response: {
+            target_id: targetId,
+            name: target.name,
+            status,
+            status_until: until,
+            next_check_at: schedule.nextCheckAt,
+            schedule_reason: schedule.reason,
+            competition_score: competition.score,
+            competition_tier: competition.tier,
+            hospital_event_inserted: hospitalEvent !== null,
+            source
+        }
     };
+}
+
+
+async function persistTargetObservations(env, plans) {
+    if (!plans.length) {
+        return;
+    }
+
+    const statements = [];
+    const hospitalEvents = plans
+        .map(plan => plan.hospitalEvent)
+        .filter(Boolean);
+
+    for (
+        let index = 0;
+        index < hospitalEvents.length;
+        index += HOSPITAL_WRITE_CHUNK_SIZE
+    ) {
+        const chunk = hospitalEvents.slice(index, index + HOSPITAL_WRITE_CHUNK_SIZE);
+        const bindings = chunk.flatMap(event => [
+            event.targetId,
+            event.hospitalizedAt,
+            event.hospitalUntil,
+            event.reportedBy
+        ]);
+        const rows = orderedValueRows(chunk.length, 4);
+        statements.push(
+            env.DB
+                .prepare(`
+                    INSERT OR IGNORE INTO hospital_events (
+                        target_id,
+                        hospitalized_at,
+                        hospital_until,
+                        reported_by
+                    )
+                    VALUES ${rows}
+                `)
+                .bind(...bindings)
+        );
+    }
+
+    const statusRows = plans.map(plan => plan.statusRow);
+
+    for (
+        let index = 0;
+        index < statusRows.length;
+        index += STATUS_WRITE_CHUNK_SIZE
+    ) {
+        const chunk = statusRows.slice(index, index + STATUS_WRITE_CHUNK_SIZE);
+        const bindings = chunk.flatMap(row => [
+            row.targetId,
+            row.status,
+            row.until,
+            row.lastCheckedAt,
+            row.nextCheckAt,
+            row.competitionScore,
+            row.competitionTier,
+            row.hidingOut,
+            row.permanentFederal
+        ]);
+        const rows = orderedValueRows(chunk.length, 9, true);
+        statements.push(
+            env.DB
+                .prepare(`
+                    INSERT INTO target_status (
+                        target_id,
+                        status,
+                        status_until,
+                        last_checked_at,
+                        next_check_at,
+                        competition_score,
+                        competition_tier,
+                        hiding_out,
+                        permanent_federal,
+                        updated_at
+                    )
+                    VALUES ${rows}
+                    ON CONFLICT(target_id) DO UPDATE SET
+                        status = excluded.status,
+                        status_until = excluded.status_until,
+                        last_checked_at = excluded.last_checked_at,
+                        next_check_at = excluded.next_check_at,
+                        competition_score = excluded.competition_score,
+                        competition_tier = excluded.competition_tier,
+                        hiding_out = excluded.hiding_out,
+                        permanent_federal = excluded.permanent_federal,
+                        updated_at = CURRENT_TIMESTAMP
+                `)
+                .bind(...bindings)
+        );
+    }
+
+    const releaseLeaseIds = [...new Set(
+        plans
+            .filter(plan => plan.releaseLease)
+            .map(plan => plan.statusRow.targetId)
+    )];
+
+    for (
+        let index = 0;
+        index < releaseLeaseIds.length;
+        index += LEASE_DELETE_CHUNK_SIZE
+    ) {
+        const chunk = releaseLeaseIds.slice(index, index + LEASE_DELETE_CHUNK_SIZE);
+        statements.push(
+            env.DB
+                .prepare(`
+                    DELETE FROM client_target_leases
+                    WHERE target_id IN (${orderedSqlParameters(chunk.length)})
+                `)
+                .bind(...chunk)
+        );
+    }
+
+    await env.DB.batch(statements);
+}
+
+
+function orderedSqlParameters(count, startAt = 1) {
+    return Array.from(
+        { length: count },
+        (_, index) => `?${startAt + index}`
+    ).join(', ');
+}
+
+
+function orderedValueRows(count, width, appendCurrentTimestamp = false) {
+    return Array.from({ length: count }, (_, rowIndex) => {
+        const parameters = orderedSqlParameters(width, (rowIndex * width) + 1);
+        return appendCurrentTimestamp
+            ? `(${parameters}, CURRENT_TIMESTAMP)`
+            : `(${parameters})`;
+    }).join(', ');
 }
 
 
@@ -2100,22 +2266,11 @@ async function cleanExpiredCoordinationRows(env, now) {
 }
 
 
-async function calculateCompetition(env, targetId, now = Date.now()) {
-    const result = await env.DB
-        .prepare(`
-            SELECT hospitalized_at, hospital_until
-            FROM hospital_events
-            WHERE target_id = ?1
-              AND CAST(hospitalized_at AS INTEGER) >= ?2
-            ORDER BY CAST(hospitalized_at AS INTEGER) ASC
-        `)
-        .bind(targetId, now - HOSPITAL_7D_MS)
-        .all();
-
-    const events = (result.results || [])
-        .map(row => ({
-            at: Number(row.hospitalized_at) || 0,
-            until: Number(row.hospital_until) || 0
+function calculateCompetitionFromEvents(eventRows, now = Date.now()) {
+    const events = (eventRows || [])
+        .map(event => ({
+            at: Number(event.at) || 0,
+            until: Number(event.until) || 0
         }))
         .filter(event => event.at > 0)
         .sort((left, right) => left.at - right.at);

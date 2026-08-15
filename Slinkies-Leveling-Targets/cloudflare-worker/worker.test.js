@@ -7,7 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.10.0-low-write-coordination';
+const WORKER_VERSION = '0.11.0-batched-observations';
 const TERMS_VERSION = '2026-08-14';
 const TERMS_DOCUMENT_SHA256 =
     '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
@@ -310,6 +310,16 @@ describe('SLINK Leveling Worker', () => {
         const env = { DB: db, SESSION_SECRET };
         const token = await sessionToken(3853023);
         const until = Math.floor(Date.now() / 1000) + 900;
+        db.sqlite.prepare(`
+            INSERT INTO client_target_leases (
+                target_id,
+                user_id,
+                session_id,
+                leased_at,
+                expires_at
+            )
+            VALUES (1, 3853023, 'hospital-test', ?1, ?2)
+        `).run(Date.now(), Date.now() + 60_000);
 
         const firstResponse = await worker.fetch(
             authenticatedJsonRequest(
@@ -334,6 +344,17 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(firstBody.accepted[0].hospital_event_inserted, true);
         assert.equal(firstBody.accepted[0].schedule_reason, 'hospital_release_plus_1m');
         assert.equal(firstBody.accepted[0].competition_score, 12);
+        assert.equal(
+            db.sqlite
+                .prepare(`
+                    SELECT COUNT(*) AS count
+                    FROM client_target_leases
+                    WHERE target_id = 1
+                `)
+                .get().count,
+            0,
+            'an unavailable target should release its recommendation lease'
+        );
 
         const secondResponse = await worker.fetch(
             authenticatedJsonRequest(
@@ -483,6 +504,7 @@ describe('SLINK Leveling Worker', () => {
         }
 
         const writesBefore = db.writeChanges;
+        const queriesBefore = db.queryCount;
         const response = await worker.fetch(
             authenticatedJsonRequest(
                 'https://worker.example/api/observations',
@@ -505,11 +527,62 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(body.accepted_count, 60);
         assert.equal(db.writeChanges - writesBefore, 60);
         assert.equal(
+            db.queryCount - queriesBefore,
+            12,
+            '60 normal observations should use six preload and six write queries'
+        );
+        assert.equal(
             db.sqlite
                 .prepare('SELECT COUNT(*) AS count FROM client_check_claims')
                 .get().count,
             0
         );
+    });
+
+
+    it('keeps a worst-case 200-observation upload below 50 D1 queries', async () => {
+        const now = 1_800_000_000_000;
+        Date.now = () => now;
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(1101, 'maximum-observations');
+        const insert = db.sqlite.prepare(`
+            INSERT INTO targets (id, name, level, total_stats, sources)
+            VALUES (?, ?, ?, ?, ?)
+        `);
+
+        for (let id = 7; id <= 200; id++) {
+            insert.run(id, `Target ${id}`, 30, 1000, 'Test source');
+        }
+
+        const writesBefore = db.writeChanges;
+        const queriesBefore = db.queryCount;
+        const response = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
+                {
+                    observations: Array.from({ length: 200 }, (_, index) => ({
+                        target_id: index + 1,
+                        state: 'Hospital',
+                        description: 'Hospitalized',
+                        until: Math.floor(now / 1000) + 3600 + index,
+                        source: 'torn_api'
+                    }))
+                }
+            ),
+            env
+        );
+        const body = await response.json();
+        const usedQueries = db.queryCount - queriesBefore;
+
+        assert.equal(response.status, 200);
+        assert.equal(body.accepted_count, 200);
+        assert.equal(body.rejected_count, 0);
+        assert.equal(usedQueries, 44);
+        assert.ok(usedQueries <= 50);
+        assert.equal(db.writeChanges - writesBefore, 400);
     });
 
 
@@ -1097,6 +1170,7 @@ class D1DatabaseAdapter {
     constructor(sqlite) {
         this.sqlite = sqlite;
         this.writeChanges = 0;
+        this.queryCount = 0;
     }
 
     prepare(sql) {
@@ -1135,6 +1209,7 @@ class D1StatementAdapter {
     }
 
     async first(columnName) {
+        this.database.queryCount++;
         const row = this.database.sqlite
             .prepare(this.sql)
             .get(...this.bindings) ?? null;
@@ -1142,6 +1217,7 @@ class D1StatementAdapter {
     }
 
     async all() {
+        this.database.queryCount++;
         return {
             success: true,
             results: this.database.sqlite
@@ -1151,6 +1227,18 @@ class D1StatementAdapter {
     }
 
     async run() {
+        this.database.queryCount++;
+
+        if (/^\s*SELECT\b/i.test(this.sql)) {
+            return {
+                success: true,
+                results: this.database.sqlite
+                    .prepare(this.sql)
+                    .all(...this.bindings),
+                meta: { changes: 0, last_row_id: 0 }
+            };
+        }
+
         const result = this.database.sqlite
             .prepare(this.sql)
             .run(...this.bindings);
