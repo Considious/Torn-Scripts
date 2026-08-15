@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.9\.0/);
+        assert.match(client, /@version\s+0\.10\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -59,8 +59,12 @@ describe('SLINK Leveling Service thin client', () => {
 
 
     it('uses Core Lib as the single Torn API polling limiter', () => {
-        assert.match(client, /TornLib\.getTornApiUsage\(/);
-        assert.match(client, /capacity,\s*poll_seconds:\s*settings\.pollSeconds/);
+        assert.match(client, /function checkPlanCapacity\(/);
+        assert.match(client, /interval_capacity:\s*intervalCapacity/);
+        assert.match(client, /function runPacedChecks\(/);
+        assert.match(client, /spacingMs/);
+        assert.match(client, /scheduleNextPoll\(cycleStartedAt\)/);
+        assert.match(client, /OBSERVATION_BATCH_SIZE\s*=\s*200/);
         assert.match(client, /TornLib\.TORN_API_DEFAULT_LIMIT/);
         assert.match(client, /TornLib\.reserveTornApiSlot\(/);
 

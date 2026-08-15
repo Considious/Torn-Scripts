@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.6.0 is identified as `0.6.0-personal-stat-fit`.
+version. Release 0.7.0 is identified as `0.7.0-balanced-check-sharing`.
 
 ## Cloudflare configuration
 
@@ -58,6 +58,14 @@ Recommendation leases are keyed by Torn user ID, so a user's PC and mobile
 sessions see the same target set. Collector ownership is keyed by signed session
 ID, allowing another device to take over after the lease expires.
 
+Scheduled checks are shared by active Torn user, not by device. The Worker
+counts all targets currently due, divides that total by the number of active
+user collectors, and caps each plan by what that user's interval can safely
+carry. PC and mobile sessions belonging to the same Torn user therefore consume
+one share, with only the elected session doing the work. Unfinished claims
+expire after the interval plus a two-minute grace period and return to the
+shared pool.
+
 Recommendation ranking is source-neutral. Baldr, Legacy, Extra, and every other
 source label are metadata only and never boost or penalize a target. The
 member's locally derived stat range removes obvious strength mismatches before
@@ -87,10 +95,13 @@ available pool permits it.
 Member routes use `Authorization: Bearer <session token>`. Admin routes use
 `X-Admin-Token: <admin token>`.
 
-The client gets its live Torn API capacity from Considious Torn Core Lib. A
-five-minute interval lets that shared allowance refill, so the collector can
-receive a larger batch of scheduled checks in each exchange. The Worker's batch
-ceilings protect request payloads; they are not polling limits.
+The client derives its interval capacity from Considious Torn Core Lib's shared
+60-per-minute allowance. At the five-minute default it can accept up to 300
+checks, but the Worker returns only that user's equal share of the work that is
+actually due. The client spaces those checks across the interval and every Torn
+request still passes through Core Lib, so other installed scripts remain part
+of the same rate limit. Observation uploads use up to 200 rows per Worker
+request to avoid unnecessary invocations.
 
 Targets currently assigned in a member recommendation list sort behind
 unassigned targets when the Worker creates scheduled Torn API check batches.
@@ -111,4 +122,5 @@ not exist.
 Run `npm test` in this directory. The test suite uses Node's built-in test
 runner and covers auth/session protection, coordination, scheduling, activity,
 personal target-stat ranges, source-neutral ranking, unique target leasing,
-local-only Fair Fight estimates, collector failover, parsing, and CORS.
+local-only Fair Fight estimates, collector failover, fair check sharing,
+interval pacing, parsing, and CORS.

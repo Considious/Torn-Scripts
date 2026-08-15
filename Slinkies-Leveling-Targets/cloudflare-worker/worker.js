@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.6.0-personal-stat-fit
+ * Release: 0.7.0-balanced-check-sharing
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.6.0-personal-stat-fit';
+const WORKER_VERSION = '0.7.0-balanced-check-sharing';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -23,6 +23,7 @@ const MAX_TARGET_STATS_FILTER = Number.MAX_SAFE_INTEGER;
 // This is payload-abuse protection, not a Torn polling allowance. The client
 // supplies its live request capacity from Considious Torn Core Lib.
 const MAX_MEMBER_BATCH_ROWS = 200;
+const MAX_CHECK_PLAN_ROWS = 300;
 const MAX_ACTIVITY_TARGETS_PER_REQUEST = 1_000;
 const MAX_JSON_BODY_BYTES = 256 * 1024;
 
@@ -34,7 +35,8 @@ const MAX_CLIENT_POLL_SECONDS = 300;
 // The normal recommendation/check exchange is the heartbeat. Another session
 // may take over after the active collector misses two configured exchanges.
 const COLLECTOR_MISSED_INTERVALS = 2;
-const CHECK_CLAIM_LIFETIME_MS = 3 * 60 * 1000;
+const MIN_CHECK_CLAIM_LIFETIME_MS = 3 * 60 * 1000;
+const CHECK_CLAIM_GRACE_MS = 2 * 60 * 1000;
 const TARGET_LEASE_LIFETIME_MS = 10 * 60 * 1000;
 const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const HOSPITAL_24H_MS = 24 * 60 * 60 * 1000;
@@ -1096,11 +1098,11 @@ async function handleRecommendations(url, env, session) {
 async function handleClaimChecks(request, env, session) {
     try {
         const body = await readJsonBody(request);
-        const capacity = boundedInteger(
-            body?.capacity,
+        const intervalCapacity = boundedInteger(
+            body?.interval_capacity ?? body?.capacity,
             0,
             0,
-            MAX_MEMBER_BATCH_ROWS
+            MAX_CHECK_PLAN_ROWS
         );
         const pollSeconds = boundedInteger(
             body?.poll_seconds,
@@ -1109,6 +1111,10 @@ async function handleClaimChecks(request, env, session) {
             MAX_CLIENT_POLL_SECONDS
         );
         const now = Date.now();
+        const claimLifetimeMs = Math.max(
+            MIN_CHECK_CLAIM_LIFETIME_MS,
+            (pollSeconds * 1000) + CHECK_CLAIM_GRACE_MS
+        );
 
         await cleanExpiredCoordinationRows(env, now);
         const collectorLease = await claimUserCollector(
@@ -1122,10 +1128,57 @@ async function handleClaimChecks(request, env, session) {
             return collectorLeaseResponse(collectorLease, {
                 count: 0,
                 capacity: 0,
-                claim_seconds: Math.floor(CHECK_CLAIM_LIFETIME_MS / 1000),
+                interval_capacity: intervalCapacity,
+                due_count: 0,
+                active_collectors: 0,
+                fair_share: 0,
+                claim_seconds: Math.floor(claimLifetimeMs / 1000),
                 checks: []
             });
         }
+
+        const activeCollectorRow = await env.DB
+            .prepare(`
+                SELECT COUNT(*) AS count
+                FROM client_user_collectors
+                WHERE expires_at > ?1
+            `)
+            .bind(now)
+            .first();
+        const activeCollectors = Math.max(
+            1,
+            Number(activeCollectorRow?.count || 0)
+        );
+
+        const dueRow = await env.DB
+            .prepare(`
+                SELECT COUNT(*) AS count
+                FROM targets AS t
+                LEFT JOIN target_status AS ts
+                    ON ts.target_id = t.id
+                LEFT JOIN target_activity AS activity
+                    ON activity.target_id = t.id
+                WHERE (
+                    activity.last_seen_at IS NULL
+                    OR activity.last_seen_at < ?1
+                )
+                  AND COALESCE(ts.hiding_out, 0) = 0
+                  AND COALESCE(ts.permanent_federal, 0) = 0
+                  AND (
+                    ts.target_id IS NULL
+                    OR CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?2
+                  )
+            `)
+            .bind(
+                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
+                now
+            )
+            .first();
+        const dueCount = Number(dueRow?.count || 0);
+        const fairShare = dueCount > 0
+            ? Math.ceil(dueCount / activeCollectors)
+            : 0;
+        const capacity = Math.min(intervalCapacity, fairShare);
 
         const existing = await env.DB
             .prepare(`
@@ -1194,7 +1247,7 @@ async function handleClaimChecks(request, env, session) {
                 )
                 .all();
 
-            const expiresAt = now + CHECK_CLAIM_LIFETIME_MS;
+            const expiresAt = now + claimLifetimeMs;
             const statements = (candidates.results || []).map(candidate => {
                 return env.DB
                     .prepare(`
@@ -1255,7 +1308,11 @@ async function handleClaimChecks(request, env, session) {
         return collectorLeaseResponse(collectorLease, {
             count: claims.results?.length ?? 0,
             capacity,
-            claim_seconds: Math.floor(CHECK_CLAIM_LIFETIME_MS / 1000),
+            interval_capacity: intervalCapacity,
+            due_count: dueCount,
+            active_collectors: activeCollectors,
+            fair_share: fairShare,
+            claim_seconds: Math.floor(claimLifetimeMs / 1000),
             checks: claims.results ?? []
         });
     } catch (error) {

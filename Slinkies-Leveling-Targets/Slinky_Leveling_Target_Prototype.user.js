@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.9.0
+// @version      0.10.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,12 +21,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.9.0-local-fair-fight-preview
+    // Release: 0.10.0-balanced-check-sharing
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.9.0';
+    const SCRIPT_VERSION = '0.10.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
@@ -37,6 +37,9 @@
     const DEFAULT_POLL_SECONDS = 300;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
+    const MAX_INTERVAL_CHECKS = 300;
+    const OBSERVATION_BATCH_SIZE = 200;
+    const CHECK_PACING_GRACE_MS = 5_000;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
@@ -487,6 +490,7 @@
         }
 
         state.polling = true;
+        const cycleStartedAt = Date.now();
 
         state.lastError = '';
         state.cycleStatus = 'Connecting to the SLINK Network…';
@@ -539,34 +543,29 @@
             render();
             await syncActivitySnapshots(settings.tornKey, forceActivity);
 
-            const apiUsage = TornLib.getTornApiUsage({
-                limit: TornLib.TORN_API_DEFAULT_LIMIT
-            });
-            const capacity = Math.max(0, Number(apiUsage.remaining) || 0);
+            const intervalCapacity = checkPlanCapacity(settings.pollSeconds);
 
             const claim = await workerRequest('/api/checks/claim', {
                 method: 'POST',
                 body: {
-                    capacity,
+                    interval_capacity: intervalCapacity,
                     poll_seconds: settings.pollSeconds
                 }
             });
             state.collector = claim?.collector === true;
             state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
             const checks = Array.isArray(claim?.checks) ? claim.checks : [];
-            const observations = [];
+            state.cycleStatus = checks.length
+                ? `Running ${checks.length} scheduled Torn checks across ${formatMinutes(settings.pollSeconds)}…`
+                : 'No Torn checks are currently due';
+            render();
 
-            const results = await Promise.allSettled(
-                checks.map(async target => {
-                    const observed = await getUserStatus(
-                        settings.tornKey,
-                        target,
-                        'normal'
-                    );
-                    observations.push(observed);
-                    return target;
-                })
+            const checkResult = await runPacedChecks(
+                settings.tornKey,
+                checks,
+                settings.pollSeconds
             );
+            const observations = checkResult.observations;
 
             if (observations.length) {
                 const report = await submitObservations(observations);
@@ -575,7 +574,7 @@
                 state.lastCycleReported = 0;
             }
 
-            const failures = results.filter(result => result.status === 'rejected');
+            const failures = checkResult.failures;
             if (failures.length && !state.lastError) {
                 state.lastError = `${failures.length} assigned Torn check${failures.length === 1 ? '' : 's'} failed.`;
             }
@@ -587,7 +586,10 @@
             state.cycleStatus = `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values shown · Targets ready`;
 
             logClientEvent('cycle_completed', {
-                apiCapacity: capacity,
+                intervalCapacity,
+                dueChecks: Number(claim?.due_count) || 0,
+                activeCollectors: Number(claim?.active_collectors) || 0,
+                fairShare: Number(claim?.fair_share) || 0,
                 assigned: checks.length,
                 reported: observations.length,
                 failures: failures.length
@@ -600,9 +602,57 @@
             });
         } finally {
             state.polling = false;
-            scheduleNextPoll();
+            scheduleNextPoll(cycleStartedAt);
             render();
         }
+    }
+
+
+    function checkPlanCapacity(pollSeconds) {
+        const checksPerMinute = Number(TornLib.TORN_API_DEFAULT_LIMIT) || 60;
+        return clamp(
+            Math.floor(checksPerMinute * (Number(pollSeconds) / 60)),
+            1,
+            MAX_INTERVAL_CHECKS
+        );
+    }
+
+
+    function formatMinutes(pollSeconds) {
+        const minutes = Number(pollSeconds) / 60;
+        return `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} minute${minutes === 1 ? '' : 's'}`;
+    }
+
+
+    async function runPacedChecks(apiKey, checks, pollSeconds) {
+        const observations = [];
+        const failures = [];
+        const horizonMs = Math.max(
+            0,
+            (Number(pollSeconds) * 1000) - CHECK_PACING_GRACE_MS
+        );
+        const spacingMs = checks.length > 1
+            ? horizonMs / (checks.length - 1)
+            : 0;
+        const startedAt = Date.now();
+
+        await Promise.all(checks.map(async (target, index) => {
+            const delayMs = Math.max(
+                0,
+                (startedAt + Math.floor(index * spacingMs)) - Date.now()
+            );
+            if (delayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+
+            try {
+                observations.push(await getUserStatus(apiKey, target, 'normal'));
+            } catch (error) {
+                failures.push({ target, error });
+            }
+        }));
+
+        return { observations, failures };
     }
 
 
@@ -638,7 +688,7 @@
 
 
     async function submitObservations(observations) {
-        const batchSize = TornLib.TORN_API_DEFAULT_LIMIT;
+        const batchSize = OBSERVATION_BATCH_SIZE;
         const combined = {
             ok: true,
             accepted_count: 0,
@@ -1026,15 +1076,20 @@
     // Scheduling and client diagnostics
     // ================================================================
 
-    function scheduleNextPoll() {
+    function scheduleNextPoll(cycleStartedAt = 0) {
         if (state.timer) clearTimeout(state.timer);
+        const intervalMs = getSettings().pollSeconds * 1000;
+        const elapsedMs = cycleStartedAt
+            ? Math.max(0, Date.now() - cycleStartedAt)
+            : 0;
+        const delayMs = Math.max(1_000, intervalMs - elapsedMs);
         state.timer = setTimeout(() => {
             if (state.leader?.isLeader()) {
                 void runCycle(false);
             } else {
                 scheduleNextPoll();
             }
-        }, getSettings().pollSeconds * 1000);
+        }, delayMs);
     }
 
 

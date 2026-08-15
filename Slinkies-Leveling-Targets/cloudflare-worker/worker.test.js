@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.6.0-personal-stat-fit';
+const WORKER_VERSION = '0.7.0-balanced-check-sharing';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -371,6 +371,68 @@ describe('SLINK Leveling Worker', () => {
             env
         );
         assert.equal((await pcAfterTakeover.json()).collector, false);
+    });
+
+
+    it('divides all due checks between active Torn users', async () => {
+        let now = 1_800_000_000_000;
+        Date.now = () => now;
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const tokens = await Promise.all([
+            sessionToken(4001, 'collector-one'),
+            sessionToken(4002, 'collector-two'),
+            sessionToken(4003, 'collector-three')
+        ]);
+
+        for (const token of tokens) {
+            const response = await worker.fetch(
+                authenticatedRequest(
+                    'https://worker.example/api/recommendations?limit=2&poll_seconds=300',
+                    token
+                ),
+                env
+            );
+            assert.equal((await response.json()).collector, true);
+        }
+
+        const plans = [];
+        for (const token of tokens) {
+            const response = await worker.fetch(
+                authenticatedJsonRequest(
+                    'https://worker.example/api/checks/claim',
+                    token,
+                    { interval_capacity: 300, poll_seconds: 300 }
+                ),
+                env
+            );
+            plans.push(await response.json());
+        }
+
+        const claimedIds = plans.flatMap(plan => plan.checks.map(row => row.id));
+        for (const plan of plans) {
+            assert.equal(plan.due_count, 6);
+            assert.equal(plan.active_collectors, 3);
+            assert.equal(plan.fair_share, 2);
+            assert.equal(plan.capacity, 2);
+            assert.equal(plan.interval_capacity, 300);
+            assert.equal(plan.claim_seconds, 420);
+            assert.equal(plan.count, 2);
+        }
+        assert.equal(new Set(claimedIds).size, 6);
+
+        now += 420_001;
+        const reclaimed = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                tokens[0],
+                { interval_capacity: 300, poll_seconds: 300 }
+            ),
+            env
+        );
+        assert.equal(reclaimed.status, 200);
+        assert.equal((await reclaimed.json()).count, 2);
     });
 
 
