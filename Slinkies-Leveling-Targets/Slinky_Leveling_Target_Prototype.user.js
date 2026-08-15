@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.11.0
+// @version      0.11.1
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,12 +21,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.11.0-required-versioned-terms
+    // Release: 0.11.1-minimized-network-bubble
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.11.0';
+    const SCRIPT_VERSION = '0.11.1';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -68,6 +68,7 @@
         maxFF: 'slinkyLeveling.maxFF',
         collapsed: 'slinkyLeveling.collapsed',
         panelPosition: 'slinkyLeveling.panelPosition.v1',
+        bubblePosition: 'slinkyLeveling.bubblePosition.v1',
         sessionToken: 'slinkyLeveling.workerSession.v1',
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
@@ -110,6 +111,7 @@
         timer: null,
         leader: null
     };
+    let panelDragController = null;
 
 
     // ================================================================
@@ -1287,8 +1289,30 @@
             .slp-debug-actions { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:7px; }
             .slp-debug textarea { width:100%; min-height:220px; resize:vertical; border:1px solid #454b55; border-radius:5px; background:#0f1216; color:#d8d8d8; padding:7px; font:11px/1.35 Consolas,monospace; }
             .slp-footer { padding:6px 8px; color:#888; border-top:1px solid rgba(255,255,255,.08); font-size:10px; }
-            #slinky-leveling-panel.slp-collapsed .slp-body,
-            #slinky-leveling-panel.slp-collapsed .slp-footer { display:none; }
+            #slinky-leveling-panel.slp-collapsed {
+                width:54px; height:54px; max-height:none; overflow:visible;
+                border-radius:50%;
+                border-color:rgba(116,190,255,.55);
+                background:transparent;
+                box-shadow:0 6px 18px rgba(0,0,0,.48);
+            }
+            .slp-bubble {
+                position:relative; display:flex; align-items:center; justify-content:center;
+                width:100%; height:100%; padding:0; border:0; border-radius:50%;
+                background:linear-gradient(145deg,#3478b9,#172f4c); color:#fff;
+                cursor:pointer; font:800 15px/1 Arial,sans-serif; letter-spacing:-.5px;
+                box-shadow:inset 0 0 0 1px rgba(255,255,255,.17);
+                touch-action:none; user-select:none;
+            }
+            .slp-bubble:hover { background:linear-gradient(145deg,#438dce,#1d3a5d); }
+            .slp-bubble:focus-visible { outline:2px solid #a9d5ff; outline-offset:3px; }
+            #slinky-leveling-panel.slp-dragging .slp-bubble { cursor:grabbing; }
+            .slp-bubble-status {
+                position:absolute; right:2px; bottom:3px; width:11px; height:11px;
+                border:2px solid #17202b; border-radius:50%; background:#59d67d;
+            }
+            .slp-bubble-status.slp-bubble-standby { background:#8aa1b7; }
+            .slp-bubble-status.slp-bubble-error { background:#ff7373; }
         `);
     }
 
@@ -1303,6 +1327,82 @@
     }
 
 
+    function applySavedPanelPosition(collapsed) {
+        if (!panelDragController) return;
+        const saved = GM_getValue(
+            collapsed ? KEYS.bubblePosition : KEYS.panelPosition,
+            null
+        );
+        if (saved) {
+            panelDragController.applyPosition(saved);
+            return;
+        }
+        if (collapsed) {
+            panelDragController.applyPosition({
+                left: 4,
+                top: Math.max(4, Math.round((window.innerHeight - 54) / 2))
+            });
+        } else {
+            panelDragController.clampToViewport();
+        }
+    }
+
+
+    function installBubbleEdgeBehavior(panel) {
+        let pointer = null;
+
+        panel.addEventListener('pointerdown', event => {
+            if (!getSettings().collapsed || !event.target.closest('.slp-bubble')) return;
+            pointer = {
+                id: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                moved: false
+            };
+        });
+
+        panel.addEventListener('pointermove', event => {
+            if (!pointer || event.pointerId !== pointer.id) return;
+            if (Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) >= 5) {
+                pointer.moved = true;
+            }
+        });
+
+        panel.addEventListener('pointerup', event => {
+            if (!pointer || event.pointerId !== pointer.id) return;
+            const moved = pointer.moved;
+            pointer = null;
+
+            if (!moved) {
+                GM_setValue(KEYS.collapsed, false);
+                render();
+                return;
+            }
+
+            const margin = 4;
+            const rect = panel.getBoundingClientRect();
+            const left = rect.left + (rect.width / 2) <= (window.innerWidth / 2)
+                ? margin
+                : window.innerWidth - rect.width - margin;
+            const top = clamp(
+                rect.top,
+                margin,
+                window.innerHeight - rect.height - margin
+            );
+            const position = {
+                left: Math.round(left),
+                top: Math.round(top)
+            };
+            panelDragController?.applyPosition(position);
+            GM_setValue(KEYS.bubblePosition, position);
+        });
+
+        panel.addEventListener('pointercancel', () => {
+            pointer = null;
+        });
+    }
+
+
     function render() {
         const panel = ensurePanel();
         const settings = getSettings();
@@ -1314,6 +1414,28 @@
             : (state.collector ? 'API collector' : 'Standby device');
 
         panel.classList.toggle('slp-collapsed', settings.collapsed);
+        if (settings.collapsed) {
+            const bubbleState = state.lastError
+                ? 'slp-bubble-error'
+                : (leader && state.collector ? '' : 'slp-bubble-standby');
+            panel.innerHTML = `
+                <div
+                    class="slp-bubble"
+                    id="slp-expand"
+                    role="button"
+                    tabindex="0"
+                    title="Open SLINK Leveling Service. Background API work remains active while minimized."
+                    aria-label="Open SLINK Leveling Service"
+                >
+                    <span>SL</span>
+                    <span class="slp-bubble-status ${bubbleState}" aria-hidden="true"></span>
+                </div>
+            `;
+            applySavedPanelPosition(true);
+            bindEvents(panel);
+            return;
+        }
+
         panel.innerHTML = `
             <div class="slp-head">
                 <div>
@@ -1323,7 +1445,7 @@
                 <button class="slp-btn" id="slp-refresh" ${busy ? 'disabled' : ''}>${busy ? 'Syncing…' : 'Refresh'}</button>
                 <button class="slp-btn" id="slp-debug-btn">Data</button>
                 <button class="slp-btn" id="slp-settings-btn">⚙</button>
-                <button class="slp-btn" id="slp-collapse">${settings.collapsed ? '＋' : '−'}</button>
+                <button class="slp-btn" id="slp-collapse" title="Minimize to the SLINK bubble">−</button>
             </div>
             <div class="slp-body">
                 <div class="slp-summary">
@@ -1344,6 +1466,7 @@
                 Cloudflare owns target ranking, check scheduling, shared status, competition scoring, per-user distribution, and multi-device failover. Only the elected device performs routine Torn API work.
             </div>
         `;
+        applySavedPanelPosition(false);
         bindEvents(panel);
     }
 
@@ -1454,6 +1577,12 @@
 
 
     function bindEvents(panel) {
+        panel.querySelector('#slp-expand')?.addEventListener('keydown', event => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            GM_setValue(KEYS.collapsed, false);
+            render();
+        });
         panel.querySelector('#slp-refresh')?.addEventListener('click', () => {
             void runCycle(false);
         });
@@ -1466,7 +1595,7 @@
             render();
         });
         panel.querySelector('#slp-collapse')?.addEventListener('click', () => {
-            GM_setValue(KEYS.collapsed, !getSettings().collapsed);
+            GM_setValue(KEYS.collapsed, true);
             render();
         });
         panel.querySelector('#slp-copy-debug')?.addEventListener('click', async event => {
@@ -1561,12 +1690,20 @@
     async function start() {
         installStyles();
         const panel = ensurePanel();
-        TornLib.makePanelDraggable(panel, {
+        panelDragController = TornLib.makePanelDraggable(panel, {
             handle: panel,
             storageKey: KEYS.panelPosition,
             ignoreSelector: 'button, input, textarea, select, a, .slp-body, .slp-footer, [data-no-drag]',
+            draggingClass: 'slp-dragging',
+            setValue: (_key, position) => {
+                GM_setValue(
+                    getSettings().collapsed ? KEYS.bubblePosition : KEYS.panelPosition,
+                    position
+                );
+            },
             margin: 4
         });
+        installBubbleEdgeBehavior(panel);
 
         state.leader = TornLib.createTabLeaderLease('slinky-leveling-targets', {
             leaseMs: 15_000,
