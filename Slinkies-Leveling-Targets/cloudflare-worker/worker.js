@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.9.1-configurable-leveling-filters
+ * Release: 0.10.0-low-write-coordination
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.9.1-configurable-leveling-filters';
+const WORKER_VERSION = '0.10.0-low-write-coordination';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -65,7 +65,9 @@ const MAX_CLIENT_POLL_SECONDS = 300;
 const COLLECTOR_MISSED_INTERVALS = 2;
 const MIN_CHECK_CLAIM_LIFETIME_MS = 3 * 60 * 1000;
 const CHECK_CLAIM_GRACE_MS = 2 * 60 * 1000;
-const TARGET_LEASE_LIFETIME_MS = 10 * 60 * 1000;
+// Recommendation assignments remain stable for the member session. Rebuilding
+// 40 indexed lease rows every ten minutes created needless D1 write churn.
+const TARGET_LEASE_LIFETIME_MS = SESSION_LIFETIME_SECONDS * 1000;
 const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const HOSPITAL_24H_MS = 24 * 60 * 60 * 1000;
 const HOSPITAL_7D_MS = 7 * 24 * 60 * 60 * 1000;
@@ -861,6 +863,10 @@ async function handleBootstrapTargets(env) {
                 total_stats = excluded.total_stats,
                 sources = excluded.sources,
                 updated_at = CURRENT_TIMESTAMP
+            WHERE targets.name IS NOT excluded.name
+               OR targets.level IS NOT excluded.level
+               OR targets.total_stats IS NOT excluded.total_stats
+               OR targets.sources IS NOT excluded.sources
         `);
 
         let processed = 0;
@@ -1235,6 +1241,11 @@ async function claimUserCollector(env, session, now, pollSeconds) {
         )
         .run();
 
+    return readUserCollector(env, session, now);
+}
+
+
+async function readUserCollector(env, session, now) {
     const current = await env.DB
         .prepare(`
             SELECT session_id, claimed_at, last_seen_at, expires_at
@@ -1243,16 +1254,19 @@ async function claimUserCollector(env, session, now, pollSeconds) {
         `)
         .bind(session.user_id)
         .first();
+    const expiresAt = Number(current?.expires_at) || 0;
 
     return {
-        collector: current?.session_id === session.session_id,
+        collector: (
+            current?.session_id === session.session_id &&
+            expiresAt > now
+        ),
         claimedAt: Number(current?.claimed_at) || 0,
         lastSeenAt: Number(current?.last_seen_at) || 0,
-        expiresAt: Number(current?.expires_at) || 0,
+        expiresAt,
         lifetimeMs: Math.max(
             0,
-            (Number(current?.expires_at) || 0) -
-                (Number(current?.last_seen_at) || 0)
+            expiresAt - (Number(current?.last_seen_at) || 0)
         )
     };
 }
@@ -1589,13 +1603,19 @@ async function handleClaimChecks(request, env, session) {
             (pollSeconds * 1000) + CHECK_CLAIM_GRACE_MS
         );
 
-        await cleanExpiredCoordinationRows(env, now);
-        const collectorLease = await claimUserCollector(
-            env,
-            session,
-            now,
-            pollSeconds
-        );
+        // The recommendation exchange immediately precedes this request and
+        // already renews the collector lease. Reading it here avoids a second
+        // indexed collector write during every client cycle.
+        let collectorLease = await readUserCollector(env, session, now);
+
+        if (!collectorLease.expiresAt || collectorLease.expiresAt <= now) {
+            collectorLease = await claimUserCollector(
+                env,
+                session,
+                now,
+                pollSeconds
+            );
+        }
 
         if (!collectorLease.collector) {
             return collectorLeaseResponse(collectorLease, {
@@ -1610,150 +1630,42 @@ async function handleClaimChecks(request, env, session) {
             });
         }
 
-        const activeCollectorRow = await env.DB
+        const activeCollectorResult = await env.DB
             .prepare(`
-                SELECT COUNT(*) AS count
+                SELECT user_id, session_id
                 FROM client_user_collectors
                 WHERE expires_at > ?1
+                ORDER BY user_id ASC, session_id ASC
             `)
             .bind(now)
-            .first();
-        const activeCollectors = Math.max(
-            1,
-            Number(activeCollectorRow?.count || 0)
-        );
+            .all();
+        const activeCollectorList = activeCollectorResult.results || [];
+        const activeCollectors = activeCollectorList.length;
+        const collectorIndex = activeCollectorList.findIndex(row => {
+            return (
+                Number(row.user_id) === Number(session.user_id) &&
+                row.session_id === session.session_id
+            );
+        });
 
-        const dueRow = await env.DB
-            .prepare(`
-                SELECT COUNT(*) AS count
-                FROM targets AS t
-                LEFT JOIN target_status AS ts
-                    ON ts.target_id = t.id
-                LEFT JOIN target_activity AS activity
-                    ON activity.target_id = t.id
-                WHERE (
-                    activity.last_seen_at IS NULL
-                    OR activity.last_seen_at < ?1
-                )
-                  AND COALESCE(ts.hiding_out, 0) = 0
-                  AND COALESCE(ts.permanent_federal, 0) = 0
-                  AND (
-                    ts.target_id IS NULL
-                    OR CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?2
-                  )
-            `)
-            .bind(
-                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
-                now
-            )
-            .first();
-        const dueCount = Number(dueRow?.count || 0);
-        const fairShare = dueCount > 0
-            ? Math.ceil(dueCount / activeCollectors)
-            : 0;
-        const capacity = Math.min(intervalCapacity, fairShare);
-
-        const existing = await env.DB
-            .prepare(`
-                SELECT COUNT(*) AS count
-                FROM client_check_claims
-                WHERE session_id = ?1
-                  AND expires_at > ?2
-            `)
-            .bind(session.session_id, now)
-            .first();
-
-        const needed = Math.max(0, capacity - Number(existing?.count || 0));
-
-        if (needed > 0) {
-            const candidates = await env.DB
-                .prepare(`
-                    SELECT t.id
-                    FROM targets AS t
-                    LEFT JOIN target_status AS ts
-                        ON ts.target_id = t.id
-                    LEFT JOIN target_activity AS activity
-                        ON activity.target_id = t.id
-                    LEFT JOIN client_check_claims AS claim
-                        ON claim.target_id = t.id
-                       AND claim.expires_at > ?1
-                    LEFT JOIN client_target_leases AS assigned_target
-                        ON assigned_target.target_id = t.id
-                       AND assigned_target.expires_at > ?1
-                    WHERE claim.target_id IS NULL
-                      AND (
-                        activity.last_seen_at IS NULL
-                        OR activity.last_seen_at < ?2
-                      )
-                      AND COALESCE(ts.hiding_out, 0) = 0
-                      AND COALESCE(ts.permanent_federal, 0) = 0
-                      AND (
-                        ts.target_id IS NULL
-                        OR CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?1
-                      )
-                    ORDER BY
-                        CASE
-                            WHEN assigned_target.target_id IS NULL THEN 0
-                            ELSE 1
-                        END ASC,
-                        CASE
-                            WHEN LOWER(COALESCE(ts.status, '')) IN ('hospital', 'federal')
-                                THEN 0
-                            WHEN ts.target_id IS NULL THEN 1
-                            WHEN LOWER(COALESCE(ts.status, 'unknown')) = 'unknown'
-                                THEN 2
-                            WHEN LOWER(COALESCE(ts.status, '')) = 'okay'
-                                THEN 3
-                            ELSE 2
-                        END ASC,
-                        COALESCE(ts.competition_score, 0) ASC,
-                        CAST(COALESCE(ts.last_checked_at, '0') AS INTEGER) ASC,
-                        t.level DESC,
-                        COALESCE(t.total_stats, 9223372036854775807) ASC,
-                        t.id ASC
-                    LIMIT ?3
-                `)
-                .bind(
-                    now,
-                    Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
-                    needed
-                )
-                .all();
-
-            const expiresAt = now + claimLifetimeMs;
-            const statements = (candidates.results || []).map(candidate => {
-                return env.DB
-                    .prepare(`
-                        INSERT INTO client_check_claims (
-                            target_id,
-                            user_id,
-                            session_id,
-                            claimed_at,
-                            expires_at
-                        )
-                        VALUES (?1, ?2, ?3, ?4, ?5)
-                        ON CONFLICT(target_id) DO UPDATE SET
-                            user_id = excluded.user_id,
-                            session_id = excluded.session_id,
-                            claimed_at = excluded.claimed_at,
-                            expires_at = excluded.expires_at
-                        WHERE client_check_claims.expires_at <= excluded.claimed_at
-                    `)
-                    .bind(
-                        Number(candidate.id),
-                        session.user_id,
-                        session.session_id,
-                        now,
-                        expiresAt
-                    );
+        if (collectorIndex < 0 || activeCollectors < 1) {
+            return collectorLeaseResponse(collectorLease, {
+                count: 0,
+                capacity: 0,
+                interval_capacity: intervalCapacity,
+                due_count: 0,
+                active_collectors: activeCollectors,
+                fair_share: 0,
+                claim_seconds: Math.floor(claimLifetimeMs / 1000),
+                checks: []
             });
-
-            if (statements.length) {
-                await env.DB.batch(statements);
-            }
         }
 
-        const claims = await env.DB
+        const candidateLimit = Math.max(
+            1,
+            intervalCapacity * activeCollectors
+        );
+        const candidateResult = await env.DB
             .prepare(`
                 SELECT
                     t.id,
@@ -1764,29 +1676,80 @@ async function handleClaimChecks(request, env, session) {
                     COALESCE(ts.status, 'Unknown') AS previous_status,
                     CAST(COALESCE(ts.status_until, '0') AS INTEGER)
                         AS previous_status_until,
-                    claim.expires_at AS claim_expires_at
-                FROM client_check_claims AS claim
-                JOIN targets AS t
-                    ON t.id = claim.target_id
+                    COUNT(*) OVER () AS due_count
+                FROM targets AS t
                 LEFT JOIN target_status AS ts
                     ON ts.target_id = t.id
-                WHERE claim.session_id = ?1
-                  AND claim.expires_at > ?2
-                ORDER BY claim.claimed_at ASC, t.id ASC
+                LEFT JOIN target_activity AS activity
+                    ON activity.target_id = t.id
+                LEFT JOIN client_target_leases AS assigned_target
+                    ON assigned_target.target_id = t.id
+                   AND assigned_target.expires_at > ?1
+                WHERE (
+                    activity.last_seen_at IS NULL
+                    OR activity.last_seen_at < ?2
+                )
+                  AND COALESCE(ts.hiding_out, 0) = 0
+                  AND COALESCE(ts.permanent_federal, 0) = 0
+                  AND (
+                    ts.target_id IS NULL
+                    OR CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?1
+                  )
+                ORDER BY
+                    CASE
+                        WHEN assigned_target.target_id IS NULL THEN 0
+                        ELSE 1
+                    END ASC,
+                    CASE
+                        WHEN LOWER(COALESCE(ts.status, '')) IN ('hospital', 'federal')
+                            THEN 0
+                        WHEN ts.target_id IS NULL THEN 1
+                        WHEN LOWER(COALESCE(ts.status, 'unknown')) = 'unknown'
+                            THEN 2
+                        WHEN LOWER(COALESCE(ts.status, '')) = 'okay'
+                            THEN 3
+                        ELSE 2
+                    END ASC,
+                    COALESCE(ts.competition_score, 0) ASC,
+                    CAST(COALESCE(ts.last_checked_at, '0') AS INTEGER) ASC,
+                    t.level DESC,
+                    COALESCE(t.total_stats, 9223372036854775807) ASC,
+                    t.id ASC
                 LIMIT ?3
             `)
-            .bind(session.session_id, now, capacity)
+            .bind(
+                now,
+                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
+                candidateLimit
+            )
             .all();
+        const candidates = candidateResult.results || [];
+        const dueCount = Number(candidates[0]?.due_count || 0);
+        const fairShare = dueCount > 0
+            ? Math.ceil(dueCount / activeCollectors)
+            : 0;
+        const capacity = Math.min(intervalCapacity, fairShare);
+        const checks = candidates
+            .filter((candidate, index) => {
+                return index % activeCollectors === collectorIndex;
+            })
+            .slice(0, capacity)
+            .map(candidate => {
+                const check = { ...candidate };
+                delete check.due_count;
+                return check;
+            });
 
         return collectorLeaseResponse(collectorLease, {
-            count: claims.results?.length ?? 0,
+            count: checks.length,
             capacity,
             interval_capacity: intervalCapacity,
             due_count: dueCount,
             active_collectors: activeCollectors,
             fair_share: fairShare,
             claim_seconds: Math.floor(claimLifetimeMs / 1000),
-            checks: claims.results ?? []
+            coordination: 'deterministic_shard',
+            checks
         });
     } catch (error) {
         return requestOrWorkerErrorResponse('Could not claim checks.', error);
@@ -1974,9 +1937,6 @@ async function applyTargetObservation(env, session, observation) {
                 schedule.permanentFederal ? 1 : 0
             ),
         env.DB
-            .prepare('DELETE FROM client_check_claims WHERE target_id = ?1')
-            .bind(targetId),
-        env.DB
             .prepare(`
                 DELETE FROM client_target_leases
                 WHERE target_id = ?1
@@ -2059,6 +2019,8 @@ async function handleActivityReport(request, env, session) {
                                 ),
                                 observed_at = excluded.observed_at,
                                 reported_by = excluded.reported_by
+                            WHERE excluded.last_seen_at >
+                                target_activity.last_seen_at
                         `)
                         .bind(
                             entry.targetId,
@@ -2083,6 +2045,7 @@ async function handleActivityReport(request, env, session) {
                                 END,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE target_id = ?1
+                              AND COALESCE(hiding_out, 0) = 1
                         `)
                         .bind(entry.targetId)
                 );
@@ -2118,10 +2081,17 @@ function handleDeprecatedFairFightReport() {
 async function cleanExpiredCoordinationRows(env, now) {
     await env.DB.batch([
         env.DB
-            .prepare('DELETE FROM client_check_claims WHERE expires_at <= ?1')
-            .bind(now),
-        env.DB
-            .prepare('DELETE FROM client_target_leases WHERE expires_at <= ?1')
+            .prepare(`
+                DELETE FROM client_target_leases
+                WHERE expires_at <= ?1
+                   OR NOT EXISTS (
+                        SELECT 1
+                        FROM client_user_collectors AS active_collector
+                        WHERE active_collector.user_id =
+                            client_target_leases.user_id
+                          AND active_collector.expires_at > ?1
+                   )
+            `)
             .bind(now),
         env.DB
             .prepare('DELETE FROM client_user_collectors WHERE expires_at <= ?1')
