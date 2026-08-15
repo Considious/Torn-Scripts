@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.11\.1/);
+        assert.match(client, /@version\s+0\.12\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -124,6 +124,16 @@ describe('SLINK Leveling Service thin client', () => {
                 `${testingOnlyControl} should not control live polling`
             );
         }
+    });
+
+
+    it('keeps unfinished checks locally and reports deterministic batch IDs', () => {
+        assert.match(client, /pendingChecks:\s*'slinkyLeveling\.pendingChecks\.v1'/);
+        assert.match(client, /completedCheckBatches:/);
+        assert.match(client, /function mergePendingAndClaimedChecks\(/);
+        assert.match(client, /function reconcilePendingChecks\(/);
+        assert.match(client, /savePendingChecks\(queuedChecks\)/);
+        assert.match(client, /check_batch_id:\s*String\(target\?\.check_batch_id/);
     });
 
 

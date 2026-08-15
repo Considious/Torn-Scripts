@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.11.2
+// @version      0.12.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,12 +21,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.11.2-attack-link-fix
+    // Release: 0.12.0-hybrid-scheduler
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.11.2';
+    const SCRIPT_VERSION = '0.12.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -59,6 +59,8 @@
     const MAX_INTERVAL_CHECKS = 300;
     const OBSERVATION_BATCH_SIZE = 200;
     const CHECK_PACING_GRACE_MS = 5_000;
+    const LOCAL_CHECK_RETRY_MS = 24 * 60 * 60 * 1000;
+    const MAX_LOCAL_PENDING_CHECKS = 600;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
@@ -76,6 +78,8 @@
         battleStats: 'slinkyLeveling.localBattleStats.v1',
         runtimeState: 'slinkyLeveling.clientRuntime.v1',
         clientEvents: 'slinkyLeveling.clientEvents.v1',
+        pendingChecks: 'slinkyLeveling.pendingChecks.v1',
+        completedCheckBatches: 'slinkyLeveling.completedCheckBatches.v1',
         acceptedConsentVersion: 'slinkyLeveling.acceptedConsentVersion.v1'
     };
 
@@ -131,6 +135,124 @@
     function saveJson(key, value) {
         GM_setValue(key, value);
         return value;
+    }
+
+
+    // Tampermonkey is the durable retry layer for this device. Cloudflare's
+    // edge cache is only a short-lived mirror and deterministic scheduling
+    // safely reoffers work if both copies disappear.
+    function loadPendingChecks() {
+        const cutoff = Date.now() - LOCAL_CHECK_RETRY_MS;
+        const checks = loadJson(KEYS.pendingChecks, []);
+
+        if (!Array.isArray(checks)) return [];
+
+        return checks.filter(check => {
+            return (
+                Number.isInteger(Number(check?.id)) &&
+                Number(check.id) > 0 &&
+                Number(check?.queued_at || 0) >= cutoff
+            );
+        });
+    }
+
+
+    function savePendingChecks(checks) {
+        return saveJson(
+            KEYS.pendingChecks,
+            checks.slice(0, MAX_LOCAL_PENDING_CHECKS)
+        );
+    }
+
+
+    function loadCompletedCheckBatches() {
+        const now = Date.now();
+        const stored = loadJson(KEYS.completedCheckBatches, {});
+        const current = {};
+
+        for (const [batchId, entry] of Object.entries(stored || {})) {
+            if (Number(entry?.expires_at || 0) > now) {
+                current[batchId] = {
+                    target_ids: Array.isArray(entry?.target_ids)
+                        ? entry.target_ids.map(Number).filter(Number.isInteger)
+                        : [],
+                    expires_at: Number(entry.expires_at)
+                };
+            }
+        }
+
+        saveJson(KEYS.completedCheckBatches, current);
+        return current;
+    }
+
+
+    function rememberCompletedChecks(observations, acceptedTargetIds) {
+        const accepted = new Set(acceptedTargetIds.map(Number));
+        const batches = loadCompletedCheckBatches();
+
+        for (const observation of observations) {
+            const targetId = Number(observation?.target_id);
+            const batchId = String(observation?.check_batch_id || '').trim();
+
+            if (!batchId || !accepted.has(targetId)) continue;
+
+            const entry = batches[batchId] || {
+                target_ids: [],
+                expires_at: Date.now() + LOCAL_CHECK_RETRY_MS
+            };
+            entry.target_ids = [...new Set([
+                ...entry.target_ids.map(Number),
+                targetId
+            ])];
+            entry.expires_at = Date.now() + LOCAL_CHECK_RETRY_MS;
+            batches[batchId] = entry;
+        }
+
+        saveJson(KEYS.completedCheckBatches, batches);
+    }
+
+
+    function mergePendingAndClaimedChecks(claimedChecks) {
+        const completedBatches = loadCompletedCheckBatches();
+        const merged = new Map();
+
+        for (const check of loadPendingChecks()) {
+            merged.set(Number(check.id), check);
+        }
+
+        for (const check of claimedChecks) {
+            const batchId = String(check?.check_batch_id || '').trim();
+            const completed = new Set(
+                completedBatches[batchId]?.target_ids?.map(Number) || []
+            );
+
+            if (completed.has(Number(check.id))) continue;
+
+            if (!merged.has(Number(check.id))) {
+                merged.set(Number(check.id), {
+                    ...check,
+                    queued_at: Date.now()
+                });
+            }
+        }
+
+        return [...merged.values()];
+    }
+
+
+    function reconcilePendingChecks(observations, report) {
+        const accepted = new Set(
+            (report.accepted || []).map(row => Number(row.target_id))
+        );
+        const rejected = new Set(
+            (report.rejected || []).map(row => Number(row.target_id))
+        );
+        const finished = new Set([...accepted, ...rejected]);
+
+        rememberCompletedChecks(observations, [...accepted]);
+        savePendingChecks(
+            loadPendingChecks().filter(check => !finished.has(Number(check.id)))
+        );
     }
 
 
@@ -614,10 +736,21 @@
             });
             state.collector = claim?.collector === true;
             state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
-            const checks = Array.isArray(claim?.checks) ? claim.checks : [];
+            const claimedChecks = Array.isArray(claim?.checks)
+                ? claim.checks
+                : [];
+            const queuedChecks = mergePendingAndClaimedChecks(claimedChecks);
+            savePendingChecks(queuedChecks);
+            const checks = queuedChecks.slice(0, intervalCapacity);
+            const retryCount = checks.filter(check => {
+                return Number(check.queued_at || 0) < cycleStartedAt;
+            }).length;
             state.cycleStatus = checks.length
                 ? `Running ${checks.length} scheduled Torn checks across ${formatMinutes(settings.pollSeconds)}…`
                 : 'No Torn checks are currently due';
+            if (checks.length && retryCount) {
+                state.cycleStatus += ` (${retryCount} restored locally)`;
+            }
             render();
 
             const checkResult = await runPacedChecks(
@@ -630,6 +763,7 @@
             if (observations.length) {
                 const report = await submitObservations(observations);
                 state.lastCycleReported = Number(report.accepted_count) || 0;
+                reconcilePendingChecks(observations, report);
             } else {
                 state.lastCycleReported = 0;
             }
@@ -650,6 +784,7 @@
                 dueChecks: Number(claim?.due_count) || 0,
                 activeCollectors: Number(claim?.active_collectors) || 0,
                 fairShare: Number(claim?.fair_share) || 0,
+                pendingBeforeRun: queuedChecks.length,
                 assigned: checks.length,
                 reported: observations.length,
                 failures: failures.length
@@ -742,6 +877,7 @@
             state: String(stateValue || 'Unknown'),
             description,
             until: Number(status?.until) || 0,
+            check_batch_id: String(target?.check_batch_id || '') || undefined,
             source: 'torn_api'
         };
     }
