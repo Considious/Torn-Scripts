@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.8.0 is identified as `0.8.0-versioned-terms-consent`.
+version. Release 0.9.0 is identified as `0.9.0-ffscouter-leveling-catalog`.
 
 ## Cloudflare configuration
 
@@ -17,9 +17,11 @@ The Worker expects:
 - `DB`: the existing D1 database;
 - `CONSENT_DB`: the separate append-only SLINK terms acceptance database;
 - `ADMIN_TOKEN`: the secret protecting `/api/admin/*`;
-- `SESSION_SECRET`: the secret signing individual 12-hour member sessions.
+- `SESSION_SECRET`: the secret signing individual 12-hour member sessions;
+- `FFSCOUTER_API_KEY`: the operator-owned key used only by scheduled
+  FFScouter leveling discovery.
 
-Keep both secrets in Cloudflare and out of this repository.
+Keep all secrets in Cloudflare and out of this repository.
 
 ## Required versioned consent
 
@@ -50,11 +52,18 @@ D1 stores shared service facts: targets, status observations, hospital events,
 scheduling, activity exclusions, target leases, check claims, and per-user
 collector leases.
 
-Fair Fight is not a shared service fact. The userscript reads the member's own
+Personalized Fair Fight is not a shared service fact. The userscript reads the member's own
 battle stats from Torn once per day and stores only a local score and total in
 Tampermonkey. It immediately estimates Fair Fight from that score and the
 master target estimate. Exact member battle stats and Fair Fight values are not
 uploaded or stored in D1.
+
+The scheduled leveling-catalog collector makes one randomized, inactive-target
+FFScouter request per Cron Trigger. It stores only level 20-100 candidates with
+an absolute battle-stat estimate of 5,000 or less in the existing `targets`
+table. It ignores personalized Fair Fight, writes no search history, and uses a
+conditional upsert so unchanged candidates consume no additional D1 row writes.
+The operator key remains a Cloudflare secret and is never returned by a route.
 
 The browser sends only a temporary minimum and maximum target-stat range with
 the recommendation request. The Worker uses that range for assignment without
@@ -115,6 +124,7 @@ available pool permits it.
 | `POST` | `/api/activity` | Member session | Share activity-snapshot matches |
 | `POST` | `/api/fair-fight` | Member session | Deprecated no-op; Fair Fight stays local |
 | `POST` | `/api/admin/bootstrap-targets` | Admin token | Refresh targets from the master CSV |
+| `POST` | `/api/admin/discover-targets` | Admin token | Run one FFScouter leveling-catalog discovery pass |
 | `GET` | `/api/admin/targets` | Admin token | Inspect paginated targets |
 
 Member routes use `Authorization: Bearer <session token>`. Admin routes use
