@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Scout
 // @namespace    Considious [3853023]
-// @version      0.2.1
+// @version      0.2.2
 // @description  Local FFScouter discovery companion for finding possible SLINK targets.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,12 +19,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.2.1-persistent-minimized-completion-alert
+    // Release: 0.2.2-navigation-safe-auto-collection
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.2.1';
+    const SCRIPT_VERSION = '0.2.2';
     const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
     const REQUEST_COOLDOWN_MS = 12_500;
     const AUTO_INTERVAL_MS = 15_000;
@@ -32,10 +32,12 @@
     const SATURATION_STREAK_LIMIT = 3;
     const AUTO_LEASE_MS = 35_000;
     const AUTO_LEASE_RENEW_MS = 10_000;
+    const AUTO_RESUME_WINDOW_MS = 120_000;
     const MAX_RESULTS = 50;
     const DISPLAY_LIMIT = 200;
     const INSTANCE_ID = globalThis.crypto?.randomUUID?.() ||
         `slink-scout-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const TAB_ID = getTabId();
 
     const KEYS = {
         ffKey: 'slinkScout.ffscouterKey.v1',
@@ -45,6 +47,7 @@
         collection: 'slinkScout.collection.v1',
         lastRequestAt: 'slinkScout.lastRequestAt.v1',
         autoLease: 'slinkScout.autoLease.v1',
+        autoRunState: 'slinkScout.autoRunState.v1',
         collapsed: 'slinkScout.collapsed.v1',
         panelPosition: 'slinkScout.panelPosition.v1',
         bubblePosition: 'slinkScout.bubblePosition.v1'
@@ -81,6 +84,7 @@
         autoDuplicateStreak: 0,
         autoNextAt: 0,
         autoStopRequested: false,
+        autoGeneration: 0,
         attention: false,
         originalTitle: document.title,
         titleTimer: null,
@@ -107,6 +111,21 @@
     function saveJson(key, value) {
         GM_setValue(key, value);
         return value;
+    }
+
+
+    function getTabId() {
+        const key = 'slinkScout.tabId.v1';
+        try {
+            const existing = globalThis.sessionStorage?.getItem(key);
+            if (existing) return existing;
+            const created = globalThis.crypto?.randomUUID?.() ||
+                `slink-scout-tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            globalThis.sessionStorage?.setItem(key, created);
+            return created;
+        } catch {
+            return INSTANCE_ID;
+        }
     }
 
 
@@ -361,6 +380,15 @@
     }
 
 
+    function readSavedSearchInputs() {
+        const apiKey = String(GM_getValue(KEYS.ffKey, '') || '').trim();
+        if (!/^[A-Za-z0-9]{16}$/.test(apiKey)) {
+            throw new Error('The saved FFScouter key is missing or invalid. Open SLINK Scout and start automatic collection again.');
+        }
+        return { apiKey, filters: loadFilters() };
+    }
+
+
     async function requestDiscoveryBatch(apiKey, filters) {
         const lastRequestAt = Number(GM_getValue(KEYS.lastRequestAt, 0)) || 0;
         const waitMs = REQUEST_COOLDOWN_MS - (Date.now() - lastRequestAt);
@@ -437,14 +465,48 @@
     }
 
 
+    function readAutoRunState() {
+        const saved = loadJson(KEYS.autoRunState, null);
+        return saved && typeof saved === 'object' ? saved : null;
+    }
+
+
+    function saveAutoRunState(enabled) {
+        saveJson(KEYS.autoRunState, {
+            enabled: Boolean(enabled),
+            tabId: TAB_ID,
+            updatedAt: Date.now(),
+            runs: state.autoRuns,
+            duplicateStreak: state.autoDuplicateStreak
+        });
+    }
+
+
+    function resumableAutoRunState() {
+        const saved = readAutoRunState();
+        if (!saved?.enabled || saved.tabId !== TAB_ID) return null;
+        if (Date.now() - Number(saved.updatedAt) > AUTO_RESUME_WINDOW_MS) {
+            saveAutoRunState(false);
+            return null;
+        }
+        return saved;
+    }
+
+
     function acquireAutoLease() {
         const now = Date.now();
         const current = readAutoLease();
-        if (current && current.owner !== INSTANCE_ID && Number(current.expiresAt) > now) {
+        if (
+            current &&
+            current.owner !== INSTANCE_ID &&
+            current.tabId !== TAB_ID &&
+            Number(current.expiresAt) > now
+        ) {
             throw new Error('Automatic collection is already running in another Torn tab.');
         }
         saveJson(KEYS.autoLease, {
             owner: INSTANCE_ID,
+            tabId: TAB_ID,
             expiresAt: now + AUTO_LEASE_MS
         });
         if (readAutoLease()?.owner !== INSTANCE_ID) {
@@ -458,9 +520,12 @@
         if (!state.autoRunning || current?.owner !== INSTANCE_ID) return false;
         saveJson(KEYS.autoLease, {
             owner: INSTANCE_ID,
+            tabId: TAB_ID,
             expiresAt: Date.now() + AUTO_LEASE_MS
         });
-        return readAutoLease()?.owner === INSTANCE_ID;
+        const renewed = readAutoLease()?.owner === INSTANCE_ID;
+        if (renewed && !state.autoStopRequested) saveAutoRunState(true);
+        return renewed;
     }
 
 
@@ -516,12 +581,14 @@
         clearInterval(state.autoLeaseTimer);
         state.autoTimer = null;
         state.autoLeaseTimer = null;
+        state.autoGeneration += 1;
         state.autoRunning = false;
         state.busy = false;
         state.autoNextAt = 0;
         state.autoStopRequested = false;
         state.autoApiKey = '';
         state.autoFilters = null;
+        saveAutoRunState(false);
         releaseAutoLease();
         const stopMessage = reason || 'Automatic collection stopped.';
         if (exportCollection && state.results.length) {
@@ -538,6 +605,7 @@
         if (!state.autoRunning) return;
         if (state.busy) {
             state.autoStopRequested = true;
+            saveAutoRunState(false);
             state.message = 'Stopping after the current FFScouter request finishes…';
             render();
             return;
@@ -548,6 +616,7 @@
 
     async function runAutomaticCycle() {
         if (!state.autoRunning || state.busy) return;
+        const generation = state.autoGeneration;
         if (!renewAutoLease()) {
             stopAutomatic('Automatic collection stopped because another tab took over.', {
                 needsAttention: true,
@@ -564,7 +633,7 @@
         render();
         try {
             const batch = await requestDiscoveryBatch(state.autoApiKey, state.autoFilters);
-            if (!state.autoRunning) return;
+            if (!state.autoRunning || generation !== state.autoGeneration) return;
             state.autoRuns += 1;
             if (state.autoStopRequested) {
                 stopAutomatic('Automatic collection stopped manually after the current request finished.', {
@@ -575,6 +644,7 @@
             state.autoDuplicateStreak = batch.eligibleCount > 0 && batch.duplicateRatio >= SATURATION_OVERLAP
                 ? state.autoDuplicateStreak + 1
                 : 0;
+            saveAutoRunState(true);
             if (state.autoDuplicateStreak >= SATURATION_STREAK_LIMIT) {
                 stopAutomatic(
                     `At least 80% of qualified results were already seen for ${SATURATION_STREAK_LIMIT} searches in a row. Lower the minimum level or widen the filters, then start again.`,
@@ -588,6 +658,7 @@
             scheduleAutomatic(AUTO_INTERVAL_MS);
             render();
         } catch (error) {
+            if (generation !== state.autoGeneration) return;
             stopAutomatic(`Automatic collection stopped: ${TornLib.errorMessage(error)}`, {
                 needsAttention: true,
                 exportCollection: true,
@@ -597,20 +668,28 @@
     }
 
 
-    function startAutomatic(panel) {
+    function startAutomatic(panel, options = {}) {
+        const { resuming = false } = options;
         if (state.autoRunning || state.busy) return;
         clearAttention();
         state.error = '';
         try {
-            const { apiKey, filters } = readSearchInputs(panel);
+            const { apiKey, filters } = resuming
+                ? readSavedSearchInputs()
+                : readSearchInputs(panel);
             acquireAutoLease();
+            state.autoGeneration += 1;
             state.autoRunning = true;
             state.autoApiKey = apiKey;
             state.autoFilters = filters;
-            state.autoRuns = 0;
-            state.autoDuplicateStreak = 0;
+            const savedRun = resuming ? resumableAutoRunState() : null;
+            state.autoRuns = savedRun ? Number(savedRun.runs) || 0 : 0;
+            state.autoDuplicateStreak = savedRun ? Number(savedRun.duplicateStreak) || 0 : 0;
             state.autoStopRequested = false;
-            state.message = 'Automatic collection started. Filters are locked until it stops.';
+            state.message = resuming
+                ? 'Automatic collection resumed after the Torn page changed.'
+                : 'Automatic collection started. Filters are locked until it stops.';
+            saveAutoRunState(true);
             state.autoLeaseTimer = setInterval(() => {
                 if (!renewAutoLease()) {
                     stopAutomatic('Automatic collection stopped because its tab lock was lost.', {
@@ -630,6 +709,16 @@
             state.message = 'Automatic collection did not start.';
             render();
         }
+    }
+
+
+    function resumeAutomaticAfterNavigation(panel) {
+        if (!resumableAutoRunState()) return;
+        setTimeout(() => {
+            if (!state.autoRunning && document.contains(panel)) {
+                startAutomatic(panel, { resuming: true });
+            }
+        }, 100);
     }
 
 
@@ -964,7 +1053,7 @@
                 <div class="sls-summary"><span>Collection: ${state.results.length}</span><span>Seen locally: ${seenCount()}</span><span>${state.autoRunning ? 'Automatic: running' : 'Automatic: stopped'}</span></div>
                 ${resultsHtml()}
             </div>
-            <div class="sls-footer">Automatic mode runs only after you start it and waits 15 seconds after each completed FFScouter request. No Torn API usage or Torn page scraping.</div>
+            <div class="sls-footer">Automatic mode continues while minimized and across Torn page changes, waiting 15 seconds after each completed FFScouter request. No Torn API usage or Torn page scraping.</div>
         `;
         applySavedPanelPosition(false);
         bindEvents(panel);
@@ -1034,12 +1123,23 @@
         });
         installBubbleEdgeBehavior(panel);
         globalThis.addEventListener('pagehide', () => {
+            state.autoGeneration += 1;
             clearTimeout(state.autoTimer);
             clearInterval(state.autoLeaseTimer);
             releaseAutoLease();
             clearAttention();
-        }, { once: true });
+        });
+        globalThis.addEventListener('pageshow', event => {
+            if (!event.persisted) return;
+            state.autoRunning = false;
+            state.busy = false;
+            state.autoTimer = null;
+            state.autoLeaseTimer = null;
+            render();
+            resumeAutomaticAfterNavigation(panel);
+        });
         render();
+        resumeAutomaticAfterNavigation(panel);
     }
 
     start();
