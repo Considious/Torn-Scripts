@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Scout
 // @namespace    Considious [3853023]
-// @version      0.2.0
+// @version      0.2.1
 // @description  Local FFScouter discovery companion for finding possible SLINK targets.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,12 +19,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.2.0-duplicate-aware-auto-collection
+    // Release: 0.2.1-persistent-minimized-completion-alert
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.2.0';
+    const SCRIPT_VERSION = '0.2.1';
     const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
     const REQUEST_COOLDOWN_MS = 12_500;
     const AUTO_INTERVAL_MS = 15_000;
@@ -79,12 +79,10 @@
         autoLeaseTimer: null,
         autoRuns: 0,
         autoDuplicateStreak: 0,
-        autoEmptyStreak: 0,
         autoNextAt: 0,
         autoStopRequested: false,
         attention: false,
         originalTitle: document.title,
-        attentionTimer: null,
         titleTimer: null,
         autoApiKey: '',
         autoFilters: null
@@ -475,9 +473,7 @@
 
     function clearAttention() {
         state.attention = false;
-        clearTimeout(state.attentionTimer);
         clearInterval(state.titleTimer);
-        state.attentionTimer = null;
         state.titleTimer = null;
         document.title = state.originalTitle;
     }
@@ -485,18 +481,17 @@
 
     function flashAttention(message) {
         clearAttention();
-        state.attention = true;
-        let showWarning = true;
-        const warningTitle = '⚠ SLINK Scout: adjust filters';
-        document.title = warningTitle;
-        state.titleTimer = setInterval(() => {
-            showWarning = !showWarning;
-            document.title = showWarning ? warningTitle : state.originalTitle;
-        }, 900);
-        state.attentionTimer = setTimeout(() => {
-            clearAttention();
-            render();
-        }, 20_000);
+        const minimized = Boolean(GM_getValue(KEYS.collapsed, false));
+        state.attention = minimized;
+        if (minimized) {
+            let showWarning = true;
+            const warningTitle = '⚠ SLINK Scout: collection stopped';
+            document.title = warningTitle;
+            state.titleTimer = setInterval(() => {
+                showWarning = !showWarning;
+                document.title = showWarning ? warningTitle : state.originalTitle;
+            }, 900);
+        }
         setTimeout(() => globalThis.alert(`SLINK Scout stopped\n\n${message}`), 0);
     }
 
@@ -580,20 +575,9 @@
             state.autoDuplicateStreak = batch.eligibleCount > 0 && batch.duplicateRatio >= SATURATION_OVERLAP
                 ? state.autoDuplicateStreak + 1
                 : 0;
-            state.autoEmptyStreak = batch.eligibleCount === 0
-                ? state.autoEmptyStreak + 1
-                : 0;
-
             if (state.autoDuplicateStreak >= SATURATION_STREAK_LIMIT) {
                 stopAutomatic(
                     `At least 80% of qualified results were already seen for ${SATURATION_STREAK_LIMIT} searches in a row. Lower the minimum level or widen the filters, then start again.`,
-                    { needsAttention: true, exportCollection: true }
-                );
-                return;
-            }
-            if (state.autoEmptyStreak >= SATURATION_STREAK_LIMIT) {
-                stopAutomatic(
-                    `${SATURATION_STREAK_LIMIT} searches in a row found no candidates matching these filters. Lower the minimum level or widen the filters, then start again.`,
                     { needsAttention: true, exportCollection: true }
                 );
                 return;
@@ -625,7 +609,6 @@
             state.autoFilters = filters;
             state.autoRuns = 0;
             state.autoDuplicateStreak = 0;
-            state.autoEmptyStreak = 0;
             state.autoStopRequested = false;
             state.message = 'Automatic collection started. Filters are locked until it stops.';
             state.autoLeaseTimer = setInterval(() => {
@@ -778,6 +761,8 @@
             #slink-scout-panel.sls-dragging .sls-bubble { cursor:grabbing; }
             .sls-bubble-dot { position:absolute; right:2px; bottom:3px; width:11px; height:11px; border:2px solid #152522; border-radius:50%; background:#60dd89; }
             .sls-bubble-dot.sls-bubble-error { background:#ff7373; }
+            .sls-bubble-badge { position:absolute; top:-5px; right:-6px; min-width:22px; height:22px; padding:0 5px; display:flex; align-items:center; justify-content:center; border:2px solid #152522; border-radius:11px; background:#287b69; color:#fff; font:700 10px/1 Arial,sans-serif; }
+            .sls-bubble-badge.sls-bubble-badge-alert { background:#d84d4d; }
             @keyframes sls-attention-pulse {
                 0%,100% { box-shadow:0 8px 24px rgba(0,0,0,.44),0 0 0 0 rgba(255,93,93,.2); }
                 50% { box-shadow:0 8px 24px rgba(0,0,0,.44),0 0 0 7px rgba(255,93,93,.55); }
@@ -898,9 +883,9 @@
                     <label><input id="sls-factionless" type="checkbox" ${filters.factionlessOnly ? 'checked' : ''} ${controlsDisabled}> Factionless only</label>
                 </div>
                 <div class="sls-filter-note">
-                    Random discovery is recommended. Automatic mode waits 15 seconds after each completed request, remembers every unique candidate locally, and stops after three 80%+ duplicate batches or three empty batches. When it stops, lower the minimum level or widen the filters.
+                    Random discovery is recommended. Automatic mode waits 15 seconds after each completed request, remembers every unique candidate locally, and stops only after three batches in a row have 80%+ overlap with previously seen qualified targets. Empty filtered batches do not stop an outlier search.
                 </div>
-                ${state.autoRunning ? `<div class="sls-filter-note">Automatic run ${state.autoRuns} · duplicate streak ${state.autoDuplicateStreak}/${SATURATION_STREAK_LIMIT} · empty streak ${state.autoEmptyStreak}/${SATURATION_STREAK_LIMIT}${nextRun ? ` · next request ${escapeHtml(nextRun)}` : ' · request in progress'}</div>` : ''}
+                ${state.autoRunning ? `<div class="sls-filter-note">Automatic run ${state.autoRuns} · overlap streak ${state.autoDuplicateStreak}/${SATURATION_STREAK_LIMIT}${nextRun ? ` · next request ${escapeHtml(nextRun)}` : ' · request in progress'}</div>` : ''}
                 <div class="sls-actions">
                     <button class="sls-btn" id="sls-clear-collection" ${state.autoRunning ? 'disabled' : ''}>Clear collection + seen</button>
                     <button class="sls-btn" id="sls-export" ${state.results.length ? '' : 'disabled'}>Export collection CSV</button>
@@ -953,9 +938,11 @@
         panel.classList.toggle('sls-attention', state.attention);
 
         if (collapsed) {
+            const collectionBadge = state.results.length > 999 ? '999+' : String(state.results.length);
             panel.innerHTML = `
-                <div class="sls-bubble" id="sls-expand" role="button" tabindex="0" title="Open SLINK Scout" aria-label="Open SLINK Scout">
+                <div class="sls-bubble" id="sls-expand" role="button" tabindex="0" title="Open SLINK Scout — ${state.results.length} collected" aria-label="Open SLINK Scout; ${state.results.length} targets collected">
                     <span>SS</span>
+                    <span class="sls-bubble-badge ${state.attention ? 'sls-bubble-badge-alert' : ''}" aria-hidden="true">${collectionBadge}</span>
                     <span class="sls-bubble-dot ${state.error || state.attention ? 'sls-bubble-error' : ''}" aria-hidden="true"></span>
                 </div>
             `;
