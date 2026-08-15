@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.9.1 is identified as `0.9.1-configurable-leveling-filters`.
+version. Release 0.10.0 is identified as `0.10.0-low-write-coordination`.
 
 ## Cloudflare configuration
 
@@ -55,8 +55,9 @@ reject accidental updates or deletions.
 ## Data ownership
 
 D1 stores shared service facts: targets, status observations, hospital events,
-scheduling, activity exclusions, target leases, check claims, and per-user
-collector leases.
+scheduling, activity exclusions, stable recommendation assignments, and
+per-user collector leases. Scheduled check assignments are calculated without
+creating per-target claim rows.
 
 Personalized Fair Fight is not a shared service fact. The userscript reads the member's own
 battle stats from Torn once per day and stores only a local score and total in
@@ -96,17 +97,19 @@ or ten minutes. At a 90-second interval, failover takes roughly three minutes.
 Expired rows are replaced or cleaned up by the next request. They do not run
 background work while every device is offline.
 
-Recommendation leases are keyed by Torn user ID, so a user's PC and mobile
-sessions see the same target set. Collector ownership is keyed by signed session
-ID, allowing another device to take over after the lease expires.
+Recommendation leases are keyed by Torn user ID and remain stable for the
+12-hour member session, so a user's PC and mobile sessions see the same target
+set. They are replaced early only when a target becomes invalid for that list,
+and released after that user has no live collector device.
+Collector ownership is keyed by signed session ID, allowing another device to
+take over after the collector lease expires.
 
-Scheduled checks are shared by active Torn user, not by device. The Worker
-counts all targets currently due, divides that total by the number of active
-user collectors, and caps each plan by what that user's interval can safely
-carry. PC and mobile sessions belonging to the same Torn user therefore consume
-one share, with only the elected session doing the work. Unfinished claims
-expire after the interval plus a two-minute grace period and return to the
-shared pool.
+Scheduled checks are shared by active Torn user, not by device. A single ordered
+query finds due work, and the Worker deterministically divides that result among
+the active user collectors. PC and mobile sessions belonging to the same Torn
+user therefore consume one share, with only the elected session doing the work.
+The same active-collector list always produces disjoint assignments, without
+inserting, refreshing, or deleting per-target claim rows in D1.
 
 Recommendation ranking is source-neutral. Baldr, Legacy, Extra, and every other
 source label are metadata only and never boost or penalize a target. The
@@ -128,7 +131,7 @@ available pool permits it.
 | `GET` | `/api/targets` | Member session | Read paginated leveling targets |
 | `GET` | `/api/recommendations` | Member session | Return targets and renew collector coordination |
 | `POST` | `/api/collector/heartbeat` | Member session | Backward-compatible manual collector renewal |
-| `POST` | `/api/checks/claim` | Member session | Claim coordinated Torn status checks |
+| `POST` | `/api/checks/claim` | Member session | Receive a deterministic share of due Torn status checks |
 | `POST` | `/api/observations` | Member session | Submit status observations |
 | `POST` | `/api/activity` | Member session | Share activity-snapshot matches |
 | `POST` | `/api/fair-fight` | Member session | Deprecated no-op; Fair Fight stays local |
@@ -156,10 +159,11 @@ fallback for API checks if no unassigned due work is available.
 
 ## Migrations
 
-Migrations 0001 and 0002 create the shared coordination tables. Migration 0003
-only removes the unused experimental `user_target_fair_fight` table if it was
-manually created while 0.5.0 was being developed. It is safe when the table does
-not exist.
+Migrations 0001 and 0002 created the original coordination tables. Release
+0.10.0 stops using `client_check_claims`, but leaves the legacy table in place
+so this Worker update requires no destructive database migration. Migration
+0003 only removes the unused experimental `user_target_fair_fight` table if it
+was manually created while 0.5.0 was being developed.
 
 The separate consent database uses
 `consent-database/0001-terms-acceptances.sql`. Run that schema only against the
@@ -169,7 +173,7 @@ not numbered as a migration for the main target database.
 ## Test
 
 Run `npm test` in this directory. The test suite uses Node's built-in test
-runner and covers auth/session protection, coordination, scheduling, activity,
+runner and covers auth/session protection, low-write coordination, scheduling, activity,
 personal target-stat ranges, source-neutral ranking, unique target leasing,
 local-only Fair Fight estimates, collector failover, fair check sharing,
 interval pacing, fail-closed versioned consent, append-only acceptance records,

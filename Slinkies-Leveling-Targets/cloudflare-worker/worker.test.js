@@ -7,7 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.9.1-configurable-leveling-filters';
+const WORKER_VERSION = '0.10.0-low-write-coordination';
 const TERMS_VERSION = '2026-08-14';
 const TERMS_DOCUMENT_SHA256 =
     '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
@@ -368,7 +368,7 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
-    it('coordinates check claims between active member sessions', async () => {
+    it('coordinates checks without writing per-target claims', async () => {
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
         const firstToken = await sessionToken(1001);
@@ -385,6 +385,25 @@ describe('SLINK Leveling Worker', () => {
         const assignedIds = (await assignedResponse.json())
             .targets
             .map(row => row.id);
+        db.sqlite.prepare(`
+            UPDATE client_user_collectors
+            SET expires_at = 0
+            WHERE user_id = 9001
+        `).run();
+
+        for (const token of [firstToken, secondToken]) {
+            const response = await worker.fetch(
+                authenticatedJsonRequest(
+                    'https://worker.example/api/collector/heartbeat',
+                    token,
+                    {}
+                ),
+                env
+            );
+            assert.equal((await response.json()).collector, true);
+        }
+
+        const writesBeforePlans = db.writeChanges;
 
         const firstResponse = await worker.fetch(
             authenticatedJsonRequest(
@@ -405,6 +424,7 @@ describe('SLINK Leveling Worker', () => {
         const firstIds = (await firstResponse.json()).checks.map(row => row.id);
         const secondIds = (await secondResponse.json()).checks.map(row => row.id);
 
+        assert.equal(db.writeChanges, writesBeforePlans);
         assert.equal(firstIds.length, 2);
         assert.equal(secondIds.length, 2);
         assert.deepEqual(
@@ -420,6 +440,12 @@ describe('SLINK Leveling Worker', () => {
         assert.deepEqual(
             firstIds.filter(id => secondIds.includes(id)),
             []
+        );
+        assert.equal(
+            db.sqlite
+                .prepare('SELECT COUNT(*) AS count FROM client_check_claims')
+                .get().count,
+            0
         );
 
         const observationResponse = await worker.fetch(
@@ -439,10 +465,49 @@ describe('SLINK Leveling Worker', () => {
             env
         );
         assert.equal(observationResponse.status, 200);
+        assert.equal(db.writeChanges, writesBeforePlans + 1);
+    });
+
+
+    it('uses one durable row change per normal completed check', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(1100, 'bulk-observations');
+        const insert = db.sqlite.prepare(`
+            INSERT INTO targets (id, name, level, total_stats, sources)
+            VALUES (?, ?, ?, ?, ?)
+        `);
+
+        for (let id = 7; id <= 60; id++) {
+            insert.run(id, `Target ${id}`, 30, 1000, 'Test source');
+        }
+
+        const writesBefore = db.writeChanges;
+        const response = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
+                {
+                    observations: Array.from({ length: 60 }, (_, index) => ({
+                        target_id: index + 1,
+                        state: 'Okay',
+                        description: 'Okay',
+                        until: 0,
+                        source: 'torn_api'
+                    }))
+                }
+            ),
+            env
+        );
+        const body = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(body.accepted_count, 60);
+        assert.equal(db.writeChanges - writesBefore, 60);
         assert.equal(
             db.sqlite
-                .prepare('SELECT COUNT(*) AS count FROM client_check_claims WHERE target_id = ?')
-                .get(firstIds[0]).count,
+                .prepare('SELECT COUNT(*) AS count FROM client_check_claims')
+                .get().count,
             0
         );
     });
@@ -762,6 +827,92 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
+    it('keeps recommendation assignments without ten-minute lease churn', async () => {
+        let now = 1_800_000_000_000;
+        Date.now = () => now;
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(2100, 'stable-recommendations');
+        const url =
+            'https://worker.example/api/recommendations?limit=2&poll_seconds=300';
+
+        const firstResponse = await worker.fetch(
+            authenticatedRequest(url, token),
+            env
+        );
+        const first = await firstResponse.json();
+        const leasesBefore = db.sqlite.prepare(`
+            SELECT target_id, user_id, session_id, leased_at, expires_at
+            FROM client_target_leases
+            WHERE user_id = 2100
+            ORDER BY target_id
+        `).all();
+        const writesAfterFirstLoad = db.writeChanges;
+
+        now += 11 * 60 * 1000;
+        const secondResponse = await worker.fetch(
+            authenticatedRequest(url, token),
+            env
+        );
+        const second = await secondResponse.json();
+        const leasesAfter = db.sqlite.prepare(`
+            SELECT target_id, user_id, session_id, leased_at, expires_at
+            FROM client_target_leases
+            WHERE user_id = 2100
+            ORDER BY target_id
+        `).all();
+
+        assert.equal(first.lease_seconds, 43_200);
+        assert.deepEqual(
+            first.targets.map(row => row.id),
+            second.targets.map(row => row.id)
+        );
+        assert.deepEqual(leasesAfter, leasesBefore);
+        assert.equal(
+            db.writeChanges - writesAfterFirstLoad,
+            1,
+            'only the single collector lease should renew'
+        );
+    });
+
+
+    it('does not rewrite duplicate activity snapshots', async () => {
+        let now = 1_800_000_000_000;
+        Date.now = () => now;
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(2200, 'activity-deduplication');
+        const snapshot = Math.floor(now / 1000);
+        const requestBody = { active_targets: { 1: snapshot } };
+
+        const firstResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/activity',
+                token,
+                requestBody
+            ),
+            env
+        );
+        assert.equal(firstResponse.status, 200);
+        const writesAfterFirstReport = db.writeChanges;
+
+        now += 60_000;
+        const duplicateResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/activity',
+                token,
+                requestBody
+            ),
+            env
+        );
+
+        assert.equal(duplicateResponse.status, 200);
+        assert.equal(db.writeChanges, writesAfterFirstReport);
+    });
+
+
     it('ignores source labels and honors the local strength range', async () => {
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
@@ -945,10 +1096,11 @@ function createConsentDatabase() {
 class D1DatabaseAdapter {
     constructor(sqlite) {
         this.sqlite = sqlite;
+        this.writeChanges = 0;
     }
 
     prepare(sql) {
-        return new D1StatementAdapter(this.sqlite, sql, []);
+        return new D1StatementAdapter(this, sql, []);
     }
 
     async batch(statements) {
@@ -972,35 +1124,43 @@ class D1DatabaseAdapter {
 
 
 class D1StatementAdapter {
-    constructor(sqlite, sql, bindings) {
-        this.sqlite = sqlite;
+    constructor(database, sql, bindings) {
+        this.database = database;
         this.sql = sql;
         this.bindings = bindings;
     }
 
     bind(...values) {
-        return new D1StatementAdapter(this.sqlite, this.sql, values);
+        return new D1StatementAdapter(this.database, this.sql, values);
     }
 
     async first(columnName) {
-        const row = this.sqlite.prepare(this.sql).get(...this.bindings) ?? null;
+        const row = this.database.sqlite
+            .prepare(this.sql)
+            .get(...this.bindings) ?? null;
         return columnName && row ? row[columnName] ?? null : row;
     }
 
     async all() {
         return {
             success: true,
-            results: this.sqlite.prepare(this.sql).all(...this.bindings)
+            results: this.database.sqlite
+                .prepare(this.sql)
+                .all(...this.bindings)
         };
     }
 
     async run() {
-        const result = this.sqlite.prepare(this.sql).run(...this.bindings);
+        const result = this.database.sqlite
+            .prepare(this.sql)
+            .run(...this.bindings);
+        const changes = Number(result.changes || 0);
+        this.database.writeChanges += changes;
         return {
             success: true,
             results: [],
             meta: {
-                changes: Number(result.changes || 0),
+                changes,
                 last_row_id: Number(result.lastInsertRowid || 0)
             }
         };
