@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.9.0 is identified as `0.9.0-ffscouter-leveling-catalog`.
+version. Release 0.9.1 is identified as `0.9.1-configurable-leveling-filters`.
 
 ## Cloudflare configuration
 
@@ -20,6 +20,12 @@ The Worker expects:
 - `SESSION_SECRET`: the secret signing individual 12-hour member sessions;
 - `FFSCOUTER_API_KEY`: the operator-owned key used only by scheduled
   FFScouter leveling discovery.
+
+The discovery filter uses three optional, non-secret Worker variables:
+
+- `FFSCOUTER_LEVELING_MIN_LEVEL` (default `30`);
+- `FFSCOUTER_LEVELING_MAX_LEVEL` (default `100`);
+- `FFSCOUTER_LEVELING_MAX_STATS` (default `2000`).
 
 Keep all secrets in Cloudflare and out of this repository.
 
@@ -59,11 +65,14 @@ master target estimate. Exact member battle stats and Fair Fight values are not
 uploaded or stored in D1.
 
 The scheduled leveling-catalog collector makes one randomized, inactive-target
-FFScouter request per Cron Trigger. It stores only level 20-100 candidates with
-an absolute battle-stat estimate of 5,000 or less in the existing `targets`
-table. It ignores personalized Fair Fight, writes no search history, and uses a
-conditional upsert so unchanged candidates consume no additional D1 row writes.
-The operator key remains a Cloudflare secret and is never returned by a route.
+FFScouter request per Cron Trigger. By default, it stores only level 30-100
+candidates with an absolute battle-stat estimate of 2,000 or less in the
+existing `targets` table. Those three bounds are ordinary Worker variables, so
+they can be expanded without editing or redeploying the source. The collector
+ignores personalized Fair Fight, writes no search history, and uses a
+conditional upsert so unchanged candidates consume no additional D1 row
+writes. The operator key remains a Cloudflare secret and is never returned by a
+route.
 
 The browser sends only a temporary minimum and maximum target-stat range with
 the recommendation request. The Worker uses that range for assignment without

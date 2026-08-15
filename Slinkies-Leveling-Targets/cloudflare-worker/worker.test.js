@@ -7,7 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.9.0-ffscouter-leveling-catalog';
+const WORKER_VERSION = '0.9.1-configurable-leveling-filters';
 const TERMS_VERSION = '2026-08-14';
 const TERMS_DOCUMENT_SHA256 =
     '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
@@ -61,6 +61,12 @@ describe('SLINK Leveling Worker', () => {
             database: 'connected',
             consent_database: 'connected',
             ffscouter_collector: 'not_configured',
+            ffscouter_filters: {
+                minimum_level: 30,
+                maximum_level: 100,
+                maximum_battle_stats: 2000,
+                inactive_only: true
+            },
             terms: {
                 version: TERMS_VERSION,
                 effective_at: TERMS_VERSION
@@ -473,18 +479,18 @@ describe('SLINK Leveling Worker', () => {
                         player_id: 7001,
                         name: 'Rare Outlier',
                         level: 95,
-                        bs_estimate: 4999
+                        bs_estimate: 1999
                     },
                     {
                         player_id: 7002,
                         name: 'Too Strong',
                         level: 100,
-                        bs_estimate: 5001
+                        bs_estimate: 2001
                     },
                     {
                         player_id: 7003,
                         name: 'Too Low Level',
-                        level: 19,
+                        level: 29,
                         bs_estimate: 100
                     }
                 ]
@@ -498,9 +504,9 @@ describe('SLINK Leveling Worker', () => {
             inserted_or_updated: 2,
             unchanged: 0,
             filters: {
-                minimum_level: 20,
+                minimum_level: 30,
                 maximum_level: 100,
-                maximum_battle_stats: 5000,
+                maximum_battle_stats: 2000,
                 inactive_only: true
             }
         });
@@ -518,7 +524,7 @@ describe('SLINK Leveling Worker', () => {
             .get();
         assert.equal(discovered.name, 'Rare Outlier');
         assert.equal(discovered.level, 95);
-        assert.equal(discovered.total_stats, 4999);
+        assert.equal(discovered.total_stats, 1999);
         assert.equal(discovered.sources, 'FFScouter discovery');
 
         const second = await testing.discoverLevelingTargets(env);
@@ -551,6 +557,22 @@ describe('SLINK Leveling Worker', () => {
         );
         assert.equal(retrySuppressed, false);
         assert.equal(requests, 4);
+
+        const expanded = await testing.discoverLevelingTargets({
+            ...env,
+            FFSCOUTER_LEVELING_MIN_LEVEL: '20',
+            FFSCOUTER_LEVELING_MAX_LEVEL: '100',
+            FFSCOUTER_LEVELING_MAX_STATS: '5000'
+        });
+        assert.equal(expanded.qualified, 4);
+        assert.equal(expanded.inserted_or_updated, 2);
+        assert.deepEqual(expanded.filters, {
+            minimum_level: 20,
+            maximum_level: 100,
+            maximum_battle_stats: 5000,
+            inactive_only: true
+        });
+        assert.equal(requests, 5);
     });
 
 
