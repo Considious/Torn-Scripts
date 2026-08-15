@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.11.0-batched-observations
+ * Release: 0.12.0-hybrid-scheduler
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.11.0-batched-observations';
+const WORKER_VERSION = '0.12.0-hybrid-scheduler';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -80,6 +80,13 @@ const HOSPITAL_7D_MS = 7 * 24 * 60 * 60 * 1000;
 const NON_OKAY_RECHECK_MS = 10 * 60 * 1000;
 const HOSPITAL_RECHECK_GRACE_MS = 60 * 1000;
 const RAPID_REHOSP_WINDOW_MS = 60 * 60 * 1000;
+const ROUTINE_CHECK_BUCKET_MS = 5 * 60 * 1000;
+const CHECK_BATCH_CACHE_SECONDS = 30 * 60;
+const CHECK_BATCH_MAX_AGE_BUCKETS = Math.ceil(
+    (CHECK_BATCH_CACHE_SECONDS * 1000) / ROUTINE_CHECK_BUCKET_MS
+);
+const DAILY_FRESHNESS_START_UTC_MINUTE = (23 * 60) + 45;
+const DAILY_FRESHNESS_BUCKETS = 3;
 const OKAY_RECHECK_PRIME_MS = 15 * 60 * 1000;
 const OKAY_RECHECK_WARM_MS = 30 * 60 * 1000;
 const OKAY_RECHECK_CROWDED_MS = 60 * 60 * 1000;
@@ -1604,6 +1611,8 @@ async function handleClaimChecks(request, env, session) {
             MAX_CLIENT_POLL_SECONDS
         );
         const now = Date.now();
+        const scheduleBucket = routineCheckBucket(now);
+        const batchId = checkBatchId(session, scheduleBucket);
         const claimLifetimeMs = Math.max(
             MIN_CHECK_CLAIM_LIFETIME_MS,
             (pollSeconds * 1000) + CHECK_CLAIM_GRACE_MS
@@ -1633,6 +1642,23 @@ async function handleClaimChecks(request, env, session) {
                 fair_share: 0,
                 claim_seconds: Math.floor(claimLifetimeMs / 1000),
                 checks: []
+            });
+        }
+
+        // Edge cache is a fast retry mirror, never the source of truth. It is
+        // data-center local and may be absent (including on workers.dev), so
+        // the client queue and deterministic bucket remain the recovery path.
+        const cachedBatch = await readCheckBatchCache(
+            request,
+            session,
+            batchId
+        );
+
+        if (cachedBatch) {
+            return collectorLeaseResponse(collectorLease, {
+                ...cachedBatch,
+                count: cachedBatch.checks.length,
+                cache_status: 'hit'
             });
         }
 
@@ -1671,6 +1697,9 @@ async function handleClaimChecks(request, env, session) {
             1,
             intervalCapacity * activeCollectors
         );
+        // Routine Okay checks are computed from target ID + a five-minute
+        // bucket. Only exception states retain a durable next_check_at.
+        const freshnessSlot = dailyFreshnessSlot(now);
         const candidateResult = await env.DB
             .prepare(`
                 SELECT
@@ -1699,7 +1728,34 @@ async function handleClaimChecks(request, env, session) {
                   AND COALESCE(ts.permanent_federal, 0) = 0
                   AND (
                     ts.target_id IS NULL
-                    OR CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?1
+                    OR (
+                        LOWER(COALESCE(ts.status, 'unknown')) = 'okay'
+                        AND (
+                            (
+                                CAST(?3 AS INTEGER) % CASE
+                                    WHEN ts.competition_tier = 'Farmed' THEN 72
+                                    WHEN ts.competition_tier = 'Crowded' THEN 12
+                                    WHEN ts.competition_tier = 'Warm' THEN 6
+                                    ELSE 3
+                                END
+                            ) = (
+                                t.id % CASE
+                                    WHEN ts.competition_tier = 'Farmed' THEN 72
+                                    WHEN ts.competition_tier = 'Crowded' THEN 12
+                                    WHEN ts.competition_tier = 'Warm' THEN 6
+                                    ELSE 3
+                                END
+                            )
+                            OR (
+                                ?4 >= 0
+                                AND (t.id % ${DAILY_FRESHNESS_BUCKETS}) = ?4
+                            )
+                        )
+                    )
+                    OR (
+                        LOWER(COALESCE(ts.status, 'unknown')) <> 'okay'
+                        AND CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?1
+                    )
                   )
                 ORDER BY
                     CASE
@@ -1721,11 +1777,13 @@ async function handleClaimChecks(request, env, session) {
                     t.level DESC,
                     COALESCE(t.total_stats, 9223372036854775807) ASC,
                     t.id ASC
-                LIMIT ?3
+                LIMIT ?5
             `)
             .bind(
                 now,
                 Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
+                scheduleBucket,
+                freshnessSlot,
                 candidateLimit
             )
             .all();
@@ -1743,10 +1801,11 @@ async function handleClaimChecks(request, env, session) {
             .map(candidate => {
                 const check = { ...candidate };
                 delete check.due_count;
+                check.check_batch_id = batchId;
                 return check;
             });
 
-        return collectorLeaseResponse(collectorLease, {
+        const batch = {
             count: checks.length,
             capacity,
             interval_capacity: intervalCapacity,
@@ -1755,10 +1814,169 @@ async function handleClaimChecks(request, env, session) {
             fair_share: fairShare,
             claim_seconds: Math.floor(claimLifetimeMs / 1000),
             coordination: 'deterministic_shard',
+            schedule: 'deterministic_time_bucket',
+            schedule_bucket: scheduleBucket,
+            batch_id: batchId,
+            daily_freshness_window: freshnessSlot >= 0,
             checks
+        };
+
+        await writeCheckBatchCache(request, session, batch);
+
+        return collectorLeaseResponse(collectorLease, {
+            ...batch,
+            cache_status: 'miss'
         });
     } catch (error) {
         return requestOrWorkerErrorResponse('Could not claim checks.', error);
+    }
+}
+
+
+function routineCheckBucket(now = Date.now()) {
+    return Math.floor(now / ROUTINE_CHECK_BUCKET_MS);
+}
+
+
+function checkBatchId(session, scheduleBucket) {
+    return `${session.session_id}:${scheduleBucket}`;
+}
+
+
+function checkBatchCacheKey(request, session, batchId) {
+    const url = new URL(request.url);
+    url.pathname = '/__slink-internal/check-batch';
+    url.search = new URLSearchParams({
+        session: session.session_id,
+        batch: batchId
+    }).toString();
+    return new Request(url.toString(), { method: 'GET' });
+}
+
+
+function defaultWorkerCache() {
+    return globalThis.caches?.default || null;
+}
+
+
+async function readCheckBatchCache(request, session, batchId) {
+    const cache = defaultWorkerCache();
+
+    if (!cache) {
+        return null;
+    }
+
+    try {
+        const response = await cache.match(
+            checkBatchCacheKey(request, session, batchId)
+        );
+
+        if (!response) {
+            return null;
+        }
+
+        const batch = await response.json();
+
+        if (
+            batch?.batch_id !== batchId ||
+            !Array.isArray(batch?.checks)
+        ) {
+            return null;
+        }
+
+        return batch;
+    } catch (error) {
+        console.warn(JSON.stringify({
+            event: 'check_batch_cache_read_failed',
+            error: errorMessage(error)
+        }));
+        return null;
+    }
+}
+
+
+async function writeCheckBatchCache(request, session, batch) {
+    const cache = defaultWorkerCache();
+
+    if (!cache || !batch?.batch_id) {
+        return;
+    }
+
+    try {
+        await cache.put(
+            checkBatchCacheKey(request, session, batch.batch_id),
+            Response.json(batch, {
+                headers: {
+                    'Cache-Control': `public, max-age=${CHECK_BATCH_CACHE_SECONDS}`
+                }
+            })
+        );
+    } catch (error) {
+        console.warn(JSON.stringify({
+            event: 'check_batch_cache_write_failed',
+            error: errorMessage(error)
+        }));
+    }
+}
+
+
+function validateObservationBatchId(session, value, now) {
+    const supplied = String(value || '').trim();
+
+    if (!supplied) {
+        return null;
+    }
+
+    const prefix = `${session.session_id}:`;
+
+    if (!supplied.startsWith(prefix)) {
+        return null;
+    }
+
+    const bucket = Number(supplied.slice(prefix.length));
+    const currentBucket = routineCheckBucket(now);
+
+    if (!Number.isInteger(bucket) || bucket > currentBucket + 1) {
+        throw new RequestValidationError('check_batch_id is invalid.');
+    }
+
+    if (bucket < currentBucket - CHECK_BATCH_MAX_AGE_BUCKETS) {
+        return null;
+    }
+
+    return supplied;
+}
+
+
+async function markCheckBatchesComplete(request, session, plans) {
+    const completedByBatch = new Map();
+
+    for (const plan of plans) {
+        if (!plan.checkBatchId) {
+            continue;
+        }
+
+        const completed = completedByBatch.get(plan.checkBatchId) || new Set();
+        completed.add(plan.statusRow.targetId);
+        completedByBatch.set(plan.checkBatchId, completed);
+    }
+
+    for (const [batchId, completed] of completedByBatch) {
+        const batch = await readCheckBatchCache(
+            request,
+            session,
+            batchId
+        );
+
+        if (!batch) {
+            continue;
+        }
+
+        batch.checks = batch.checks.filter(check => {
+            return !completed.has(Number(check.id));
+        });
+        batch.count = batch.checks.length;
+        await writeCheckBatchCache(request, session, batch);
     }
 }
 
@@ -1810,6 +2028,11 @@ async function handleObservations(request, env, session) {
         }
 
         await persistTargetObservations(env, acceptedPlans);
+        await markCheckBatchesComplete(
+            request,
+            session,
+            acceptedPlans
+        );
 
         return jsonResponse({
             ok: rejected.length === 0,
@@ -1854,7 +2077,16 @@ async function loadObservationContext(env, observations, now) {
                 .bind(...chunk),
             env.DB
                 .prepare(`
-                    SELECT target_id, status, status_until
+                    SELECT
+                        target_id,
+                        status,
+                        status_until,
+                        last_checked_at,
+                        next_check_at,
+                        competition_score,
+                        competition_tier,
+                        hiding_out,
+                        permanent_federal
                     FROM target_status
                     WHERE target_id IN (${placeholders})
                 `)
@@ -1877,7 +2109,13 @@ async function loadObservationContext(env, observations, now) {
         for (const statusRow of statusResult.results || []) {
             statusById.set(Number(statusRow.target_id), {
                 status: statusRow.status,
-                status_until: statusRow.status_until
+                status_until: statusRow.status_until,
+                last_checked_at: statusRow.last_checked_at,
+                next_check_at: statusRow.next_check_at,
+                competition_score: statusRow.competition_score,
+                competition_tier: statusRow.competition_tier,
+                hiding_out: statusRow.hiding_out,
+                permanent_federal: statusRow.permanent_federal
             });
         }
 
@@ -1922,6 +2160,11 @@ function prepareTargetObservation(session, observation, context, now) {
         nowSeconds + (5 * 365 * 24 * 60 * 60)
     );
     const source = normalizeObservationSource(observation?.source);
+    const observationBatchId = validateObservationBatchId(
+        session,
+        observation?.check_batch_id,
+        now
+    );
 
     const previous = context.statusById.get(targetId);
 
@@ -1954,6 +2197,7 @@ function prepareTargetObservation(session, observation, context, now) {
 
     const competition = calculateCompetitionFromEvents(targetEvents, now);
     const schedule = calculateNextCheck({
+        targetId,
         status,
         description,
         until,
@@ -1961,21 +2205,47 @@ function prepareTargetObservation(session, observation, context, now) {
         now
     });
 
-    context.statusById.set(targetId, { status, status_until: until });
+    const statusRow = {
+        targetId,
+        status,
+        until,
+        lastCheckedAt: now,
+        nextCheckAt: schedule.nextCheckAt,
+        competitionScore: competition.score,
+        competitionTier: competition.tier,
+        hidingOut: schedule.hidingOut ? 1 : 0,
+        permanentFederal: schedule.permanentFederal ? 1 : 0
+    };
+    const freshnessCheckpoint = shouldWriteDailyFreshness(
+        previous,
+        statusRow,
+        now
+    );
+    const persistStatus = shouldPersistStatusObservation(
+        previous,
+        statusRow,
+        freshnessCheckpoint
+    );
+
+    context.statusById.set(targetId, {
+        status,
+        status_until: until,
+        last_checked_at: persistStatus
+            ? now
+            : previous?.last_checked_at,
+        next_check_at: schedule.nextCheckAt,
+        competition_score: competition.score,
+        competition_tier: competition.tier,
+        hiding_out: statusRow.hidingOut,
+        permanent_federal: statusRow.permanentFederal
+    });
 
     return {
-        statusRow: {
-            targetId,
-            status,
-            until,
-            lastCheckedAt: now,
-            nextCheckAt: schedule.nextCheckAt,
-            competitionScore: competition.score,
-            competitionTier: competition.tier,
-            hidingOut: schedule.hidingOut ? 1 : 0,
-            permanentFederal: schedule.permanentFederal ? 1 : 0
-        },
+        statusRow,
+        persistStatus,
+        freshnessCheckpoint,
         hospitalEvent,
+        checkBatchId: observationBatchId,
         releaseLease: status !== 'Okay' && status !== 'Unknown',
         response: {
             target_id: targetId,
@@ -1987,6 +2257,8 @@ function prepareTargetObservation(session, observation, context, now) {
             competition_score: competition.score,
             competition_tier: competition.tier,
             hospital_event_inserted: hospitalEvent !== null,
+            database_status_written: persistStatus,
+            freshness_checkpoint: freshnessCheckpoint,
             source
         }
     };
@@ -2031,7 +2303,9 @@ async function persistTargetObservations(env, plans) {
         );
     }
 
-    const statusRows = plans.map(plan => plan.statusRow);
+    const statusRows = plans
+        .filter(plan => plan.persistStatus)
+        .map(plan => plan.statusRow);
 
     for (
         let index = 0;
@@ -2104,7 +2378,9 @@ async function persistTargetObservations(env, plans) {
         );
     }
 
-    await env.DB.batch(statements);
+    if (statements.length) {
+        await env.DB.batch(statements);
+    }
 }
 
 
@@ -2313,7 +2589,68 @@ function calculateCompetitionFromEvents(eventRows, now = Date.now()) {
 }
 
 
+function dailyFreshnessSlot(now = Date.now()) {
+    const date = new Date(now);
+    const utcMinute = (date.getUTCHours() * 60) + date.getUTCMinutes();
+
+    if (utcMinute < DAILY_FRESHNESS_START_UTC_MINUTE) {
+        return -1;
+    }
+
+    return Math.min(
+        DAILY_FRESHNESS_BUCKETS - 1,
+        Math.floor(
+            (utcMinute - DAILY_FRESHNESS_START_UTC_MINUTE) /
+            (ROUTINE_CHECK_BUCKET_MS / 60_000)
+        )
+    );
+}
+
+
+function shouldWriteDailyFreshness(previous, statusRow, now) {
+    const date = new Date(now);
+    const freshnessWindowStart = Date.UTC(
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        date.getUTCDate(),
+        23,
+        45
+    );
+
+    return (
+        statusRow.status === 'Okay' &&
+        dailyFreshnessSlot(now) >= 0 &&
+        Number(previous?.last_checked_at || 0) < freshnessWindowStart
+    );
+}
+
+
+function shouldPersistStatusObservation(
+    previous,
+    statusRow,
+    freshnessCheckpoint
+) {
+    if (!previous || statusRow.status !== 'Okay') {
+        return true;
+    }
+
+    if (normalizeStatus(previous.status) !== 'Okay') {
+        return true;
+    }
+
+    return (
+        Number(previous.status_until || 0) !== statusRow.until ||
+        Number(previous.competition_score || 0) !== statusRow.competitionScore ||
+        String(previous.competition_tier || 'Prime') !== statusRow.competitionTier ||
+        Number(previous.hiding_out || 0) !== statusRow.hidingOut ||
+        Number(previous.permanent_federal || 0) !== statusRow.permanentFederal ||
+        freshnessCheckpoint
+    );
+}
+
+
 function calculateNextCheck({
+    targetId = 0,
     status,
     description,
     until,
@@ -2351,8 +2688,8 @@ function calculateNextCheck({
         nextCheckAt = DEFERRED_CHECK_AT_MS;
         reason = 'hiding_out_until_activity_snapshot';
     } else if (status === 'Okay') {
-        nextCheckAt = now + okayRecheckInterval(tier);
-        reason = `okay_${String(tier || 'Prime').toLowerCase()}_recheck`;
+        nextCheckAt = nextDeterministicOkayCheckAt(targetId, tier, now);
+        reason = `okay_${String(tier || 'Prime').toLowerCase()}_time_bucket`;
     } else if (status === 'Unknown') {
         nextCheckAt = now + NON_OKAY_RECHECK_MS;
         reason = 'unknown_recheck';
@@ -2418,7 +2755,36 @@ function okayRecheckInterval(tier) {
 }
 
 
+function okayRecheckBucketCount(tier) {
+    return Math.max(
+        1,
+        Math.round(okayRecheckInterval(tier) / ROUTINE_CHECK_BUCKET_MS)
+    );
+}
+
+
+function nextDeterministicOkayCheckAt(targetId, tier, now = Date.now()) {
+    const bucketCount = okayRecheckBucketCount(tier);
+    const targetSlot = Math.abs(Number(targetId) || 0) % bucketCount;
+    const firstFutureBucket = routineCheckBucket(now) + 1;
+    const delta = (
+        targetSlot - (firstFutureBucket % bucketCount) + bucketCount
+    ) % bucketCount;
+
+    return (firstFutureBucket + delta) * ROUTINE_CHECK_BUCKET_MS;
+}
+
+
 function normalizeRecommendationRow(row) {
+    const status = normalizeStatus(row.status);
+    const nextCheckAt = status === 'Okay'
+        ? nextDeterministicOkayCheckAt(
+            Number(row.id),
+            row.competition_tier,
+            Date.now()
+        )
+        : Number(row.next_check_at) || 0;
+
     return {
         ...row,
         id: Number(row.id),
@@ -2426,7 +2792,7 @@ function normalizeRecommendationRow(row) {
         total_stats: nullableNumber(row.total_stats),
         status_until: Number(row.status_until) || 0,
         last_checked_at: Number(row.last_checked_at) || 0,
-        next_check_at: Number(row.next_check_at) || 0,
+        next_check_at: nextCheckAt,
         competition_score: Number(row.competition_score) || 0,
         fair_fight: nullableNumber(row.fair_fight),
         bs_estimate: nullableNumber(row.bs_estimate),
@@ -2893,7 +3259,9 @@ export const testing = {
     calculateNextCheck,
     competitionTier,
     createSessionToken,
+    dailyFreshnessSlot,
     discoverLevelingTargets,
+    nextDeterministicOkayCheckAt,
     normalizeStatus,
     parseCsv,
     parseStatNumber,

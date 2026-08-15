@@ -7,7 +7,8 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.11.0-batched-observations';
+const originalCaches = globalThis.caches;
+const WORKER_VERSION = '0.12.0-hybrid-scheduler';
 const TERMS_VERSION = '2026-08-14';
 const TERMS_DOCUMENT_SHA256 =
     '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
@@ -20,6 +21,11 @@ const originalDateNow = Date.now;
 afterEach(() => {
     globalThis.fetch = originalFetch;
     Date.now = originalDateNow;
+    if (originalCaches === undefined) {
+        delete globalThis.caches;
+    } else {
+        globalThis.caches = originalCaches;
+    }
 });
 
 
@@ -490,7 +496,124 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
-    it('uses one durable row change per normal completed check', async () => {
+    it('reuses an unfinished edge batch and removes completed checks', async () => {
+        const now = Date.UTC(2026, 7, 15, 12, 0, 0);
+        Date.now = () => now;
+        globalThis.caches = { default: new MemoryCache() };
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(1099, 'edge-batch-session');
+
+        await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/collector/heartbeat',
+                token,
+                {}
+            ),
+            env
+        );
+
+        const claimRequest = () => authenticatedJsonRequest(
+            'https://worker.example/api/checks/claim',
+            token,
+            { interval_capacity: 2, poll_seconds: 300 }
+        );
+        const firstResponse = await worker.fetch(claimRequest(), env);
+        const first = await firstResponse.json();
+        const secondResponse = await worker.fetch(claimRequest(), env);
+        const second = await secondResponse.json();
+
+        assert.equal(first.cache_status, 'miss');
+        assert.equal(second.cache_status, 'hit');
+        assert.deepEqual(
+            second.checks.map(row => row.id),
+            first.checks.map(row => row.id)
+        );
+
+        const completed = first.checks[0];
+        const observationResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
+                {
+                    observations: [{
+                        target_id: completed.id,
+                        state: 'Okay',
+                        description: 'Okay',
+                        until: 0,
+                        source: 'torn_api',
+                        check_batch_id: first.batch_id
+                    }]
+                }
+            ),
+            env
+        );
+        assert.equal(observationResponse.status, 200);
+
+        const remainingResponse = await worker.fetch(claimRequest(), env);
+        const remaining = await remainingResponse.json();
+        assert.equal(remaining.cache_status, 'hit');
+        assert.equal(remaining.count, 1);
+        assert.notEqual(remaining.checks[0].id, completed.id);
+    });
+
+
+    it('schedules unchanged Okay targets from deterministic time buckets', async () => {
+        const now = Date.UTC(2026, 7, 15, 12, 0, 0);
+        Date.now = () => now;
+
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const token = await sessionToken(1102, 'time-bucket-session');
+        const insertStatus = db.sqlite.prepare(`
+            INSERT INTO target_status (
+                target_id,
+                status,
+                status_until,
+                last_checked_at,
+                next_check_at,
+                competition_score,
+                competition_tier
+            )
+            VALUES (?, 'Okay', 0, ?, ?, 0, 'Prime')
+        `);
+
+        for (let id = 1; id <= 6; id++) {
+            insertStatus.run(id, now, now + (365 * 24 * 60 * 60 * 1000));
+        }
+
+        await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/collector/heartbeat',
+                token,
+                {}
+            ),
+            env
+        );
+        const response = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                token,
+                { interval_capacity: 300, poll_seconds: 300 }
+            ),
+            env
+        );
+        const body = await response.json();
+        const scheduleBucket = Math.floor(now / (5 * 60 * 1000));
+        const expected = [1, 2, 3, 4, 5, 6].filter(id => {
+            return id % 3 === scheduleBucket % 3;
+        });
+
+        assert.equal(response.status, 200);
+        assert.equal(body.schedule, 'deterministic_time_bucket');
+        assert.deepEqual(body.checks.map(row => row.id), expected);
+    });
+
+
+    it('skips unchanged Okay writes except during the daily freshness window', async () => {
+        const midday = Date.UTC(2026, 7, 15, 12, 0, 0);
+        Date.now = () => midday;
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
         const token = await sessionToken(1100, 'bulk-observations');
@@ -536,6 +659,59 @@ describe('SLINK Leveling Worker', () => {
                 .prepare('SELECT COUNT(*) AS count FROM client_check_claims')
                 .get().count,
             0
+        );
+
+        const writesAfterInitialState = db.writeChanges;
+        const repeatResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
+                {
+                    observations: Array.from({ length: 60 }, (_, index) => ({
+                        target_id: index + 1,
+                        state: 'Okay',
+                        description: 'Still Okay',
+                        until: 0,
+                        source: 'torn_api'
+                    }))
+                }
+            ),
+            env
+        );
+
+        assert.equal(repeatResponse.status, 200);
+        assert.equal(db.writeChanges, writesAfterInitialState);
+        assert.equal(
+            (await repeatResponse.json()).accepted.every(row => {
+                return row.database_status_written === false;
+            }),
+            true
+        );
+
+        Date.now = () => Date.UTC(2026, 7, 15, 23, 46, 0);
+        const freshnessResponse = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/observations',
+                token,
+                {
+                    observations: Array.from({ length: 60 }, (_, index) => ({
+                        target_id: index + 1,
+                        state: 'Okay',
+                        description: 'Still Okay',
+                        until: 0,
+                        source: 'torn_api'
+                    }))
+                }
+            ),
+            env
+        );
+        const freshnessBody = await freshnessResponse.json();
+
+        assert.equal(freshnessResponse.status, 200);
+        assert.equal(db.writeChanges - writesAfterInitialState, 60);
+        assert.equal(
+            freshnessBody.accepted.every(row => row.freshness_checkpoint),
+            true
         );
     });
 
@@ -1101,6 +1277,18 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(testing.normalizeStatus('Okay but in hospital'), 'Hospital');
         assert.equal(testing.competitionTier(80), 'Farmed');
         assert.equal(testing.rapidPenalty(4 * 60 * 1000), 40);
+        assert.equal(
+            testing.dailyFreshnessSlot(Date.UTC(2026, 7, 15, 23, 44)),
+            -1
+        );
+        assert.equal(
+            testing.dailyFreshnessSlot(Date.UTC(2026, 7, 15, 23, 46)),
+            0
+        );
+        assert.equal(
+            testing.dailyFreshnessSlot(Date.UTC(2026, 7, 15, 23, 56)),
+            2
+        );
         assert.equal(testing.parseStatNumber('1.25m'), 1_250_000);
         assert.deepEqual(
             testing.parseCsv('id,name\r\n1,"Quoted, Name"\r\n'),
@@ -1252,6 +1440,21 @@ class D1StatementAdapter {
                 last_row_id: Number(result.lastInsertRowid || 0)
             }
         };
+    }
+}
+
+
+class MemoryCache {
+    constructor() {
+        this.responses = new Map();
+    }
+
+    async match(request) {
+        return this.responses.get(request.url)?.clone();
+    }
+
+    async put(request, response) {
+        this.responses.set(request.url, response.clone());
     }
 }
 
