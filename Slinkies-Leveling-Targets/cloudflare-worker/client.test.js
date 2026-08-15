@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.11\.0/);
+        assert.match(client, /@version\s+0\.11\.1/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -43,6 +43,24 @@ describe('SLINK Leveling Service thin client', () => {
         ]) {
             assert.ok(client.includes(endpoint), `missing ${endpoint}`);
         }
+    });
+
+
+    it('minimizes to a SLINK bubble without stopping background work', () => {
+        assert.match(client, /id="slp-expand"/);
+        assert.match(client, /Background API work remains active while minimized/);
+        assert.match(client, /bubblePosition:/);
+        assert.match(client, /function installBubbleEdgeBehavior\(/);
+        assert.match(client, /window\.innerWidth - rect\.width - margin/);
+        assert.match(client, /GM_setValue\(KEYS\.bubblePosition, position\)/);
+        assert.match(client, /GM_setValue\(KEYS\.collapsed, false\)/);
+        assert.match(client, /GM_setValue\(KEYS\.collapsed, true\)/);
+
+        const collapsedRender = client.slice(
+            client.indexOf('if (settings.collapsed) {'),
+            client.indexOf('panel.innerHTML = `', client.indexOf('if (settings.collapsed) {') + 1)
+        );
+        assert.doesNotMatch(collapsedRender, /scheduleNextPoll|clearWorkerSession|stop/);
     });
 
 
