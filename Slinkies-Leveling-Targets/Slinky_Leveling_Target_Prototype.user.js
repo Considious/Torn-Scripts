@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.10.0
+// @version      0.11.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,14 +21,33 @@
 (function () {
     'use strict';
 
-    // Release: 0.10.0-balanced-check-sharing
+    // Release: 0.11.0-required-versioned-terms
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.10.0';
+    const SCRIPT_VERSION = '0.11.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
+    const TERMS_VERSION = '2026-08-14';
+    const TERMS_DOCUMENT_SHA256 =
+        '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
+    const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+    const LEVELING_DISCLOSURE_SHA256 =
+        '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+    const TERMS_URL =
+        'https://github.com/Considious/Torn-Scripts/blob/main/' +
+        'Slinkies-Leveling-Targets/terms/2026-08-14/' +
+        'SLINK_API_Data_Terms_of_Service.md';
+    const LEVELING_TERMS_SUMMARY =
+        'Your Torn API key is sent to SLINK only for faction authentication ' +
+        'and is otherwise used locally for assigned Torn requests; ordinary ' +
+        'member keys are not stored remotely. SLINK persistently shares target ' +
+        'status, hospital timing, activity matches, competition measurements, ' +
+        'scheduling and coordination data with authorized Slinky\'s members. ' +
+        'Exact member battle stats and Fair Fight values stay in this browser. ' +
+        'Your Torn user ID, the accepted terms version, document fingerprint ' +
+        'and acceptance time are retained in SLINK\'s separate consent ledger.';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -55,7 +74,8 @@
         ffCache: 'slinkyLeveling.ffCache.v1',
         battleStats: 'slinkyLeveling.localBattleStats.v1',
         runtimeState: 'slinkyLeveling.clientRuntime.v1',
-        clientEvents: 'slinkyLeveling.clientEvents.v1'
+        clientEvents: 'slinkyLeveling.clientEvents.v1',
+        acceptedConsentVersion: 'slinkyLeveling.acceptedConsentVersion.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
@@ -187,6 +207,13 @@
     }
 
 
+    function hasAcceptedCurrentTerms() {
+        return String(
+            GM_getValue(KEYS.acceptedConsentVersion, '') || ''
+        ) === `${TERMS_VERSION}:${LEVELING_DISCLOSURE_VERSION}`;
+    }
+
+
     function clamp(value, minimum, maximum) {
         return Math.min(maximum, Math.max(minimum, value));
     }
@@ -197,6 +224,12 @@
     // ================================================================
 
     async function ensureWorkerSession(force = false) {
+        if (!hasAcceptedCurrentTerms()) {
+            throw new Error(
+                'Review and accept the current SLINK API & Data Terms before authentication.'
+            );
+        }
+
         const token = String(GM_getValue(KEYS.sessionToken, '') || '').trim();
         const expiresAt = Number(GM_getValue(KEYS.sessionExpiresAt, 0)) || 0;
 
@@ -232,7 +265,16 @@
                     method: 'POST',
                     auth: false,
                     retryAuthentication: false,
-                    body: { api_key: apiKey }
+                    body: {
+                        api_key: apiKey,
+                        terms_accepted: true,
+                        terms_version: TERMS_VERSION,
+                        terms_sha256: TERMS_DOCUMENT_SHA256,
+                        disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                        disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+                        client_name: SCRIPT_NAME,
+                        client_version: SCRIPT_VERSION
+                    }
                 });
                 await TornLib.finishTornApiLog(reservation, {
                     status: 200,
@@ -247,6 +289,12 @@
 
             if (!response?.session_token) {
                 throw new Error('Cloudflare did not return a session token.');
+            }
+
+            if (response.terms_version !== TERMS_VERSION) {
+                throw new Error(
+                    'SLINK returned a different terms version. Update the userscript before continuing.'
+                );
             }
 
             GM_setValue(KEYS.sessionToken, response.session_token);
@@ -481,6 +529,16 @@
         }
 
         const settings = getSettings();
+
+        if (!hasAcceptedCurrentTerms()) {
+            clearWorkerSession();
+            state.lastError =
+                'Review and accept the current SLINK API & Data Terms to use this service.';
+            state.cycleStatus = 'Terms acceptance required';
+            state.settingsOpen = true;
+            render();
+            return;
+        }
 
         if (!settings.tornKey) {
             state.lastError = 'Add your Torn API key in Settings.';
@@ -1113,6 +1171,9 @@
             coreLibVersion: TornLib.VERSION,
             workerVersion: state.workerVersion || 'Unknown',
             authenticated: sessionExpiresAt > Date.now(),
+            termsVersion: TERMS_VERSION,
+            levelingDisclosureVersion: LEVELING_DISCLOSURE_VERSION,
+            termsAcceptedLocally: hasAcceptedCurrentTerms(),
             sessionExpiresAt,
             leaderTab: Boolean(state.leader?.isLeader()),
             collector: state.collector,
@@ -1200,6 +1261,12 @@
             .slp-settings .wide { grid-column:1 / -1; }
             .slp-settings input { width:100%; border:1px solid #555; border-radius:4px; background:#11151a; color:#eee; padding:5px 6px; }
             .slp-disclosure { grid-column:1 / -1; color:#999; font-size:10px; }
+            .slp-terms { grid-column:1 / -1; padding:9px; border:1px solid #4c6075; border-radius:6px; background:#18222d; color:#d9e9f7; }
+            .slp-terms strong { display:block; margin-bottom:5px; color:#fff; }
+            .slp-terms p { margin:0 0 7px; }
+            .slp-terms a { color:#8fc9ff; }
+            .slp-terms-agree { display:flex !important; flex-direction:row !important; align-items:flex-start; gap:7px !important; margin-top:8px; color:#fff !important; }
+            .slp-terms-agree input { width:auto; margin:2px 0 0; flex:0 0 auto; }
             .slp-settings-actions { grid-column:1 / -1; display:flex; gap:6px; justify-content:flex-end; }
             .slp-row { padding:7px 8px; border-bottom:1px solid rgba(255,255,255,.07); }
             .slp-row:hover { background:rgba(255,255,255,.035); }
@@ -1282,8 +1349,18 @@
 
 
     function settingsHtml(settings) {
+        const termsAccepted = hasAcceptedCurrentTerms();
         return `
             <div class="slp-settings">
+                <div class="slp-terms">
+                    <strong>Required SLINK Leveling disclosure</strong>
+                    <p>${escapeHtml(LEVELING_TERMS_SUMMARY)}</p>
+                    <a href="${escapeHtml(TERMS_URL)}" target="_blank" rel="noopener noreferrer">Read the complete SLINK API &amp; Data Terms</a>
+                    <label class="slp-terms-agree">
+                        <input id="slp-accept-terms" type="checkbox" ${termsAccepted ? 'checked' : ''}>
+                        <span>I have read the Leveling disclosure above and agree to version ${escapeHtml(TERMS_VERSION)} of the SLINK API &amp; Data Terms.</span>
+                    </label>
+                </div>
                 <label class="wide">Torn API key
                     <input id="slp-torn-key" type="password" value="${escapeHtml(settings.tornKey)}" autocomplete="off">
                 </label>
@@ -1413,6 +1490,24 @@
             render();
         });
         panel.querySelector('#slp-save-settings')?.addEventListener('click', async () => {
+            const accepted = Boolean(
+                panel.querySelector('#slp-accept-terms')?.checked
+            );
+
+            if (!accepted) {
+                GM_setValue(KEYS.acceptedConsentVersion, '');
+                clearWorkerSession();
+                state.lastError =
+                    'You must agree to the current SLINK API & Data Terms before authentication.';
+                state.settingsOpen = true;
+                render();
+                return;
+            }
+
+            GM_setValue(
+                KEYS.acceptedConsentVersion,
+                `${TERMS_VERSION}:${LEVELING_DISCLOSURE_VERSION}`
+            );
             saveSettings({
                 tornKey: panel.querySelector('#slp-torn-key')?.value,
                 ffKey: panel.querySelector('#slp-ff-key')?.value,
@@ -1489,7 +1584,9 @@
             }
         });
 
-        if (!getSettings().tornKey) state.settingsOpen = true;
+        if (!getSettings().tornKey || !hasAcceptedCurrentTerms()) {
+            state.settingsOpen = true;
+        }
         render();
         scheduleAttackPageScrape();
         if (state.leader.isLeader()) {

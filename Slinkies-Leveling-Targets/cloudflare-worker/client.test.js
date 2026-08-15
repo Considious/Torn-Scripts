@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.10\.0/);
+        assert.match(client, /@version\s+0\.11\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -43,6 +43,33 @@ describe('SLINK Leveling Service thin client', () => {
         ]) {
             assert.ok(client.includes(endpoint), `missing ${endpoint}`);
         }
+    });
+
+
+    it('requires the current versioned terms before authentication', () => {
+        assert.match(client, /TERMS_VERSION\s*=\s*'2026-08-14'/);
+        assert.match(client, /LEVELING_DISCLOSURE_VERSION\s*=\s*'2026-08-14'/);
+        assert.match(client, /acceptedConsentVersion:/);
+        assert.match(client, /function hasAcceptedCurrentTerms\(/);
+        assert.match(client, /id="slp-accept-terms"/);
+        assert.match(client, /Read the complete SLINK API &amp; Data Terms/);
+        assert.match(client, /terms_accepted:\s*true/);
+        assert.match(client, /terms_version:\s*TERMS_VERSION/);
+        assert.match(client, /terms_sha256:\s*TERMS_DOCUMENT_SHA256/);
+        assert.match(client, /disclosure_version:\s*LEVELING_DISCLOSURE_VERSION/);
+        assert.match(client, /disclosure_sha256:\s*LEVELING_DISCLOSURE_SHA256/);
+        assert.match(client, /client_version:\s*SCRIPT_VERSION/);
+        assert.match(client, /KEYS\.acceptedConsentVersion/);
+
+        const cycle = client.slice(
+            client.indexOf('async function runCycle('),
+            client.indexOf('async function getUserStatus(')
+        );
+        assert.ok(
+            cycle.indexOf('if (!hasAcceptedCurrentTerms())') <
+                cycle.indexOf('await ensureWorkerSession(false);'),
+            'the client must gate the entire cycle before authentication'
+        );
     });
 
 

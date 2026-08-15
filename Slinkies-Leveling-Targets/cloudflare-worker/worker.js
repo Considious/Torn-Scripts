@@ -1,18 +1,40 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.7.0-balanced-check-sharing
+ * Release: 0.8.0-versioned-terms-consent
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.7.0-balanced-check-sharing';
+const WORKER_VERSION = '0.8.0-versioned-terms-consent';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
     'Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
+
+const TERMS_VERSION = '2026-08-14';
+const TERMS_EFFECTIVE_AT = '2026-08-14';
+const TERMS_URL =
+    'https://github.com/Considious/Torn-Scripts/blob/main/' +
+    'Slinkies-Leveling-Targets/terms/2026-08-14/' +
+    'SLINK_API_Data_Terms_of_Service.md';
+const TERMS_DOCUMENT_SHA256 =
+    '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
+const LEVELING_SERVICE_ID = 'slink-leveling-service';
+const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+const LEVELING_DISCLOSURE_SHA256 =
+    '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+const LEVELING_TERMS_SUMMARY =
+    'Your Torn API key is sent to SLINK only for faction authentication and ' +
+    'is otherwise used locally for assigned Torn requests; ordinary member ' +
+    'keys are not stored remotely. SLINK persistently shares target status, ' +
+    'hospital timing, activity matches, competition measurements, scheduling ' +
+    'and coordination data with authorized Slinky\'s members. Exact member ' +
+    'battle stats and Fair Fight values stay in this browser. Your Torn user ' +
+    'ID, the accepted terms version, document fingerprint and acceptance time ' +
+    'are retained in SLINK\'s separate consent ledger.';
 
 const IMPORT_BATCH_SIZE = 50;
 const DEFAULT_TARGET_LIMIT = 50;
@@ -82,6 +104,13 @@ const worker = {
             request.method === 'GET'
         ) {
             return handleHealth(env);
+        }
+
+        if (
+            url.pathname === '/api/terms' &&
+            request.method === 'GET'
+        ) {
+            return handleTerms();
         }
 
         if (
@@ -246,10 +275,53 @@ async function handleHealth(env) {
             .prepare('SELECT COUNT(*) AS count FROM scheduler_queue')
             .first();
 
+        if (!env.CONSENT_DB) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    version: WORKER_VERSION,
+                    database: 'connected',
+                    consent_database: 'not_configured',
+                    terms: {
+                        version: TERMS_VERSION,
+                        effective_at: TERMS_EFFECTIVE_AT
+                    },
+                    error: 'The CONSENT_DB binding is required.'
+                },
+                500
+            );
+        }
+
+        try {
+            await env.CONSENT_DB
+                .prepare('SELECT id FROM terms_acceptances LIMIT 1')
+                .first();
+        } catch (error) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    version: WORKER_VERSION,
+                    database: 'connected',
+                    consent_database: 'error',
+                    terms: {
+                        version: TERMS_VERSION,
+                        effective_at: TERMS_EFFECTIVE_AT
+                    },
+                    error: errorMessage(error)
+                },
+                500
+            );
+        }
+
         return jsonResponse({
             ok: true,
             version: WORKER_VERSION,
             database: 'connected',
+            consent_database: 'connected',
+            terms: {
+                version: TERMS_VERSION,
+                effective_at: TERMS_EFFECTIVE_AT
+            },
             tables: {
                 targets: targetCount?.count ?? 0,
                 target_status: statusCount?.count ?? 0,
@@ -270,6 +342,22 @@ async function handleHealth(env) {
 }
 
 
+function handleTerms() {
+    return jsonResponse({
+        ok: true,
+        acceptance_required: true,
+        version: TERMS_VERSION,
+        effective_at: TERMS_EFFECTIVE_AT,
+        document_url: TERMS_URL,
+        document_sha256: TERMS_DOCUMENT_SHA256,
+        service_id: LEVELING_SERVICE_ID,
+        disclosure_version: LEVELING_DISCLOSURE_VERSION,
+        disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+        leveling_service_summary: LEVELING_TERMS_SUMMARY
+    });
+}
+
+
 // ================================================================
 // Member authentication and sessions
 // ================================================================
@@ -286,6 +374,16 @@ async function handleAuthentication(request, env) {
             );
         }
 
+        if (!env.CONSENT_DB) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    error: 'Terms acceptance storage is not configured.'
+                },
+                500
+            );
+        }
+
         let body;
 
         try {
@@ -297,6 +395,26 @@ async function handleAuthentication(request, env) {
                     error: errorMessage(error)
                 },
                 400
+            );
+        }
+
+        if (
+            body?.terms_accepted !== true ||
+            body?.terms_version !== TERMS_VERSION ||
+            body?.terms_sha256 !== TERMS_DOCUMENT_SHA256 ||
+            body?.disclosure_version !== LEVELING_DISCLOSURE_VERSION ||
+            body?.disclosure_sha256 !== LEVELING_DISCLOSURE_SHA256
+        ) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    error: 'You must accept the current SLINK API & Data Terms before authentication.',
+                    terms_required: true,
+                    terms_version: TERMS_VERSION,
+                    disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                    terms_url: TERMS_URL
+                },
+                428
             );
         }
 
@@ -375,13 +493,40 @@ async function handleAuthentication(request, env) {
             );
         }
 
-        const issuedAt = Math.floor(Date.now() / 1000);
+        const acceptedAt = Date.now();
+        const issuedAt = Math.floor(acceptedAt / 1000);
         const expiresAt = issuedAt + SESSION_LIFETIME_SECONDS;
+        const sessionId = crypto.randomUUID();
+
+        try {
+            await recordTermsAcceptance(env, {
+                userId,
+                factionId,
+                acceptedAt,
+                clientName: String(body?.client_name || 'SLINK Leveling Service')
+                    .trim()
+                    .slice(0, 100) || 'SLINK Leveling Service',
+                clientVersion: String(body?.client_version || 'unknown')
+                    .trim()
+                    .slice(0, 40) || 'unknown'
+            });
+        } catch (error) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    error: 'Terms acceptance could not be recorded. Access was not granted.',
+                    detail: errorMessage(error)
+                },
+                503
+            );
+        }
 
         const sessionPayload = {
             user_id: userId,
             faction_id: factionId,
-            session_id: crypto.randomUUID(),
+            session_id: sessionId,
+            terms_version: TERMS_VERSION,
+            disclosure_version: LEVELING_DISCLOSURE_VERSION,
             iat: issuedAt,
             exp: expiresAt
         };
@@ -396,6 +541,9 @@ async function handleAuthentication(request, env) {
             authenticated: true,
             user_id: userId,
             faction_id: factionId,
+            terms_version: TERMS_VERSION,
+            disclosure_version: LEVELING_DISCLOSURE_VERSION,
+            terms_accepted_at: new Date(acceptedAt).toISOString(),
             expires_at: new Date(expiresAt * 1000).toISOString(),
             expires_in: SESSION_LIFETIME_SECONDS,
             session_token: sessionToken
@@ -408,6 +556,75 @@ async function handleAuthentication(request, env) {
                 detail: errorMessage(error)
             },
             500
+        );
+    }
+}
+
+
+async function recordTermsAcceptance(env, acceptance) {
+    await env.CONSENT_DB
+        .prepare(`
+            INSERT OR IGNORE INTO terms_acceptances (
+                user_id,
+                faction_id,
+                terms_version,
+                document_sha256,
+                document_url,
+                service_id,
+                disclosure_version,
+                disclosure_sha256,
+                accepted_at,
+                client_name,
+                client_version,
+                acceptance_method
+            )
+            VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                'explicit_checkbox'
+            )
+        `)
+        .bind(
+            acceptance.userId,
+            acceptance.factionId,
+            TERMS_VERSION,
+            TERMS_DOCUMENT_SHA256,
+            TERMS_URL,
+            LEVELING_SERVICE_ID,
+            LEVELING_DISCLOSURE_VERSION,
+            LEVELING_DISCLOSURE_SHA256,
+            acceptance.acceptedAt,
+            acceptance.clientName,
+            acceptance.clientVersion
+        )
+        .run();
+
+    const stored = await env.CONSENT_DB
+        .prepare(`
+            SELECT
+                document_sha256,
+                document_url,
+                disclosure_sha256
+            FROM terms_acceptances
+            WHERE user_id = ?1
+              AND terms_version = ?2
+              AND service_id = ?3
+              AND disclosure_version = ?4
+        `)
+        .bind(
+            acceptance.userId,
+            TERMS_VERSION,
+            LEVELING_SERVICE_ID,
+            LEVELING_DISCLOSURE_VERSION
+        )
+        .first();
+
+    if (
+        stored?.document_sha256 !== TERMS_DOCUMENT_SHA256 ||
+        stored?.document_url !== TERMS_URL ||
+        stored?.disclosure_sha256 !== LEVELING_DISCLOSURE_SHA256
+    ) {
+        throw new Error(
+            'The stored acceptance does not match the current terms document.'
         );
     }
 }
@@ -426,6 +643,8 @@ async function handleSessionCheck(request, env) {
         user_id: session.user_id,
         faction_id: session.faction_id,
         session_id: session.session_id,
+        terms_version: session.terms_version,
+        disclosure_version: session.disclosure_version,
         issued_at: new Date(session.iat * 1000).toISOString(),
         expires_at: new Date(session.exp * 1000).toISOString()
     });
@@ -504,6 +723,8 @@ async function verifySessionToken(token, secret) {
             payload.faction_id !== ALLOWED_FACTION_ID ||
             typeof payload.session_id !== 'string' ||
             !payload.session_id ||
+            payload.terms_version !== TERMS_VERSION ||
+            payload.disclosure_version !== LEVELING_DISCLOSURE_VERSION ||
             !Number.isInteger(payload.iat) ||
             !Number.isInteger(payload.exp) ||
             payload.exp <= now ||

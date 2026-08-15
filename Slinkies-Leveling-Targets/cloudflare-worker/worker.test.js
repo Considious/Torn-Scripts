@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, it } from 'node:test';
@@ -6,7 +7,13 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.7.0-balanced-check-sharing';
+const WORKER_VERSION = '0.8.0-versioned-terms-consent';
+const TERMS_VERSION = '2026-08-14';
+const TERMS_DOCUMENT_SHA256 =
+    '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
+const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+const LEVELING_DISCLOSURE_SHA256 =
+    '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -21,6 +28,7 @@ describe('SLINK Leveling Worker', () => {
         const db = createDatabase();
         const env = {
             DB: db,
+            CONSENT_DB: createConsentDatabase(),
             ADMIN_TOKEN: 'correct-admin-token'
         };
 
@@ -51,6 +59,11 @@ describe('SLINK Leveling Worker', () => {
             ok: true,
             version: WORKER_VERSION,
             database: 'connected',
+            consent_database: 'connected',
+            terms: {
+                version: TERMS_VERSION,
+                effective_at: TERMS_VERSION
+            },
             tables: {
                 targets: 6,
                 target_status: 0,
@@ -85,11 +98,52 @@ describe('SLINK Leveling Worker', () => {
             optionsResponse.headers.get('X-Slinky-Worker-Version'),
             WORKER_VERSION
         );
+
+        const termsResponse = await worker.fetch(
+            new Request('https://worker.example/api/terms'),
+            env
+        );
+        const terms = await termsResponse.json();
+        assert.equal(termsResponse.status, 200);
+        assert.equal(terms.acceptance_required, true);
+        assert.equal(terms.version, TERMS_VERSION);
+        assert.equal(terms.document_sha256, TERMS_DOCUMENT_SHA256);
+        assert.equal(terms.disclosure_version, LEVELING_DISCLOSURE_VERSION);
+        assert.equal(terms.disclosure_sha256, LEVELING_DISCLOSURE_SHA256);
+        assert.match(terms.document_url, /SLINK_API_Data_Terms_of_Service\.md$/);
+        const publishedTerms = readFileSync(
+            new URL(
+                '../terms/2026-08-14/SLINK_API_Data_Terms_of_Service.md',
+                import.meta.url
+            )
+        );
+        assert.equal(
+            createHash('sha256').update(publishedTerms).digest('hex'),
+            TERMS_DOCUMENT_SHA256
+        );
+        const originalTerms = readFileSync(
+            new URL(
+                '../terms/2026-08-14/SLINK_API_Data_Terms_of_Service.docx',
+                import.meta.url
+            )
+        );
+        assert.equal(
+            createHash('sha256').update(originalTerms).digest('hex'),
+            '5303acaf9a596a5799f15731faa7b55e4862172048a8474b5d18c372b6e8d99d'
+        );
+        assert.equal(
+            createHash('sha256')
+                .update(terms.leveling_service_summary, 'utf8')
+                .digest('hex'),
+            LEVELING_DISCLOSURE_SHA256
+        );
     });
 
 
     it('authenticates from Torn info.user and verifies the issued session', async () => {
+        let tornRequests = 0;
         globalThis.fetch = async () => {
+            tornRequests++;
             return Response.json({
                 info: {
                     user: {
@@ -100,10 +154,39 @@ describe('SLINK Leveling Worker', () => {
             });
         };
 
-        const env = { SESSION_SECRET };
-        const authResponse = await worker.fetch(
+        const consentDb = createConsentDatabase();
+        const env = { SESSION_SECRET, CONSENT_DB: consentDb };
+        const unconfiguredResponse = await worker.fetch(
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key',
+                terms_accepted: true,
+                terms_version: TERMS_VERSION,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION
+            }),
+            { SESSION_SECRET }
+        );
+        assert.equal(unconfiguredResponse.status, 500);
+        assert.equal(tornRequests, 0, 'missing consent storage must fail closed');
+
+        const refusedResponse = await worker.fetch(
             jsonRequest('https://worker.example/api/auth', {
                 api_key: 'test-torn-key'
+            }),
+            env
+        );
+        assert.equal(refusedResponse.status, 428);
+        assert.equal(tornRequests, 0, 'Torn must not be contacted before consent');
+
+        const authResponse = await worker.fetch(
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key',
+                terms_accepted: true,
+                terms_version: TERMS_VERSION,
+                terms_sha256: TERMS_DOCUMENT_SHA256,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+                client_name: 'SLINK Leveling Service',
+                client_version: '0.11.0'
             }),
             env
         );
@@ -113,8 +196,64 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(authBody.authenticated, true);
         assert.equal(authBody.user_id, 3853023);
         assert.equal(authBody.faction_id, 46978);
+        assert.equal(authBody.terms_version, TERMS_VERSION);
+        assert.equal(
+            authBody.disclosure_version,
+            LEVELING_DISCLOSURE_VERSION
+        );
         assert.equal(authBody.expires_in, 43200);
         assert.ok(authBody.session_token);
+        assert.equal(tornRequests, 1);
+
+        const acceptance = consentDb.sqlite
+            .prepare('SELECT * FROM terms_acceptances')
+            .get();
+        assert.equal(acceptance.user_id, 3853023);
+        assert.equal(acceptance.faction_id, 46978);
+        assert.equal(acceptance.terms_version, TERMS_VERSION);
+        assert.equal(acceptance.document_sha256, TERMS_DOCUMENT_SHA256);
+        assert.equal(acceptance.service_id, 'slink-leveling-service');
+        assert.equal(
+            acceptance.disclosure_version,
+            LEVELING_DISCLOSURE_VERSION
+        );
+        assert.equal(
+            acceptance.disclosure_sha256,
+            LEVELING_DISCLOSURE_SHA256
+        );
+        assert.equal(acceptance.acceptance_method, 'explicit_checkbox');
+
+        const repeatedResponse = await worker.fetch(
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key',
+                terms_accepted: true,
+                terms_version: TERMS_VERSION,
+                terms_sha256: TERMS_DOCUMENT_SHA256,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+                client_name: 'SLINK Leveling Service',
+                client_version: '0.11.0'
+            }),
+            env
+        );
+        assert.equal(repeatedResponse.status, 200);
+        assert.equal(
+            consentDb.sqlite
+                .prepare('SELECT COUNT(*) AS count FROM terms_acceptances')
+                .get().count,
+            1,
+            're-authentication must not overwrite or duplicate this version'
+        );
+        assert.throws(() => {
+            consentDb.sqlite
+                .prepare('UPDATE terms_acceptances SET client_version = ?')
+                .run('changed');
+        }, /append-only/);
+        assert.throws(() => {
+            consentDb.sqlite
+                .prepare('DELETE FROM terms_acceptances')
+                .run();
+        }, /append-only/);
 
         const sessionResponse = await worker.fetch(
             authenticatedRequest(
@@ -124,7 +263,13 @@ describe('SLINK Leveling Worker', () => {
             env
         );
         assert.equal(sessionResponse.status, 200);
-        assert.equal((await sessionResponse.json()).authenticated, true);
+        const sessionBody = await sessionResponse.json();
+        assert.equal(sessionBody.authenticated, true);
+        assert.equal(sessionBody.terms_version, TERMS_VERSION);
+        assert.equal(
+            sessionBody.disclosure_version,
+            LEVELING_DISCLOSURE_VERSION
+        );
     });
 
 
@@ -553,6 +698,8 @@ describe('SLINK Leveling Worker', () => {
                 user_id: 3853023,
                 faction_id: 46978,
                 session_id: crypto.randomUUID(),
+                terms_version: TERMS_VERSION,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION,
                 iat: now - 43201,
                 exp: now - 1
             },
@@ -561,6 +708,22 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(
             await testing.verifySessionToken(expiredToken, SESSION_SECRET),
             null
+        );
+
+        const preConsentToken = await testing.createSessionToken(
+            {
+                user_id: 3853023,
+                faction_id: 46978,
+                session_id: crypto.randomUUID(),
+                iat: now,
+                exp: now + 43200
+            },
+            SESSION_SECRET
+        );
+        assert.equal(
+            await testing.verifySessionToken(preConsentToken, SESSION_SECRET),
+            null,
+            'sessions issued before required consent must stop working'
         );
 
         const validToken = await sessionToken(3853023);
@@ -624,6 +787,21 @@ function createDatabase() {
         );
     }
 
+    return new D1DatabaseAdapter(sqlite);
+}
+
+
+function createConsentDatabase() {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(
+        readFileSync(
+            new URL(
+                './consent-database/0001-terms-acceptances.sql',
+                import.meta.url
+            ),
+            'utf8'
+        )
+    );
     return new D1DatabaseAdapter(sqlite);
 }
 
@@ -701,6 +879,8 @@ async function sessionToken(userId, sessionId = crypto.randomUUID()) {
             user_id: userId,
             faction_id: 46978,
             session_id: sessionId,
+            terms_version: TERMS_VERSION,
+            disclosure_version: LEVELING_DISCLOSURE_VERSION,
             iat: now,
             exp: now + 43200
         },
