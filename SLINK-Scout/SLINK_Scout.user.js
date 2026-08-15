@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Scout
 // @namespace    Considious [3853023]
-// @version      0.1.0
+// @version      0.2.0
 // @description  Local FFScouter discovery companion for finding possible SLINK targets.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,22 +19,32 @@
 (function () {
     'use strict';
 
-    // Release: 0.1.0-ffscouter-local-csv-discovery
+    // Release: 0.2.0-duplicate-aware-auto-collection
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.1.0';
+    const SCRIPT_VERSION = '0.2.0';
     const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
     const REQUEST_COOLDOWN_MS = 12_500;
+    const AUTO_INTERVAL_MS = 15_000;
+    const SATURATION_OVERLAP = 0.8;
+    const SATURATION_STREAK_LIMIT = 3;
+    const AUTO_LEASE_MS = 35_000;
+    const AUTO_LEASE_RENEW_MS = 10_000;
     const MAX_RESULTS = 50;
+    const DISPLAY_LIMIT = 200;
+    const INSTANCE_ID = globalThis.crypto?.randomUUID?.() ||
+        `slink-scout-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     const KEYS = {
         ffKey: 'slinkScout.ffscouterKey.v1',
         filters: 'slinkScout.filters.v1',
         seen: 'slinkScout.seenIds.v1',
         lastResults: 'slinkScout.lastResults.v1',
+        collection: 'slinkScout.collection.v1',
         lastRequestAt: 'slinkScout.lastRequestAt.v1',
+        autoLease: 'slinkScout.autoLease.v1',
         collapsed: 'slinkScout.collapsed.v1',
         panelPosition: 'slinkScout.panelPosition.v1',
         bubblePosition: 'slinkScout.bubblePosition.v1'
@@ -51,16 +61,33 @@
         randomSample: true,
         inactiveOnly: true,
         factionlessOnly: false,
-        hideSeen: true,
         resultLimit: 50
     });
 
+    const savedCollection = loadJson(
+        KEYS.collection,
+        loadJson(KEYS.lastResults, [])
+    );
     const state = {
         busy: false,
         error: '',
         message: 'Ready for a manual FFScouter search.',
-        results: loadJson(KEYS.lastResults, []),
-        returnedCount: 0
+        results: Array.isArray(savedCollection) ? savedCollection : [],
+        returnedCount: 0,
+        autoRunning: false,
+        autoTimer: null,
+        autoLeaseTimer: null,
+        autoRuns: 0,
+        autoDuplicateStreak: 0,
+        autoEmptyStreak: 0,
+        autoNextAt: 0,
+        autoStopRequested: false,
+        attention: false,
+        originalTitle: document.title,
+        attentionTimer: null,
+        titleTimer: null,
+        autoApiKey: '',
+        autoFilters: null
     };
     let panelDragController = null;
 
@@ -162,6 +189,22 @@
     }
 
 
+    function formatLocalTime(milliseconds) {
+        const parsed = Number(milliseconds);
+        return Number.isFinite(parsed) && parsed > 0
+            ? new Date(parsed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            : '';
+    }
+
+
+    function formatMilliseconds(milliseconds) {
+        const parsed = Number(milliseconds);
+        return Number.isFinite(parsed) && parsed > 0
+            ? new Date(parsed).toISOString()
+            : '';
+    }
+
+
     // ================================================================
     // FFScouter discovery
     // ================================================================
@@ -196,7 +239,6 @@
             randomSample: Boolean(panel.querySelector('#sls-random')?.checked),
             inactiveOnly: Boolean(panel.querySelector('#sls-inactive')?.checked),
             factionlessOnly: Boolean(panel.querySelector('#sls-factionless')?.checked),
-            hideSeen: Boolean(panel.querySelector('#sls-hide-seen')?.checked),
             resultLimit: clamp(Number(panel.querySelector('#sls-limit')?.value) || 50, 1, MAX_RESULTS)
         };
 
@@ -227,7 +269,7 @@
         if (filters.randomSample) {
             return `${FFSCOUTER_TARGETS_URL}?${new URLSearchParams({
                 key: apiKey,
-                limit: String(MAX_RESULTS)
+                limit: String(filters.resultLimit)
             })}`;
         }
 
@@ -247,7 +289,7 @@
     }
 
 
-    function filterAndSortTargets(targets, filters, alreadySeen) {
+    function qualifyingTargets(targets, filters) {
         const minimumStats = parseStatInput(filters.minBattleStats);
         const maximumStats = parseStatInput(filters.maxBattleStats);
 
@@ -259,7 +301,6 @@
                 target.fair_fight < filters.minFairFight ||
                 target.fair_fight > filters.maxFairFight
             )) return false;
-            if (filters.hideSeen && alreadySeen[target.player_id]) return false;
             if (minimumStats !== null && (
                 target.bs_estimate === null || target.bs_estimate < minimumStats
             )) return false;
@@ -271,7 +312,7 @@
             const leftStats = left.bs_estimate ?? Number.POSITIVE_INFINITY;
             const rightStats = right.bs_estimate ?? Number.POSITIVE_INFINITY;
             return leftStats - rightStats || right.level - left.level || left.player_id - right.player_id;
-        }).slice(0, filters.resultLimit);
+        });
     }
 
 
@@ -285,59 +326,325 @@
     }
 
 
+    function mergeCollection(targets) {
+        const collected = new Map(
+            state.results.map(target => [Number(target.player_id), target])
+        );
+        const now = Date.now();
+        for (const target of targets) {
+            const existing = collected.get(target.player_id);
+            collected.set(target.player_id, {
+                ...existing,
+                ...target,
+                first_seen_at: Number(existing?.first_seen_at || existing?.discovered_at) || now,
+                last_seen_at: now,
+                times_seen: (Number(existing?.times_seen) || 0) + 1,
+                discovered_at: Number(existing?.discovered_at) || now
+            });
+        }
+        state.results = [...collected.values()].sort((left, right) => {
+            const leftStats = left.bs_estimate ?? Number.POSITIVE_INFINITY;
+            const rightStats = right.bs_estimate ?? Number.POSITIVE_INFINITY;
+            return leftStats - rightStats || right.level - left.level || left.player_id - right.player_id;
+        });
+        saveJson(KEYS.collection, state.results);
+    }
+
+
+    function readSearchInputs(panel) {
+        const apiKey = String(panel.querySelector('#sls-ff-key')?.value || '').trim();
+        if (!/^[A-Za-z0-9]{16}$/.test(apiKey)) {
+            throw new Error('Enter the 16-character API key registered with FFScouter.');
+        }
+        const filters = readFilters(panel);
+        GM_setValue(KEYS.ffKey, apiKey);
+        saveJson(KEYS.filters, filters);
+        return { apiKey, filters };
+    }
+
+
+    async function requestDiscoveryBatch(apiKey, filters) {
+        const lastRequestAt = Number(GM_getValue(KEYS.lastRequestAt, 0)) || 0;
+        const waitMs = REQUEST_COOLDOWN_MS - (Date.now() - lastRequestAt);
+        if (waitMs > 0) {
+            throw new Error(`FFScouter allows five searches per minute. Try again in ${Math.ceil(waitMs / 1000)} seconds.`);
+        }
+        GM_setValue(KEYS.lastRequestAt, Date.now());
+
+        const response = await TornLib.requestJson(
+            buildDiscoveryUrl(apiKey, filters),
+            {
+                headers: { Accept: 'application/json' },
+                timeout: 20_000,
+                invalidJsonMessage: 'FFScouter returned an invalid response.',
+                networkErrorMessage: 'Could not reach FFScouter.',
+                timeoutMessage: 'FFScouter took too long to respond.'
+            }
+        );
+        const returned = Array.isArray(response?.targets)
+            ? response.targets.map(normalizeTarget)
+            : [];
+        const eligible = qualifyingTargets(returned, filters);
+        const previousSeen = seenMap();
+        const newTargets = eligible.filter(target => !previousSeen[target.player_id]);
+        const duplicateCount = eligible.length - newTargets.length;
+        const duplicateRatio = eligible.length ? duplicateCount / eligible.length : 0;
+
+        mergeCollection(eligible);
+        markSeen(eligible);
+        state.returnedCount = returned.length;
+        return {
+            returnedCount: returned.length,
+            eligibleCount: eligible.length,
+            newCount: newTargets.length,
+            duplicateCount,
+            duplicateRatio
+        };
+    }
+
+
+    function batchSummary(batch) {
+        const overlap = Math.round(batch.duplicateRatio * 100);
+        return `${batch.returnedCount} returned · ${batch.eligibleCount} qualified · ${batch.newCount} new · ${overlap}% overlap`;
+    }
+
+
     async function discover(panel) {
-        if (state.busy) return;
+        if (state.busy || state.autoRunning) return;
         state.error = '';
-
         try {
-            const apiKey = String(panel.querySelector('#sls-ff-key')?.value || '').trim();
-            if (!/^[A-Za-z0-9]{16}$/.test(apiKey)) {
-                throw new Error('Enter the 16-character API key registered with FFScouter.');
-            }
-
-            const filters = readFilters(panel);
-            const lastRequestAt = Number(GM_getValue(KEYS.lastRequestAt, 0)) || 0;
-            const waitMs = REQUEST_COOLDOWN_MS - (Date.now() - lastRequestAt);
-            if (waitMs > 0) {
-                throw new Error(`FFScouter allows five searches per minute. Try again in ${Math.ceil(waitMs / 1000)} seconds.`);
-            }
-
-            GM_setValue(KEYS.ffKey, apiKey);
-            saveJson(KEYS.filters, filters);
-            GM_setValue(KEYS.lastRequestAt, Date.now());
+            const { apiKey, filters } = readSearchInputs(panel);
             state.busy = true;
             state.message = 'Asking FFScouter for candidate targets…';
             render();
-
-            const response = await TornLib.requestJson(
-                buildDiscoveryUrl(apiKey, filters),
-                {
-                    headers: { Accept: 'application/json' },
-                    timeout: 20_000,
-                    invalidJsonMessage: 'FFScouter returned an invalid response.',
-                    networkErrorMessage: 'Could not reach FFScouter.',
-                    timeoutMessage: 'FFScouter took too long to respond.'
-                }
-            );
-
-            const returned = Array.isArray(response?.targets)
-                ? response.targets.map(normalizeTarget)
-                : [];
-            const visible = filterAndSortTargets(returned, filters, seenMap());
-            state.returnedCount = returned.length;
-            state.results = visible;
-            markSeen(visible);
-            saveJson(KEYS.lastResults, visible);
-
-            const hidden = returned.length - visible.length;
-            state.message = visible.length
-                ? `FFScouter returned ${returned.length}; showing ${visible.length} lowest-stat matches${hidden ? ` after hiding ${hidden}` : ''}.`
-                : `FFScouter returned ${returned.length}, but every result was excluded by the local battle-stat or seen filters.`;
+            const batch = await requestDiscoveryBatch(apiKey, filters);
+            state.message = `${batchSummary(batch)}. Collection now has ${state.results.length} unique candidates.`;
         } catch (error) {
             state.error = TornLib.errorMessage(error);
             state.message = 'Discovery did not complete.';
         } finally {
             state.busy = false;
+            render();
+        }
+    }
+
+
+    // ================================================================
+    // Duplicate-aware automatic collection
+    // ================================================================
+
+    function readAutoLease() {
+        const lease = loadJson(KEYS.autoLease, null);
+        return lease && typeof lease === 'object' ? lease : null;
+    }
+
+
+    function acquireAutoLease() {
+        const now = Date.now();
+        const current = readAutoLease();
+        if (current && current.owner !== INSTANCE_ID && Number(current.expiresAt) > now) {
+            throw new Error('Automatic collection is already running in another Torn tab.');
+        }
+        saveJson(KEYS.autoLease, {
+            owner: INSTANCE_ID,
+            expiresAt: now + AUTO_LEASE_MS
+        });
+        if (readAutoLease()?.owner !== INSTANCE_ID) {
+            throw new Error('Another Torn tab started automatic collection first.');
+        }
+    }
+
+
+    function renewAutoLease() {
+        const current = readAutoLease();
+        if (!state.autoRunning || current?.owner !== INSTANCE_ID) return false;
+        saveJson(KEYS.autoLease, {
+            owner: INSTANCE_ID,
+            expiresAt: Date.now() + AUTO_LEASE_MS
+        });
+        return readAutoLease()?.owner === INSTANCE_ID;
+    }
+
+
+    function releaseAutoLease() {
+        if (readAutoLease()?.owner === INSTANCE_ID) {
+            saveJson(KEYS.autoLease, null);
+        }
+    }
+
+
+    function clearAttention() {
+        state.attention = false;
+        clearTimeout(state.attentionTimer);
+        clearInterval(state.titleTimer);
+        state.attentionTimer = null;
+        state.titleTimer = null;
+        document.title = state.originalTitle;
+    }
+
+
+    function flashAttention(message) {
+        clearAttention();
+        state.attention = true;
+        let showWarning = true;
+        const warningTitle = '⚠ SLINK Scout: adjust filters';
+        document.title = warningTitle;
+        state.titleTimer = setInterval(() => {
+            showWarning = !showWarning;
+            document.title = showWarning ? warningTitle : state.originalTitle;
+        }, 900);
+        state.attentionTimer = setTimeout(() => {
+            clearAttention();
+            render();
+        }, 20_000);
+        setTimeout(() => globalThis.alert(`SLINK Scout stopped\n\n${message}`), 0);
+    }
+
+
+    function scheduleAutomatic(delayMs) {
+        clearTimeout(state.autoTimer);
+        const delay = Math.max(0, Number(delayMs) || 0);
+        state.autoNextAt = Date.now() + delay;
+        state.autoTimer = setTimeout(() => {
+            void runAutomaticCycle();
+        }, delay);
+    }
+
+
+    function stopAutomatic(reason, options = {}) {
+        const {
+            needsAttention = false,
+            exportCollection = false,
+            isError = false
+        } = options;
+        clearTimeout(state.autoTimer);
+        clearInterval(state.autoLeaseTimer);
+        state.autoTimer = null;
+        state.autoLeaseTimer = null;
+        state.autoRunning = false;
+        state.busy = false;
+        state.autoNextAt = 0;
+        state.autoStopRequested = false;
+        state.autoApiKey = '';
+        state.autoFilters = null;
+        releaseAutoLease();
+        const stopMessage = reason || 'Automatic collection stopped.';
+        if (exportCollection && state.results.length) {
+            exportCsv({ automatic: true, renderAfter: false });
+        }
+        state.message = stopMessage;
+        state.error = isError ? stopMessage : '';
+        if (needsAttention) flashAttention(stopMessage);
+        render();
+    }
+
+
+    function requestAutomaticStop() {
+        if (!state.autoRunning) return;
+        if (state.busy) {
+            state.autoStopRequested = true;
+            state.message = 'Stopping after the current FFScouter request finishes…';
+            render();
+            return;
+        }
+        stopAutomatic('Automatic collection stopped manually.', { exportCollection: true });
+    }
+
+
+    async function runAutomaticCycle() {
+        if (!state.autoRunning || state.busy) return;
+        if (!renewAutoLease()) {
+            stopAutomatic('Automatic collection stopped because another tab took over.', {
+                needsAttention: true,
+                exportCollection: true,
+                isError: true
+            });
+            return;
+        }
+
+        state.busy = true;
+        state.autoNextAt = 0;
+        state.error = '';
+        state.message = `Automatic run ${state.autoRuns + 1}: asking FFScouter for candidates…`;
+        render();
+        try {
+            const batch = await requestDiscoveryBatch(state.autoApiKey, state.autoFilters);
+            if (!state.autoRunning) return;
+            state.autoRuns += 1;
+            if (state.autoStopRequested) {
+                stopAutomatic('Automatic collection stopped manually after the current request finished.', {
+                    exportCollection: true
+                });
+                return;
+            }
+            state.autoDuplicateStreak = batch.eligibleCount > 0 && batch.duplicateRatio >= SATURATION_OVERLAP
+                ? state.autoDuplicateStreak + 1
+                : 0;
+            state.autoEmptyStreak = batch.eligibleCount === 0
+                ? state.autoEmptyStreak + 1
+                : 0;
+
+            if (state.autoDuplicateStreak >= SATURATION_STREAK_LIMIT) {
+                stopAutomatic(
+                    `At least 80% of qualified results were already seen for ${SATURATION_STREAK_LIMIT} searches in a row. Lower the minimum level or widen the filters, then start again.`,
+                    { needsAttention: true, exportCollection: true }
+                );
+                return;
+            }
+            if (state.autoEmptyStreak >= SATURATION_STREAK_LIMIT) {
+                stopAutomatic(
+                    `${SATURATION_STREAK_LIMIT} searches in a row found no candidates matching these filters. Lower the minimum level or widen the filters, then start again.`,
+                    { needsAttention: true, exportCollection: true }
+                );
+                return;
+            }
+
+            state.message = `${batchSummary(batch)}. Automatic run ${state.autoRuns} complete; collection has ${state.results.length} unique candidates.`;
+            state.busy = false;
+            scheduleAutomatic(AUTO_INTERVAL_MS);
+            render();
+        } catch (error) {
+            stopAutomatic(`Automatic collection stopped: ${TornLib.errorMessage(error)}`, {
+                needsAttention: true,
+                exportCollection: true,
+                isError: true
+            });
+        }
+    }
+
+
+    function startAutomatic(panel) {
+        if (state.autoRunning || state.busy) return;
+        clearAttention();
+        state.error = '';
+        try {
+            const { apiKey, filters } = readSearchInputs(panel);
+            acquireAutoLease();
+            state.autoRunning = true;
+            state.autoApiKey = apiKey;
+            state.autoFilters = filters;
+            state.autoRuns = 0;
+            state.autoDuplicateStreak = 0;
+            state.autoEmptyStreak = 0;
+            state.autoStopRequested = false;
+            state.message = 'Automatic collection started. Filters are locked until it stops.';
+            state.autoLeaseTimer = setInterval(() => {
+                if (!renewAutoLease()) {
+                    stopAutomatic('Automatic collection stopped because its tab lock was lost.', {
+                        needsAttention: true,
+                        exportCollection: true,
+                        isError: true
+                    });
+                }
+            }, AUTO_LEASE_RENEW_MS);
+            const lastRequestAt = Number(GM_getValue(KEYS.lastRequestAt, 0)) || 0;
+            const initialDelay = Math.max(0, REQUEST_COOLDOWN_MS - (Date.now() - lastRequestAt));
+            scheduleAutomatic(initialDelay);
+            render();
+        } catch (error) {
+            releaseAutoLease();
+            state.error = TornLib.errorMessage(error);
+            state.message = 'Automatic collection did not start.';
             render();
         }
     }
@@ -355,8 +662,9 @@
     }
 
 
-    function exportCsv() {
-        if (!state.results.length) return;
+    function exportCsv(options = {}) {
+        const { automatic = false, renderAfter = true } = options;
+        if (!state.results.length) return false;
         const header = [
             'player_id',
             'name',
@@ -372,7 +680,10 @@
             'hospital_until',
             'profile_url',
             'attack_url',
-            'discovered_at_utc'
+            'discovered_at_utc',
+            'first_seen_at_utc',
+            'last_seen_at_utc',
+            'times_seen'
         ];
         const rows = state.results.map(target => [
             target.player_id,
@@ -389,7 +700,10 @@
             target.hospital_until || '',
             `https://www.torn.com/profiles.php?XID=${target.player_id}`,
             TornLib.attackLink(target.player_id),
-            new Date(target.discovered_at).toISOString()
+            formatMilliseconds(target.discovered_at),
+            formatMilliseconds(target.first_seen_at || target.discovered_at),
+            formatMilliseconds(target.last_seen_at || target.discovered_at),
+            Number(target.times_seen) || 1
         ]);
         const csv = [header, ...rows]
             .map(row => row.map(csvCell).join(','))
@@ -399,13 +713,14 @@
         const link = document.createElement('a');
         const timestamp = new Date().toISOString().replaceAll(':', '-').replace(/\.\d{3}Z$/, 'Z');
         link.href = url;
-        link.download = `slink-scout-${timestamp}.csv`;
+        link.download = `slink-scout-${automatic ? 'auto-' : ''}${timestamp}.csv`;
         document.body.appendChild(link);
         link.click();
         link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         state.message = `Exported ${state.results.length} candidates to CSV.`;
-        render();
+        if (renderAfter) render();
+        return true;
     }
 
 
@@ -429,6 +744,8 @@
             .sls-btn { border:1px solid rgba(255,255,255,.16); border-radius:5px; padding:5px 8px; background:#29343a; color:#eee; cursor:pointer; }
             .sls-btn:hover { background:#38464e; }
             .sls-btn:disabled { opacity:.5; cursor:default; }
+            .sls-btn.sls-stop { background:#713737; border-color:#a95b5b; }
+            .sls-btn.sls-start { background:#176653; border-color:#318d76; }
             .sls-body { max-height:calc(100vh - 165px); overflow:auto; }
             .sls-disclosure { padding:8px 9px; color:#b9c8cc; background:#18272d; border-bottom:1px solid rgba(255,255,255,.08); }
             .sls-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; padding:9px; border-bottom:1px solid rgba(255,255,255,.09); }
@@ -461,6 +778,12 @@
             #slink-scout-panel.sls-dragging .sls-bubble { cursor:grabbing; }
             .sls-bubble-dot { position:absolute; right:2px; bottom:3px; width:11px; height:11px; border:2px solid #152522; border-radius:50%; background:#60dd89; }
             .sls-bubble-dot.sls-bubble-error { background:#ff7373; }
+            @keyframes sls-attention-pulse {
+                0%,100% { box-shadow:0 8px 24px rgba(0,0,0,.44),0 0 0 0 rgba(255,93,93,.2); }
+                50% { box-shadow:0 8px 24px rgba(0,0,0,.44),0 0 0 7px rgba(255,93,93,.55); }
+            }
+            #slink-scout-panel.sls-attention { border-color:#ff7777; animation:sls-attention-pulse .9s infinite; }
+            #slink-scout-panel.sls-attention .sls-bubble { background:linear-gradient(145deg,#b84c4c,#6f2424); }
         `);
     }
 
@@ -511,6 +834,7 @@
             const moved = pointer.moved;
             pointer = null;
             if (!moved) {
+                clearAttention();
                 GM_setValue(KEYS.collapsed, false);
                 render();
                 return;
@@ -534,26 +858,28 @@
 
     function filtersHtml(filters) {
         const apiKey = String(GM_getValue(KEYS.ffKey, '') || '');
-        const fairFightDisabled = filters.useFairFight ? '' : 'disabled';
+        const controlsDisabled = state.autoRunning ? 'disabled' : '';
+        const fairFightDisabled = filters.useFairFight && !state.autoRunning ? '' : 'disabled';
+        const nextRun = state.autoNextAt ? formatLocalTime(state.autoNextAt) : '';
         return `
             <div class="sls-disclosure">
                 Local discovery only. Your key is stored in this Tampermonkey script and sent only to FFScouter. This tool does not scrape Torn pages or send candidates to SLINK yet.
             </div>
             <div class="sls-filters">
                 <label class="sls-wide">FFScouter-registered API key
-                    <input id="sls-ff-key" type="password" value="${escapeHtml(apiKey)}" autocomplete="off">
+                    <input id="sls-ff-key" type="password" value="${escapeHtml(apiKey)}" autocomplete="off" ${controlsDisabled}>
                 </label>
                 <label>Minimum level
-                    <input id="sls-min-level" type="number" min="1" max="100" value="${filters.minLevel}">
+                    <input id="sls-min-level" type="number" min="1" max="100" value="${filters.minLevel}" ${controlsDisabled}>
                 </label>
                 <label>Maximum level
-                    <input id="sls-max-level" type="number" min="1" max="100" value="${filters.maxLevel}">
+                    <input id="sls-max-level" type="number" min="1" max="100" value="${filters.maxLevel}" ${controlsDisabled}>
                 </label>
                 <label>Minimum estimated stats
-                    <input id="sls-min-bs" type="text" value="${escapeHtml(filters.minBattleStats)}" placeholder="Blank or 100k">
+                    <input id="sls-min-bs" type="text" value="${escapeHtml(filters.minBattleStats)}" placeholder="Blank or 100k" ${controlsDisabled}>
                 </label>
                 <label>Maximum estimated stats
-                    <input id="sls-max-bs" type="text" value="${escapeHtml(filters.maxBattleStats)}" placeholder="Blank or 10m">
+                    <input id="sls-max-bs" type="text" value="${escapeHtml(filters.maxBattleStats)}" placeholder="Blank or 10m" ${controlsDisabled}>
                 </label>
                 <label>Minimum Fair Fight
                     <input id="sls-min-ff" type="number" min="1" max="3" step=".05" value="${filters.minFairFight}" ${fairFightDisabled}>
@@ -562,23 +888,26 @@
                     <input id="sls-max-ff" type="number" min="1" max="3" step=".05" value="${filters.maxFairFight}" ${fairFightDisabled}>
                 </label>
                 <label>Result limit
-                    <input id="sls-limit" type="number" min="1" max="50" value="${filters.resultLimit}">
+                    <input id="sls-limit" type="number" min="1" max="50" value="${filters.resultLimit}" ${controlsDisabled}>
                 </label>
                 <div></div>
                 <div class="sls-checks">
-                    <label><input id="sls-random" type="checkbox" ${filters.randomSample ? 'checked' : ''}> Random discovery</label>
-                    <label><input id="sls-use-ff" type="checkbox" ${filters.useFairFight ? 'checked' : ''}> Filter by Fair Fight</label>
-                    <label><input id="sls-hide-seen" type="checkbox" ${filters.hideSeen ? 'checked' : ''}> Hide locally seen IDs</label>
-                    <label><input id="sls-inactive" type="checkbox" ${filters.inactiveOnly ? 'checked' : ''}> Inactive only (14+ days)</label>
-                    <label><input id="sls-factionless" type="checkbox" ${filters.factionlessOnly ? 'checked' : ''}> Factionless only</label>
+                    <label><input id="sls-random" type="checkbox" ${filters.randomSample ? 'checked' : ''} ${controlsDisabled}> Random discovery</label>
+                    <label><input id="sls-use-ff" type="checkbox" ${filters.useFairFight ? 'checked' : ''} ${controlsDisabled}> Filter by Fair Fight</label>
+                    <label><input id="sls-inactive" type="checkbox" ${filters.inactiveOnly ? 'checked' : ''} ${controlsDisabled}> Inactive only (14+ days)</label>
+                    <label><input id="sls-factionless" type="checkbox" ${filters.factionlessOnly ? 'checked' : ''} ${controlsDisabled}> Factionless only</label>
                 </div>
                 <div class="sls-filter-note">
-                    Random discovery is recommended: FFScouter returns a fresh inactive sample, then level, optional FF, seen-ID, and estimated-stat filters are applied locally. Turn it off for FFScouter’s targeted search, which may repeat the same strongest 50 results. Display order is lowest estimated stats first.
+                    Random discovery is recommended. Automatic mode waits 15 seconds after each completed request, remembers every unique candidate locally, and stops after three 80%+ duplicate batches or three empty batches. When it stops, lower the minimum level or widen the filters.
                 </div>
+                ${state.autoRunning ? `<div class="sls-filter-note">Automatic run ${state.autoRuns} · duplicate streak ${state.autoDuplicateStreak}/${SATURATION_STREAK_LIMIT} · empty streak ${state.autoEmptyStreak}/${SATURATION_STREAK_LIMIT}${nextRun ? ` · next request ${escapeHtml(nextRun)}` : ' · request in progress'}</div>` : ''}
                 <div class="sls-actions">
-                    <button class="sls-btn" id="sls-clear-seen">Clear seen history</button>
-                    <button class="sls-btn" id="sls-export" ${state.results.length ? '' : 'disabled'}>Export displayed CSV</button>
-                    <button class="sls-btn" id="sls-search" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Searching…' : 'Search FFScouter'}</button>
+                    <button class="sls-btn" id="sls-clear-collection" ${state.autoRunning ? 'disabled' : ''}>Clear collection + seen</button>
+                    <button class="sls-btn" id="sls-export" ${state.results.length ? '' : 'disabled'}>Export collection CSV</button>
+                    <button class="sls-btn" id="sls-search" ${state.busy || state.autoRunning ? 'disabled' : ''}>${state.busy && !state.autoRunning ? 'Searching…' : 'Search once'}</button>
+                    ${state.autoRunning
+                        ? `<button class="sls-btn sls-stop" id="sls-auto-stop" ${state.autoStopRequested ? 'disabled' : ''}>${state.autoStopRequested ? 'Stopping…' : 'Stop automatic'}</button>`
+                        : `<button class="sls-btn sls-start" id="sls-auto-start" ${state.busy ? 'disabled' : ''}>Start automatic</button>`}
                 </div>
             </div>
         `;
@@ -587,14 +916,15 @@
 
     function resultsHtml() {
         if (!state.results.length) {
-            return '<div class="sls-empty">No displayed candidates yet.</div>';
+            return '<div class="sls-empty">No collected candidates yet.</div>';
         }
+        const displayed = state.results.slice(0, DISPLAY_LIMIT);
         return `
             <div class="sls-results">
                 <table class="sls-table">
                     <thead><tr><th>Player</th><th>Level</th><th>Est. stats</th><th>FF</th><th>Last action</th><th>Actions</th></tr></thead>
                     <tbody>
-                        ${state.results.map(target => {
+                        ${displayed.map(target => {
                             const profile = `https://www.torn.com/profiles.php?XID=${target.player_id}`;
                             const attack = TornLib.attackLink(target.player_id);
                             return `
@@ -610,6 +940,7 @@
                         }).join('')}
                     </tbody>
                 </table>
+                ${state.results.length > DISPLAY_LIMIT ? `<div class="sls-empty">Showing the first ${DISPLAY_LIMIT} candidates. All ${state.results.length} are included in the CSV export.</div>` : ''}
             </div>
         `;
     }
@@ -619,12 +950,13 @@
         const panel = ensurePanel();
         const collapsed = Boolean(GM_getValue(KEYS.collapsed, false));
         panel.classList.toggle('sls-collapsed', collapsed);
+        panel.classList.toggle('sls-attention', state.attention);
 
         if (collapsed) {
             panel.innerHTML = `
                 <div class="sls-bubble" id="sls-expand" role="button" tabindex="0" title="Open SLINK Scout" aria-label="Open SLINK Scout">
                     <span>SS</span>
-                    <span class="sls-bubble-dot ${state.error ? 'sls-bubble-error' : ''}" aria-hidden="true"></span>
+                    <span class="sls-bubble-dot ${state.error || state.attention ? 'sls-bubble-error' : ''}" aria-hidden="true"></span>
                 </div>
             `;
             applySavedPanelPosition(true);
@@ -642,10 +974,10 @@
                 ${filtersHtml(filters)}
                 ${state.error ? `<div class="sls-error">${escapeHtml(state.error)}</div>` : ''}
                 <div class="sls-message">${escapeHtml(state.message)}</div>
-                <div class="sls-summary"><span>Displayed: ${state.results.length}</span><span>Seen locally: ${seenCount()}</span></div>
+                <div class="sls-summary"><span>Collection: ${state.results.length}</span><span>Seen locally: ${seenCount()}</span><span>${state.autoRunning ? 'Automatic: running' : 'Automatic: stopped'}</span></div>
                 ${resultsHtml()}
             </div>
-            <div class="sls-footer">One click makes one FFScouter request. No automatic background discovery and no Torn API usage.</div>
+            <div class="sls-footer">Automatic mode runs only after you start it and waits 15 seconds after each completed FFScouter request. No Torn API usage or Torn page scraping.</div>
         `;
         applySavedPanelPosition(false);
         bindEvents(panel);
@@ -656,10 +988,21 @@
         panel.querySelector('#sls-search')?.addEventListener('click', () => {
             void discover(panel);
         });
-        panel.querySelector('#sls-export')?.addEventListener('click', exportCsv);
-        panel.querySelector('#sls-clear-seen')?.addEventListener('click', () => {
+        panel.querySelector('#sls-auto-start')?.addEventListener('click', () => {
+            startAutomatic(panel);
+        });
+        panel.querySelector('#sls-auto-stop')?.addEventListener('click', () => {
+            requestAutomaticStop();
+        });
+        panel.querySelector('#sls-export')?.addEventListener('click', () => {
+            exportCsv();
+        });
+        panel.querySelector('#sls-clear-collection')?.addEventListener('click', () => {
             saveJson(KEYS.seen, {});
-            state.message = 'Local seen-ID history cleared.';
+            saveJson(KEYS.collection, []);
+            saveJson(KEYS.lastResults, []);
+            state.results = [];
+            state.message = 'Local candidate collection and seen-ID history cleared.';
             state.error = '';
             render();
         });
@@ -677,6 +1020,7 @@
         panel.querySelector('#sls-expand')?.addEventListener('keydown', event => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
+            clearAttention();
             GM_setValue(KEYS.collapsed, false);
             render();
         });
@@ -702,6 +1046,12 @@
             margin: 4
         });
         installBubbleEdgeBehavior(panel);
+        globalThis.addEventListener('pagehide', () => {
+            clearTimeout(state.autoTimer);
+            clearInterval(state.autoLeaseTimer);
+            releaseAutoLease();
+            clearAttention();
+        }, { once: true });
         render();
     }
 
