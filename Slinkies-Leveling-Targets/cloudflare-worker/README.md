@@ -8,17 +8,41 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.7.0 is identified as `0.7.0-balanced-check-sharing`.
+version. Release 0.8.0 is identified as `0.8.0-versioned-terms-consent`.
 
 ## Cloudflare configuration
 
 The Worker expects:
 
 - `DB`: the existing D1 database;
+- `CONSENT_DB`: the separate append-only SLINK terms acceptance database;
 - `ADMIN_TOKEN`: the secret protecting `/api/admin/*`;
 - `SESSION_SECRET`: the secret signing individual 12-hour member sessions.
 
 Keep both secrets in Cloudflare and out of this repository.
+
+## Required versioned consent
+
+The full SLINK API & Data Terms are published in versioned folders under
+[`../terms`](../terms/README.md). The August 14, 2026 release is consent version
+`2026-08-14`. Its original Word document is preserved alongside an accessible
+Markdown transcription.
+
+Authentication fails closed unless the request explicitly accepts the current
+version. The Worker performs this check before contacting Torn. After Torn
+returns the member identity, the Worker writes one permanent acceptance row for
+that Torn user, terms version, service, and disclosure version to `CONSENT_DB`;
+only then does it issue the session. Re-authentication to the same versions uses
+the existing row without overwriting its original timestamp. Future overall
+terms or Leveling-disclosure versions create another row, and sessions carrying
+older versions stop authenticating.
+
+The ledger stores the Torn user and faction IDs, terms version, document URL and
+SHA-256 fingerprint, service/disclosure identity and fingerprint, first
+acceptance time, client identity/version, and the explicit-checkbox method. It
+does not store the Torn API key, IP address, or browser user-agent. The Worker
+has no update or deletion path for acceptance records, and database triggers
+reject accidental updates or deletions.
 
 ## Data ownership
 
@@ -80,7 +104,8 @@ available pool permits it.
 | --- | --- | --- | --- |
 | `GET` | `/` | Public | Worker identity check |
 | `GET` | `/api/health` | Public | D1 connectivity and table counts |
-| `POST` | `/api/auth` | Public | Verify a Torn key once and issue a session |
+| `GET` | `/api/terms` | Public | Current required terms, fingerprint, link, and Leveling disclosure |
+| `POST` | `/api/auth` | Public | Record current consent, verify a Torn key once, and issue a version-bound session |
 | `GET` | `/api/session` | Member session | Inspect the signed session |
 | `GET` | `/api/targets` | Member session | Read paginated leveling targets |
 | `GET` | `/api/recommendations` | Member session | Return targets and renew collector coordination |
@@ -117,10 +142,16 @@ only removes the unused experimental `user_target_fair_fight` table if it was
 manually created while 0.5.0 was being developed. It is safe when the table does
 not exist.
 
+The separate consent database uses
+`consent-database/0001-terms-acceptances.sql`. Run that schema only against the
+consent database, then bind it to the Worker as `CONSENT_DB`. It is intentionally
+not numbered as a migration for the main target database.
+
 ## Test
 
 Run `npm test` in this directory. The test suite uses Node's built-in test
 runner and covers auth/session protection, coordination, scheduling, activity,
 personal target-stat ranges, source-neutral ranking, unique target leasing,
 local-only Fair Fight estimates, collector failover, fair check sharing,
-interval pacing, parsing, and CORS.
+interval pacing, fail-closed versioned consent, append-only acceptance records,
+old-session invalidation, parsing, and CORS.
