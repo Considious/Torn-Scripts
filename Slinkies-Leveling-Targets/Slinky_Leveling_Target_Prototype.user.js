@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.11.1
+// @version      0.11.2
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,12 +21,12 @@
 (function () {
     'use strict';
 
-    // Release: 0.11.1-minimized-network-bubble
+    // Release: 0.11.2-attack-link-fix
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.11.1';
+    const SCRIPT_VERSION = '0.11.2';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -1529,7 +1529,8 @@
 
         return targets.map(target => {
             const profileUrl = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(target.id)}`;
-            const attackUrl = TornLib.attackLink(target.id);
+            const attackUrl =
+                `https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(target.id)}`;
             const fairFight = target.fair_fight === null || target.fair_fight === undefined
                 ? Number.NaN
                 : Number(target.fair_fight);
