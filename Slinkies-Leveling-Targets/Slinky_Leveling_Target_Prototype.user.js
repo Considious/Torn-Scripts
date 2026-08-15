@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.7.2
+// @version      0.9.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -21,17 +21,20 @@
 (function () {
     'use strict';
 
+    // Release: 0.9.0-local-fair-fight-preview
+
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.7.2';
+    const SCRIPT_VERSION = '0.9.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
-    const FF_CACHE_MS = 12 * 60 * 60 * 1000;
-    const COLLECTOR_HEARTBEAT_MS = 20 * 1000;
+    const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+    const BATTLE_STATS_CACHE_MS = 24 * 60 * 60 * 1000;
+    const DEFAULT_POLL_SECONDS = 300;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
 
@@ -46,14 +49,21 @@
         sessionToken: 'slinkyLeveling.workerSession.v1',
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
+        ffCache: 'slinkyLeveling.ffCache.v1',
+        battleStats: 'slinkyLeveling.localBattleStats.v1',
         runtimeState: 'slinkyLeveling.clientRuntime.v1',
         clientEvents: 'slinkyLeveling.clientEvents.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
+    const persistedFairFightCache = loadJson(KEYS.ffCache, {});
+    const persistedBattleStats = loadJson(KEYS.battleStats, {});
 
     const state = {
         targets: [],
+        recommendationTargets: [],
+        ffCache: persistedFairFightCache,
+        battleStats: persistedBattleStats,
         polling: false,
         authenticating: false,
         settingsOpen: false,
@@ -62,14 +72,19 @@
         workerVersion: '',
         collector: false,
         collectorExpiresAt: 0,
+        cycleStatus: '',
+        fairFightStatus: '',
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
         lastCycleChecked: Number(persistedRuntime.lastCycleChecked) || 0,
         lastCycleReported: Number(persistedRuntime.lastCycleReported) || 0,
         lastActivitySyncAt: Number(GM_getValue(KEYS.lastActivitySyncAt, 0)) || 0,
         activeTargetsReported: Number(persistedRuntime.activeTargetsReported) || 0,
+        lastFairFightAt: Number(persistedRuntime.lastFairFightAt) ||
+            latestFairFightCacheTime(persistedFairFightCache),
+        lastFairFightRequested: Number(persistedRuntime.lastFairFightRequested) || 0,
+        lastFairFightSaved: Number(persistedRuntime.lastFairFightSaved) || 0,
         clientEvents: loadJson(KEYS.clientEvents, []),
         timer: null,
-        collectorTimer: null,
         leader: null
     };
 
@@ -94,31 +109,57 @@
     }
 
 
+    function latestFairFightCacheTime(cache) {
+        return Object.values(cache || {}).reduce((latest, row) => {
+            return Math.max(latest, Number(row?.checkedAt) || 0);
+        }, 0);
+    }
+
+
     function getSettings() {
         return {
             tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
             ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
             pollSeconds: clamp(
-                Number(GM_getValue(KEYS.pollSeconds, 90)) || 90,
+                Number(GM_getValue(KEYS.pollSeconds, DEFAULT_POLL_SECONDS)) ||
+                    DEFAULT_POLL_SECONDS,
                 60,
                 300
             ),
-            minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 0, 10),
-            maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 0, 10),
+            minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 3),
+            maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 3),
             collapsed: Boolean(GM_getValue(KEYS.collapsed, false))
         };
     }
 
 
     function saveSettings(values) {
-        GM_setValue(KEYS.tornKey, String(values.tornKey || '').trim());
-        GM_setValue(KEYS.ffKey, String(values.ffKey || '').trim());
+        const previous = getSettings();
+        const tornKey = String(values.tornKey || '').trim();
+        const ffKey = String(values.ffKey || '').trim();
+
+        GM_setValue(KEYS.tornKey, tornKey);
+        GM_setValue(KEYS.ffKey, ffKey);
         GM_setValue(
             KEYS.pollSeconds,
-            clamp(Number(values.pollSeconds) || 90, 60, 300)
+            clamp(
+                Number(values.pollSeconds) || DEFAULT_POLL_SECONDS,
+                60,
+                300
+            )
         );
-        GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 0, 0, 10));
-        GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 0, 0, 10));
+        GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 3));
+        GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 3));
+
+        if (tornKey !== previous.tornKey) {
+            state.battleStats = {};
+            saveJson(KEYS.battleStats, state.battleStats);
+        }
+
+        if (ffKey !== previous.ffKey) {
+            state.ffCache = {};
+            saveJson(KEYS.ffCache, state.ffCache);
+        }
     }
 
 
@@ -127,7 +168,10 @@
             lastCycleAt: state.lastCycleAt,
             lastCycleChecked: state.lastCycleChecked,
             lastCycleReported: state.lastCycleReported,
-            activeTargetsReported: state.activeTargetsReported
+            activeTargetsReported: state.activeTargetsReported,
+            lastFairFightAt: state.lastFairFightAt,
+            lastFairFightRequested: state.lastFairFightRequested,
+            lastFairFightSaved: state.lastFairFightSaved
         });
     }
 
@@ -267,29 +311,6 @@
     }
 
 
-    async function syncCollectorLease() {
-        if (!state.leader?.isLeader()) return false;
-
-        const wasCollector = state.collector;
-        const response = await workerRequest('/api/collector/heartbeat', {
-            method: 'POST',
-            body: {}
-        });
-
-        state.collector = response?.collector === true;
-        state.collectorExpiresAt = Number(response?.collector_expires_at) || 0;
-
-        if (state.collector !== wasCollector) {
-            logClientEvent(
-                state.collector ? 'collector_acquired' : 'collector_standby',
-                { expiresAt: state.collectorExpiresAt }
-            );
-        }
-
-        return state.collector;
-    }
-
-
     function gmRequest(options) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -325,6 +346,127 @@
 
 
     // ================================================================
+    // Local-only player strength and immediate Fair Fight estimates
+    // ================================================================
+
+    async function ensureLocalBattleStats(apiKey, force = false) {
+        const cachedAt = Number(state.battleStats?.checkedAt) || 0;
+        const cachedScore = Number(state.battleStats?.score) || 0;
+        const fresh = (
+            cachedScore > 0 &&
+            cachedAt > 0 &&
+            Date.now() - cachedAt < BATTLE_STATS_CACHE_MS
+        );
+
+        if (!force && fresh) return state.battleStats;
+
+        const data = await TornLib.tornRequest(
+            'https://api.torn.com/v2/user/battlestats',
+            apiKey,
+            {
+                tornScript: SCRIPT_NAME,
+                tornPriority: 'normal',
+                tornLimit: TornLib.TORN_API_DEFAULT_LIMIT,
+                tornWait: true,
+                tornMaxWaitMs: 65_000
+            }
+        );
+        const stats = data?.battlestats ?? data;
+        const values = [
+            battleStatValue(stats?.strength),
+            battleStatValue(stats?.defense),
+            battleStatValue(stats?.speed),
+            battleStatValue(stats?.dexterity)
+        ];
+
+        if (values.some(value => value === null)) {
+            throw new Error('Torn returned incomplete battle stats.');
+        }
+
+        const score = values.reduce((sum, value) => sum + Math.sqrt(value), 0);
+        const total = finiteNumberOrNull(stats?.total) ??
+            values.reduce((sum, value) => sum + value, 0);
+
+        if (!Number.isFinite(score) || score <= 0 || total <= 0) {
+            throw new Error('Torn returned unusable battle stats.');
+        }
+
+        state.battleStats = {
+            score,
+            total,
+            checkedAt: Date.now()
+        };
+        saveJson(KEYS.battleStats, state.battleStats);
+        logClientEvent('local_strength_cached', {
+            checkedAt: state.battleStats.checkedAt
+        });
+        return state.battleStats;
+    }
+
+
+    function battleStatValue(stat) {
+        const value = finiteNumberOrNull(stat?.value ?? stat);
+        return value !== null && value >= 0 ? value : null;
+    }
+
+
+    function localTargetStatRange(settings = getSettings()) {
+        const attackerScore = Number(state.battleStats?.score) || 0;
+        if (attackerScore <= 0) return null;
+
+        const minFairFight = Math.min(settings.minFF, settings.maxFF);
+        const maxFairFight = Math.max(settings.minFF, settings.maxFF);
+        const minScoreRatio = fairFightToScoreRatio(minFairFight);
+        const maxScoreRatio = fairFightToScoreRatio(maxFairFight);
+        const minimum = balancedTotalFromScore(attackerScore * minScoreRatio);
+        const maximum = balancedTotalFromScore(attackerScore * maxScoreRatio);
+
+        return {
+            min: minScoreRatio > 0 ? Math.max(1, Math.floor(minimum)) : 0,
+            max: Math.max(1, Math.ceil(maximum))
+        };
+    }
+
+
+    function fairFightToScoreRatio(fairFight) {
+        return clamp(((clamp(fairFight, 1, 3) - 1) * 3) / 8, 0, 0.75);
+    }
+
+
+    function balancedTotalFromScore(score) {
+        return Math.min(Number.MAX_SAFE_INTEGER, Math.pow(score / 2, 2));
+    }
+
+
+    function balancedScoreFromTotal(totalStats) {
+        const total = finiteNumberOrNull(totalStats);
+        return total !== null && total > 0 ? 2 * Math.sqrt(total) : null;
+    }
+
+
+    function estimateLocalFairFight(totalStats) {
+        const attackerScore = Number(state.battleStats?.score) || 0;
+        const defenderScore = balancedScoreFromTotal(totalStats);
+        if (attackerScore <= 0 || defenderScore === null) return null;
+
+        return clamp(1 + (8 / 3) * (defenderScore / attackerScore), 1, 3);
+    }
+
+
+    function localDifficulty(totalStats) {
+        const attackerScore = Number(state.battleStats?.score) || 0;
+        const defenderScore = balancedScoreFromTotal(totalStats);
+        if (attackerScore <= 0 || defenderScore === null) return null;
+
+        const ratio = defenderScore / attackerScore;
+        if (ratio <= 0.35) return { label: 'Easy', className: 'slp-easy' };
+        if (ratio <= 0.6) return { label: 'Good', className: 'slp-good' };
+        if (ratio <= 0.75) return { label: 'Fair', className: 'slp-fair' };
+        return { label: 'Risky', className: 'slp-risky' };
+    }
+
+
+    // ================================================================
     // Browser-side data collection assigned by Cloudflare
     // ================================================================
 
@@ -347,14 +489,42 @@
         state.polling = true;
 
         state.lastError = '';
+        state.cycleStatus = 'Connecting to the SLINK Network…';
         render();
 
         try {
             await ensureWorkerSession(false);
-            const collector = await syncCollectorLease();
 
-            if (!collector) {
-                await refreshRecommendations();
+            state.cycleStatus = 'Reading your locally cached strength range…';
+            render();
+            try {
+                await ensureLocalBattleStats(settings.tornKey);
+            } catch (error) {
+                state.lastError = `Local Fair Fight estimate: ${TornLib.errorMessage(error)}`;
+            }
+
+            state.cycleStatus = 'Asking the SLINK Network for targets…';
+            await refreshRecommendations();
+            render();
+
+            let fairFightTask = Promise.resolve(null);
+            if (settings.ffKey) {
+                fairFightTask = hydrateRecommendationFairFight(settings.ffKey)
+                    .catch(error => {
+                        state.fairFightStatus = 'FFScouter refinement failed; local estimates remain available';
+                        state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
+                        render();
+                        return null;
+                    });
+            } else {
+                state.fairFightStatus = state.battleStats?.score
+                    ? 'Approximate Fair Fight is ready · Add FFScouter to refine it'
+                    : 'Add FFScouter for Fair Fight values';
+            }
+
+            if (!state.collector) {
+                await fairFightTask;
+                state.cycleStatus = 'Targets ready · Standby device';
                 state.lastCycleAt = Date.now();
                 state.lastCycleChecked = 0;
                 state.lastCycleReported = 0;
@@ -365,6 +535,8 @@
                 return;
             }
 
+            state.cycleStatus = 'Running scheduled Torn checks…';
+            render();
             await syncActivitySnapshots(settings.tornKey, forceActivity);
 
             const apiUsage = TornLib.getTornApiUsage({
@@ -374,7 +546,10 @@
 
             const claim = await workerRequest('/api/checks/claim', {
                 method: 'POST',
-                body: { capacity }
+                body: {
+                    capacity,
+                    poll_seconds: settings.pollSeconds
+                }
             });
             state.collector = claim?.collector === true;
             state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
@@ -405,27 +580,11 @@
                 state.lastError = `${failures.length} assigned Torn check${failures.length === 1 ? '' : 's'} failed.`;
             }
 
-            await refreshRecommendations();
-
-            if (state.collector && settings.ffKey) {
-                try {
-                    const fairFightTargets = recommendationsNeedingFairFight(
-                        state.targets
-                    );
-                    if (fairFightTargets.length) {
-                        await collectAndReportFairFight(
-                            settings.ffKey,
-                            fairFightTargets
-                        );
-                        await refreshRecommendations();
-                    }
-                } catch (error) {
-                    state.lastError = `FFScouter: ${TornLib.errorMessage(error)}`;
-                }
-            }
+            await fairFightTask;
 
             state.lastCycleAt = Date.now();
             state.lastCycleChecked = checks.length;
+            state.cycleStatus = `${fairFightReadyCount(state.targets)}/${state.targets.length} Fair Fight values shown · Targets ready`;
 
             logClientEvent('cycle_completed', {
                 apiCapacity: capacity,
@@ -504,9 +663,45 @@
     }
 
 
-    async function collectAndReportFairFight(apiKey, targets) {
+    async function hydrateRecommendationFairFight(apiKey) {
+        const targets = recommendationsNeedingFairFight(
+            state.recommendationTargets
+        );
+        if (!targets.length) {
+            applyLocalFairFightToRecommendations();
+            state.fairFightStatus = 'Fair Fight values loaded from local cache';
+            return { requestedCount: 0, savedCount: 0, cachedAt: 0 };
+        }
+
+        state.fairFightStatus = `Refining ${targets.length} Fair Fight estimate${targets.length === 1 ? '' : 's'} in the background…`;
+        render();
+        logClientEvent('fair_fight_started', { requested: targets.length });
+
+        const result = await collectAndCacheFairFight(apiKey, targets);
+        state.lastFairFightAt = result.cachedAt || Date.now();
+        state.lastFairFightRequested = targets.length;
+        state.lastFairFightSaved = result.savedCount;
+        state.fairFightStatus = `${result.savedCount} Fair Fight value${result.savedCount === 1 ? '' : 's'} refined · Cached locally for 7 days`;
+        applyLocalFairFightToRecommendations();
+        saveRuntimeState();
+        render();
+        logClientEvent('fair_fight_cached_locally', {
+            requested: targets.length,
+            saved: result.savedCount,
+            cachedAt: result.cachedAt
+        });
+
+        return {
+            requestedCount: targets.length,
+            savedCount: result.savedCount,
+            cachedAt: result.cachedAt
+        };
+    }
+
+
+    async function collectAndCacheFairFight(apiKey, targets) {
         const uniqueIds = [...new Set(targets.map(target => String(target.id)))];
-        if (!uniqueIds.length) return 0;
+        if (!uniqueIds.length) return { savedCount: 0, cachedAt: 0 };
 
         const url =
             'https://ffscouter.com/api/v1/get-stats' +
@@ -524,48 +719,96 @@
                     ? data.data
                     : [];
         const returned = new Set();
-        const reports = [];
+        const cachedAt = Date.now();
 
         for (const row of rows) {
             const id = Number(row?.player_id ?? row?.id);
             if (!Number.isInteger(id) || id <= 0) continue;
             returned.add(String(id));
-            reports.push({
-                target_id: id,
-                fair_fight: finiteNumberOrNull(row?.fair_fight),
-                bs_estimate: finiteNumberOrNull(row?.bs_estimate),
+            state.ffCache[id] = {
+                fairFight: finiteNumberOrNull(row?.fair_fight),
+                bsEstimate: finiteNumberOrNull(row?.bs_estimate),
+                bsEstimateHuman: String(row?.bs_estimate_human || ''),
                 source: String(row?.source || 'FFScouter')
-            });
+                    .slice(0, 100),
+                lastUpdated: String(row?.last_updated || ''),
+                noData: Boolean(row?.no_data),
+                checkedAt: cachedAt
+            };
         }
 
         for (const id of uniqueIds) {
             if (returned.has(id)) continue;
-            reports.push({
-                target_id: Number(id),
-                fair_fight: null,
-                bs_estimate: null,
-                source: 'FFScouter'
-            });
+            state.ffCache[id] = {
+                fairFight: null,
+                bsEstimate: null,
+                bsEstimateHuman: '',
+                source: 'FFScouter',
+                lastUpdated: '',
+                noData: true,
+                checkedAt: cachedAt
+            };
         }
 
-        if (reports.length) {
-            const response = await workerRequest('/api/fair-fight', {
-                method: 'POST',
-                body: { targets: reports.slice(0, 200) }
-            });
-            return Number(response?.accepted_count) || 0;
-        }
-
-        return 0;
+        saveJson(KEYS.ffCache, state.ffCache);
+        return { savedCount: uniqueIds.length, cachedAt };
     }
 
 
     function recommendationsNeedingFairFight(targets) {
         const now = Date.now();
         return targets.filter(target => {
-            const checkedAt = Number(target?.fair_fight_checked_at) || 0;
+            const checkedAt = Number(state.ffCache[String(target.id)]?.checkedAt) || 0;
             return checkedAt <= 0 || now - checkedAt >= FF_CACHE_MS;
         });
+    }
+
+
+    function applyLocalFairFightToRecommendations() {
+        const settings = getSettings();
+        const minFairFight = Math.min(settings.minFF, settings.maxFF);
+        const maxFairFight = Math.max(settings.minFF, settings.maxFF);
+
+        state.targets = state.recommendationTargets
+            .map(target => {
+                const cached = state.ffCache[String(target.id)] || {};
+                const refinedFairFight = finiteNumberOrNull(cached.fairFight);
+                const estimatedFairFight = estimateLocalFairFight(target.total_stats);
+                const useEstimate = refinedFairFight === null && estimatedFairFight !== null;
+                return {
+                    ...target,
+                    fair_fight: refinedFairFight ?? estimatedFairFight,
+                    fair_fight_estimated: useEstimate,
+                    bs_estimate: finiteNumberOrNull(cached.bsEstimate) ??
+                        finiteNumberOrNull(target.total_stats),
+                    fair_fight_source: refinedFairFight !== null
+                        ? String(cached.source || 'FFScouter')
+                        : useEstimate
+                            ? 'Local estimate'
+                            : '',
+                    fair_fight_checked_at: refinedFairFight !== null
+                        ? Number(cached.checkedAt) || 0
+                        : 0,
+                    local_difficulty: localDifficulty(target.total_stats)
+                };
+            })
+            .filter(target => {
+                const fairFight = finiteNumberOrNull(target.fair_fight);
+                return fairFight === null || (
+                    fairFight >= minFairFight && fairFight <= maxFairFight
+                );
+            });
+    }
+
+
+    function fairFightReadyCount(targets) {
+        return targets.filter(target => {
+            if (target?.fair_fight === null || target?.fair_fight === undefined) {
+                return false;
+            }
+            const value = Number(target.fair_fight);
+            return Number.isFinite(value) && value > 0;
+        }).length;
     }
 
 
@@ -650,15 +893,34 @@
 
 
     async function refreshRecommendations() {
+        const wasCollector = state.collector;
         const settings = getSettings();
         const query = new URLSearchParams({
             limit: String(MAX_DISPLAY),
+            poll_seconds: String(settings.pollSeconds),
             min_ff: String(Math.min(settings.minFF, settings.maxFF)),
             max_ff: String(Math.max(settings.minFF, settings.maxFF))
         });
+        const targetRange = localTargetStatRange(settings);
+        if (targetRange) {
+            query.set('min_target_stats', String(targetRange.min));
+            query.set('max_target_stats', String(targetRange.max));
+        }
         const response = await workerRequest(`/api/recommendations?${query}`);
-        state.targets = Array.isArray(response?.targets) ? response.targets : [];
+        state.collector = response?.collector === true;
+        state.collectorExpiresAt = Number(response?.collector_expires_at) || 0;
+        state.recommendationTargets = Array.isArray(response?.targets)
+            ? response.targets
+            : [];
+        applyLocalFairFightToRecommendations();
         state.workerVersion = response?.version || state.workerVersion;
+
+        if (state.collector !== wasCollector) {
+            logClientEvent(
+                state.collector ? 'collector_acquired' : 'collector_standby',
+                { expiresAt: state.collectorExpiresAt }
+            );
+        }
     }
 
 
@@ -732,7 +994,6 @@
                     until,
                     source: 'attack_page'
                 }]);
-                await refreshRecommendations();
                 logClientEvent('attack_page_observation', { targetId, status });
                 render();
                 return true;
@@ -777,36 +1038,6 @@
     }
 
 
-    function scheduleCollectorHeartbeat() {
-        if (state.collectorTimer) clearTimeout(state.collectorTimer);
-        state.collectorTimer = setTimeout(async () => {
-            let becameCollector = false;
-
-            try {
-                if (state.leader?.isLeader()) {
-                    const wasCollector = state.collector;
-                    const isCollector = await syncCollectorLease();
-                    becameCollector = isCollector && !wasCollector;
-                }
-            } catch (error) {
-                if (state.collectorExpiresAt <= Date.now()) {
-                    state.collector = false;
-                }
-                logClientEvent('collector_heartbeat_failed', {
-                    error: TornLib.errorMessage(error)
-                });
-            } finally {
-                scheduleCollectorHeartbeat();
-                render();
-            }
-
-            if (becameCollector && !state.polling) {
-                void runCycle(false);
-            }
-        }, COLLECTOR_HEARTBEAT_MS);
-    }
-
-
     function logClientEvent(event, details = {}) {
         state.clientEvents.push({
             at: Date.now(),
@@ -838,6 +1069,12 @@
             lastPrimaryReported: state.lastCycleReported,
             lastActivitySyncAt: state.lastActivitySyncAt,
             activeTargetsReported: state.activeTargetsReported,
+            cycleStatus: state.cycleStatus,
+            fairFightStatus: state.fairFightStatus,
+            localStrengthCachedAt: Number(state.battleStats?.checkedAt) || 0,
+            lastFairFightAt: state.lastFairFightAt,
+            lastFairFightRequested: state.lastFairFightRequested,
+            lastFairFightSaved: state.lastFairFightSaved,
             lastError: state.lastError || '',
             recentEvents: state.clientEvents.slice(-20).reverse()
         };
@@ -860,6 +1097,10 @@
             `Polling: Core Lib remaining quota every ${data.pollSecondsConfigured}s`,
             `Last primary: ${formatDateTime(data.lastPrimaryPollAt)} | assigned ${data.lastPrimaryChecked} | reported ${data.lastPrimaryReported}`,
             `Activity sync: ${formatDateTime(data.lastActivitySyncAt)} | active matches ${data.activeTargetsReported}`,
+            `Local strength cached: ${formatDateTime(data.localStrengthCachedAt)}`,
+            `Fair Fight: requested ${data.lastFairFightRequested} | saved locally ${data.lastFairFightSaved} | cached ${formatDateTime(data.lastFairFightAt)}`,
+            `Fair Fight work: ${data.fairFightStatus || 'Idle'}`,
+            `Current work: ${data.cycleStatus || 'Idle'}`,
             `Last error: ${data.lastError || 'None'}`,
             '',
             'Recent client events:'
@@ -894,10 +1135,11 @@
             .slp-btn:hover { background:#3a414d; }
             .slp-btn:disabled { opacity:.55; cursor:default; }
             .slp-body { max-height:calc(100vh - 165px); overflow:auto; }
-            .slp-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:rgba(255,255,255,.08); }
+            .slp-summary { display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:rgba(255,255,255,.08); }
             .slp-stat { background:#20242b; padding:6px; text-align:center; }
             .slp-stat b { display:block; font-size:13px; }
             .slp-error { padding:7px 9px; color:#ffb4b4; border-bottom:1px solid rgba(255,255,255,.08); }
+            .slp-phase { padding:6px 9px; color:#a9d5ff; border-bottom:1px solid rgba(255,255,255,.08); }
             .slp-settings { padding:9px; border-bottom:1px solid rgba(255,255,255,.1); display:grid; grid-template-columns:1fr 1fr; gap:7px; }
             .slp-settings label { display:flex; flex-direction:column; gap:3px; color:#bbb; }
             .slp-settings .wide { grid-column:1 / -1; }
@@ -912,6 +1154,10 @@
             .slp-meta { display:flex; gap:8px; margin-top:3px; color:#aaa; flex-wrap:wrap; }
             .slp-badge { padding:1px 5px; border-radius:8px; background:#303641; color:#ddd; }
             .slp-hosp-hot { background:#5a2828; color:#ffd0d0; }
+            .slp-easy { background:#234a32; color:#c9f7d6; }
+            .slp-good { background:#24445a; color:#ccecff; }
+            .slp-fair { background:#5a4a24; color:#ffe9ad; }
+            .slp-risky { background:#5a2828; color:#ffd0d0; }
             .slp-actions { display:flex; gap:4px; margin-top:5px; }
             .slp-actions a { text-decoration:none; }
             .slp-empty { padding:16px; text-align:center; color:#aaa; }
@@ -962,8 +1208,11 @@
                     <div class="slp-stat"><b>${state.targets.length}</b><span>Targets</span></div>
                     <div class="slp-stat"><b>${state.lastCycleChecked}</b><span>Assigned</span></div>
                     <div class="slp-stat"><b>${state.lastCycleReported}</b><span>Reported</span></div>
+                    <div class="slp-stat"><b>${fairFightReadyCount(state.targets)}/${state.targets.length}</b><span>FF ready</span></div>
                     <div class="slp-stat"><b>${usage.count}/${usage.limit}</b><span>API / min</span></div>
                 </div>
+                ${state.cycleStatus ? `<div class="slp-phase">${escapeHtml(state.cycleStatus)}</div>` : ''}
+                ${state.fairFightStatus ? `<div class="slp-phase">${escapeHtml(state.fairFightStatus)}</div>` : ''}
                 ${state.lastError ? `<div class="slp-error">${escapeHtml(state.lastError)}</div>` : ''}
                 ${state.settingsOpen ? settingsHtml(settings) : ''}
                 ${state.debugOpen ? debugHtml() : ''}
@@ -983,7 +1232,7 @@
                 <label class="wide">Torn API key
                     <input id="slp-torn-key" type="password" value="${escapeHtml(settings.tornKey)}" autocomplete="off">
                 </label>
-                <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. The key is stored locally and is not retained by Cloudflare.</div>
+                <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
                 <label class="wide">FFScouter API key
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
                 </label>
@@ -991,10 +1240,10 @@
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
                 </label>
                 <label>Min FF
-                    <input id="slp-min-ff" type="number" min="0" max="10" step=".1" value="${settings.minFF}">
+                    <input id="slp-min-ff" type="number" min="1" max="3" step=".1" value="${settings.minFF}">
                 </label>
                 <label>Max FF
-                    <input id="slp-max-ff" type="number" min="0" max="10" step=".1" value="${settings.maxFF}">
+                    <input id="slp-max-ff" type="number" min="1" max="3" step=".1" value="${settings.maxFF}">
                 </label>
                 <div class="slp-settings-actions">
                     <button class="slp-btn" id="slp-clear-session">Clear local session</button>
@@ -1020,20 +1269,28 @@
 
     function targetsHtml(targets) {
         if (!targets.length) {
-            return `<div class="slp-empty">${state.polling ? 'Asking Cloudflare for targets…' : 'No recommendations are currently assigned.'}</div>`;
+            return `<div class="slp-empty">${state.polling ? 'Asking the SLINK Network for targets…' : 'No recommendations are currently assigned.'}</div>`;
         }
 
         return targets.map(target => {
             const profileUrl = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(target.id)}`;
             const attackUrl = TornLib.attackLink(target.id);
-            const fairFight = Number(target.fair_fight);
-            const ffText = Number.isFinite(fairFight) ? fairFight.toFixed(2) : '?';
+            const fairFight = target.fair_fight === null || target.fair_fight === undefined
+                ? Number.NaN
+                : Number(target.fair_fight);
+            const ffText = Number.isFinite(fairFight) && fairFight > 0
+                ? `${target.fair_fight_estimated ? '~' : ''}${fairFight.toFixed(2)}`
+                : '?';
+            const ffTitle = target.fair_fight_estimated
+                ? 'Immediate local estimate; FFScouter will refine this in the background.'
+                : target.fair_fight_source || 'Fair Fight unavailable';
             const battleStats = Number(target.bs_estimate);
             const statsText = Number.isFinite(battleStats) && battleStats > 0
                 ? TornLib.shortNumber(battleStats)
                 : shortNumber(target.total_stats);
             const hospitalCount = Number(target.hospitalizations_24h) || 0;
             const nextCheckAt = Number(target.next_check_at) || 0;
+            const difficulty = target.local_difficulty || null;
 
             return `
                 <article class="slp-row">
@@ -1043,7 +1300,8 @@
                     </div>
                     <div class="slp-meta">
                         <span class="slp-badge">${escapeHtml(target.status || 'Unknown')}</span>
-                        <span class="slp-badge">FF ${escapeHtml(ffText)}</span>
+                        <span class="slp-badge" title="${escapeHtml(ffTitle)}">FF ${escapeHtml(ffText)}</span>
+                        ${difficulty ? `<span class="slp-badge ${escapeHtml(difficulty.className)}">${escapeHtml(difficulty.label)}</span>` : ''}
                         <span class="slp-badge">BS ${escapeHtml(statsText)}</span>
                         <span class="slp-badge ${hospitalCount ? 'slp-hosp-hot' : ''}">Hosp 24h: ${hospitalCount}</span>
                         <span class="slp-badge">${escapeHtml(target.competition_tier || 'Prime')} ${Number(target.competition_score) || 0}</span>
@@ -1179,8 +1437,6 @@
         if (!getSettings().tornKey) state.settingsOpen = true;
         render();
         scheduleAttackPageScrape();
-        scheduleCollectorHeartbeat();
-
         if (state.leader.isLeader()) {
             await runCycle(false);
         } else {

@@ -1,111 +1,71 @@
 # Cloudflare deployment checklist
 
-Use this order. Do not merge or install userscript `0.7.2` before all three
-checks at the bottom succeed.
+Use this order. Install userscript 0.9.0 only after the health check reports
+Worker `0.6.0-personal-stat-fit`.
 
-## 1. Add the D1 coordination tables
+## 1. Confirm the existing migrations
 
-Open the existing Slinky D1 database in Cloudflare, select **Console**, and run
-the complete contents of:
+Migrations 0001 and 0002 create the shared coordination tables. Migration 0003
+removes the unused experimental `user_target_fair_fight` table. No new D1 table
+or query is required for this release.
 
-```text
-migrations/0001-client-coordination.sql
-```
+## 2. Deploy the Worker
 
-The script is safe to run again if Cloudflare or the browser interrupts the
-first attempt.
-
-Next, run the complete contents of:
-
-```text
-migrations/0002-user-collector-leases.sql
-```
-
-This second file is also safe to run again. Run both migrations before changing
-the Worker source.
-
-Verify the new tables with:
-
-```sql
-SELECT name
-FROM sqlite_master
-WHERE type = 'table'
-  AND name IN (
-    'client_check_claims',
-    'client_target_leases',
-    'client_user_collectors',
-    'target_activity',
-    'target_fair_fight'
-  )
-ORDER BY name;
-```
-
-Cloudflare should return five rows.
-
-## 2. Deploy the Worker source
-
-Open the `slinkyleveling` Worker, choose **Edit code**, replace the Worker source
-with the complete repository `worker.js`, and deploy it. Keep the existing `DB`
+Open the `slinkyleveling` Worker, choose **Edit code**, replace the source with
+the complete repository `worker.js`, and deploy it. Keep the existing `DB`
 binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 
-The new release is:
+## 3. Check the version
+
+Open:
 
 ```text
-0.4.0-multi-device-collector
+https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.6.0
 ```
 
-## 3. Smoke-test the protected API
-
-First open:
-
-```text
-GET https://slinkyleveling.richard-johnson554.workers.dev/api/health
-```
-
-The JSON should contain:
+The JSON should include:
 
 ```json
 {
   "ok": true,
-  "version": "0.4.0-multi-device-collector",
+  "version": "0.6.0-personal-stat-fit",
   "database": "connected"
 }
 ```
 
-Authenticate through `POST /api/auth` exactly as before. Then use the returned
-session token for these three tests.
+## 4. Update Tampermonkey
+
+Install or update userscript 0.9.0, reload Torn, and click **Refresh**. Targets
+appear as soon as SLINK answers. On the first run of each day the client makes
+one Core Lib-controlled Torn request for the member's battle stats.
+
+The panel should progress through messages like:
 
 ```text
-POST /api/collector/heartbeat
-Authorization: Bearer YOUR_SESSION_TOKEN
-Content-Type: application/json
-
-{}
+Reading your locally cached strength range...
+Asking the SLINK Network for targets...
+Refining 40 Fair Fight estimates in the background...
+Running scheduled Torn checks...
 ```
 
-The first active session for your Torn user should receive
-`"collector": true`.
+Approximate values carry a tilde, such as `FF ~2.15`, and are usable
+immediately. FFScouter refinement no longer blocks scheduled Torn work. The
+browser reuses each refined Fair Fight result for seven days and never sends
+those values to Cloudflare.
 
-```text
-POST /api/checks/claim
-Authorization: Bearer YOUR_SESSION_TOKEN
-Content-Type: application/json
+Source labels never affect assignment. The Worker selects inside the member's
+temporary target-stat range using competition, target usefulness, estimated
+stats, and global lease availability. Exact member battle stats stay in
+Tampermonkey; the Worker receives only the derived range for the current
+recommendation request and does not store it.
 
-{"capacity":1}
-```
+There is no separate collector heartbeat or redundant second target refresh.
+Collector election is part of the normal recommendation load. The default
+interval is 300 seconds, so a standby panel generally makes six Worker requests
+per 30 minutes. The collector receives a larger scheduled-check batch after
+Core Lib's shared allowance has had time to refill.
 
-```text
-GET /api/recommendations?limit=5&min_ff=1&max_ff=3
-Authorization: Bearer YOUR_SESSION_TOKEN
-```
-
-All three responses should contain `"ok": true`. The check response may contain
-one assigned check; the recommendation response should contain up to five
-targets.
-
-If the same Torn user authenticates on another device, that session remains a
-standby while the first device renews its collector lease. If the first device
-stops, the standby can take over after about one minute and will continue using
-the same D1-backed recommendations.
-
-Once those requests work, userscript `0.7.2` can be installed for a live test.
+The collector lease covers two configured intervals. With the 300-second
+default, a second device can take over after roughly ten minutes without data
+from the active device. Existing users who previously saved a different
+interval can leave it in place or change it to 300 in the panel settings.

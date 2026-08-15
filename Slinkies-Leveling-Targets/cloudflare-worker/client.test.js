@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.7\.2/);
+        assert.match(client, /@version\s+0\.9\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -37,11 +37,9 @@ describe('SLINK Leveling Service thin client', () => {
             '/api/auth',
             '/api/targets',
             '/api/recommendations',
-            '/api/collector/heartbeat',
             '/api/checks/claim',
             '/api/observations',
-            '/api/activity',
-            '/api/fair-fight'
+            '/api/activity'
         ]) {
             assert.ok(client.includes(endpoint), `missing ${endpoint}`);
         }
@@ -49,17 +47,20 @@ describe('SLINK Leveling Service thin client', () => {
 
 
     it('supports one active collector with automatic device failover', () => {
-        assert.match(client, /COLLECTOR_HEARTBEAT_MS/);
-        assert.match(client, /async function syncCollectorLease\(/);
-        assert.match(client, /function scheduleCollectorHeartbeat\(/);
         assert.match(client, /response\?\.collector === true/);
         assert.match(client, /cycle_standby/);
+        assert.match(client, /DEFAULT_POLL_SECONDS\s*=\s*300/);
+        assert.match(client, /poll_seconds:\s*settings\.pollSeconds/);
+        assert.doesNotMatch(client, /COLLECTOR_HEARTBEAT_MS/);
+        assert.doesNotMatch(client, /syncCollectorLease/);
+        assert.doesNotMatch(client, /scheduleCollectorHeartbeat/);
+        assert.doesNotMatch(client, /\/api\/collector\/heartbeat/);
     });
 
 
     it('uses Core Lib as the single Torn API polling limiter', () => {
         assert.match(client, /TornLib\.getTornApiUsage\(/);
-        assert.match(client, /body:\s*\{\s*capacity\s*\}/);
+        assert.match(client, /capacity,\s*poll_seconds:\s*settings\.pollSeconds/);
         assert.match(client, /TornLib\.TORN_API_DEFAULT_LIMIT/);
         assert.match(client, /TornLib\.reserveTornApiSlot\(/);
 
@@ -77,16 +78,65 @@ describe('SLINK Leveling Service thin client', () => {
     });
 
 
-    it('hydrates recommendation Fair Fight data through the elected collector', () => {
-        assert.match(client, /FF_CACHE_MS\s*=\s*12\s*\*\s*60\s*\*\s*60/);
+    it('shows local Fair Fight estimates while FFScouter refines in the background', () => {
+        assert.match(client, /FF_CACHE_MS\s*=\s*7\s*\*\s*24\s*\*\s*60\s*\*\s*60/);
+        assert.match(client, /BATTLE_STATS_CACHE_MS\s*=\s*24\s*\*\s*60\s*\*\s*60/);
+        assert.match(client, /ffCache:\s*'slinkyLeveling\.ffCache\.v1'/);
+        assert.match(client, /battleStats:\s*'slinkyLeveling\.localBattleStats\.v1'/);
+        assert.match(client, /https:\/\/api\.torn\.com\/v2\/user\/battlestats/);
+        assert.match(client, /function estimateLocalFairFight\(/);
+        assert.match(client, /function localTargetStatRange\(/);
+        assert.match(client, /fair_fight_estimated:\s*useEstimate/);
+        assert.match(client, /min_target_stats/);
+        assert.match(client, /max_target_stats/);
+        assert.match(client, /async function hydrateRecommendationFairFight\(/);
+        assert.match(client, /async function collectAndCacheFairFight\(/);
         assert.match(client, /function recommendationsNeedingFairFight\(/);
-        assert.match(client, /recommendationsNeedingFairFight\(\s*state\.targets/);
-        assert.match(client, /collectAndReportFairFight\(\s*settings\.ffKey,\s*fairFightTargets/);
-        assert.match(client, /await refreshRecommendations\(\);/);
-        assert.doesNotMatch(
-            client,
-            /collectAndReportFairFight\(settings\.ffKey, successfulTargets\)/
+        assert.match(client, /recommendationsNeedingFairFight\(\s*state\.recommendationTargets/);
+        assert.match(client, /saveJson\(KEYS\.ffCache, state\.ffCache\)/);
+        assert.match(client, /Cached locally for 7 days/);
+        assert.match(client, /Asking the SLINK Network for targets/);
+        assert.doesNotMatch(client, /workerRequest\('\/api\/fair-fight'/);
+        assert.doesNotMatch(client, /reported to SLINK/);
+
+        const cycle = client.slice(
+            client.indexOf('async function runCycle('),
+            client.indexOf('async function getUserStatus(')
         );
+        const firstRecommendations = cycle.indexOf('await refreshRecommendations();');
+        const firstFairFight = cycle.indexOf('fairFightTask = hydrateRecommendationFairFight(');
+        const scheduledTornWork = cycle.indexOf('await syncActivitySnapshots(');
+        const waitForFairFight = cycle.indexOf('await fairFightTask;', scheduledTornWork);
+        const recommendationLoads = cycle.match(/await refreshRecommendations\(\);/g) || [];
+
+        assert.ok(firstRecommendations >= 0, 'recommendations should load');
+        assert.ok(firstFairFight > firstRecommendations, 'FF should follow targets');
+        assert.ok(scheduledTornWork > firstFairFight, 'FF refinement should start after targets');
+        assert.ok(
+            waitForFairFight > scheduledTornWork,
+            'scheduled Torn work should not wait for FFScouter refinement'
+        );
+        assert.equal(
+            recommendationLoads.length,
+            1,
+            'each routine cycle should make only one recommendation request'
+        );
+        assert.doesNotMatch(client, /collectAndReportFairFight/);
+    });
+
+
+    it('reports attack-page hospital timing without another target refresh', () => {
+        assert.match(client, /function parseVisibleRemainingMs\(/);
+        assert.match(client, /async function scrapeAndReportAttackPage\(/);
+
+        const attackAdapter = client.slice(
+            client.indexOf('async function scrapeAndReportAttackPage('),
+            client.indexOf('function scheduleAttackPageScrape(')
+        );
+
+        assert.match(attackAdapter, /source:\s*'attack_page'/);
+        assert.match(attackAdapter, /await submitObservations\(/);
+        assert.doesNotMatch(attackAdapter, /refreshRecommendations\(/);
     });
 
 
