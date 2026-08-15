@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.10.0 is identified as `0.10.0-low-write-coordination`.
+version. Release 0.11.0 is identified as `0.11.0-batched-observations`.
 
 ## Cloudflare configuration
 
@@ -150,6 +150,14 @@ request still passes through Core Lib, so other installed scripts remain part
 of the same rate limit. Observation uploads use up to 200 rows per Worker
 request to avoid unnecessary invocations.
 
+Release 0.11.0 also handles each observation upload as bounded D1 batches.
+Targets, prior statuses, and seven-day hospital history are preloaded in groups;
+status and hospital changes are then written with multi-row statements. Routine
+`Okay` and `Unknown` results no longer issue no-op recommendation-lease deletes.
+The maximum 200-observation upload is sized to use no more than 44 D1 statements,
+including the worst case where every row creates a hospital event and releases a
+lease.
+
 Targets currently assigned in a member recommendation list sort behind
 unassigned targets when the Worker creates scheduled Torn API check batches.
 Opening an assigned target through the panel starts the userscript in that attack
@@ -165,6 +173,9 @@ so this Worker update requires no destructive database migration. Migration
 0003 only removes the unused experimental `user_target_fair_fight` table if it
 was manually created while 0.5.0 was being developed.
 
+Release 0.11.0 changes only how observation queries are grouped. It uses the
+existing schema and requires no migration.
+
 The separate consent database uses
 `consent-database/0001-terms-acceptances.sql`. Run that schema only against the
 consent database, then bind it to the Worker as `CONSENT_DB`. It is intentionally
@@ -173,8 +184,9 @@ not numbered as a migration for the main target database.
 ## Test
 
 Run `npm test` in this directory. The test suite uses Node's built-in test
-runner and covers auth/session protection, low-write coordination, scheduling, activity,
-personal target-stat ranges, source-neutral ranking, unique target leasing,
+runner and covers auth/session protection, bounded observation query counts,
+low-write coordination, scheduling, activity, personal target-stat ranges,
+source-neutral ranking, unique target leasing,
 local-only Fair Fight estimates, collector failover, fair check sharing,
 interval pacing, fail-closed versioned consent, append-only acceptance records,
 old-session invalidation, parsing, and CORS.
