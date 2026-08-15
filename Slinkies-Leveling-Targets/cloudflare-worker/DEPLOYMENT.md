@@ -1,7 +1,7 @@
 # Cloudflare deployment checklist
 
-Use this order. Install userscript 0.9.0 only after the health check reports
-Worker `0.6.0-personal-stat-fit`.
+Use this order. Install userscript 0.10.0 only after the health check reports
+Worker `0.7.0-balanced-check-sharing`.
 
 ## 1. Confirm the existing migrations
 
@@ -20,7 +20,7 @@ binding, `ADMIN_TOKEN`, and `SESSION_SECRET` unchanged.
 Open:
 
 ```text
-https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.6.0
+https://slinkyleveling.richard-johnson554.workers.dev/api/health?release=0.7.0
 ```
 
 The JSON should include:
@@ -28,14 +28,14 @@ The JSON should include:
 ```json
 {
   "ok": true,
-  "version": "0.6.0-personal-stat-fit",
+  "version": "0.7.0-balanced-check-sharing",
   "database": "connected"
 }
 ```
 
 ## 4. Update Tampermonkey
 
-Install or update userscript 0.9.0, reload Torn, and click **Refresh**. Targets
+Install or update userscript 0.10.0, reload Torn, and click **Refresh**. Targets
 appear as soon as SLINK answers. On the first run of each day the client makes
 one Core Lib-controlled Torn request for the member's battle stats.
 
@@ -45,7 +45,7 @@ The panel should progress through messages like:
 Reading your locally cached strength range...
 Asking the SLINK Network for targets...
 Refining 40 Fair Fight estimates in the background...
-Running scheduled Torn checks...
+Running 120 scheduled Torn checks across 5 minutes...
 ```
 
 Approximate values carry a tilde, such as `FF ~2.15`, and are usable
@@ -64,6 +64,15 @@ Collector election is part of the normal recommendation load. The default
 interval is 300 seconds, so a standby panel generally makes six Worker requests
 per 30 minutes. The collector receives a larger scheduled-check batch after
 Core Lib's shared allowance has had time to refill.
+
+The Worker divides every currently due check by the number of active Torn user
+collectors. Multiple signed-in devices for one Torn account count once, and
+only that account's elected session receives the plan. At the default interval,
+a client can carry up to 300 checks but receives no more than its equal share.
+Checks are paced across the five minutes through Core Lib rather than fired as
+one burst. Reports are uploaded in batches of up to 200 to reduce Worker
+invocations. If a client disappears, its unfinished claims expire after seven
+minutes and become available to another collector.
 
 The collector lease covers two configured intervals. With the 300-second
 default, a second device can take over after roughly ten minutes without data
