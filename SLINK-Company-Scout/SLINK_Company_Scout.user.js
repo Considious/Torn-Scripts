@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Company Scout
 // @namespace    Considious [3853023]
-// @version      0.1.1
+// @version      0.1.2
 // @description  Build and filter a local directory of Torn companies for SLINK research.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,22 +19,61 @@
 (function () {
     'use strict';
 
-    // Release: 0.1.1-company-type-names-resizable-panel
+    // Release: 0.1.2-built-in-company-type-names
     // This research stage deliberately stops at company-level discovery.
     // It does not request employee lists, user profiles, or send data to SLINK.
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.1.1';
+    const SCRIPT_VERSION = '0.1.2';
     const SNAPSHOT_URL = 'https://api.torn.com/v2/company/snapshot';
-    const COMPANY_TYPES_URL = 'https://api.torn.com/v2/torn/companies';
     const DISPLAY_LIMIT = 300;
+    const COMPANY_TYPE_NAMES = Object.freeze({
+        1: 'Hair Salon',
+        2: 'Law Firm',
+        3: 'Flower Shop',
+        4: 'Car Dealership',
+        5: 'Clothing Store',
+        6: 'Gun Shop',
+        7: 'Game Shop',
+        8: 'Candle Shop',
+        9: 'Toy Shop',
+        10: 'Adult Novelties',
+        11: 'Cyber Cafe',
+        12: 'Grocery Store',
+        13: 'Theater',
+        14: 'Sweet Shop',
+        15: 'Cruise Line',
+        16: 'Television Network',
+        18: 'Zoo',
+        19: 'Firework Stand',
+        20: 'Property Broker',
+        21: 'Furniture Store',
+        22: 'Gas Station',
+        23: 'Music Store',
+        24: 'Nightclub',
+        25: 'Pub',
+        26: 'Gents Strip Club',
+        27: 'Restaurant',
+        28: 'Oil Rig',
+        29: 'Fitness Center',
+        30: 'Mechanic Shop',
+        31: 'Amusement Park',
+        32: 'Lingerie Store',
+        33: 'Meat Warehouse',
+        34: 'Farm',
+        35: 'Software Corporation',
+        36: 'Ladies Strip Club',
+        37: 'Private Security Firm',
+        38: 'Mining Corporation',
+        39: 'Detective Agency',
+        40: 'Logistics Management'
+    });
     const KEYS = Object.freeze({
         apiKey: 'slinkCompanyScout.tornApiKey.v1',
         snapshot: 'slinkCompanyScout.snapshot.v1',
         fetchedAt: 'slinkCompanyScout.fetchedAt.v1',
-        typeNames: 'slinkCompanyScout.typeNames.v1',
         filters: 'slinkCompanyScout.filters.v1',
         selectedTypes: 'slinkCompanyScout.selectedTypes.v1',
         collapsed: 'slinkCompanyScout.collapsed.v1',
@@ -59,7 +98,6 @@
             ? storedSnapshot.map(normalizeStoredCompany).filter(company => company.id)
             : [],
         fetchedAt: Number(loadValue(KEYS.fetchedAt, 0)) || 0,
-        typeNames: loadValue(KEYS.typeNames, {}),
         filters: {
             ...DEFAULT_FILTERS,
             ...loadValue(KEYS.filters, {})
@@ -199,7 +237,12 @@
             created_at: numeric(row.created_at),
             days_old: numeric(row.days_old),
             type_id: numeric(row.type_id ?? row.type),
-            type_name: String(row.type_name || (numeric(row.type_id ?? row.type) ? '' : row.type) || ''),
+            type_name: String(
+                row.type_name ||
+                COMPANY_TYPE_NAMES[numeric(row.type_id ?? row.type)] ||
+                (numeric(row.type_id ?? row.type) ? '' : row.type) ||
+                ''
+            ),
             rating: numeric(row.rating),
             director_id: numeric(row.director_id),
             employees_hired: numeric(row.employees_hired),
@@ -258,7 +301,7 @@
             ? companyTypeKey(companyOrKey)
             : String(companyOrKey);
         if (key.startsWith('name:')) return key.slice(5);
-        return String(state.typeNames?.[key] || `Company type ${key}`);
+        return String(COMPANY_TYPE_NAMES[Number(key)] || `Unknown company type [${key}]`);
     }
 
     function typeCounts() {
@@ -329,39 +372,6 @@
     }
 
 
-    async function ensureCompanyTypeNames(apiKey, companies) {
-        const requiredIds = [...new Set(companies.map(company => company.type_id).filter(Boolean).map(String))];
-        const missingNames = requiredIds.filter(id => !state.typeNames?.[id]);
-        if (!missingNames.length) return false;
-
-        state.message = 'Downloading Torn company-type names...';
-        render();
-        const response = await TornLib.tornRequest(COMPANY_TYPES_URL, apiKey, {
-            timeout: 30_000,
-            tornScript: 'SLINK Company Scout',
-            tornPriority: 'normal',
-            networkErrorMessage: 'Could not download Torn company-type names.',
-            timeoutMessage: 'The Torn company-type directory took too long to respond.'
-        });
-        const companyTypes = Array.isArray(response?.companies)
-            ? response.companies
-            : Object.values(response?.companies || {});
-        const names = { ...(state.typeNames || {}) };
-        for (const companyType of companyTypes) {
-            const id = numeric(companyType?.id);
-            const name = String(companyType?.name || '').trim();
-            if (id && name) names[String(id)] = name;
-        }
-        const stillMissing = requiredIds.filter(id => !names[id]);
-        if (stillMissing.length) {
-            throw new Error(`Torn did not provide names for ${stillMissing.length} company types.`);
-        }
-        state.typeNames = names;
-        saveValue(KEYS.typeNames, names);
-        return true;
-    }
-
-
     async function refreshSnapshot(panel) {
         if (state.busy) return;
         state.error = '';
@@ -389,8 +399,6 @@
             });
             const companies = parseSnapshot(csv);
             if (!companies.length) throw new Error('Torn returned an empty company directory.');
-
-            await ensureCompanyTypeNames(apiKey, companies);
 
             state.companies = companies;
             state.fetchedAt = Date.now();
@@ -645,7 +653,7 @@
                 <button class="scs-btn" id="scs-collapse" title="Minimize to a movable bubble">-</button>
             </div>
             <div class="scs-body">
-                <div class="scs-disclosure">Your Torn API key stays in this Tampermonkey script and is sent only to Torn. The first download may make one additional request to translate company-type IDs into names. This release does not inspect employees or upload anything to SLINK.</div>
+                <div class="scs-disclosure">Your Torn API key stays in this Tampermonkey script and is sent only to Torn. Company-type IDs are translated locally into their real names. This release does not inspect employees or upload anything to SLINK.</div>
                 <div class="scs-controls">
                     <label class="scs-key">Torn API key
                         <input id="scs-api-key" type="password" value="${escapeHtml(apiKey)}" autocomplete="off">
