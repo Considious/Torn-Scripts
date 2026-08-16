@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Company Scout
 // @namespace    Considious [3853023]
-// @version      0.1.0
+// @version      0.1.1
 // @description  Build and filter a local directory of Torn companies for SLINK research.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -19,25 +19,28 @@
 (function () {
     'use strict';
 
-    // Release: 0.1.0-company-directory
-    // This first release deliberately stops at company-level discovery.
+    // Release: 0.1.1-company-type-names-resizable-panel
+    // This research stage deliberately stops at company-level discovery.
     // It does not request employee lists, user profiles, or send data to SLINK.
 
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '0.1.0';
+    const SCRIPT_VERSION = '0.1.1';
     const SNAPSHOT_URL = 'https://api.torn.com/v2/company/snapshot';
+    const COMPANY_TYPES_URL = 'https://api.torn.com/v2/torn/companies';
     const DISPLAY_LIMIT = 300;
     const KEYS = Object.freeze({
         apiKey: 'slinkCompanyScout.tornApiKey.v1',
         snapshot: 'slinkCompanyScout.snapshot.v1',
         fetchedAt: 'slinkCompanyScout.fetchedAt.v1',
+        typeNames: 'slinkCompanyScout.typeNames.v1',
         filters: 'slinkCompanyScout.filters.v1',
         selectedTypes: 'slinkCompanyScout.selectedTypes.v1',
         collapsed: 'slinkCompanyScout.collapsed.v1',
         panelPosition: 'slinkCompanyScout.panelPosition.v1',
-        bubblePosition: 'slinkCompanyScout.bubblePosition.v1'
+        bubblePosition: 'slinkCompanyScout.bubblePosition.v1',
+        panelSize: 'slinkCompanyScout.panelSize.v1'
     });
     const DEFAULT_FILTERS = Object.freeze({
         minimumRating: 7,
@@ -56,6 +59,7 @@
             ? storedSnapshot.map(normalizeStoredCompany).filter(company => company.id)
             : [],
         fetchedAt: Number(loadValue(KEYS.fetchedAt, 0)) || 0,
+        typeNames: loadValue(KEYS.typeNames, {}),
         filters: {
             ...DEFAULT_FILTERS,
             ...loadValue(KEYS.filters, {})
@@ -194,7 +198,8 @@
             name: String(row.name || 'Unknown'),
             created_at: numeric(row.created_at),
             days_old: numeric(row.days_old),
-            type: String(row.type || 'Unknown'),
+            type_id: numeric(row.type_id ?? row.type),
+            type_name: String(row.type_name || (numeric(row.type_id ?? row.type) ? '' : row.type) || ''),
             rating: numeric(row.rating),
             director_id: numeric(row.director_id),
             employees_hired: numeric(row.employees_hired),
@@ -243,26 +248,42 @@
     // Filters and collection
     // ================================================================
 
+    function companyTypeKey(company) {
+        return company.type_id ? String(company.type_id) : `name:${company.type_name || 'Unknown'}`;
+    }
+
+
+    function companyTypeName(companyOrKey) {
+        const key = typeof companyOrKey === 'object'
+            ? companyTypeKey(companyOrKey)
+            : String(companyOrKey);
+        if (key.startsWith('name:')) return key.slice(5);
+        return String(state.typeNames?.[key] || `Company type ${key}`);
+    }
+
     function typeCounts() {
         const counts = new Map();
         for (const company of state.companies) {
-            counts.set(company.type, (counts.get(company.type) || 0) + 1);
+            const key = companyTypeKey(company);
+            counts.set(key, (counts.get(key) || 0) + 1);
         }
-        return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right));
+        return [...counts.entries()].sort(([left], [right]) =>
+            companyTypeName(left).localeCompare(companyTypeName(right))
+        );
     }
 
 
     function selectedTypeSet() {
         const available = typeCounts().map(([type]) => type);
         if (!Array.isArray(state.selectedTypes)) return new Set(available);
-        return new Set(state.selectedTypes.filter(type => available.includes(type)));
+        return new Set(state.selectedTypes.map(String).filter(type => available.includes(type)));
     }
 
 
     function filteredCompanies() {
         const selected = selectedTypeSet();
         return state.companies.filter(company => {
-            if (!selected.has(company.type)) return false;
+            if (!selected.has(companyTypeKey(company))) return false;
             if (company.rating < state.filters.minimumRating) return false;
             if (company.rating > state.filters.maximumRating) return false;
             if (state.filters.employeesOnly && company.employees_hired <= 0) return false;
@@ -308,6 +329,39 @@
     }
 
 
+    async function ensureCompanyTypeNames(apiKey, companies) {
+        const requiredIds = [...new Set(companies.map(company => company.type_id).filter(Boolean).map(String))];
+        const missingNames = requiredIds.filter(id => !state.typeNames?.[id]);
+        if (!missingNames.length) return false;
+
+        state.message = 'Downloading Torn company-type names...';
+        render();
+        const response = await TornLib.tornRequest(COMPANY_TYPES_URL, apiKey, {
+            timeout: 30_000,
+            tornScript: 'SLINK Company Scout',
+            tornPriority: 'normal',
+            networkErrorMessage: 'Could not download Torn company-type names.',
+            timeoutMessage: 'The Torn company-type directory took too long to respond.'
+        });
+        const companyTypes = Array.isArray(response?.companies)
+            ? response.companies
+            : Object.values(response?.companies || {});
+        const names = { ...(state.typeNames || {}) };
+        for (const companyType of companyTypes) {
+            const id = numeric(companyType?.id);
+            const name = String(companyType?.name || '').trim();
+            if (id && name) names[String(id)] = name;
+        }
+        const stillMissing = requiredIds.filter(id => !names[id]);
+        if (stillMissing.length) {
+            throw new Error(`Torn did not provide names for ${stillMissing.length} company types.`);
+        }
+        state.typeNames = names;
+        saveValue(KEYS.typeNames, names);
+        return true;
+    }
+
+
     async function refreshSnapshot(panel) {
         if (state.busy) return;
         state.error = '';
@@ -335,6 +389,8 @@
             });
             const companies = parseSnapshot(csv);
             if (!companies.length) throw new Error('Torn returned an empty company directory.');
+
+            await ensureCompanyTypeNames(apiKey, companies);
 
             state.companies = companies;
             state.fetchedAt = Date.now();
@@ -374,14 +430,18 @@
             return;
         }
         const headers = [
-            'id', 'name', 'type', 'rating', 'director_id',
+            'id', 'name', 'type_id', 'type_name', 'rating', 'director_id',
             'employees_hired', 'employees_capacity', 'days_old',
             'daily_income', 'weekly_income', 'daily_customers',
             'weekly_customers', 'applications_allowed', 'created_at'
         ];
         const lines = [headers.join(',')];
         for (const company of companies) {
-            lines.push(headers.map(header => csvCell(company[header])).join(','));
+            const exported = {
+                ...company,
+                type_name: companyTypeName(company)
+            };
+            lines.push(headers.map(header => csvCell(exported[header])).join(','));
         }
         const blob = new Blob([`\uFEFF${lines.join('\r\n')}\r\n`], { type: 'text/csv;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -407,16 +467,19 @@
         GM_addStyle(`
             #slink-company-scout {
                 position:fixed; right:18px; top:110px; z-index:999999;
-                width:min(760px,calc(100vw - 24px)); max-height:calc(100vh - 130px);
+                display:flex; flex-direction:column;
+                width:min(520px,calc(100vw - 24px)); height:min(520px,calc(100vh - 130px));
+                min-width:360px; min-height:260px;
+                max-width:calc(100vw - 8px); max-height:calc(100vh - 8px);
                 overflow:hidden; border:1px solid #52636b; border-radius:8px;
                 background:#11191d; color:#e8edef; font:12px/1.35 Arial,sans-serif;
-                box-shadow:0 9px 28px rgba(0,0,0,.48);
+                box-shadow:0 9px 28px rgba(0,0,0,.48); resize:both;
             }
             #slink-company-scout * { box-sizing:border-box; }
-            .scs-head { display:flex; align-items:center; gap:8px; padding:9px 10px; background:#1b2b31; border-bottom:1px solid rgba(255,255,255,.1); cursor:move; user-select:none; }
+            .scs-head { flex:none; display:flex; align-items:center; gap:8px; padding:9px 10px; background:#1b2b31; border-bottom:1px solid rgba(255,255,255,.1); cursor:move; user-select:none; }
             .scs-title { flex:1; font-size:14px; font-weight:700; }
             .scs-sub { color:#93a7ad; font-size:10px; font-weight:400; }
-            .scs-body { max-height:calc(100vh - 190px); overflow:auto; }
+            .scs-body { flex:1; min-height:0; overflow:auto; }
             .scs-disclosure { padding:8px 10px; color:#b9c7cb; background:#17242a; border-bottom:1px solid rgba(255,255,255,.08); }
             .scs-controls { display:grid; grid-template-columns:2fr 1fr 1fr; gap:8px; padding:10px; border-bottom:1px solid rgba(255,255,255,.09); }
             .scs-controls label { display:flex; flex-direction:column; gap:3px; color:#c1cbce; }
@@ -430,7 +493,7 @@
             .scs-types { padding:9px 10px; border-bottom:1px solid rgba(255,255,255,.09); }
             .scs-type-head { display:flex; align-items:center; gap:7px; margin-bottom:7px; }
             .scs-type-title { flex:1; font-weight:700; color:#cfe3e7; }
-            .scs-type-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px 12px; max-height:190px; overflow:auto; padding-right:5px; }
+            .scs-type-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 12px; max-height:190px; overflow:auto; padding-right:5px; }
             .scs-type-grid label { display:flex; align-items:flex-start; gap:5px; color:#b8c5c9; }
             .scs-type-count { color:#788d94; }
             .scs-message, .scs-error { padding:7px 10px; border-bottom:1px solid rgba(255,255,255,.08); }
@@ -445,14 +508,14 @@
             .scs-company { color:#9edfff; font-weight:700; text-decoration:none; }
             .scs-muted { color:#84979d; font-size:10px; }
             .scs-empty { padding:18px; text-align:center; color:#91a2a7; }
-            .scs-footer { padding:7px 10px; color:#788a90; border-top:1px solid rgba(255,255,255,.08); font-size:10px; }
-            #slink-company-scout.scs-collapsed { width:54px; height:54px; max-height:none; overflow:visible; border-radius:50%; background:transparent; border-color:rgba(65,197,220,.65); }
+            .scs-footer { flex:none; padding:7px 10px; color:#788a90; border-top:1px solid rgba(255,255,255,.08); font-size:10px; }
+            #slink-company-scout.scs-collapsed { display:block; width:54px; height:54px; min-width:54px; min-height:54px; max-width:54px; max-height:54px; overflow:visible; resize:none; border-radius:50%; background:transparent; border-color:rgba(65,197,220,.65); }
             .scs-bubble { display:flex; width:100%; height:100%; align-items:center; justify-content:center; border-radius:50%; background:linear-gradient(145deg,#278aa0,#174955); color:#fff; cursor:pointer; font:800 13px/1 Arial,sans-serif; user-select:none; touch-action:none; box-shadow:0 6px 18px rgba(0,0,0,.48),inset 0 0 0 1px rgba(255,255,255,.18); }
             .scs-bubble:hover { background:linear-gradient(145deg,#31a4bc,#1d5c69); }
             @media (max-width:700px) {
                 .scs-controls { grid-template-columns:1fr 1fr; }
                 .scs-controls .scs-key { grid-column:1 / -1; }
-                .scs-type-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+                .scs-type-grid { grid-template-columns:1fr; }
             }
         `);
     }
@@ -485,7 +548,7 @@
                     ${counts.map(([type, count]) => `
                         <label>
                             <input type="checkbox" data-company-type="${escapeHtml(type)}" ${selected.has(type) ? 'checked' : ''}>
-                            <span>${escapeHtml(type)} <span class="scs-type-count">(${count.toLocaleString()})</span></span>
+                            <span>${escapeHtml(companyTypeName(type))} <span class="scs-type-count">(${count.toLocaleString()})</span></span>
                         </label>
                     `).join('')}
                 </div>
@@ -515,7 +578,7 @@
                             return `
                                 <tr>
                                     <td><a class="scs-company" href="${escapeHtml(companyUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(company.name)} [${company.id}]</a></td>
-                                    <td>${escapeHtml(company.type)}</td>
+                                    <td>${escapeHtml(companyTypeName(company))}</td>
                                     <td>${company.rating}</td>
                                     <td>${company.employees_hired}/${company.employees_capacity}</td>
                                     <td title="$${company.daily_income.toLocaleString()}">${shortMoney(company.daily_income)}</td>
@@ -549,10 +612,22 @@
     }
 
 
+    function applySavedSize(panel, collapsed) {
+        panel.style.removeProperty('width');
+        panel.style.removeProperty('height');
+        if (collapsed) return;
+        const size = loadValue(KEYS.panelSize, null);
+        if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) return;
+        panel.style.width = `${size.width}px`;
+        panel.style.height = `${size.height}px`;
+    }
+
+
     function render() {
         const panel = ensurePanel();
         const collapsed = Boolean(loadValue(KEYS.collapsed, false));
         panel.classList.toggle('scs-collapsed', collapsed);
+        applySavedSize(panel, collapsed);
 
         if (collapsed) {
             panel.innerHTML = `<div class="scs-bubble" role="button" tabindex="0" title="Open SLINK Company Scout">CS</div>`;
@@ -570,7 +645,7 @@
                 <button class="scs-btn" id="scs-collapse" title="Minimize to a movable bubble">-</button>
             </div>
             <div class="scs-body">
-                <div class="scs-disclosure">Your Torn API key stays in this Tampermonkey script and is sent only to Torn. This release makes one manual company-snapshot request and does not inspect employees or upload anything to SLINK.</div>
+                <div class="scs-disclosure">Your Torn API key stays in this Tampermonkey script and is sent only to Torn. The first download may make one additional request to translate company-type IDs into names. This release does not inspect employees or upload anything to SLINK.</div>
                 <div class="scs-controls">
                     <label class="scs-key">Torn API key
                         <input id="scs-api-key" type="password" value="${escapeHtml(apiKey)}" autocomplete="off">
@@ -599,7 +674,7 @@
                 </div>
                 ${resultsHtml(companies)}
             </div>
-            <div class="scs-footer">The daily Torn snapshot is downloaded once. Company-type and star filters are applied locally without additional API calls.</div>
+            <div class="scs-footer">The daily Torn snapshot is downloaded once. Filters are local. Drag the bottom-right corner to resize this panel.</div>
         `;
         applySavedPosition(false);
         bindEvents(panel);
@@ -673,6 +748,20 @@
             },
             margin: 4
         });
+        let resizeTimer = null;
+        const resizeObserver = new ResizeObserver(() => {
+            clearTimeout(resizeTimer);
+            if (loadValue(KEYS.collapsed, false)) return;
+            resizeTimer = setTimeout(() => {
+                const rect = panel.getBoundingClientRect();
+                if (rect.width <= 60 || rect.height <= 60) return;
+                saveValue(KEYS.panelSize, {
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height)
+                });
+            }, 150);
+        });
+        resizeObserver.observe(panel);
         installBubbleBehavior(panel);
         render();
     }
