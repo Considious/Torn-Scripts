@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Bounty Scouter - Prototype
 // @namespace    Considious [3853023]
-// @version      0.1.0
+// @version      0.1.1
 // @description  Local-only bounty catalog for NST, BHG, UMS, and GMS* reasons with CSV export.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.5
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/bounty-scouter-prototype/slink-bounty-scouter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/bounty-scouter-prototype/slink-bounty-scouter.user.js
 // @run-at       document-end
@@ -18,13 +19,18 @@
 (() => {
   'use strict';
 
+  const TornLib = globalThis.ConsidiousTornLib;
+  if (!TornLib) throw new Error('Core Lib failed to load.');
+
   const STORAGE_KEY = 'slink-bounty-scouter-v1';
+  const POSITION_KEY = 'slink-bounty-scouter-position-v1';
   const API_ROOT = 'https://api.torn.com/v2';
   const DEFAULTS = {
     apiKey: '',
     pollSeconds: 60,
     maxPages: 5,
     minimized: false,
+    panelSize: { width: 520, height: 620 },
     records: {},
     listers: {},
     lastPollAt: 0,
@@ -33,7 +39,9 @@
     ffEstimates: {},
   };
 
-  const state = Object.assign({}, DEFAULTS, GM_getValue(STORAGE_KEY, {}));
+  const saved = GM_getValue(STORAGE_KEY, {});
+  const state = Object.assign({}, DEFAULTS, saved);
+  state.panelSize = Object.assign({}, DEFAULTS.panelSize, saved?.panelSize || {});
   state.records ||= {};
   state.listers ||= {};
   state.ffEstimates ||= {};
@@ -133,10 +141,7 @@
     if (!state.apiKey) { state.lastError = 'Enter a Torn API key first.'; save(); render(); return; }
     if (document.hidden || !document.hasFocus()) return;
 
-    let offset = 0;
-    let added = 0;
-    let pages = 0;
-    let cacheTs = 0;
+    let offset = 0, added = 0, pages = 0, cacheTs = 0;
     try {
       while (pages < Math.max(1, Number(state.maxPages || 5))) {
         const url = `${API_ROOT}/torn/bounties?limit=100&offset=${offset}&key=${encodeURIComponent(state.apiKey)}&comment=SLINK_Bounty_Scouter`;
@@ -173,16 +178,10 @@
   }
 
   function exportBounties() {
-    const header = ['target_id','target_name','target_level','reason_class','reason','reward','quantity','lister_id','lister_name','anonymous','valid_until','first_seen_at','last_seen_at','times_seen','ff_estimate','ff_confidence'];
-    const rows = [header];
+    const rows = [['target_id','target_name','target_level','reason_class','reason','reward','quantity','lister_id','lister_name','anonymous','valid_until','first_seen_at','last_seen_at','times_seen','ff_estimate','ff_confidence']];
     for (const r of Object.values(state.records).sort((a,b)=>b.first_seen_at-a.first_seen_at)) {
       const ff = state.ffEstimates[String(r.target_id)] || {};
-      rows.push([
-        r.target_id,r.target_name,r.target_level,r.reason_class,r.reason,r.reward,r.quantity,
-        r.lister_id ?? '',r.lister_name ?? '',r.is_anonymous ? 1 : 0,
-        new Date(r.valid_until*1000).toISOString(),new Date(r.first_seen_at*1000).toISOString(),new Date(r.last_seen_at*1000).toISOString(),r.times_seen,
-        ff.estimate || '',ff.confidence || ''
-      ]);
+      rows.push([r.target_id,r.target_name,r.target_level,r.reason_class,r.reason,r.reward,r.quantity,r.lister_id??'',r.lister_name??'',r.is_anonymous?1:0,new Date(r.valid_until*1000).toISOString(),new Date(r.first_seen_at*1000).toISOString(),new Date(r.last_seen_at*1000).toISOString(),r.times_seen,ff.estimate||'',ff.confidence||'']);
     }
     downloadCsv(`slink-bounty-scouter-${new Date().toISOString().slice(0,10)}.csv`, rows);
   }
@@ -199,20 +198,61 @@
   host.id = 'slink-bounty-scouter';
   document.documentElement.appendChild(host);
   const root = host.attachShadow({mode:'open'});
+  let dragController = null;
+  let resizeObserver = null;
+  let suppressResizeSave = false;
+
+  function installMovementAndResize() {
+    const panel = root.querySelector('.panel');
+    const head = root.querySelector('.head');
+    if (!panel || !head) return;
+
+    dragController?.destroy?.();
+    dragController = TornLib.makePanelDraggable(panel, {
+      handle: head,
+      storageKey: POSITION_KEY,
+      margin: 4,
+      ignoreSelector: 'button,input,textarea,select,a,[data-no-drag]',
+    });
+
+    resizeObserver?.disconnect();
+    resizeObserver = new ResizeObserver(entries => {
+      if (suppressResizeSave || state.minimized) return;
+      const rect = entries[0]?.target?.getBoundingClientRect();
+      if (!rect) return;
+      state.panelSize = {
+        width: Math.round(Math.max(320, Math.min(innerWidth - 8, rect.width))),
+        height: Math.round(Math.max(180, Math.min(innerHeight - 8, rect.height))),
+      };
+      save();
+      dragController?.clampToViewport?.();
+    });
+    resizeObserver.observe(panel);
+  }
 
   function render(flash='') {
     const records = Object.values(state.records);
     const active = records.filter(r => Number(r.valid_until) * 1000 > Date.now()).sort((a,b)=>b.first_seen_at-a.first_seen_at).slice(0,40);
     const listers = Object.values(state.listers).sort((a,b)=>b.total_matching_bounties-a.total_matching_bounties).slice(0,10);
+    const width = Math.max(320, Math.min(innerWidth - 8, Number(state.panelSize?.width) || 520));
+    const height = Math.max(180, Math.min(innerHeight - 8, Number(state.panelSize?.height) || 620));
+
+    suppressResizeSave = true;
     root.innerHTML = `<style>
-      :host{all:initial;color-scheme:dark}.panel{position:fixed;right:10px;top:90px;z-index:2147483646;width:520px;max-height:72vh;overflow:hidden;border:1px solid #55616a;border-radius:8px;background:#151a1e;color:#edf2f5;box-shadow:0 8px 28px #0009;font:12px/1.3 system-ui,-apple-system,Segoe UI,sans-serif}.head{display:flex;align-items:center;gap:7px;padding:7px 8px;background:#232a30;border-bottom:1px solid #4c5861}.head strong{font-size:13px}.spacer{flex:1}.body{display:${state.minimized?'none':'block'};max-height:calc(72vh - 38px);overflow:auto}.controls{display:grid;grid-template-columns:1fr 90px 70px;gap:6px;padding:8px;border-bottom:1px solid #38434b}.controls input,.controls select,button{box-sizing:border-box;color:#fff;background:#20272c;border:1px solid #56636c;border-radius:5px;padding:5px;font:inherit}button{cursor:pointer}.actions{display:flex;gap:5px;padding:0 8px 8px}.actions button{flex:1}.status{padding:6px 8px;color:#9fb0ba;border-bottom:1px solid #303a42}.err{color:#ff9a9a}.flash{color:#a7e9bd}.section{padding:8px}.section h4{margin:0 0 5px}.row{display:grid;grid-template-columns:42px minmax(100px,1fr) 52px 76px 95px;gap:5px;align-items:center;padding:5px 4px;border-top:1px solid #29323a}.row:first-of-type{border-top:0}.tag{font-weight:800;color:#fff}.target a,.lister a{color:#fff;text-decoration:none}.target a:hover,.lister a:hover{text-decoration:underline}.muted{color:#8f9ca5;font-size:10px}.lrow{display:grid;grid-template-columns:minmax(130px,1fr) 54px 54px;gap:6px;padding:4px;border-top:1px solid #29323a}.pill{padding:2px 5px;border:1px solid #52606a;border-radius:12px;text-align:center}.mini{width:26px;height:24px;padding:0}.note{padding:7px 8px;color:#8f9ca5;background:#111518;border-top:1px solid #303940;font-size:10px}</style>
-      <div class=panel><div class=head><strong>SLINK Bounty Scouter</strong><span class=muted>Local-only</span><div class=spacer></div><button id=min class=mini>${state.minimized?'＋':'—'}</button></div><div class=body>
+      :host{all:initial;color-scheme:dark}
+      .panel{position:fixed;right:10px;top:90px;z-index:2147483646;width:${width}px;height:${state.minimized?'auto':`${height}px`};min-width:320px;min-height:${state.minimized?'0':'180px'};max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);overflow:hidden;resize:${state.minimized?'none':'both'};border:1px solid #55616a;border-radius:8px;background:#151a1e;color:#edf2f5;box-shadow:0 8px 28px #0009;font:12px/1.3 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column}
+      .head{flex:0 0 auto;display:flex;align-items:center;gap:7px;padding:7px 8px;background:#232a30;border-bottom:1px solid #4c5861;cursor:grab;user-select:none}.head:active{cursor:grabbing}.head strong{font-size:13px}.spacer{flex:1}
+      .body{display:${state.minimized?'none':'flex'};flex:1 1 auto;min-height:0;flex-direction:column;overflow:auto}
+      .controls{display:grid;grid-template-columns:minmax(110px,1fr) 90px 70px;gap:6px;padding:8px;border-bottom:1px solid #38434b}.controls input,.controls select,button{box-sizing:border-box;color:#fff;background:#20272c;border:1px solid #56636c;border-radius:5px;padding:5px;font:inherit}button{cursor:pointer}.actions{display:flex;gap:5px;padding:0 8px 8px;flex-wrap:wrap}.actions button{flex:1 1 120px}.status{padding:6px 8px;color:#9fb0ba;border-bottom:1px solid #303a42}.err{color:#ff9a9a}.flash{color:#a7e9bd}.section{padding:8px}.section h4{margin:0 0 5px}.row{display:grid;grid-template-columns:42px minmax(100px,1fr) 52px 76px minmax(75px,95px);gap:5px;align-items:center;padding:5px 4px;border-top:1px solid #29323a}.row:first-of-type{border-top:0}.tag{font-weight:800;color:#fff}.target a,.lister a{color:#fff;text-decoration:none}.target a:hover,.lister a:hover{text-decoration:underline}.muted{color:#8f9ca5;font-size:10px}.lrow{display:grid;grid-template-columns:minmax(130px,1fr) 54px 54px;gap:6px;padding:4px;border-top:1px solid #29323a}.pill{padding:2px 5px;border:1px solid #52606a;border-radius:12px;text-align:center}.mini{width:26px;height:24px;padding:0}.note{padding:7px 8px;color:#8f9ca5;background:#111518;border-top:1px solid #303940;font-size:10px}
+      @media(max-width:480px){.controls{grid-template-columns:1fr 1fr}.controls input{grid-column:1/-1}.row{grid-template-columns:40px minmax(100px,1fr) 48px}.row>span:nth-child(4),.row>span:nth-child(5){grid-column:2/-1}.lrow{grid-template-columns:1fr 50px}}
+    </style>
+      <div class=panel><div class=head><strong>SLINK Bounty Scouter</strong><span class=muted>Local-only</span><div class=spacer></div><button id=min class=mini data-no-drag>${state.minimized?'＋':'—'}</button></div><div class=body>
       <div class=controls><input id=key type=password placeholder="Torn API key" value="${esc(state.apiKey)}"><select id=poll><option value=30 ${state.pollSeconds==30?'selected':''}>30 sec</option><option value=60 ${state.pollSeconds==60?'selected':''}>60 sec</option><option value=120 ${state.pollSeconds==120?'selected':''}>2 min</option><option value=300 ${state.pollSeconds==300?'selected':''}>5 min</option></select><select id=pages><option value=1 ${state.maxPages==1?'selected':''}>100</option><option value=3 ${state.maxPages==3?'selected':''}>300</option><option value=5 ${state.maxPages==5?'selected':''}>500</option><option value=10 ${state.maxPages==10?'selected':''}>1000</option></select></div>
       <div class=actions><button id=now>Poll now</button><button id=csv>Export Bounties CSV</button><button id=lcsv>Export Listers CSV</button></div>
       <div class="status ${state.lastError?'err':''}">${state.lastError ? esc(state.lastError) : flash ? `<span class=flash>${esc(flash)}</span>` : `Last poll: ${fmtTime(state.lastPollAt)} • Cache: ${fmtTime(state.lastCacheTimestamp)} • Stored: ${records.length}`}</div>
-      <div class=section><h4>Current matching bounties (${active.length > 40 ? '40+' : active.length})</h4>${active.length ? active.map(r=>`<div class=row><span class="tag pill">${esc(r.reason_class)}</span><span class=target><a target=_blank href="https://www.torn.com/profiles.php?XID=${r.target_id}">${esc(r.target_name)} [${r.target_id}]</a><div class=muted>Lvl ${r.target_level} • ${esc(r.reason || '')}</div></span><span>${r.quantity}×</span><span>${fmtMoney(r.reward)}</span><span class=lister>${r.is_anonymous ? '<span class=muted>Anonymous</span>' : `<a target=_blank href="https://www.torn.com/profiles.php?XID=${r.lister_id}">${esc(r.lister_name)}</a>`}</span></div>`).join('') : '<div class=muted>No matching bounties recorded yet.</div>'}</div>
-      <div class=section><h4>Known non-anonymous listers</h4>${listers.length ? listers.map(l=>`<div class=lrow><span class=lister><a target=_blank href="https://www.torn.com/profiles.php?XID=${l.lister_id}">${esc(l.lister_name)} [${l.lister_id}]</a></span><span class=pill>${l.total_matching_bounties}</span><span class=pill>${Object.keys(l.unique_targets||{}).length} tgt</span></div>`).join('') : '<div class=muted>No known listers yet.</div>'}</div>
-      <div class=note>Matches exact NST, BHG, and UMS reasons plus any reason beginning with GMS. Data and API key remain local. FF estimate columns are reserved for the FF Scouter enrichment hook.</div>
+      <div class=section><h4>Current matching bounties (${active.length})</h4>${active.length ? active.map(r=>`<div class=row><span class="tag pill">${esc(r.reason_class)}</span><span class=target><a target=_blank href="https://www.torn.com/profiles.php?XID=${r.target_id}">${esc(r.target_name)} [${r.target_id}]</a><div class=muted>Lvl ${r.target_level} • ${esc(r.reason||'')}</div></span><span>${r.quantity}×</span><span>${fmtMoney(r.reward)}</span><span class=lister>${r.is_anonymous?'<span class=muted>Anonymous</span>':`<a target=_blank href="https://www.torn.com/profiles.php?XID=${r.lister_id}">${esc(r.lister_name)}</a>`}</span></div>`).join(''):'<div class=muted>No matching bounties recorded yet.</div>'}</div>
+      <div class=section><h4>Known non-anonymous listers</h4>${listers.length ? listers.map(l=>`<div class=lrow><span class=lister><a target=_blank href="https://www.torn.com/profiles.php?XID=${l.lister_id}">${esc(l.lister_name)} [${l.lister_id}]</a></span><span class=pill>${l.total_matching_bounties}</span><span class=pill>${Object.keys(l.unique_targets||{}).length} tgt</span></div>`).join(''):'<div class=muted>No known listers yet.</div>'}</div>
+      <div class=note>Drag the header to move freely. Drag the lower-right corner to resize. Position and size are saved locally. Matches exact NST, BHG, and UMS reasons plus any reason beginning with GMS.</div>
       </div></div>`;
 
     root.getElementById('min').onclick=()=>{state.minimized=!state.minimized;save();render();};
@@ -222,6 +262,9 @@
     root.getElementById('now').onclick=poll;
     root.getElementById('csv').onclick=exportBounties;
     root.getElementById('lcsv').onclick=exportListers;
+
+    installMovementAndResize();
+    requestAnimationFrame(()=>{suppressResizeSave=false;});
   }
 
   let timer = null;
@@ -232,5 +275,6 @@
     }, Math.max(30, Number(state.pollSeconds || 60)) * 1000);
   }
 
-  render(); restartTimer();
+  render();
+  restartTimer();
 })();
