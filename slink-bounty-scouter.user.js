@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Bounty Scouter - Prototype
 // @namespace    Considious [3853023]
-// @version      0.1.1
+// @version      0.1.2
 // @description  Local-only bounty catalog for NST, BHG, UMS, and GMS* reasons with CSV export.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -28,13 +28,14 @@
   const DEFAULTS = {
     apiKey: '',
     pollSeconds: 60,
-    maxPages: 5,
     minimized: false,
     panelSize: { width: 520, height: 620 },
     records: {},
     listers: {},
     lastPollAt: 0,
     lastCacheTimestamp: 0,
+    lastScanCount: 0,
+    lastScanPages: 0,
     lastError: '',
     ffEstimates: {},
   };
@@ -141,23 +142,43 @@
     if (!state.apiKey) { state.lastError = 'Enter a Torn API key first.'; save(); render(); return; }
     if (document.hidden || !document.hasFocus()) return;
 
-    let offset = 0, added = 0, pages = 0, cacheTs = 0;
+    let offset = 0;
+    let added = 0;
+    let pages = 0;
+    let scanned = 0;
+    let cacheTs = 0;
+    let previousPageSignature = '';
+
     try {
-      while (pages < Math.max(1, Number(state.maxPages || 5))) {
+      while (true) {
         const url = `${API_ROOT}/torn/bounties?limit=100&offset=${offset}&key=${encodeURIComponent(state.apiKey)}&comment=SLINK_Bounty_Scouter`;
         const data = await apiGet(url);
         cacheTs = Number(data.bounties_timestamp || 0);
         const rows = Array.isArray(data.bounties) ? data.bounties : [];
-        for (const b of rows) if (catalogBounty(b, cacheTs)) added++;
         pages++;
+        scanned += rows.length;
+
+        // Defensive duplicate-page guard in case the API ever ignores an offset.
+        const pageSignature = rows.length
+          ? `${rows[0]?.target_id ?? ''}|${rows[0]?.valid_until ?? ''}|${rows.at(-1)?.target_id ?? ''}|${rows.at(-1)?.valid_until ?? ''}|${rows.length}`
+          : '';
+        if (pageSignature && pageSignature === previousPageSignature) break;
+        previousPageSignature = pageSignature;
+
+        for (const b of rows) if (catalogBounty(b, cacheTs)) added++;
+
+        // No arbitrary bounty-count cap: keep paging until Torn returns the final partial/empty page.
         if (rows.length < 100) break;
-        offset += 100;
+        offset += rows.length;
       }
+
       state.lastPollAt = Math.floor(Date.now()/1000);
       state.lastCacheTimestamp = cacheTs;
+      state.lastScanCount = scanned;
+      state.lastScanPages = pages;
       state.lastError = '';
       save();
-      render(`Added ${added} new matching ${added === 1 ? 'bounty' : 'bounties'}.`);
+      render(`Scanned ${scanned.toLocaleString()} bounties across ${pages} pages • added ${added} new match${added === 1 ? '' : 'es'}.`);
     } catch (e) {
       state.lastError = e.message || String(e);
       save(); render();
@@ -243,22 +264,21 @@
       .panel{position:fixed;right:10px;top:90px;z-index:2147483646;width:${width}px;height:${state.minimized?'auto':`${height}px`};min-width:320px;min-height:${state.minimized?'0':'180px'};max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);overflow:hidden;resize:${state.minimized?'none':'both'};border:1px solid #55616a;border-radius:8px;background:#151a1e;color:#edf2f5;box-shadow:0 8px 28px #0009;font:12px/1.3 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column}
       .head{flex:0 0 auto;display:flex;align-items:center;gap:7px;padding:7px 8px;background:#232a30;border-bottom:1px solid #4c5861;cursor:grab;user-select:none}.head:active{cursor:grabbing}.head strong{font-size:13px}.spacer{flex:1}
       .body{display:${state.minimized?'none':'flex'};flex:1 1 auto;min-height:0;flex-direction:column;overflow:auto}
-      .controls{display:grid;grid-template-columns:minmax(110px,1fr) 90px 70px;gap:6px;padding:8px;border-bottom:1px solid #38434b}.controls input,.controls select,button{box-sizing:border-box;color:#fff;background:#20272c;border:1px solid #56636c;border-radius:5px;padding:5px;font:inherit}button{cursor:pointer}.actions{display:flex;gap:5px;padding:0 8px 8px;flex-wrap:wrap}.actions button{flex:1 1 120px}.status{padding:6px 8px;color:#9fb0ba;border-bottom:1px solid #303a42}.err{color:#ff9a9a}.flash{color:#a7e9bd}.section{padding:8px}.section h4{margin:0 0 5px}.row{display:grid;grid-template-columns:42px minmax(100px,1fr) 52px 76px minmax(75px,95px);gap:5px;align-items:center;padding:5px 4px;border-top:1px solid #29323a}.row:first-of-type{border-top:0}.tag{font-weight:800;color:#fff}.target a,.lister a{color:#fff;text-decoration:none}.target a:hover,.lister a:hover{text-decoration:underline}.muted{color:#8f9ca5;font-size:10px}.lrow{display:grid;grid-template-columns:minmax(130px,1fr) 54px 54px;gap:6px;padding:4px;border-top:1px solid #29323a}.pill{padding:2px 5px;border:1px solid #52606a;border-radius:12px;text-align:center}.mini{width:26px;height:24px;padding:0}.note{padding:7px 8px;color:#8f9ca5;background:#111518;border-top:1px solid #303940;font-size:10px}
-      @media(max-width:480px){.controls{grid-template-columns:1fr 1fr}.controls input{grid-column:1/-1}.row{grid-template-columns:40px minmax(100px,1fr) 48px}.row>span:nth-child(4),.row>span:nth-child(5){grid-column:2/-1}.lrow{grid-template-columns:1fr 50px}}
+      .controls{display:grid;grid-template-columns:minmax(110px,1fr) 90px;gap:6px;padding:8px;border-bottom:1px solid #38434b}.controls input,.controls select,button{box-sizing:border-box;color:#fff;background:#20272c;border:1px solid #56636c;border-radius:5px;padding:5px;font:inherit}button{cursor:pointer}.actions{display:flex;gap:5px;padding:0 8px 8px;flex-wrap:wrap}.actions button{flex:1 1 120px}.status{padding:6px 8px;color:#9fb0ba;border-bottom:1px solid #303a42}.err{color:#ff9a9a}.flash{color:#a7e9bd}.section{padding:8px}.section h4{margin:0 0 5px}.row{display:grid;grid-template-columns:42px minmax(100px,1fr) 52px 76px minmax(75px,95px);gap:5px;align-items:center;padding:5px 4px;border-top:1px solid #29323a}.row:first-of-type{border-top:0}.tag{font-weight:800;color:#fff}.target a,.lister a{color:#fff;text-decoration:none}.target a:hover,.lister a:hover{text-decoration:underline}.muted{color:#8f9ca5;font-size:10px}.lrow{display:grid;grid-template-columns:minmax(130px,1fr) 54px 54px;gap:6px;padding:4px;border-top:1px solid #29323a}.pill{padding:2px 5px;border:1px solid #52606a;border-radius:12px;text-align:center}.mini{width:26px;height:24px;padding:0}.note{padding:7px 8px;color:#8f9ca5;background:#111518;border-top:1px solid #303940;font-size:10px}
+      @media(max-width:480px){.controls{grid-template-columns:1fr}.row{grid-template-columns:40px minmax(100px,1fr) 48px}.row>span:nth-child(4),.row>span:nth-child(5){grid-column:2/-1}.lrow{grid-template-columns:1fr 50px}}
     </style>
       <div class=panel><div class=head><strong>SLINK Bounty Scouter</strong><span class=muted>Local-only</span><div class=spacer></div><button id=min class=mini data-no-drag>${state.minimized?'＋':'—'}</button></div><div class=body>
-      <div class=controls><input id=key type=password placeholder="Torn API key" value="${esc(state.apiKey)}"><select id=poll><option value=30 ${state.pollSeconds==30?'selected':''}>30 sec</option><option value=60 ${state.pollSeconds==60?'selected':''}>60 sec</option><option value=120 ${state.pollSeconds==120?'selected':''}>2 min</option><option value=300 ${state.pollSeconds==300?'selected':''}>5 min</option></select><select id=pages><option value=1 ${state.maxPages==1?'selected':''}>100</option><option value=3 ${state.maxPages==3?'selected':''}>300</option><option value=5 ${state.maxPages==5?'selected':''}>500</option><option value=10 ${state.maxPages==10?'selected':''}>1000</option></select></div>
-      <div class=actions><button id=now>Poll now</button><button id=csv>Export Bounties CSV</button><button id=lcsv>Export Listers CSV</button></div>
-      <div class="status ${state.lastError?'err':''}">${state.lastError ? esc(state.lastError) : flash ? `<span class=flash>${esc(flash)}</span>` : `Last poll: ${fmtTime(state.lastPollAt)} • Cache: ${fmtTime(state.lastCacheTimestamp)} • Stored: ${records.length}`}</div>
+      <div class=controls><input id=key type=password placeholder="Torn API key" value="${esc(state.apiKey)}"><select id=poll><option value=30 ${state.pollSeconds==30?'selected':''}>30 sec</option><option value=60 ${state.pollSeconds==60?'selected':''}>60 sec</option><option value=120 ${state.pollSeconds==120?'selected':''}>2 min</option><option value=300 ${state.pollSeconds==300?'selected':''}>5 min</option></select></div>
+      <div class=actions><button id=now>Scan all bounties</button><button id=csv>Export Bounties CSV</button><button id=lcsv>Export Listers CSV</button></div>
+      <div class="status ${state.lastError?'err':''}">${state.lastError ? esc(state.lastError) : flash ? `<span class=flash>${esc(flash)}</span>` : `Last poll: ${fmtTime(state.lastPollAt)} • Cache: ${fmtTime(state.lastCacheTimestamp)} • Last scan: ${Number(state.lastScanCount||0).toLocaleString()} bounties / ${Number(state.lastScanPages||0)} pages • Stored matches: ${records.length}`}</div>
       <div class=section><h4>Current matching bounties (${active.length})</h4>${active.length ? active.map(r=>`<div class=row><span class="tag pill">${esc(r.reason_class)}</span><span class=target><a target=_blank href="https://www.torn.com/profiles.php?XID=${r.target_id}">${esc(r.target_name)} [${r.target_id}]</a><div class=muted>Lvl ${r.target_level} • ${esc(r.reason||'')}</div></span><span>${r.quantity}×</span><span>${fmtMoney(r.reward)}</span><span class=lister>${r.is_anonymous?'<span class=muted>Anonymous</span>':`<a target=_blank href="https://www.torn.com/profiles.php?XID=${r.lister_id}">${esc(r.lister_name)}</a>`}</span></div>`).join(''):'<div class=muted>No matching bounties recorded yet.</div>'}</div>
       <div class=section><h4>Known non-anonymous listers</h4>${listers.length ? listers.map(l=>`<div class=lrow><span class=lister><a target=_blank href="https://www.torn.com/profiles.php?XID=${l.lister_id}">${esc(l.lister_name)} [${l.lister_id}]</a></span><span class=pill>${l.total_matching_bounties}</span><span class=pill>${Object.keys(l.unique_targets||{}).length} tgt</span></div>`).join(''):'<div class=muted>No known listers yet.</div>'}</div>
-      <div class=note>Drag the header to move freely. Drag the lower-right corner to resize. Position and size are saved locally. Matches exact NST, BHG, and UMS reasons plus any reason beginning with GMS.</div>
+      <div class=note>Each scan now walks the entire Torn bounty feed in 100-row pages until the API returns the final page. There is no 1,000-bounty cap. Drag the header to move freely; drag the lower-right corner to resize.</div>
       </div></div>`;
 
     root.getElementById('min').onclick=()=>{state.minimized=!state.minimized;save();render();};
     root.getElementById('key').onchange=e=>{state.apiKey=e.target.value.trim();save();};
     root.getElementById('poll').onchange=e=>{state.pollSeconds=Number(e.target.value);save();restartTimer();};
-    root.getElementById('pages').onchange=e=>{state.maxPages=Number(e.target.value);save();};
     root.getElementById('now').onclick=poll;
     root.getElementById('csv').onclick=exportBounties;
     root.getElementById('lcsv').onclick=exportListers;
