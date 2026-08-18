@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.12.0
+// @version      0.12.1
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -18,15 +18,50 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(function () {
+(async function () {
     'use strict';
 
-    // Release: 0.12.0-hybrid-scheduler
+    // Release: 0.12.1-pda-core-compatibility
 
-    const TornLib = globalThis.ConsidiousTornLib;
-    if (!TornLib) throw new Error('Considious Torn Library failed to load.');
+    async function waitForTornLib(timeoutMs = 5_000) {
+        const startedAt = Date.now();
 
-    const SCRIPT_VERSION = '0.12.0';
+        while (Date.now() - startedAt < timeoutMs) {
+            if (globalThis.ConsidiousTornLib) {
+                return globalThis.ConsidiousTornLib;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        throw new Error(
+            'Considious Torn Library did not become available within 5 seconds.'
+        );
+    }
+
+
+    let TornLib;
+
+    try {
+        TornLib = await waitForTornLib();
+    } catch (error) {
+        console.error(
+            '[SLINK Leveling] Core Lib failed to load:',
+            error
+        );
+
+        alert(
+            'SLINK Leveling could not start.\n\n' +
+            'Considious Torn Core did not load.\n\n' +
+            'Torn PDA users: make sure "Core Lib" is installed, enabled, ' +
+            'and set to Injection Time: Start.'
+        );
+
+        return;
+    }
+
+
+    const SCRIPT_VERSION = '0.12.1';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
