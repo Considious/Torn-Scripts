@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Core Lib
 // @namespace    Considious [3853023]
-// @version      1.3.5
+// @version      1.3.6
 // @description  Core library of functions for Considious [3853023]'s family of scripts.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js
@@ -26,7 +26,17 @@
 
   if (global.ConsidiousTornLib) return;
 
-  const VERSION = '1.3.5';
+  const VERSION = '1.3.6';
+  const LOAD_MODE = (() => {
+    try {
+      const scriptName = typeof GM_info === 'object'
+        ? String(GM_info?.script?.name || '').trim()
+        : '';
+      return scriptName === 'Core Lib' ? 'standalone' : 'require';
+    } catch {
+      return 'unknown';
+    }
+  })();
   const ATTACK_LABEL = '【ATTACK】';
   const TORN_API_WINDOW_MS = 60_000;
   const TORN_API_DEFAULT_LIMIT = 60;
@@ -910,6 +920,7 @@
   Object.defineProperty(global, 'ConsidiousTornLib', {
     value: Object.freeze({
       VERSION,
+      LOAD_MODE,
       ATTACK_LABEL,
       TORN_API_DEFAULT_LIMIT,
       attackLink,

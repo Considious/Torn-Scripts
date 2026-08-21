@@ -1,16 +1,17 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.12.1
+// @version      0.12.2
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Slinkies-Leveling-Targets/Slinky_Leveling_Target_Prototype.user.js
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.5
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.6
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      ffscouter.com
@@ -21,7 +22,7 @@
 (async function () {
     'use strict';
 
-    // Release: 0.12.1-pda-core-compatibility
+    // Release: 0.12.2-mobile-ui-controls
 
     async function waitForTornLib(timeoutMs = 5_000) {
         const startedAt = Date.now();
@@ -61,7 +62,7 @@
     }
 
 
-    const SCRIPT_VERSION = '0.12.1';
+    const SCRIPT_VERSION = '0.12.2';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -115,7 +116,8 @@
         clientEvents: 'slinkyLeveling.clientEvents.v1',
         pendingChecks: 'slinkyLeveling.pendingChecks.v1',
         completedCheckBatches: 'slinkyLeveling.completedCheckBatches.v1',
-        acceptedConsentVersion: 'slinkyLeveling.acceptedConsentVersion.v1'
+        acceptedConsentVersion: 'slinkyLeveling.acceptedConsentVersion.v1',
+        uiHidden: 'slinkyLeveling.uiHidden.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
@@ -130,6 +132,7 @@
         polling: false,
         authenticating: false,
         settingsOpen: false,
+        termsOpen: false,
         debugOpen: false,
         lastError: '',
         workerVersion: '',
@@ -151,6 +154,7 @@
         leader: null
     };
     let panelDragController = null;
+    const PDA_CORE_MODE = TornLib.LOAD_MODE === 'standalone';
 
 
     // ================================================================
@@ -1364,6 +1368,8 @@
             lastFairFightAt: state.lastFairFightAt,
             lastFairFightRequested: state.lastFairFightRequested,
             lastFairFightSaved: state.lastFairFightSaved,
+            coreLoadMode: TornLib.LOAD_MODE || 'unknown',
+            uiHidden: isUiHidden(),
             lastError: state.lastError || '',
             recentEvents: state.clientEvents.slice(-20).reverse()
         };
@@ -1374,7 +1380,7 @@
         const data = buildDebugData();
         const lines = [
             `SLINK Leveling Service v${data.scriptVersion}`,
-            `CoreLib: ${data.coreLibVersion}`,
+            `CoreLib: ${data.coreLibVersion} (${data.coreLoadMode})`,
             `Worker: ${data.workerVersion}`,
             `Authenticated: ${data.authenticated ? 'Yes' : 'No'}`,
             `Session expires: ${data.sessionExpiresAt ? new Date(data.sessionExpiresAt).toLocaleString() : 'None'}`,
@@ -1406,11 +1412,73 @@
     // UI
     // ================================================================
 
+    function isUiHidden() {
+        const stored = loadJson(KEYS.uiHidden, false);
+        return stored === true || stored?.hidden === true;
+    }
+
+
+    function setUiHidden(hidden) {
+        saveJson(
+            KEYS.uiHidden,
+            hidden
+                ? { hidden: true, hiddenAt: Date.now() }
+                : { hidden: false, restoredAt: Date.now() }
+        );
+    }
+
+
+    function removePanel() {
+        panelDragController?.destroy();
+        panelDragController = null;
+        document.getElementById('slinky-leveling-panel')?.remove();
+    }
+
+
+    function initializePanel() {
+        if (isUiHidden()) return null;
+
+        const panel = ensurePanel();
+        panel.classList.toggle('slp-pda', PDA_CORE_MODE);
+        if (panelDragController) return panel;
+
+        panelDragController = TornLib.makePanelDraggable(panel, {
+            handle: panel,
+            storageKey: KEYS.panelPosition,
+            ignoreSelector: 'button, input, textarea, select, a, .slp-body, .slp-footer, [data-no-drag]',
+            draggingClass: 'slp-dragging',
+            setValue: (_key, position) => {
+                GM_setValue(
+                    getSettings().collapsed ? KEYS.bubblePosition : KEYS.panelPosition,
+                    position
+                );
+            },
+            margin: 4
+        });
+        installBubbleEdgeBehavior(panel);
+        return panel;
+    }
+
+
+    function showUi() {
+        setUiHidden(false);
+        initializePanel();
+        render();
+    }
+
+
+    function registerUiRecoveryCommand() {
+        if (typeof GM_registerMenuCommand !== 'function') return;
+        GM_registerMenuCommand('Show SLINK interface', showUi);
+    }
+
+
     function installStyles() {
         GM_addStyle(`
             #slinky-leveling-panel {
                 position: fixed; top: 92px; left: 12px; z-index: 999999;
-                width: 390px; max-height: calc(100vh - 110px); overflow: hidden;
+                width: min(390px, calc(100vw - 8px));
+                max-height: calc(100dvh - 8px); overflow: hidden;
                 border: 1px solid rgba(255,255,255,.16); border-radius: 9px;
                 background: rgba(19,22,28,.97); color: #eee;
                 font: 12px/1.35 Arial, sans-serif;
@@ -1440,7 +1508,10 @@
             .slp-terms a { color:#8fc9ff; }
             .slp-terms-agree { display:flex !important; flex-direction:row !important; align-items:flex-start; gap:7px !important; margin-top:8px; color:#fff !important; }
             .slp-terms-agree input { width:auto; margin:2px 0 0; flex:0 0 auto; }
+            .slp-terms-summary { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 8px; border:1px solid #3d5268; border-radius:6px; background:#18222d; color:#d9e9f7; }
             .slp-settings-actions { grid-column:1 / -1; display:flex; gap:6px; justify-content:flex-end; }
+            .slp-btn-danger { border-color:#794343; color:#ffd0d0; background:#442626; }
+            .slp-btn-danger:hover { background:#5b3030; }
             .slp-row { padding:7px 8px; border-bottom:1px solid rgba(255,255,255,.07); }
             .slp-row:hover { background:rgba(255,255,255,.035); }
             .slp-row-top { display:flex; align-items:center; gap:6px; }
@@ -1484,6 +1555,27 @@
             }
             .slp-bubble-status.slp-bubble-standby { background:#8aa1b7; }
             .slp-bubble-status.slp-bubble-error { background:#ff7373; }
+            #slinky-leveling-panel.slp-pda {
+                width:min(310px, calc(100vw - 8px));
+                top:4px;
+                font-size:11px;
+            }
+            #slinky-leveling-panel.slp-pda .slp-head { gap:4px; padding:6px; }
+            #slinky-leveling-panel.slp-pda .slp-title { font-size:12px; }
+            #slinky-leveling-panel.slp-pda .slp-sub { display:none; }
+            #slinky-leveling-panel.slp-pda .slp-btn { min-height:30px; padding:4px 6px; }
+            #slinky-leveling-panel.slp-pda .slp-body { max-height:calc(100dvh - 46px); }
+            #slinky-leveling-panel.slp-pda .slp-summary { grid-template-columns:repeat(2,1fr); }
+            #slinky-leveling-panel.slp-pda .slp-stat:last-child { grid-column:1 / -1; }
+            #slinky-leveling-panel.slp-pda .slp-settings { grid-template-columns:1fr; padding:7px; }
+            #slinky-leveling-panel.slp-pda .slp-settings-actions { flex-direction:column; }
+            #slinky-leveling-panel.slp-pda .slp-footer { display:none; }
+            #slinky-leveling-panel.slp-pda.slp-collapsed { width:48px; height:48px; }
+            @media (max-width: 420px) {
+                #slinky-leveling-panel:not(.slp-collapsed) { left:4px; }
+                .slp-settings { grid-template-columns:1fr; }
+                .slp-settings-actions { flex-wrap:wrap; }
+            }
         `);
     }
 
@@ -1509,9 +1601,12 @@
             return;
         }
         if (collapsed) {
+            const bubbleSize = panelDragController
+                ? document.getElementById('slinky-leveling-panel')?.offsetHeight || 54
+                : 54;
             panelDragController.applyPosition({
                 left: 4,
-                top: Math.max(4, Math.round((window.innerHeight - 54) / 2))
+                top: Math.max(4, Math.round((window.innerHeight - bubbleSize) / 2))
             });
         } else {
             panelDragController.clampToViewport();
@@ -1575,7 +1670,13 @@
 
 
     function render() {
-        const panel = ensurePanel();
+        if (isUiHidden()) {
+            removePanel();
+            return;
+        }
+
+        const panel = initializePanel();
+        if (!panel) return;
         const settings = getSettings();
         const leader = Boolean(state.leader?.isLeader());
         const busy = state.polling || state.authenticating;
@@ -1584,6 +1685,7 @@
             ? 'Standby tab'
             : (state.collector ? 'API collector' : 'Standby device');
 
+        panel.classList.toggle('slp-pda', PDA_CORE_MODE);
         panel.classList.toggle('slp-collapsed', settings.collapsed);
         if (settings.collapsed) {
             const bubbleState = state.lastError
@@ -1644,17 +1746,26 @@
 
     function settingsHtml(settings) {
         const termsAccepted = hasAcceptedCurrentTerms();
+        const showFullTerms = !termsAccepted || state.termsOpen;
         return `
             <div class="slp-settings">
-                <div class="slp-terms">
-                    <strong>Required SLINK Leveling disclosure</strong>
-                    <p>${escapeHtml(LEVELING_TERMS_SUMMARY)}</p>
-                    <a href="${escapeHtml(TERMS_URL)}" target="_blank" rel="noopener noreferrer">Read the complete SLINK API &amp; Data Terms</a>
-                    <label class="slp-terms-agree">
-                        <input id="slp-accept-terms" type="checkbox" ${termsAccepted ? 'checked' : ''}>
-                        <span>I have read the Leveling disclosure above and agree to version ${escapeHtml(TERMS_VERSION)} of the SLINK API &amp; Data Terms.</span>
-                    </label>
-                </div>
+                ${showFullTerms ? `
+                    <div class="slp-terms">
+                        <strong>Required SLINK Leveling disclosure</strong>
+                        <p>${escapeHtml(LEVELING_TERMS_SUMMARY)}</p>
+                        <a href="${escapeHtml(TERMS_URL)}" target="_blank" rel="noopener noreferrer">Read the complete SLINK API &amp; Data Terms</a>
+                        <label class="slp-terms-agree">
+                            <input id="slp-accept-terms" type="checkbox" ${termsAccepted ? 'checked' : ''}>
+                            <span>I have read the Leveling disclosure above and agree to version ${escapeHtml(TERMS_VERSION)} of the SLINK API &amp; Data Terms.</span>
+                        </label>
+                        ${termsAccepted ? '<button class="slp-btn" id="slp-hide-terms" type="button">Hide terms</button>' : ''}
+                    </div>
+                ` : `
+                    <div class="slp-terms-summary">
+                        <span>Terms ${escapeHtml(TERMS_VERSION)} accepted</span>
+                        <button class="slp-btn" id="slp-show-terms" type="button">View</button>
+                    </div>
+                `}
                 <label class="wide">Torn API key
                     <input id="slp-torn-key" type="password" value="${escapeHtml(settings.tornKey)}" autocomplete="off">
                 </label>
@@ -1672,6 +1783,7 @@
                     <input id="slp-max-ff" type="number" min="1" max="3" step=".1" value="${settings.maxFF}">
                 </label>
                 <div class="slp-settings-actions">
+                    <button class="slp-btn slp-btn-danger" id="slp-hide-forever" type="button">Hide forever</button>
                     <button class="slp-btn" id="slp-clear-session">Clear local session</button>
                     <button class="slp-btn" id="slp-save-settings">Save & authenticate</button>
                 </div>
@@ -1764,6 +1876,7 @@
         });
         panel.querySelector('#slp-settings-btn')?.addEventListener('click', () => {
             state.settingsOpen = !state.settingsOpen;
+            if (!state.settingsOpen) state.termsOpen = false;
             render();
         });
         panel.querySelector('#slp-collapse')?.addEventListener('click', () => {
@@ -1790,10 +1903,34 @@
             state.lastError = '';
             render();
         });
-        panel.querySelector('#slp-save-settings')?.addEventListener('click', async () => {
-            const accepted = Boolean(
-                panel.querySelector('#slp-accept-terms')?.checked
+        panel.querySelector('#slp-show-terms')?.addEventListener('click', () => {
+            state.termsOpen = true;
+            render();
+        });
+        panel.querySelector('#slp-hide-terms')?.addEventListener('click', () => {
+            state.termsOpen = false;
+            render();
+        });
+        panel.querySelector('#slp-hide-forever')?.addEventListener('click', () => {
+            const confirmed = window.confirm(
+                'This will hide the SLINK interface, including the bubble. ' +
+                'Background API contribution will continue. The interface will ' +
+                'remain hidden until you restore it from the userscript menu, ' +
+                'or disable and re-enable the plugin where supported.\n\n' +
+                'Hide the interface now?'
             );
+            if (!confirmed) return;
+
+            setUiHidden(true);
+            state.settingsOpen = false;
+            state.termsOpen = false;
+            removePanel();
+        });
+        panel.querySelector('#slp-save-settings')?.addEventListener('click', async () => {
+            const termsCheckbox = panel.querySelector('#slp-accept-terms');
+            const accepted = termsCheckbox
+                ? Boolean(termsCheckbox.checked)
+                : hasAcceptedCurrentTerms();
 
             if (!accepted) {
                 GM_setValue(KEYS.acceptedConsentVersion, '');
@@ -1861,21 +1998,8 @@
 
     async function start() {
         installStyles();
-        const panel = ensurePanel();
-        panelDragController = TornLib.makePanelDraggable(panel, {
-            handle: panel,
-            storageKey: KEYS.panelPosition,
-            ignoreSelector: 'button, input, textarea, select, a, .slp-body, .slp-footer, [data-no-drag]',
-            draggingClass: 'slp-dragging',
-            setValue: (_key, position) => {
-                GM_setValue(
-                    getSettings().collapsed ? KEYS.bubblePosition : KEYS.panelPosition,
-                    position
-                );
-            },
-            margin: 4
-        });
-        installBubbleEdgeBehavior(panel);
+        registerUiRecoveryCommand();
+        initializePanel();
 
         state.leader = TornLib.createTabLeaderLease('slinky-leveling-targets', {
             leaseMs: 15_000,
