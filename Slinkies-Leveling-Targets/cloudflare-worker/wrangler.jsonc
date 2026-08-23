@@ -5,6 +5,10 @@
   "compatibility_date": "2026-08-15",
   "keep_vars": true,
   "d1_databases": [
+    // After creating the standalone slink-permissions D1 database, add its
+    // generated database ID here as a third binding named PERMISSIONS_DB.
+    // The dashboard deployment can add the same binding without editing this
+    // file; see ../../SLINK-Permissions/README.md.
     {
       "binding": "DB",
       "database_name": "slinkies-leveling-data",

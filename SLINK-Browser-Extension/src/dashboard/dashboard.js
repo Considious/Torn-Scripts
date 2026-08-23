@@ -116,6 +116,7 @@
       `Response time: ${report.worker?.latencyMs ?? 'unknown'} ms`,
       `Main database: ${report.worker?.database || 'not checked'}`,
       `Consent database: ${report.worker?.consentDatabase || 'not checked'}`,
+      `Permissions database: ${report.worker?.permissionsDatabase || 'not checked'}`,
       '',
       `Leveling configured: ${report.leveling?.configured ? 'YES' : 'NO'}`,
       `Leveling authenticated: ${report.leveling?.authenticated ? 'YES' : 'NO'}`,

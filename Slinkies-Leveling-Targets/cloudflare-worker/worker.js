@@ -1,41 +1,44 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.13.0-permissions
+ * Release: 0.13.1-central-permissions
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.13.0-permissions';
+const WORKER_VERSION = '0.13.1-central-permissions';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
     'Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
 const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
 
-const TERMS_VERSION = '2026-08-14';
-const TERMS_EFFECTIVE_AT = '2026-08-14';
+const TERMS_VERSION = '2026-08-23';
+const TERMS_EFFECTIVE_AT = '2026-08-23';
 const TERMS_URL =
     'https://github.com/Considious/Torn-Scripts/blob/main/' +
-    'Slinkies-Leveling-Targets/terms/2026-08-14/' +
+    'Slinkies-Leveling-Targets/terms/2026-08-23/' +
     'SLINK_API_Data_Terms_of_Service.md';
 const TERMS_DOCUMENT_SHA256 =
-    '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
+    '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
 const LEVELING_SERVICE_ID = 'slink-leveling-service';
-const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
 const LEVELING_DISCLOSURE_SHA256 =
-    '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+    'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
 const LEVELING_TERMS_SUMMARY =
-    'Your Torn API key is sent to SLINK only for faction authentication and ' +
-    'is otherwise used locally for assigned Torn requests; ordinary member ' +
-    'keys are not stored remotely. SLINK persistently shares target status, ' +
-    'hospital timing, activity matches, competition measurements, scheduling ' +
-    'and coordination data with authorized Slinky\'s members. Exact member ' +
-    'battle stats and Fair Fight values stay in this browser. Your Torn user ' +
-    'ID, the accepted terms version, document fingerprint and acceptance time ' +
-    'are retained in SLINK\'s separate consent ledger.';
+    'Your Torn API key is sent to SLINK only to verify your Torn identity and ' +
+    'current faction and is otherwise used locally for assigned Torn requests; ' +
+    'ordinary user keys are not stored remotely. Leveling access requires ' +
+    'slink.level, granted automatically to current Slinky\'s members or through ' +
+    'an active direct grant. SLINK persistently shares target status, hospital ' +
+    'timing, activity matches, competition measurements, scheduling and ' +
+    'coordination data with authorized slink.level users. Exact user battle ' +
+    'stats and Fair Fight values stay in this browser. The permissions service ' +
+    'retains your Torn user ID and effective grants; your accepted terms ' +
+    'version, document fingerprint and acceptance time are retained in SLINK\'s ' +
+    'separate consent ledger.';
 
 const IMPORT_BATCH_SIZE = 50;
 const FFSCOUTER_DISCOVERY_LIMIT = 50;
@@ -61,7 +64,6 @@ const STATUS_WRITE_CHUNK_SIZE = 10;
 const HOSPITAL_WRITE_CHUNK_SIZE = 25;
 const LEASE_DELETE_CHUNK_SIZE = 50;
 
-const ALLOWED_FACTION_ID = 46978;
 const LEVELING_SCOPE = 'slink.level';
 const ADMIN_SCOPE = 'admin.*';
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
@@ -336,10 +338,6 @@ async function handleHealth(env) {
             .prepare('SELECT COUNT(*) AS count FROM scheduler_queue')
             .first();
 
-        const permissionCount = await env.DB
-            .prepare('SELECT COUNT(*) AS count FROM user_permissions')
-            .first();
-
         const ffscouterTargetCount = await env.DB
             .prepare(`
                 SELECT COUNT(*) AS count
@@ -387,11 +385,58 @@ async function handleHealth(env) {
             );
         }
 
+        if (!env.PERMISSIONS_DB) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    version: WORKER_VERSION,
+                    database: 'connected',
+                    consent_database: 'connected',
+                    permissions_database: 'not_configured',
+                    terms: {
+                        version: TERMS_VERSION,
+                        effective_at: TERMS_EFFECTIVE_AT
+                    },
+                    error: 'The PERMISSIONS_DB binding is required.'
+                },
+                500
+            );
+        }
+
+        let directGrantCount;
+        let factionGrantCount;
+
+        try {
+            directGrantCount = await env.PERMISSIONS_DB
+                .prepare('SELECT COUNT(*) AS count FROM user_scope_grants')
+                .first();
+            factionGrantCount = await env.PERMISSIONS_DB
+                .prepare('SELECT COUNT(*) AS count FROM faction_scope_grants')
+                .first();
+        } catch (error) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    version: WORKER_VERSION,
+                    database: 'connected',
+                    consent_database: 'connected',
+                    permissions_database: 'error',
+                    terms: {
+                        version: TERMS_VERSION,
+                        effective_at: TERMS_EFFECTIVE_AT
+                    },
+                    error: errorMessage(error)
+                },
+                500
+            );
+        }
+
         return jsonResponse({
             ok: true,
             version: WORKER_VERSION,
             database: 'connected',
             consent_database: 'connected',
+            permissions_database: 'connected',
             ffscouter_collector: env.FFSCOUTER_API_KEY
                 ? 'configured'
                 : 'not_configured',
@@ -405,7 +450,8 @@ async function handleHealth(env) {
                 target_status: statusCount?.count ?? 0,
                 hospital_events: hospitalCount?.count ?? 0,
                 scheduler_queue: queueCount?.count ?? 0,
-                user_permissions: permissionCount?.count ?? 0,
+                user_scope_grants: directGrantCount?.count ?? 0,
+                faction_scope_grants: factionGrantCount?.count ?? 0,
                 ffscouter_targets: ffscouterTargetCount?.count ?? 0
             }
         });
@@ -439,7 +485,7 @@ function handleTerms() {
 
 
 // ================================================================
-// Member authentication and sessions
+// Torn identity, product authorization, and sessions
 // ================================================================
 
 async function handleAuthentication(request, env) {
@@ -464,7 +510,7 @@ async function handleAuthentication(request, env) {
             );
         }
 
-        if (!env.DB) {
+        if (!env.PERMISSIONS_DB) {
             return jsonResponse(
                 {
                     ok: false,
@@ -561,7 +607,7 @@ async function handleAuthentication(request, env) {
         }
 
         const userId = Number(tornData?.info?.user?.id);
-        const factionId = Number(tornData?.info?.user?.faction_id);
+        const factionId = Number(tornData?.info?.user?.faction_id || 0);
 
         if (!Number.isInteger(userId) || userId <= 0) {
             return jsonResponse(
@@ -573,26 +619,40 @@ async function handleAuthentication(request, env) {
             );
         }
 
-        if (factionId !== ALLOWED_FACTION_ID) {
+        if (!Number.isInteger(factionId) || factionId < 0) {
             return jsonResponse(
                 {
                     ok: false,
-                    error: 'This service is restricted to Slinky faction members.'
+                    error: 'Torn did not return a valid faction identity.'
                 },
-                403
+                401
             );
         }
 
-
-        const permissions = await loadUserPermissions(env, userId);
+        const acceptedAt = Date.now();
+        const permissions = await loadUserPermissions(
+            env,
+            userId,
+            factionId,
+            acceptedAt
+        );
 
         if (!hasSessionScope(permissions, LEVELING_SCOPE)) {
             return permissionDeniedResponse(LEVELING_SCOPE);
         }
 
-        const acceptedAt = Date.now();
         const issuedAt = Math.floor(acceptedAt / 1000);
-        const expiresAt = issuedAt + SESSION_LIFETIME_SECONDS;
+        const permissionExpiresAt = permissions.expiresAt === null
+            ? Number.POSITIVE_INFINITY
+            : Math.floor(permissions.expiresAt / 1000);
+        const expiresAt = Math.min(
+            issuedAt + SESSION_LIFETIME_SECONDS,
+            permissionExpiresAt
+        );
+
+        if (!Number.isFinite(expiresAt) || expiresAt <= issuedAt) {
+            return permissionDeniedResponse(LEVELING_SCOPE);
+        }
         const sessionId = crypto.randomUUID();
 
         try {
@@ -646,7 +706,7 @@ async function handleAuthentication(request, env) {
             scopes: permissions.scopes,
             terms_accepted_at: new Date(acceptedAt).toISOString(),
             expires_at: new Date(expiresAt * 1000).toISOString(),
-            expires_in: SESSION_LIFETIME_SECONDS,
+            expires_in: expiresAt - issuedAt,
             session_token: sessionToken
         });
     } catch (error) {
@@ -772,32 +832,56 @@ async function authorizeRequest(request, env, requiredScope) {
 }
 
 
-async function loadUserPermissions(env, userId) {
-    const result = await env.DB
+async function loadUserPermissions(env, userId, factionId, now = Date.now()) {
+    const result = await env.PERMISSIONS_DB
         .prepare(`
-            SELECT scope, effect
-            FROM user_permissions
+            SELECT scope, expires_at
+            FROM user_scope_grants
             WHERE user_id = ?1
+              AND status = 'active'
+              AND starts_at <= ?3
+              AND (expires_at IS NULL OR expires_at > ?3)
+
+            UNION ALL
+
+            SELECT scope, expires_at
+            FROM faction_scope_grants
+            WHERE faction_id = ?2
+              AND status = 'active'
+              AND starts_at <= ?3
+              AND (expires_at IS NULL OR expires_at > ?3)
             ORDER BY scope ASC
         `)
-        .bind(userId)
+        .bind(userId, factionId, now)
         .all();
-    const allowed = new Set([LEVELING_SCOPE]);
-    const denied = new Set();
+    const scopeExpirations = new Map();
 
     for (const row of result.results || []) {
         const scope = String(row?.scope || '').trim();
         if (!scope) continue;
-        if (row.effect === 'deny') denied.add(scope);
-        else if (row.effect === 'allow') allowed.add(scope);
+        const expiration = row.expires_at === null || row.expires_at === undefined
+            ? null
+            : Number(row.expires_at);
+        const current = scopeExpirations.get(scope);
+
+        if (!scopeExpirations.has(scope)) {
+            scopeExpirations.set(scope, expiration);
+        } else if (current === null || expiration === null) {
+            scopeExpirations.set(scope, null);
+        } else {
+            scopeExpirations.set(scope, Math.max(current, expiration));
+        }
     }
 
-    for (const scope of denied) allowed.delete(scope);
-
-    const scopes = [...allowed].sort();
+    const scopes = [...scopeExpirations.keys()].sort();
+    const finiteExpirations = [...scopeExpirations.values()]
+        .filter(value => Number.isFinite(value));
     return {
         roles: scopes.includes(ADMIN_SCOPE) ? ['admin'] : ['member'],
-        scopes
+        scopes,
+        expiresAt: finiteExpirations.length
+            ? Math.min(...finiteExpirations)
+            : null
     };
 }
 
@@ -886,7 +970,8 @@ async function verifySessionToken(token, secret) {
         if (
             !Number.isInteger(payload.user_id) ||
             payload.user_id <= 0 ||
-            payload.faction_id !== ALLOWED_FACTION_ID ||
+            !Number.isInteger(payload.faction_id) ||
+            payload.faction_id < 0 ||
             typeof payload.session_id !== 'string' ||
             !payload.session_id ||
             payload.terms_version !== TERMS_VERSION ||
@@ -899,7 +984,8 @@ async function verifySessionToken(token, secret) {
             !Number.isInteger(payload.exp) ||
             payload.exp <= now ||
             payload.iat > now ||
-            payload.exp - payload.iat !== SESSION_LIFETIME_SECONDS
+            payload.exp - payload.iat <= 0 ||
+            payload.exp - payload.iat > SESSION_LIFETIME_SECONDS
         ) {
             return null;
         }

@@ -42,7 +42,8 @@
       `Worker version: ${worker.version || 'unknown'}`,
       `Response time: ${Number.isFinite(worker.latencyMs) ? `${worker.latencyMs} ms` : 'unknown'}`,
       `Main database: ${worker.database || 'not checked'}`,
-      `Consent database: ${worker.consentDatabase || 'not checked'}`
+      `Consent database: ${worker.consentDatabase || 'not checked'}`,
+      `Permissions database: ${worker.permissionsDatabase || 'not checked'}`
     ];
 
     if (worker.error) lines.push(`Worker error: ${worker.error}`);

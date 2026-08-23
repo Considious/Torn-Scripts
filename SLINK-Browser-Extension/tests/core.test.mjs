@@ -51,7 +51,8 @@ const context = vm.createContext({
       version: 'test-worker',
       ...(String(input).endsWith('/api/health') ? {
         database: 'connected',
-        consent_database: 'connected'
+        consent_database: 'connected',
+        permissions_database: 'connected'
       } : {})
     })
   }),
@@ -74,7 +75,7 @@ for (const file of [
 ]) load(context, file);
 
 const SLINK = context.SLINK_EXTENSION;
-assert(SLINK.VERSION === '0.3.0', 'Unexpected runtime version.');
+assert(SLINK.VERSION === '0.3.1', 'Unexpected runtime version.');
 assert(SLINK.core.format.escapeHtml('<a>') === '&lt;a&gt;', 'HTML escaping failed.');
 assert(SLINK.core.format.shortNumber(1_250_000) === '1.25M', 'Short-number formatting failed.');
 

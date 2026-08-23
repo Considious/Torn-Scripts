@@ -43,7 +43,7 @@ const chrome = {
     }
   },
   runtime: {
-    getManifest() { return { version: '0.3.0' }; },
+    getManifest() { return { version: '0.3.1' }; },
     onInstalled,
     onMessage,
     onStartup
@@ -73,7 +73,7 @@ context = vm.createContext({
     let body = { ok: true };
     if (url.hostname === 'slinkyleveling.richard-johnson554.workers.dev') {
       if (url.pathname === '/') body = { ok: true, service: 'SLINK Leveling API', version: 'test-worker' };
-      if (url.pathname === '/api/health') body = { ok: true, version: 'test-worker', database: 'connected', consent_database: 'connected' };
+      if (url.pathname === '/api/health') body = { ok: true, version: 'test-worker', database: 'connected', consent_database: 'connected', permissions_database: 'connected' };
       if (url.pathname === '/api/terms') body = {
         ok: true,
         version: 'test-terms',

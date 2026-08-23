@@ -8,13 +8,13 @@ import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
-const WORKER_VERSION = '0.13.0-permissions';
-const TERMS_VERSION = '2026-08-14';
+const WORKER_VERSION = '0.13.1-central-permissions';
+const TERMS_VERSION = '2026-08-23';
 const TERMS_DOCUMENT_SHA256 =
-    '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
-const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+    '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
+const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
 const LEVELING_DISCLOSURE_SHA256 =
-    '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+    'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -35,6 +35,7 @@ describe('SLINK Leveling Worker', () => {
         const env = {
             DB: db,
             CONSENT_DB: createConsentDatabase(),
+            PERMISSIONS_DB: createPermissionsDatabase(),
             ADMIN_TOKEN: 'correct-admin-token'
         };
 
@@ -66,6 +67,7 @@ describe('SLINK Leveling Worker', () => {
             version: WORKER_VERSION,
             database: 'connected',
             consent_database: 'connected',
+            permissions_database: 'connected',
             ffscouter_collector: 'not_configured',
             ffscouter_filters: {
                 minimum_level: 30,
@@ -82,7 +84,8 @@ describe('SLINK Leveling Worker', () => {
                 target_status: 0,
                 hospital_events: 0,
                 scheduler_queue: 0,
-                user_permissions: 1,
+                user_scope_grants: 1,
+                faction_scope_grants: 1,
                 ffscouter_targets: 0
             }
         });
@@ -128,7 +131,7 @@ describe('SLINK Leveling Worker', () => {
         assert.match(terms.document_url, /SLINK_API_Data_Terms_of_Service\.md$/);
         const publishedTerms = readFileSync(
             new URL(
-                '../terms/2026-08-14/SLINK_API_Data_Terms_of_Service.md',
+                '../terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md',
                 import.meta.url
             )
         );
@@ -137,16 +140,6 @@ describe('SLINK Leveling Worker', () => {
                 .update(publishedTerms.toString('utf8').replace(/\r\n/g, '\n'))
                 .digest('hex'),
             TERMS_DOCUMENT_SHA256
-        );
-        const originalTerms = readFileSync(
-            new URL(
-                '../terms/2026-08-14/SLINK_API_Data_Terms_of_Service.docx',
-                import.meta.url
-            )
-        );
-        assert.equal(
-            createHash('sha256').update(originalTerms).digest('hex'),
-            '5303acaf9a596a5799f15731faa7b55e4862172048a8474b5d18c372b6e8d99d'
         );
         assert.equal(
             createHash('sha256')
@@ -175,7 +168,8 @@ describe('SLINK Leveling Worker', () => {
         const env = {
             DB: createDatabase(),
             SESSION_SECRET,
-            CONSENT_DB: consentDb
+            CONSENT_DB: consentDb,
+            PERMISSIONS_DB: createPermissionsDatabase()
         };
         const unconfiguredResponse = await worker.fetch(
             jsonRequest('https://worker.example/api/auth', {
@@ -294,6 +288,86 @@ describe('SLINK Leveling Worker', () => {
             sessionBody.disclosure_version,
             LEVELING_DISCLOSURE_VERSION
         );
+    });
+
+
+    it('uses faction membership as a free grant and permits paid non-members', async () => {
+        const now = 1_800_000_000_000;
+        Date.now = () => now;
+        let tornIdentity = { id: 7001, faction_id: 46978 };
+        globalThis.fetch = async () => Response.json({
+            info: { user: tornIdentity }
+        });
+
+        const permissionsDb = createPermissionsDatabase();
+        const env = {
+            DB: createDatabase(),
+            SESSION_SECRET,
+            CONSENT_DB: createConsentDatabase(),
+            PERMISSIONS_DB: permissionsDb
+        };
+        const authenticate = () => worker.fetch(
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key',
+                terms_accepted: true,
+                terms_version: TERMS_VERSION,
+                terms_sha256: TERMS_DOCUMENT_SHA256,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+                client_name: 'Permission model test',
+                client_version: '0.13.0'
+            }),
+            env
+        );
+
+        const factionResponse = await authenticate();
+        assert.equal(factionResponse.status, 200);
+        assert.deepEqual((await factionResponse.json()).scopes, ['slink.level']);
+
+        tornIdentity = { id: 7002, faction_id: 12345 };
+        const unentitledResponse = await authenticate();
+        assert.equal(unentitledResponse.status, 403);
+        assert.equal(
+            (await unentitledResponse.json()).required_scope,
+            'slink.level'
+        );
+
+        permissionsDb.sqlite.prepare(`
+            INSERT INTO user_scope_grants (
+                user_id, scope, source, status, starts_at, expires_at,
+                granted_by, external_reference, note, created_at, updated_at
+            )
+            VALUES (?1, 'slink.level', 'purchase', 'active', ?2, ?3,
+                3853023, 'ORDER-7002', '30 minute test access', ?2, ?2)
+        `).run(7002, now - 1_000, now + (30 * 60 * 1000));
+
+        const paidResponse = await authenticate();
+        const paidBody = await paidResponse.json();
+        assert.equal(paidResponse.status, 200);
+        assert.equal(paidBody.faction_id, 12345);
+        assert.deepEqual(paidBody.scopes, ['slink.level']);
+        assert.equal(paidBody.expires_in, 30 * 60);
+        const paidSessionResponse = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/session',
+                paidBody.session_token
+            ),
+            env
+        );
+        assert.equal(paidSessionResponse.status, 200);
+
+        tornIdentity = { id: 7003, faction_id: 0 };
+        permissionsDb.sqlite.prepare(`
+            INSERT INTO user_scope_grants (
+                user_id, scope, source, status, starts_at, expires_at,
+                granted_by, external_reference, note, created_at, updated_at
+            )
+            VALUES (?1, 'slink.level', 'purchase', 'active', ?2, ?3,
+                3853023, 'ORDER-EXPIRED', 'Expired test access', ?2, ?2)
+        `).run(7003, now - 10_000, now - 1_000);
+
+        const expiredResponse = await authenticate();
+        assert.equal(expiredResponse.status, 403);
     });
 
 
@@ -1386,13 +1460,6 @@ function createDatabase() {
             'utf8'
         )
     );
-    sqlite.exec(
-        readFileSync(
-            new URL('./migrations/0004-user-permissions.sql', import.meta.url),
-            'utf8'
-        )
-    );
-
     const insert = sqlite.prepare(`
         INSERT INTO targets (id, name, level, total_stats, sources)
         VALUES (?, ?, ?, ?, ?)
@@ -1408,6 +1475,21 @@ function createDatabase() {
         );
     }
 
+    return new D1DatabaseAdapter(sqlite);
+}
+
+
+function createPermissionsDatabase() {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(
+        readFileSync(
+            new URL(
+                '../../SLINK-Permissions/migrations/0001-permissions.sql',
+                import.meta.url
+            ),
+            'utf8'
+        )
+    );
     return new D1DatabaseAdapter(sqlite);
 }
 

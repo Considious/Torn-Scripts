@@ -69,7 +69,7 @@ SLINK uses two separate permission layers:
 1. **Browser capabilities** control which browser APIs and remote origins the installed extension may access. Torn, Torn API, FFScouter, and the SLINK Worker are core dependencies and are granted together at installation. There are no separate in-app permission buttons.
 2. **SLINK scopes** are supplied by the authenticated SLINK Worker and control which modules and server operations the Torn user may use.
 
-Before authentication, the extension has no SLINK server scopes; local diagnostics remain available because they are installation checks, not protected SLINK data. A successful Worker session receives `slink.level`. Considious also receives `admin.*` from D1. The Worker signs those scopes into the session and remains authoritative for every protected route.
+Before authentication, the extension has no SLINK server scopes; local diagnostics remain available because they are installation checks, not protected SLINK data. Torn authentication establishes identity, while the standalone `slink-permissions` D1 database supplies product access. Current Slinky's members receive `slink.level` automatically and users outside the faction may receive the same scope through an active purchased or manual grant. Considious also receives `admin.*`. The Worker signs those scopes into the session and remains authoritative for every protected route.
 
 `admin.*` exposes the zero routine API-contribution override in both the Torn panel and full dashboard. The Worker rejects a zero-capacity claim from any session without that scope. Authentication still performs one Torn key validation, and Leveling may refresh the administrator's own battle stats locally; the override applies to routine shared-service contribution checks.
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SLINK",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Shared Live Intelligence NetworK with SLINK Leveling for Torn.",
   "permissions": [
     "alarms",

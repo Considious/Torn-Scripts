@@ -28,6 +28,7 @@
         version: String(response?.version || 'unknown'),
         database: response?.database || null,
         consentDatabase: response?.consent_database || null,
+        permissionsDatabase: response?.permissions_database || null,
         error: connected ? null : String(response?.error || 'The Worker returned an unhealthy response.')
       });
     } catch (error) {

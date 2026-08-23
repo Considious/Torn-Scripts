@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.13.0
+// @version      0.13.1
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
 (async function () {
     'use strict';
 
-    // Release: 0.13.0-permissions
+    // Release: 0.13.1-central-permissions
 
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -199,28 +199,32 @@
         PDA_API_KEY &&
         PDA_API_KEY !== PDA_API_KEY_TOKEN
     );
-    const SCRIPT_VERSION = '0.13.0';
+    const SCRIPT_VERSION = '0.13.1';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
-    const TERMS_VERSION = '2026-08-14';
+    const TERMS_VERSION = '2026-08-23';
     const TERMS_DOCUMENT_SHA256 =
-        '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
-    const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+        '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
+    const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
     const LEVELING_DISCLOSURE_SHA256 =
-        '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+        'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
     const TERMS_URL =
         'https://github.com/Considious/Torn-Scripts/blob/main/' +
-        'Slinkies-Leveling-Targets/terms/2026-08-14/' +
+        'Slinkies-Leveling-Targets/terms/2026-08-23/' +
         'SLINK_API_Data_Terms_of_Service.md';
     const LEVELING_TERMS_SUMMARY =
-        'Your Torn API key is sent to SLINK only for faction authentication ' +
-        'and is otherwise used locally for assigned Torn requests; ordinary ' +
-        'member keys are not stored remotely. SLINK persistently shares target ' +
-        'status, hospital timing, activity matches, competition measurements, ' +
-        'scheduling and coordination data with authorized Slinky\'s members. ' +
-        'Exact member battle stats and Fair Fight values stay in this browser. ' +
-        'Your Torn user ID, the accepted terms version, document fingerprint ' +
-        'and acceptance time are retained in SLINK\'s separate consent ledger.';
+        'Your Torn API key is sent to SLINK only to verify your Torn identity ' +
+        'and current faction and is otherwise used locally for assigned Torn ' +
+        'requests; ordinary user keys are not stored remotely. Leveling access ' +
+        'requires slink.level, granted automatically to current Slinky\'s ' +
+        'members or through an active direct grant. SLINK persistently shares ' +
+        'target status, hospital timing, activity matches, competition ' +
+        'measurements, scheduling and coordination data with authorized ' +
+        'slink.level users. Exact user battle stats and Fair Fight values stay ' +
+        'in this browser. The permissions service retains your Torn user ID ' +
+        'and effective grants; your accepted terms version, document ' +
+        'fingerprint and acceptance time are retained in SLINK\'s separate ' +
+        'consent ledger.';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -2094,7 +2098,7 @@
                         </label>
                     ` : ''}
                 </div>
-                <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
+                <div class="slp-disclosure">Used to verify your Torn identity, current faction, and slink.level access, then make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
                 <div class="wide slp-key-setting">
                     <label for="slp-ff-key">FFScouter API key</label>
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.manualFfKey)}" autocomplete="off" ${settings.usePdaFfKey ? 'disabled' : ''} placeholder="${settings.usePdaFfKey ? 'Using Torn PDA API key' : ''}">

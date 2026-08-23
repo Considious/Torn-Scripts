@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.13.0 is identified as `0.13.0-permissions`.
+version. Release 0.13.1 is identified as `0.13.1-central-permissions`.
 
 ## Cloudflare configuration
 
@@ -16,16 +16,26 @@ The Worker expects:
 
 - `DB`: the existing D1 database;
 - `CONSENT_DB`: the separate append-only SLINK terms acceptance database;
+- `PERMISSIONS_DB`: the standalone cross-product `slink-permissions` D1
+  database;
 - `ADMIN_TOKEN`: the secret protecting `/api/admin/*`;
 - `SESSION_SECRET`: the secret signing individual 12-hour member sessions;
 - `FFSCOUTER_API_KEY`: the operator-owned key used only by scheduled
   FFScouter leveling discovery.
 
-The main D1 database is also the permission authority. Every authenticated
-member begins with `slink.level`; an explicit `deny` row can revoke it. Migration
-0004 grants `admin.*` only to Considious [3853023]. Signed sessions carry the
-effective scopes so clients can route UI, while the Worker enforces scopes on
-protected routes.
+The main Leveling D1 database is not a permission authority. Authentication
+uses Torn only to establish the user and current faction, then resolves access
+from `PERMISSIONS_DB`. Current Slinky's [46978] members receive `slink.level`
+through an automatic faction grant. Users outside the faction can receive the
+same scope through an active purchased or manual direct grant. `admin.*` is a
+separate permanent owner grant for Considious [3853023]. Signed sessions carry
+the effective scopes so clients can route UI, while the Worker enforces scopes
+on protected routes.
+
+The shared schema and operator queries live in
+[`../../SLINK-Permissions`](../../SLINK-Permissions/README.md). Future SLINK
+product Workers bind that same D1 database and enforce their own scopes without
+routing through Leveling.
 
 The discovery filter uses three optional, non-secret Worker variables:
 
@@ -38,9 +48,10 @@ Keep all secrets in Cloudflare and out of this repository.
 ## Required versioned consent
 
 The full SLINK API & Data Terms are published in versioned folders under
-[`../terms`](../terms/README.md). The August 14, 2026 release is consent version
-`2026-08-14`. Its original Word document is preserved alongside an accessible
-Markdown transcription.
+[`../terms`](../terms/README.md). The August 23, 2026 release is consent version
+`2026-08-23` and adds cross-product scopes, automatic Slinky's Leveling access,
+and direct grants for authorized users outside the faction. The August 14
+version remains preserved as the prior release.
 
 Authentication fails closed unless the request explicitly accepts the current
 version. The Worker performs this check before contacting Torn. After Torn
@@ -132,7 +143,7 @@ available pool permits it.
 | `GET` | `/` | Public | Worker identity check |
 | `GET` | `/api/health` | Public | D1 connectivity and table counts |
 | `GET` | `/api/terms` | Public | Current required terms, fingerprint, link, and Leveling disclosure |
-| `POST` | `/api/auth` | Public | Record current consent, verify a Torn key once, and issue a version-bound session |
+| `POST` | `/api/auth` | Public | Record current consent, verify a Torn identity, resolve `slink.level`, and issue a version-bound session |
 | `GET` | `/api/session` | Signed session | Inspect the signed session and effective scopes |
 | `GET` | `/api/targets` | `slink.level` | Read paginated leveling targets |
 | `GET` | `/api/recommendations` | `slink.level` | Return targets and renew collector coordination |
@@ -182,9 +193,10 @@ was manually created while 0.5.0 was being developed.
 Release 0.11.0 changes only how observation queries are grouped. It uses the
 existing schema and requires no migration.
 
-Migration 0004 creates `user_permissions` in the main database and seeds the
-sole `admin.*` grant for Considious [3853023]. Apply it before deploying Worker
-0.13.0 so authentication can issue signed permission scopes.
+There is no Leveling migration 0004. Permissions are deliberately stored in the
+standalone `slink-permissions` database. Apply
+[`SLINK-Permissions/migrations/0001-permissions.sql`](../../SLINK-Permissions/migrations/0001-permissions.sql)
+to that database and bind it as `PERMISSIONS_DB` before deploying Worker 0.13.1.
 
 The separate consent database uses
 `consent-database/0001-terms-acceptances.sql`. Run that schema only against the
