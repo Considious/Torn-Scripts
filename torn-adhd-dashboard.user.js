@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.44
+// @version      1.4.46
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -36,7 +36,7 @@
   const MANUAL_REFRESH_STATUS_KEY = 'tdd-manual-refresh-status-v1';
   const NETWORTH_STORAGE_KEY = 'tdd-networth-tracker-v1';
   const NETWORTH_COMMAND_KEY = 'tdd-networth-command-v1';
-  const CHECK_CACHE_SCHEMA_VERSION = 9;
+  const CHECK_CACHE_SCHEMA_VERSION = 10;
   const API_ROOT = 'https://api.torn.com/v2';
   const API_V1_ROOT = 'https://api.torn.com';
   const CORE_REFRESH_MS = 60_000;
@@ -65,15 +65,22 @@
   const POINTS_MARKET_REFRESH_MS = 30_000;
   const MARKET_WATCH_LIMIT = 50;
   const MARKET_PRIORITY_CYCLES = Object.freeze({ high: 1, normal: 2, low: 4 });
-  const WEAV3R_PRIORITY_REFRESH_MS = Object.freeze({ high: 10_000, normal: 30_000, low: 60_000 });
+  const WEAV3R_ITEM_MIN_REFRESH_MS = 35_000;
+  const WEAV3R_PRIORITY_REFRESH_MS = Object.freeze({ high: WEAV3R_ITEM_MIN_REFRESH_MS, normal: 70_000, low: 140_000 });
+  const WEAV3R_RATE_LIMIT = 80;
+  const WEAV3R_RATE_WINDOW_MS = 60_000;
+  const WEAV3R_MIN_REQUEST_SPACING_MS = Math.ceil(WEAV3R_RATE_WINDOW_MS / WEAV3R_RATE_LIMIT);
+  const WEAV3R_RATE_LIMIT_FALLBACK_BACKOFF_MS = 15 * 60_000;
   const WEAV3R_CATEGORY_CACHE_MAX_AGE_MS = 60 * 60_000;
   const WEAV3R_CATEGORY_MAX_PAGES = 6;
-  const DOLLAR_BAZAAR_CACHE_MAX_AGE_MS = 30_000;
   const DOLLAR_BAZAAR_LIMIT = 50;
   const CITY_SHOP_TARGETS = [
-    { id: 180, name: 'Bottle of Beer', label: 'Beer' },
-    { id: 392, name: 'Pepper Spray', label: 'Pepper Spray' },
-    { id: 731, name: 'Empty Blood Bag', label: 'Empty Blood Bags' },
+    { id: 392, name: 'Pepper Spray', label: 'Pepper Spray', shop: "Big Al's Gun Shop" },
+    { id: 731, name: 'Empty Blood Bag', label: 'Empty Blood Bags', shop: 'Pharmacy' },
+    { id: 10, name: 'Chainsaw', label: 'Chainsaws', shop: "Big Al's Gun Shop" },
+    { id: 180, name: 'Bottle of Beer', label: 'Beer', shop: "Bits 'n' Bobs" },
+    { id: 310, name: 'Lollipop', label: 'Lollipops', shop: "Sally's Sweet Shop" },
+    { id: 956, name: 'Blank DVDs', label: 'Blank DVDs', shop: 'Cyber Force' },
   ];
   const API_HARD_LIMIT = 60;
   const API_SLOW_LIMIT = 30;
@@ -267,6 +274,7 @@
     turtleAlarmIntervalMinutes: 1,
     marketWatches: [],
     alarmHistory: {},
+    cityStockAlerts: Object.fromEntries(CITY_SHOP_TARGETS.map((target) => [target.id, false])),
     enabled: Object.fromEntries(ALERT_META.map(([id]) => [id, true])),
     snoozedUntil: {},
   };
@@ -364,6 +372,10 @@
     apiQueues: { high: [], normal: [], low: [] },
     apiQueueTimer: null,
     apiLimiterUntil: 0,
+    weav3rRequestTimes: [],
+    weav3rLastRequestAt: 0,
+    weav3rItemLastAttemptAt: {},
+    weav3rBackoffUntil: 0,
     rejectedApiKey: '',
     windowFocused: document.hasFocus(),
     resizing: null,
@@ -387,6 +399,7 @@
       position: { ...DEFAULT_SETTINGS.position, ...(saved?.position || {}) },
       panelSize: { ...DEFAULT_SETTINGS.panelSize, ...(saved?.panelSize || {}) },
       enabled: { ...DEFAULT_SETTINGS.enabled, ...(saved?.enabled || {}) },
+      cityStockAlerts: { ...DEFAULT_SETTINGS.cityStockAlerts, ...(saved?.cityStockAlerts || {}) },
       snoozedUntil,
       alarmHistory: { ...(saved?.alarmHistory || {}) },
       settingsSections: { ...(saved?.settingsSections || {}) },
@@ -760,17 +773,21 @@
   function loadBazaarCache() {
     const cached = GM_getValue(BAZAAR_CACHE_KEY, {});
     if (!cached || typeof cached !== 'object' || Array.isArray(cached)) return {};
-    return Object.fromEntries(Object.entries(cached).filter(([, result]) => Number(result?.fetchedAt) > Date.now() - 7 * TORN_DAY_MS && Array.isArray(result?.listings)));
+    return Object.fromEntries(Object.entries(cached).filter(([, result]) => (
+      Number(result?.fetchedAt) > Date.now() - 7 * TORN_DAY_MS
+      && Array.isArray(result?.listings)
+      && String(result?.sourceUrl || '').startsWith('https://weav3r.dev/api/marketplace/')
+    )));
   }
 
   function loadDollarBazaarCache() {
     const cached = GM_getValue(DOLLAR_BAZAAR_CACHE_KEY, {});
     if (!cached || typeof cached !== 'object' || Array.isArray(cached) || !Array.isArray(cached.bazaars)) {
-      return { fetchedAt: 0, sourceUrl: 'https://weav3r.dev/dollar-bazaars', bazaars: [] };
+      return { fetchedAt: 0, sourceUrl: `https://weav3r.dev/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`, bazaars: [] };
     }
     return {
       fetchedAt: Math.max(0, Number(cached.fetchedAt) || 0),
-      sourceUrl: String(cached.sourceUrl || 'https://weav3r.dev/dollar-bazaars'),
+      sourceUrl: `https://weav3r.dev/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`,
       bazaars: cached.bazaars.map((row) => ({
         playerId: Math.max(0, Math.trunc(Number(row?.playerId) || 0)),
         playerName: String(row?.playerName || ''),
@@ -1331,6 +1348,7 @@
   }
 
   function formatBazaarOneDollarListings() {
+    if (!focusedTornPage()) return;
     if (!onBazaarPage()) {
       document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => card.removeAttribute('data-tdd-bazaar-one-dollar'));
       document.querySelectorAll('[data-tdd-bazaar-shop-profit]').forEach((card) => card.removeAttribute('data-tdd-bazaar-shop-profit'));
@@ -1415,6 +1433,7 @@
   }
 
   function fillItemMarketPurchaseMaximum(row, price) {
+    if (!focusedTornPage()) return false;
     const input = itemMarketQuantityInput(row);
     if (!input || input.disabled || input.readOnly) return false;
     const stock = itemMarketRowStock(row);
@@ -1445,6 +1464,7 @@
   }
 
   function formatItemMarketPurchaseOpportunities() {
+    if (!focusedTornPage()) return;
     const rows = new Set(itemMarketSellerRows());
     document.querySelectorAll('[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]').forEach((row) => {
       if (!rows.has(row)) {
@@ -1496,7 +1516,7 @@
   }
 
   function fillBazaarPurchaseMaximum(pending) {
-    if (!pending || state.pendingBazaarPurchase !== pending || Date.now() - pending.clickedAt > 2_000) return false;
+    if (!focusedTornPage() || !pending || state.pendingBazaarPurchase !== pending || Date.now() - pending.clickedAt > 2_000) return false;
     const input = bazaarPurchaseQuantityInput(pending);
     if (!input) return false;
     const declaredMax = Number(input.max || input.getAttribute('aria-valuemax') || input.dataset.max);
@@ -1880,6 +1900,7 @@
   }
 
   function syncHighlightedQuickPurchaseControls() {
+    if (!focusedTornPage()) return;
     const desired = desiredQuickPurchaseControls();
     const now = Date.now();
     state.quickPurchaseOverlays.forEach((button, controlKey) => {
@@ -1942,7 +1963,7 @@
     event.preventDefault();
     event.stopImmediatePropagation();
     const spec = state.quickPurchaseControlSpecs.get(button);
-    if (!event.isTrusted || !state.settings.highlightedQuickBuyEnabled || document.visibilityState !== 'visible' || !document.hasFocus()) return;
+    if (!event.isTrusted || !state.settings.highlightedQuickBuyEnabled || !focusedTornPage()) return;
     if (!spec?.native?.isConnected || spec.native.disabled || spec.native.getAttribute('aria-disabled') === 'true') return;
     const listing = spec.listing;
     if (spec.stage === 'confirm') {
@@ -2018,7 +2039,7 @@
   }
 
   function handleBazaarPurchaseClick(event) {
-    if (!onBazaarPage()) return;
+    if (!focusedTornPage() || !onBazaarPage()) return;
     const control = event.target?.closest?.('button, [role="button"]');
     if (control?.matches?.('[data-tdd-quick-buy]')) return;
     if (!bazaarPurchaseButton(control)) return;
@@ -2048,17 +2069,79 @@
     }, delay);
   }
 
-  function weav3rBazaars(itemId) {
-    return new Promise((resolve, reject) => {
-      if (!ownsDashboardNetworkLease()) {
-        reject(dashboardOwnerPauseError());
+  let weav3rLimiterQueue = Promise.resolve();
+
+  function weav3rRetryAfterMs(responseHeaders) {
+    const value = String(responseHeaders || '').match(/^retry-after:\s*([^\r\n]+)/im)?.[1]?.trim();
+    if (!value) return 0;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+  }
+
+  function weav3rRateLimitError(retryAfterMs, message = 'TornW3B rate limit reached (429). Requests are temporarily backed off.') {
+    const error = new Error(message);
+    error.status = 429;
+    error.rateLimited = true;
+    error.retryAfterMs = Math.max(0, Number(retryAfterMs) || 0);
+    return error;
+  }
+
+  function noteWeav3rRateLimit(responseHeaders) {
+    const requestedDelay = weav3rRetryAfterMs(responseHeaders);
+    const delay = requestedDelay || WEAV3R_RATE_LIMIT_FALLBACK_BACKOFF_MS;
+    state.weav3rBackoffUntil = Math.max(Number(state.weav3rBackoffUntil) || 0, Date.now() + delay);
+    return delay;
+  }
+
+  function reserveWeav3rRequest() {
+    const reservation = weav3rLimiterQueue.catch(() => {}).then(async () => {
+      while (true) {
+        if (!ownsDashboardNetworkLease()) throw dashboardOwnerPauseError();
+        const now = Date.now();
+        if (Number(state.weav3rBackoffUntil) > now) {
+          throw weav3rRateLimitError(
+            state.weav3rBackoffUntil - now,
+            `TornW3B requests are backed off for ${formatDuration(Math.ceil((state.weav3rBackoffUntil - now) / 1000))}.`
+          );
+        }
+        state.weav3rRequestTimes = state.weav3rRequestTimes
+          .map(Number)
+          .filter((timestamp) => timestamp > now - WEAV3R_RATE_WINDOW_MS)
+          .sort((left, right) => left - right);
+        const rollingSlotAt = state.weav3rRequestTimes.length >= WEAV3R_RATE_LIMIT
+          ? state.weav3rRequestTimes[0] + WEAV3R_RATE_WINDOW_MS
+          : 0;
+        const nextSlotAt = Math.max(rollingSlotAt, Number(state.weav3rLastRequestAt) + WEAV3R_MIN_REQUEST_SPACING_MS);
+        if (nextSlotAt > now) {
+          await new Promise((resolve) => window.setTimeout(resolve, nextSlotAt - now + 5));
+          continue;
+        }
+        const startedAt = Date.now();
+        state.weav3rRequestTimes.push(startedAt);
+        state.weav3rLastRequestAt = startedAt;
+        state.bazaarCalls += 1;
         return;
       }
-      const url = `https://weav3r.dev/item/${encodeURIComponent(Math.trunc(Number(itemId)))}`;
+    });
+    weav3rLimiterQueue = reservation.catch(() => {});
+    return reservation;
+  }
+
+  async function weav3rJsonRequest(url, {
+    invalidJsonMessage = 'TornW3B returned unreadable JSON.',
+    networkErrorMessage = 'Could not reach TornW3B.',
+    timeoutMessage = 'The TornW3B request timed out.',
+    onStart = null,
+  } = {}) {
+    await reserveWeav3rRequest();
+    if (typeof onStart === 'function') onStart();
+    return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET',
         url,
-        headers: { Accept: 'text/html' },
+        headers: { Accept: 'application/json' },
         timeout: 20_000,
         onload(response) {
           if (!ownsDashboardNetworkLease()) {
@@ -2066,55 +2149,108 @@
             return;
           }
           if (response.status === 429) {
-            const retryAfter = String(response.responseHeaders || '').match(/^retry-after:\s*(\d+)/im);
-            const error = new Error('TornW3B rate limit reached (429). Bazaar polling is temporarily backed off.');
-            error.rateLimited = true;
-            error.retryAfterMs = Math.max(0, Number(retryAfter?.[1]) || 0) * 1000;
-            reject(error);
+            reject(weav3rRateLimitError(noteWeav3rRateLimit(response.responseHeaders)));
             return;
           }
           if (response.status < 200 || response.status >= 300) {
-            reject(new Error(`TornW3B request failed (${response.status}).`));
+            const error = new Error(`TornW3B request failed (${response.status}).`);
+            error.status = response.status;
+            reject(error);
             return;
           }
           try {
-            const page = new DOMParser().parseFromString(response.responseText, 'text/html');
-            const freshnessBySeller = new Map();
-            for (const match of String(response.responseText || '').matchAll(/playerId\\?":(\d+)[\s\S]{0,600}?lastUpdated\\?":\\?"([^"\\]+)/g)) {
-              const sellerId = Number(match[1]);
-              const timestamp = Date.parse(match[2]);
-              if (sellerId > 0 && Number.isFinite(timestamp)) freshnessBySeller.set(sellerId, timestamp);
-            }
-            const listings = Array.from(page.querySelectorAll('tr.item-table-row')).map((row) => {
-              const cells = row.querySelectorAll('td');
-              const sellerLink = row.querySelector('a[href*="torn.com/bazaar.php?userId="]');
-              const sellerId = Number(new URL(sellerLink?.href || '', 'https://www.torn.com').searchParams.get('userId'));
-              const sellerText = String(sellerLink?.textContent || '').replace(/\s+/g, ' ').trim();
-              const sellerName = sellerText.replace(/\s*\[\d+\]\s*$/, '').trim() || `Player ${sellerId}`;
-              const quantity = Number(String(cells[1]?.textContent || '').replace(/[^0-9]/g, ''));
-              const priceMatch = String(cells[2]?.textContent || '').match(/\$\s*([\d,]+)/);
-              const price = Number(String(priceMatch?.[1] || '').replaceAll(',', ''));
-              if (!sellerId || !Number.isFinite(price) || price <= 0) return null;
-              const lastUpdatedAt = freshnessBySeller.get(sellerId) || null;
-              return {
-                sellerId,
-                sellerName,
-                quantity: Number.isFinite(quantity) ? quantity : 0,
-                price,
-                href: highlightedBazaarHref(sellerId, itemId, price, lastUpdatedAt),
-                lastUpdatedAt,
-              };
-            }).filter(Boolean);
-            resolve({ listings, sourceUrl: url, fetchedAt: Date.now() });
-          } catch (error) {
-            reject(new Error(`Could not read TornW3B bazaar listings: ${error?.message || 'unknown format'}`));
+            resolve(JSON.parse(response.responseText));
+          } catch {
+            reject(new Error(invalidJsonMessage));
           }
         },
-        onerror: () => reject(new Error('Could not reach TornW3B.')),
-        ontimeout: () => reject(new Error('The TornW3B request timed out.')),
+        onerror: () => reject(new Error(networkErrorMessage)),
+        ontimeout: () => reject(new Error(timeoutMessage)),
       });
-      state.bazaarCalls += 1;
     });
+  }
+
+  function normalizedWeav3rListing(row, itemId) {
+    const nested = row?.listing && typeof row.listing === 'object'
+      ? row.listing
+      : row?.bazaar && typeof row.bazaar === 'object'
+        ? row.bazaar
+        : row?.offer && typeof row.offer === 'object' ? row.offer : null;
+    const source = nested ? { ...row, ...nested } : row;
+    const seller = source?.seller && typeof source.seller === 'object'
+      ? source.seller
+      : source?.player && typeof source.player === 'object'
+        ? source.player
+        : source?.user && typeof source.user === 'object'
+          ? source.user
+          : source?.owner && typeof source.owner === 'object' ? source.owner : {};
+    const sellerId = Math.trunc(Number(
+      source?.sellerId ?? source?.seller_id ?? source?.playerId ?? source?.player_id
+      ?? source?.playerID ?? source?.userId ?? source?.user_id ?? source?.userID
+      ?? seller?.id ?? seller?.playerId ?? seller?.playerID ?? seller?.userId ?? seller?.userID
+    ));
+    const price = Number(
+      source?.price ?? source?.cost ?? source?.priceEach ?? source?.price_each
+      ?? source?.price_per_item ?? source?.pricePerUnit ?? source?.price_per_unit ?? source?.cost_each
+    );
+    if (!(sellerId > 0) || !Number.isFinite(price) || price <= 0) return null;
+    const quantity = Number(
+      source?.quantity ?? source?.amount ?? source?.stock ?? source?.available
+      ?? source?.item_count ?? source?.availableAmount ?? source?.available_amount
+    );
+    const lastUpdatedAt = externalTimestampMs(
+      source?.lastUpdatedAt ?? source?.last_updated_at ?? source?.lastUpdated ?? source?.last_updated
+      ?? source?.updatedAt ?? source?.updated_at ?? source?.lastChecked ?? source?.last_checked ?? source?.timestamp
+    ) || null;
+    const sellerName = String(
+      source?.sellerName ?? source?.seller_name ?? source?.playerName ?? source?.player_name
+      ?? source?.userName ?? source?.user_name ?? seller?.name ?? `Player ${sellerId}`
+    ).trim() || `Player ${sellerId}`;
+    return {
+      sellerId,
+      sellerName,
+      quantity: Number.isFinite(quantity) && quantity > 0 ? Math.trunc(quantity) : 0,
+      price: Math.trunc(price),
+      href: highlightedBazaarHref(sellerId, itemId, price, lastUpdatedAt),
+      lastUpdatedAt,
+    };
+  }
+
+  function weav3rMarketplaceRows(body) {
+    const candidates = [
+      body?.listings,
+      body?.bazaarListings,
+      body?.bazaar_listings,
+      body?.marketplace?.listings,
+      body?.item?.listings,
+      body?.data?.listings,
+      body?.data?.bazaarListings,
+      body?.data?.bazaar_listings,
+      body?.data?.marketplace?.listings,
+      body?.data?.item?.listings,
+      body,
+    ];
+    return candidates.find(Array.isArray) || [];
+  }
+
+  async function weav3rBazaars(itemId, maxPrice = null) {
+    const normalizedItemId = Math.trunc(Number(itemId));
+    if (!(normalizedItemId > 0)) throw new Error('A valid item ID is required for TornW3B Bazaar checks.');
+    const url = new URL(`https://weav3r.dev/api/marketplace/${encodeURIComponent(normalizedItemId)}`);
+    const threshold = Math.trunc(Number(maxPrice));
+    if (threshold > 0) url.searchParams.set('maxPrice', String(threshold));
+    url.searchParams.set('limit', '5');
+    const body = await weav3rJsonRequest(url.toString(), {
+      invalidJsonMessage: 'TornW3B returned an unreadable marketplace response.',
+      networkErrorMessage: 'Could not reach TornW3B for Bazaar listings.',
+      timeoutMessage: 'The TornW3B Bazaar request timed out.',
+      onStart: () => { state.weav3rItemLastAttemptAt[normalizedItemId] = Date.now(); },
+    });
+    return {
+      listings: weav3rMarketplaceRows(body).map((row) => normalizedWeav3rListing(row, normalizedItemId)).filter(Boolean).slice(0, 5),
+      sourceUrl: url.toString(),
+      fetchedAt: Date.now(),
+    };
   }
 
   function externalTimestampMs(value) {
@@ -2176,7 +2312,7 @@
       .slice(0, DOLLAR_BAZAAR_LIMIT);
   }
 
-  async function refreshDollarBazaars({ force = false } = {}) {
+  async function refreshDollarBazaars() {
     if (state.dollarBazaarLoading) return false;
     dashboardNetworkLease?.refresh();
     if (!ownsDashboardNetworkLease()) {
@@ -2185,13 +2321,9 @@
       return false;
     }
     const now = Date.now();
-    if (!force && Number(state.dollarBazaarCache.fetchedAt) > now - DOLLAR_BAZAAR_CACHE_MAX_AGE_MS) {
-      state.dollarBazaarError = '';
-      render();
-      return true;
-    }
-    if (now < state.dollarBazaarBackoffUntil) {
-      state.dollarBazaarError = `TornW3B is rate-limited. Try again in ${formatDuration(Math.ceil((state.dollarBazaarBackoffUntil - now) / 1000))}.`;
+    const blockedUntil = Math.max(Number(state.dollarBazaarBackoffUntil) || 0, Number(state.weav3rBackoffUntil) || 0);
+    if (now < blockedUntil) {
+      state.dollarBazaarError = `TornW3B is rate-limited. Try again in ${formatDuration(Math.ceil((blockedUntil - now) / 1000))}.`;
       render();
       return false;
     }
@@ -2200,10 +2332,7 @@
     render();
     const sourceUrl = `https://weav3r.dev/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`;
     try {
-      state.bazaarCalls += 1;
-      const body = await TornLib.requestJson(sourceUrl, {
-        headers: { Accept: 'application/json' },
-        timeout: 20_000,
+      const body = await weav3rJsonRequest(sourceUrl, {
         invalidJsonMessage: 'TornW3B returned an unreadable $1 Bazaar response.',
         networkErrorMessage: 'Could not reach TornW3B for $1 Bazaars.',
         timeoutMessage: 'The TornW3B $1 Bazaar request timed out.',
@@ -2212,14 +2341,19 @@
       const bazaars = dollarBazaarRows(body);
       state.dollarBazaarCache = {
         fetchedAt: Date.now(),
-        sourceUrl: 'https://weav3r.dev/dollar-bazaars?tab=bazaars',
+        sourceUrl,
         bazaars,
       };
       GM_setValue(DOLLAR_BAZAAR_CACHE_KEY, state.dollarBazaarCache);
       state.dollarBazaarBackoffUntil = 0;
       return true;
     } catch (error) {
-      if (Number(error?.status) === 429) state.dollarBazaarBackoffUntil = Date.now() + 60_000;
+      if (error?.rateLimited || Number(error?.status) === 429) {
+        state.dollarBazaarBackoffUntil = Math.max(
+          Number(state.weav3rBackoffUntil) || 0,
+          Date.now() + (Number(error?.retryAfterMs) || WEAV3R_RATE_LIMIT_FALLBACK_BACKOFF_MS)
+        );
+      }
       state.dollarBazaarError = isDashboardOwnerPause(error)
         ? error.message
         : error?.message || 'Could not load TornW3B $1 Bazaars.';
@@ -2659,7 +2793,10 @@
 
   function bazaarWatchNextCheckAt(watch) {
     const itemId = Math.trunc(Number(watch?.itemId));
-    const fetchedAt = Number(state.bazaarCache[itemId]?.fetchedAt) || 0;
+    const fetchedAt = Math.max(
+      Number(state.bazaarCache[itemId]?.fetchedAt) || 0,
+      Number(state.weav3rItemLastAttemptAt[itemId]) || 0
+    );
     if (!fetchedAt) return 0;
     const marketResult = state.data.market?.[watch.uid];
     return fetchedAt + weav3rRefreshMsForPriority(watchMarketPriority(watch, marketResult));
@@ -2670,7 +2807,8 @@
     if (state.bazaarPolling || !ownsDashboardNetworkLease() || !state.settings.weav3rBazaarEnabled
       || state.settings.enabled.itemMarket === false || !watches.length) return false;
     const now = Date.now();
-    if (!force && now < state.bazaarBackoffUntil) {
+    const blockedUntil = Math.max(Number(state.bazaarBackoffUntil) || 0, Number(state.weav3rBackoffUntil) || 0);
+    if (now < blockedUntil) {
       if (!state.readyAlertGroups.has('bazaar')) {
         state.data.bazaars ||= {};
         watches.forEach((watch) => {
@@ -2690,9 +2828,20 @@
     const dueGroups = [...groups.entries()].map(([itemId, itemWatches]) => {
       const marketResult = state.data.market?.[itemWatches[0].uid];
       const priority = groupMarketPriority(itemWatches, marketResult);
-      const fetchedAt = Number(state.bazaarCache[itemId]?.fetchedAt) || 0;
-      return { itemId, itemWatches, priority, nextCheckAt: fetchedAt ? fetchedAt + weav3rRefreshMsForPriority(priority) : 0 };
-    }).filter((group) => force || !group.nextCheckAt || now >= group.nextCheckAt)
+      const fetchedAt = Math.max(
+        Number(state.bazaarCache[itemId]?.fetchedAt) || 0,
+        Number(state.weav3rItemLastAttemptAt[itemId]) || 0
+      );
+      const maxPrice = Math.max(0, ...itemWatches.map((watch) => Math.trunc(Number(watch?.maxPrice) || 0)));
+      return {
+        itemId,
+        itemWatches,
+        priority,
+        maxPrice,
+        minimumNextCheckAt: fetchedAt ? fetchedAt + WEAV3R_ITEM_MIN_REFRESH_MS : 0,
+        nextCheckAt: fetchedAt ? fetchedAt + weav3rRefreshMsForPriority(priority) : 0,
+      };
+    }).filter((group) => !group.minimumNextCheckAt || now >= (force ? group.minimumNextCheckAt : group.nextCheckAt))
       .sort((left, right) => marketPriorityRank(left.priority) - marketPriorityRank(right.priority) || left.nextCheckAt - right.nextCheckAt);
     if (!dueGroups.length) {
       if (!state.readyAlertGroups.has('bazaar')) {
@@ -2712,9 +2861,9 @@
     try {
       for (let index = 0; index < dueGroups.length; index += 4) {
         const batch = dueGroups.slice(index, index + 4);
-        await Promise.all(batch.map(async ({ itemId, itemWatches }) => {
+        await Promise.all(batch.map(async ({ itemId, itemWatches, maxPrice }) => {
           try {
-            const result = await weav3rBazaars(itemId);
+            const result = await weav3rBazaars(itemId, maxPrice);
             const previous = state.bazaarCache[itemId];
             if (bazaarResultSignature(previous) !== bazaarResultSignature(result)) changed = true;
             state.data.bazaars ||= {};
@@ -2729,7 +2878,10 @@
               rateLimited = true;
               state.bazaarRateLimitStrikes += 1;
               const exponentialDelay = Math.min(5 * 60_000, 30_000 * (2 ** (state.bazaarRateLimitStrikes - 1)));
-              state.bazaarBackoffUntil = Date.now() + Math.max(Number(error.retryAfterMs) || 0, exponentialDelay);
+              state.bazaarBackoffUntil = Math.max(
+                Number(state.weav3rBackoffUntil) || 0,
+                Date.now() + Math.max(Number(error.retryAfterMs) || 0, exponentialDelay)
+              );
             }
           }
         }));
@@ -2741,7 +2893,7 @@
         state.bazaarRateLimitStrikes = 0;
         state.bazaarBackoffUntil = 0;
       } else if (!rateLimited) {
-        state.bazaarBackoffUntil = Date.now() + 30_000;
+        state.bazaarBackoffUntil = Date.now() + WEAV3R_ITEM_MIN_REFRESH_MS;
       }
       GM_setValue(BAZAAR_CACHE_KEY, state.bazaarCache);
       saveCheckCache();
@@ -2760,7 +2912,7 @@
       const watches = activeBazaarWatches();
       const dueTimes = watches.map(bazaarWatchNextCheckAt).filter((value) => value > 0);
       const nextDue = dueTimes.length ? Math.min(...dueTimes) : Date.now() + weav3rRefreshMsForPriority('normal');
-      const backoffDelay = Math.max(0, state.bazaarBackoffUntil - Date.now());
+      const backoffDelay = Math.max(0, state.bazaarBackoffUntil - Date.now(), state.weav3rBackoffUntil - Date.now());
       scheduleBazaarPoll(Math.max(1_000, backoffDelay, nextDue - Date.now()));
     }, Math.max(0, Number(delayMs) || 0));
   }
@@ -3108,6 +3260,10 @@
   }
 
   function formatPickpocketTargets() {
+    if (!focusedTornPage()) {
+      state.pickpocketFormattedCount = 0;
+      return;
+    }
     if (!state.settings.pickpocketHelperEnabled || !onPickpocketPage()) {
       cleanupPickpocketFormatting();
       return;
@@ -3710,6 +3866,37 @@
       (unique?.rewards?.items || []).some((item) => Number(item?.id ?? item?.item_id) === 1465));
   }
 
+  function normalizedClusterRingSecurity(shopliftingBody, subcrimesBody) {
+    const legacy = shopliftingBody?.shoplifting?.jewelry_store;
+    if (Array.isArray(legacy)) return legacy;
+    if (!Array.isArray(shopliftingBody?.shoplifting) || !Array.isArray(subcrimesBody?.subcrimes)) return null;
+    const jewelryStore = subcrimesBody.subcrimes.find((subcrime) => /jewelry\s+store/i.test(String(subcrime?.name || '')));
+    if (!Number(jewelryStore?.id)) return null;
+    const status = shopliftingBody.shoplifting.find((subcrime) => Number(subcrime?.id) === Number(jewelryStore.id))?.status;
+    if (!Array.isArray(status)) return null;
+    const camera = status.find((entry) => /camera/i.test(String(entry?.title || '')));
+    const guard = status.find((entry) => /guard/i.test(String(entry?.title || '')));
+    if (!camera || !guard || typeof camera.disabled !== 'boolean' || typeof guard.disabled !== 'boolean') return null;
+    return [camera, guard];
+  }
+
+  async function fetchClusterRingStatus() {
+    let subcrimes = state.data.shopliftingSubcrimes;
+    if (!Array.isArray(subcrimes?.subcrimes)
+      || !subcrimes.subcrimes.some((subcrime) => /jewelry\s+store/i.test(String(subcrime?.name || '')))) {
+      const body = await api('torn/4/subcrimes', {}, { priority: 'low' });
+      if (!Array.isArray(body?.subcrimes)) throw new Error('Torn returned no Shoplifting subcrime map.');
+      subcrimes = { ...body, __fetchedAt: Date.now() };
+      state.data.shopliftingSubcrimes = subcrimes;
+    }
+    const body = await api('torn/shoplifting', {}, { priority: 'low' });
+    const jewelryStore = normalizedClusterRingSecurity(body, subcrimes);
+    if (!Array.isArray(jewelryStore)) {
+      throw new Error('Torn returned incomplete Jewelry Store security status for the Cluster Ring check.');
+    }
+    return { shoplifting: { jewelry_store: jewelryStore }, __fetchedAt: Date.now() };
+  }
+
   function educationOcSelectionsNeeded({ educationDue = false, organizedCrimeDue = false } = {}) {
     const selections = new Set();
     if (educationDue && alertCheckDue('education') && !state.dom.educationActive) selections.add('education');
@@ -3735,7 +3922,7 @@
     }
     const expiredSnoozes = new Set(releaseExpiredSnoozes());
     const snoozeExpiredFor = (...ids) => ids.some((id) => expiredSnoozes.has(id));
-    if (visibleTornTab()) {
+    if (focusedTornPage()) {
       scrapeActivePage();
       state.pageCheckPending = focusedRouteAwaitingLiveData();
       const liveGroups = ['turtle'];
@@ -3779,7 +3966,8 @@
       || dailyStatusCheckDue('refills', enabledRefillStatusKnown(), state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const cityItemsStatusKnown = numberFromPersonalStats(state.data.cityItemsNow) !== null
       && numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
-    const cityItemsEnabled = state.settings.enabled.cityItem !== false && (force || alertCheckDue('cityItem'));
+    const cityStockEnabled = enabledCityShopTargets().length > 0;
+    const cityItemsEnabled = (state.settings.enabled.cityItem !== false && (force || alertCheckDue('cityItem'))) || cityStockEnabled;
     const cityItemsDue = cityItemsEnabled && (force || dayChanged || snoozeExpiredFor('cityItem')
       || dailyStatusCheckDue('cityItems', cityItemsStatusKnown, state.lastDailyUpdated, DAILY_UNKNOWN_RETRY_MS, now));
     const apiPlayerAddictionKnown = addictionPercentFromBattleStats(state.data.battlestats) !== null;
@@ -3980,8 +4168,6 @@
 
       if (alertCheckDue('clusterRing')) {
         tasks.push((async () => {
-          if (!state.data.shoplifting && state.crimeProgressPromise) await state.crimeProgressPromise;
-          if (!state.data.shoplifting) return;
           if (clusterRingAlreadyAchieved()) {
             delete state.errors.clusterRingStatus;
             state.lastClusterUpdated = now;
@@ -3989,19 +4175,14 @@
             return;
           }
           const cachedStatusKnown = Array.isArray(state.data.shopliftingStatus?.shoplifting?.jewelry_store);
-          if (!force && !snoozeExpiredFor('clusterRing') && cachedStatusKnown && state.data.shoplifting && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
+          if (!force && !snoozeExpiredFor('clusterRing') && cachedStatusKnown && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
             publishAlertGroups(['clusterRing']);
             return;
           }
           const clusterRetryAt = Number(state.nextApiChecks?.clusterRingStatus) || 0;
           if (!force && clusterRetryAt > now) return;
-          const statusPromise = guardedRequest('clusterRingStatus', () => api('torn', { selections: 'shoplifting' }, { priority: 'low' }), (body) => {
-            const jewelryStore = body?.shoplifting?.jewelry_store;
-            if (!Array.isArray(jewelryStore) || jewelryStore.length < 2
-              || jewelryStore.slice(0, 2).some((entry) => entry?.disabled === null || entry?.disabled === undefined)) {
-              throw new Error('Torn returned incomplete Shoplifting status for the Cluster Ring check.');
-            }
-            state.data.shopliftingStatus = { ...body, __fetchedAt: Date.now() };
+          const statusPromise = guardedRequest('clusterRingStatus', fetchClusterRingStatus, (body) => {
+            state.data.shopliftingStatus = body;
           });
           const statusOkay = await statusPromise;
           if (statusOkay) {
@@ -4070,7 +4251,7 @@
           dailyTasks.push((async () => {
             const baselineKnown = numberFromPersonalStats(state.data.cityItemsAtReset) !== null;
             const results = await Promise.all([
-              guardedRequest('cityItemsNow', () => api('user/personalstats', { cat: 'trading' }), (body) => {
+              guardedRequest('cityItemsNow', () => api('user/personalstats', { stat: 'cityitemsbought' }), (body) => {
                 if (numberFromPersonalStats(body) === null) throw new Error('Torn returned no current city-item total.');
                 state.data.cityItemsNow = { ...body, __fetchedAt: Date.now() };
               }),
@@ -4092,7 +4273,7 @@
               return;
             }
             delete state.errors.cityItemsStatus;
-            deferApiCheck('cityItems', nextTornResetAtMs());
+            deferApiCheck('cityItems', remaining > 0 ? Date.now() + CITY_SHOP_REFRESH_MS : nextTornResetAtMs());
             publishAlertGroups(['cityItem']);
           })());
         }
@@ -4178,7 +4359,7 @@
       if (!casinoDue && state.settings.enabled.casinoTokens && state.data.casino?.casino
         && Array.isArray(state.data.icons?.icons)) cachedDailyGroups.push('casinoTokens');
       if (!refillsDue && (state.settings.enabled.energyRefill || state.settings.enabled.nerveRefill) && state.data.refills?.refills) cachedDailyGroups.push('refills');
-      if (!cityItemsDue && state.settings.enabled.cityItem && state.data.cityItemsNow && state.data.cityItemsAtReset) cachedDailyGroups.push('cityItem');
+      if (!cityItemsDue && cityItemsEnabled && state.data.cityItemsNow && state.data.cityItemsAtReset) cachedDailyGroups.push('cityItem');
       if (!playerAddictionDue && state.settings.enabled.playerAddiction && state.data.battlestats?.battlestats) cachedDailyGroups.push('playerAddiction');
       if (!jobAddictionDue && state.settings.enabled.jobAddiction && state.data.job?.job
         && (state.data.job.job.type !== 'company' || state.data.companyEmployees?.employees)) cachedDailyGroups.push('jobAddiction');
@@ -4206,7 +4387,7 @@
         publishAlertGroups(['bazaar']);
       }
       await Promise.all(tasks);
-      if (alertCheckDue('cityItem')) {
+      if (cityItemsEnabled) {
         await refreshCityShopStockIfNeeded({ force });
         publishAlertGroups(['cityItem']);
       }
@@ -4888,7 +5069,7 @@
     const refreshed = Number(state.dollarBazaarCache.fetchedAt) > 0
       ? new Date(state.dollarBazaarCache.fetchedAt).toLocaleString()
       : 'never';
-    const sourceUrl = state.dollarBazaarCache.sourceUrl || 'https://weav3r.dev/dollar-bazaars';
+    const sourceUrl = state.dollarBazaarCache.sourceUrl || `https://weav3r.dev/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`;
     return `<section class="dollar-bazaars-view">
       <div class="dollar-bazaars-controls">
         <div><strong>Weaver $1 Bazaars</strong><small>${rows.length.toLocaleString()} Bazaar link${rows.length === 1 ? '' : 's'} · updated ${escapeHtml(refreshed)}</small></div>
@@ -4903,7 +5084,7 @@
           ${row.updatedAt > 0 ? `<small>Checked ${escapeHtml(new Date(row.updatedAt).toLocaleString())}</small>` : ''}
         </article>
       `).join('') || `<div class="empty"><strong>${state.dollarBazaarLoading ? 'Polling TornW3B…' : 'No $1 Bazaars loaded.'}</strong>${state.dollarBazaarLoading ? 'Waiting for Weaver’s current Bazaar list.' : 'Use Poll now to load up to 50 active Bazaar links.'}</div>`}</div>
-      <div class="dollar-bazaars-source"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open the full TornW3B Dollar Bazaars page</a><small>This uses Weaver, not your Torn API quota. Availability restrictions are only known after opening a Bazaar.</small></div>
+      <div class="dollar-bazaars-source"><a href="https://weav3r.dev/dollar-bazaars?tab=bazaars" target="_blank" rel="noopener noreferrer">Open the full TornW3B Dollar Bazaars page</a><small>JSON source: ${escapeHtml(sourceUrl)}. Data refreshes only when this panel is opened or Poll now is pressed.</small></div>
     </section>`;
   }
 
@@ -5317,36 +5498,37 @@
     return Math.max(0, 100 - Math.max(0, cityNow - cityAtReset));
   }
 
+  function enabledCityShopTargets() {
+    return CITY_SHOP_TARGETS.filter((target) => state.settings.cityStockAlerts?.[target.id] === true);
+  }
+
   function cityShopTargetStock(body) {
     const found = new Map();
     const targetById = new Map(CITY_SHOP_TARGETS.map((target) => [target.id, target]));
-    const targetByName = new Map(CITY_SHOP_TARGETS.map((target) => [target.name.toLowerCase(), target]));
-    const visited = new Set();
-
-    function visit(value, key = '', depth = 0) {
-      if (!value || typeof value !== 'object' || depth > 10 || visited.has(value)) return;
-      visited.add(value);
-      const rawName = String(value.name ?? value.item_name ?? value.itemName ?? value.title ?? '').trim();
-      const rawId = Number(value.item_id ?? value.itemID ?? value.id ?? key);
-      const target = targetById.get(rawId) || targetByName.get(rawName.toLowerCase());
-      if (target) {
-        const stockValue = [value.stock, value.quantity, value.amount, value.available, value.in_stock]
-          .find((candidate) => candidate !== '' && candidate !== null && candidate !== undefined && Number.isFinite(Number(candidate)));
-        const stock = stockValue === undefined ? null : Math.max(0, Number(stockValue));
-        const previous = found.get(target.id);
-        if (!previous || previous.stock === null || stock !== null) found.set(target.id, { ...target, stock });
-      }
-      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
-    }
-
-    visit(body);
+    (Array.isArray(body?.cityshops) ? body.cityshops : []).forEach((shop) => {
+      (Array.isArray(shop?.items) ? shop.items : []).forEach((item) => {
+        const target = targetById.get(Number(item?.id));
+        if (!target || String(shop?.name || '').toLowerCase() !== target.shop.toLowerCase()) return;
+        const current = item?.stock?.current;
+        const defaultStock = item?.stock?.default;
+        found.set(target.id, {
+          ...target,
+          shopId: Math.max(0, Math.trunc(Number(shop?.id) || 0)),
+          shopName: String(shop?.name || target.shop),
+          price: Math.max(0, Math.trunc(Number(item?.price) || 0)),
+          stock: Number.isFinite(Number(current)) ? Math.max(0, Math.trunc(Number(current))) : null,
+          defaultStock: Number.isFinite(Number(defaultStock)) ? Math.max(0, Math.trunc(Number(defaultStock))) : null,
+        });
+      });
+    });
     return CITY_SHOP_TARGETS.map((target) => found.get(target.id) || { ...target, stock: null });
   }
 
   function cityShopStockSummary() {
     const response = state.data.cityShops;
     if (!response?.__fetchedAt) return '';
-    const rows = cityShopTargetStock(response);
+    const enabledIds = new Set(enabledCityShopTargets().map((target) => target.id));
+    const rows = cityShopTargetStock(response).filter((item) => enabledIds.has(item.id));
     return rows.map((item) => {
       if (item.stock === null) return `${item.label}: stock unavailable`;
       return item.stock > 0 ? `${item.label}: ${item.stock.toLocaleString()} in stock` : `${item.label}: sold out`;
@@ -5355,14 +5537,15 @@
 
   async function refreshCityShopStockIfNeeded({ force = false } = {}) {
     const remaining = cityItemsRemainingToday();
-    if (!(remaining > 0)) {
+    if (!(remaining > 0) || !enabledCityShopTargets().length) {
       delete state.data.cityShops;
       delete state.errors.cityShopStock;
       return false;
     }
     const fetchedAt = Number(state.data.cityShops?.__fetchedAt) || 0;
     if (!force && Date.now() - fetchedAt < CITY_SHOP_REFRESH_MS) return true;
-    return guardedRequest('cityShopStock', () => apiV1('torn', { selections: 'cityshops' }, { priority: 'low' }), (body) => {
+    return guardedRequest('cityShopStock', () => api('torn/cityshops', {}, { priority: 'low' }), (body) => {
+      if (!Array.isArray(body?.cityshops)) throw new Error('Torn returned city shop stock in an unreadable format.');
       state.data.cityShops = { ...body, __fetchedAt: Date.now() };
     });
   }
@@ -5553,7 +5736,7 @@
             detail: `Player bazaar listing - $${Number(listing.price).toLocaleString()}${Number(listing.quantity) > 0 ? ` x ${Number(listing.quantity).toLocaleString()}` : ''} - target $${threshold.toLocaleString()}${freshness} - TornW3B`,
             links: [
               { label: `${listing.sellerName}'s Bazaar`, href: listing.href },
-              { label: 'W3B', href: result?.sourceUrl || `https://weav3r.dev/item/${itemId}` },
+              { label: 'W3B', href: result?.sourceUrl || `https://weav3r.dev/api/marketplace/${itemId}?maxPrice=${threshold}&limit=5` },
             ],
             shareText: `Bazaar | ${escapeHtml(name)} | $${Number(listing.price).toLocaleString()}${Number(listing.quantity) > 0 ? ` x ${Number(listing.quantity).toLocaleString()}` : ''} | target $${threshold.toLocaleString()} | ${chatAnchor(listing.href, `${listing.sellerName}'s Bazaar`)}`,
             tone: 'urgent',
@@ -5609,6 +5792,17 @@
     const cityAtReset = numberFromPersonalStats(state.data.cityItemsAtReset);
     const boughtInCityToday = cityNow !== null && cityAtReset !== null ? Math.max(0, cityNow - cityAtReset) : null;
     const cityStockSummary = cityShopStockSummary();
+    const cityStockAlerts = cityShopTargetStock(state.data.cityShops)
+      .filter((item) => state.settings.cityStockAlerts?.[item.id] === true)
+      .map((item) => ({
+        id: `cityStock:${item.id}`,
+        active: boughtInCityToday !== null && boughtInCityToday < 100 && Number(item.stock) > 0,
+        title: `${item.label} in stock at ${item.shopName || item.shop}`,
+        detail: `${Number(item.stock).toLocaleString()} available at ${item.shopName || item.shop}${item.defaultStock !== null && item.defaultStock !== undefined ? ` (normal restock ${Number(item.defaultStock).toLocaleString()})` : ''}. ${boughtInCityToday ?? 0} / 100 city items bought today.`,
+        links: [{ label: item.shopName || item.shop, href: 'https://www.torn.com/city.php' }],
+        tone: 'urgent',
+        noDisable: true,
+      }));
     const medicalThresholdSeconds = cooldownThresholdSeconds('medical');
     const boosterThresholdSeconds = cooldownThresholdSeconds('booster');
     const playerAddiction = playerAddictionPercent();
@@ -5688,7 +5882,7 @@
         id: 'cityItem',
         active: boughtInCityToday !== null && boughtInCityToday < 100,
         title: 'Buy 100 items from city shops',
-        detail: boughtInCityToday !== null ? `${boughtInCityToday} / 100 bought since today's Torn reset - ${100 - boughtInCityToday} remaining.${cityStockSummary ? ` ${cityStockSummary}.` : ' Checking Beer, Pepper Spray, and Empty Blood Bag stock.'}` : '',
+        detail: boughtInCityToday !== null ? `${boughtInCityToday} / 100 bought since today's Torn reset - ${100 - boughtInCityToday} remaining.${cityStockSummary ? ` ${cityStockSummary}.` : ''}` : '',
         links: [{ label: 'City', href: 'https://www.torn.com/city.php' }],
         tone: 'daily',
       },
@@ -5833,7 +6027,7 @@
         tone: 'urgent',
       },
     ];
-    return [...alerts, ...marketAlerts(), ...bazaarAlerts()];
+    return [...alerts, ...cityStockAlerts, ...marketAlerts(), ...bazaarAlerts()];
   }
 
   function invalidateAlertSnapshot() {
@@ -5847,6 +6041,7 @@
     if (id === 'energyRefill' || id === 'nerveRefill') return 'refills';
     if (String(id).startsWith('market:')) return 'market';
     if (String(id).startsWith('bazaar:')) return 'bazaar';
+    if (String(id).startsWith('cityStock:')) return 'cityItem';
     return id;
   }
 
@@ -6008,6 +6203,7 @@
   async function waitForFactionChat(timeoutMs = 2500) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (!focusedTornPage()) return { container: null, composer: null };
       const container = findFactionChatContainer();
       const composer = findFactionChatComposer(container);
       if (container && composer) return { container, composer };
@@ -6019,6 +6215,7 @@
   async function waitForFactionChatSendButton(container, composer, timeoutMs = 1500) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (!focusedTornPage()) return null;
       const button = findFactionChatSendButton(container, composer);
       if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true') {
         return button;
@@ -6042,6 +6239,7 @@
       return { ok: false, label: 'Faction message box not found' };
     }
 
+    if (!focusedTornPage()) return { ok: false, label: 'Focus Torn first' };
     setFactionChatComposerContent(composer, text);
     const sendButton = await waitForFactionChatSendButton(container, composer);
     if (!sendButton) return { ok: false, label: 'Faction send not ready' };
@@ -6551,6 +6749,15 @@
               <label><input type="checkbox" data-toggle-alert="${id}" ${state.settings.enabled[id] !== false ? 'checked' : ''}> ${escapeHtml(label)}</label>
             `).join('')}
           </div>
+          <div class="crime-unique-settings">
+            <strong>City shop stock alerts</strong>
+            <p>Check Torn's cityshops API every 5 minutes and alert only while your daily city-shop total is below 100. These are off by default.</p>
+            <div class="crime-toggles">
+              ${CITY_SHOP_TARGETS.map((target) => `
+                <label><input type="checkbox" data-city-stock-alert="${target.id}" ${state.settings.cityStockAlerts?.[target.id] === true ? 'checked' : ''}> ${escapeHtml(target.label)} · ${escapeHtml(target.shop)}</label>
+              `).join('')}
+            </div>
+          </div>
         </details>
         <details class="settings-group" data-settings-section="thresholds" ${sectionOpen('thresholds')}>
           <summary>Thresholds and special timers</summary>
@@ -6682,13 +6889,13 @@
           <p class="priority-note"><strong>Priority:</strong> Each Item Market watch follows Torn's returned cache timestamp and delay, then checks one second after that cache should refresh. If Torn still returns the same timestamp, it retries after 2–5 seconds. High, Normal, and Low determine quota order and headroom; a watch at or below its alert price temporarily becomes High. Each response is limited to the five cheapest listings, and every Torn Item Market check counts in Core's shared API ledger.</p>
           <div class="bazaar-controls">
             <label><input type="checkbox" data-field="weav3r-bazaar-enabled" ${state.settings.weav3rBazaarEnabled ? 'checked' : ''}> Check TornW3B bazaars</label>
-            <span>High 10s · Normal 30s · Low 60s; four at a time with rate-limit backoff</span>
+            <span>High 35s · Normal 70s · Low 140s; JSON API calls use a local rolling 80/min limiter and 750ms spacing</span>
           </div>
           <div class="bazaar-controls">
             <label><input type="checkbox" data-field="highlighted-quick-buy-enabled" ${state.settings.highlightedQuickBuyEnabled ? 'checked' : ''}> Native quick-buy buttons on highlighted listings</label>
             <span>Bazaar: Buy → Buy max → Yes. Item Market: Buy max → Yes. Every step requires a manual press.</span>
           </div>
-          <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs to weav3r.dev. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
+          <p class="third-party-note">Optional third-party source for Item Market watches only: sends watched item IDs and the highest matching watch price to weav3r.dev's JSON API. Your Torn API key is never sent. Bazaar results have their own per-seller 1h/1d snoozes.</p>
           <details class="pawn-shop-builder" data-settings-section="pawnShopBuilder" ${sectionOpen('pawnShopBuilder')}>
             <summary>Travel contraband / city-shop profit builder</summary>
             <p>Build up to ${MARKET_WATCH_LIMIT} watches from Torn's official 23 travel-contraband items, limited to goods that currently have a city-shop sell-back value. This includes Insulin, Bear Gall, Shark Fin, Turtle Shell, Pangolin Scales, Tiger Bone Powder, and the other recent imports. TornW3B statistics are added when its checkbox above is enabled.</p>
@@ -6721,6 +6928,7 @@
   function alertIconFor(id) {
     if (String(id).startsWith('bazaar:')) return '🏪';
     if (String(id).startsWith('market:')) return '🛒';
+    if (String(id).startsWith('cityStock:')) return '🏙';
     return ALERT_ICONS[id] || '•';
   }
 
@@ -7203,7 +7411,7 @@
       refreshAwards();
       return;
     } else if (action === 'refresh-dollar-bazaars') {
-      refreshDollarBazaars({ force: true });
+      refreshDollarBazaars();
       return;
     } else if (action === 'refresh-networth-public') {
       requestNetworthAction('refresh-public');
@@ -7485,6 +7693,23 @@
   });
 
   shadow.addEventListener('change', (event) => {
+    const cityStockToggle = event.target.closest('[data-city-stock-alert]');
+    if (cityStockToggle) {
+      const itemId = Math.max(0, Math.trunc(Number(cityStockToggle.dataset.cityStockAlert) || 0));
+      if (itemId) state.settings.cityStockAlerts[itemId] = cityStockToggle.checked;
+      if (cityStockToggle.checked) {
+        delete state.nextApiChecks.cityItems;
+        delete state.data.cityShops;
+        window.setTimeout(() => refresh({ includeDaily: true }), 0);
+      } else if (!enabledCityShopTargets().length) {
+        delete state.data.cityShops;
+        delete state.errors.cityShopStock;
+      }
+      saveSettings();
+      publishAlertGroups(['cityItem']);
+      render();
+      return;
+    }
     const toggle = event.target.closest('[data-toggle-alert]');
     if (toggle) {
       state.settings.enabled[toggle.dataset.toggleAlert] = toggle.checked;
@@ -7805,8 +8030,8 @@
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (visibleTornTab()) {
-      state.windowFocused = document.hasFocus();
+    state.windowFocused = document.hasFocus();
+    if (focusedTornPage()) {
       refresh({ domOnly: true });
       schedulePickpocketFormatting(0);
       schedulePurchaseOpportunityFormatting(0);
@@ -7814,8 +8039,7 @@
       state.windowFocused = false;
       state.quickPurchaseFlow = null;
       state.dom = { capturedAt: Date.now(), source: 'paused' };
-      cleanupPickpocketFormatting();
-      schedulePurchaseOpportunityFormatting(0);
+      state.pickpocketFormattedCount = 0;
       render();
     }
   });
@@ -7831,8 +8055,7 @@
     state.windowFocused = false;
     state.quickPurchaseFlow = null;
     state.dom = { capturedAt: Date.now(), source: 'api-fallback' };
-    cleanupPickpocketFormatting();
-    schedulePurchaseOpportunityFormatting(0);
+    state.pickpocketFormattedCount = 0;
     if (state.raceCheckComplete && !state.raceCheckPending) publishAlertGroups(['raceTravel']);
     render();
   });
@@ -8018,56 +8241,23 @@
     });
   }
 
-  function weav3rCategoryPage(category, pageNumber) {
-    return new Promise((resolve, reject) => {
-      if (!ownsDashboardNetworkLease()) {
-        reject(dashboardOwnerPauseError());
-        return;
-      }
-      const url = `https://weav3r.dev/api/categories/items?cat=${encodeURIComponent(category)}&page=${Math.max(1, Math.trunc(Number(pageNumber) || 1))}&sort=marketPrice&dir=desc`;
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url,
-        headers: { Accept: 'application/json' },
-        timeout: 20_000,
-        onload(response) {
-          if (!ownsDashboardNetworkLease()) {
-            reject(dashboardOwnerPauseError('Response ignored because another Torn tab now owns ADHD Dashboard polling.'));
-            return;
-          }
-          if (response.status === 429) {
-            const retryAfter = String(response.responseHeaders || '').match(/^retry-after:\s*(\d+)/im);
-            const error = new Error('TornW3B category rate limit reached (429). Try loading the category again later.');
-            error.rateLimited = true;
-            error.retryAfterMs = Math.max(0, Number(retryAfter?.[1]) || 0) * 1000;
-            reject(error);
-            return;
-          }
-          if (response.status < 200 || response.status >= 300) {
-            reject(new Error(`TornW3B category request failed (${response.status}).`));
-            return;
-          }
-          try {
-            const rows = JSON.parse(response.responseText);
-            if (!Array.isArray(rows)) throw new Error('unexpected response format');
-            resolve(rows.map((item) => ({
-              id: Math.trunc(Number(item?.id)),
-              name: String(item?.name || ''),
-              type: String(item?.type || category),
-              marketPrice: Math.max(0, Math.trunc(Number(item?.marketPrice) || 0)),
-              bazaarAvgPrice: Math.max(0, Math.trunc(Number(item?.bazaarAvgPrice) || 0)),
-              bazaarCount: Math.max(0, Math.trunc(Number(item?.bazaarCount) || 0)),
-              circulation: Math.max(0, Math.trunc(Number(item?.circulation) || 0)),
-            })).filter((item) => item.id > 0 && item.name));
-          } catch (error) {
-            reject(new Error(`Could not read TornW3B category data: ${error?.message || 'unknown format'}`));
-          }
-        },
-        onerror: () => reject(new Error('Could not reach TornW3B for category data.')),
-        ontimeout: () => reject(new Error('The TornW3B category request timed out.')),
-      });
-      state.bazaarCalls += 1;
+  async function weav3rCategoryPage(category, pageNumber) {
+    const url = `https://weav3r.dev/api/categories/items?cat=${encodeURIComponent(category)}&page=${Math.max(1, Math.trunc(Number(pageNumber) || 1))}&sort=marketPrice&dir=desc`;
+    const rows = await weav3rJsonRequest(url, {
+      invalidJsonMessage: 'TornW3B returned unreadable category JSON.',
+      networkErrorMessage: 'Could not reach TornW3B for category data.',
+      timeoutMessage: 'The TornW3B category request timed out.',
     });
+    if (!Array.isArray(rows)) throw new Error('Could not read TornW3B category data: unexpected response format.');
+    return rows.map((item) => ({
+      id: Math.trunc(Number(item?.id)),
+      name: String(item?.name || ''),
+      type: String(item?.type || category),
+      marketPrice: Math.max(0, Math.trunc(Number(item?.marketPrice) || 0)),
+      bazaarAvgPrice: Math.max(0, Math.trunc(Number(item?.bazaarAvgPrice) || 0)),
+      bazaarCount: Math.max(0, Math.trunc(Number(item?.bazaarCount) || 0)),
+      circulation: Math.max(0, Math.trunc(Number(item?.circulation) || 0)),
+    })).filter((item) => item.id > 0 && item.name);
   }
 
   async function loadWeav3rCategoryStats(category, { force = false } = {}) {
@@ -8100,9 +8290,11 @@
 
   render();
   window.setTimeout(() => refresh(), 800);
+  if (state.settings.activeView === 'dollarBazaars') window.setTimeout(() => refreshDollarBazaars(), 900);
   if (state.settings.settingsOpen && !itemCatalogFresh()) loadItemCatalog();
   if (document.body) {
     state.domObserver = new MutationObserver((records) => {
+      if (!focusedTornPage()) return;
       const pageChanged = records.some((record) => {
         const target = record.target?.nodeType === Node.ELEMENT_NODE
           ? record.target
@@ -8126,7 +8318,7 @@
   schedulePurchaseOpportunityFormatting(0);
   state.pickpocketHeartbeat = window.setInterval(() => {
     if (focusedTornPage()) schedulePickpocketFormatting(0);
-    else cleanupPickpocketFormatting();
+    else state.pickpocketFormattedCount = 0;
   }, 1_500);
   state.coreTimer = window.setInterval(() => refresh(), CORE_REFRESH_MS);
   state.networthTimer = window.setInterval(() => {
