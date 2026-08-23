@@ -95,6 +95,17 @@ button:hover { filter: brightness(1.12); }
 button:disabled { cursor: wait; opacity: .55; }
 button.secondary, .capability button { background: #2a3542; }
 .capability button { min-height: 26px; padding: 3px 7px; font-size: 10px; }
+button.wide { width: 100%; min-height: 28px; margin-top: 8px; }
+
+.diagnostic-report {
+  max-height: 190px;
+  margin: 0;
+  overflow: auto;
+  color: #cbd9e7;
+  font: 10px/1.45 Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .actions { display: grid; grid-template-columns: 1fr 90px; gap: 7px; }
 .error { padding: 7px 8px; border: 1px solid #6a3636; border-radius: 7px; background: #3c2222; color: #ffc2c2; }

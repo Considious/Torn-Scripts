@@ -12,10 +12,13 @@ This initial version intentionally contains no Leveling or Admin implementation.
 - browser capability declarations
 - server-supplied role and scope handling
 - a module registry
-- a shared in-page panel and toolbar popup
-- a harmless diagnostic module
+- a movable, position-persistent in-page panel and toolbar popup
+- an automatic SLINK Worker connection check
+- a readable, selectable diagnostic report
 
-The diagnostic module makes no external requests and sends no Torn data anywhere.
+The automatic connection check calls the public SLINK Worker root route. A manual
+diagnostic additionally calls its public health route. Neither request sends Torn
+account data, API keys, or page contents.
 
 ## Load it in Chrome
 
@@ -24,6 +27,9 @@ The diagnostic module makes no external requests and sends no Torn data anywhere
 3. Choose **Load unpacked**.
 4. Select this `SLINK-Browser-Extension` folder.
 5. Open Torn and click the SLINK extension button.
+
+`Load unpacked` is the development installation flow. A published Chrome Web
+Store build will use Chrome's normal one-click installation flow.
 
 ## Test it
 
@@ -49,7 +55,7 @@ SLINK Worker and optional services
 
 SLINK uses two separate permission layers:
 
-1. **Browser capabilities** control which browser APIs and remote origins the installed extension may access. Optional origins are declared in `manifest.json` and requested by a user action in the popup.
+1. **Browser capabilities** control which browser APIs and remote origins the installed extension may access. Torn and the SLINK Worker are required and granted at installation. Only genuinely optional integrations are requested later from the popup.
 2. **SLINK scopes** are supplied by the authenticated SLINK Worker and control which modules and server operations the Torn user may use.
 
 The current bootstrap identity has only `diagnostics.read`. It is deliberately local and temporary. Future authentication will replace that snapshot with a signed or server-verified session response. Client-side scope checks are for routing and UI only; every protected Worker endpoint must enforce its own permissions.
@@ -60,6 +66,13 @@ Suggested future scopes include:
 - `leveling.contribute`
 - `leveling.configure`
 - `admin.*`
+
+## Interface rule
+
+SLINK overlay panels must be movable with mouse and touch, persist their last
+position, remain clamped inside the visible viewport, and provide a position
+reset. New modules should use the shared UI shell instead of creating immovable
+overlay windows.
 
 ## Adding a module
 

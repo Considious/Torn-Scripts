@@ -42,7 +42,19 @@ const chrome = {
 const context = vm.createContext({
   chrome,
   console,
-  fetch: async () => ({ ok: true, status: 200, text: async () => '{}' }),
+  fetch: async input => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({
+      ok: true,
+      service: 'SLINK Leveling API',
+      version: 'test-worker',
+      ...(String(input).endsWith('/api/health') ? {
+        database: 'connected',
+        consent_database: 'connected'
+      } : {})
+    })
+  }),
   setTimeout,
   clearTimeout,
   URL
@@ -57,11 +69,12 @@ for (const file of [
   'src/core/messaging.js',
   'src/core/modules.js',
   'src/core/http.js',
+  'src/core/worker-client.js',
   'src/core/torn-api-limiter.js'
 ]) load(context, file);
 
 const SLINK = context.SLINK_EXTENSION;
-assert(SLINK.VERSION === '0.1.0', 'Unexpected runtime version.');
+assert(SLINK.VERSION === '0.1.1', 'Unexpected runtime version.');
 assert(SLINK.core.format.escapeHtml('<a>') === '&lt;a&gt;', 'HTML escaping failed.');
 assert(SLINK.core.format.shortNumber(1_250_000) === '1.25M', 'Short-number formatting failed.');
 
@@ -106,6 +119,10 @@ try {
   blocked = error.code === 'SLINK_ORIGIN_BLOCKED';
 }
 assert(blocked, 'Unapproved HTTP origin was not blocked.');
+
+const workerProbe = await SLINK.core.workerClient.probe({ deep: true });
+assert(workerProbe.connected, 'Required SLINK Worker probe did not connect.');
+assert(workerProbe.database === 'connected', 'Deep SLINK Worker health was not normalized.');
 
 await SLINK.core.tornApiLimiter.reserve({ limit: 1, wait: false });
 let limited = false;

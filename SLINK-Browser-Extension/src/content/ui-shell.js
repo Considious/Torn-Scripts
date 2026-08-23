@@ -23,11 +23,13 @@
       font: 12px/1.4 Arial, sans-serif;
     }
     .shell[hidden] { display: none; }
-    .head { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.1); }
+    .head { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.1); cursor: grab; touch-action: none; user-select: none; }
+    .head[data-dragging="true"] { cursor: grabbing; }
     .mark { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; border-radius: 9px; background: linear-gradient(145deg,#3478b9,#172f4c); font-weight: 800; }
     .heading { min-width: 0; flex: 1; }
     .title { font-size: 13px; font-weight: 700; }
     .subtitle { overflow: hidden; color: #9eb0c2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .drag-hint { color: #71869a; font-size: 9px; }
     button { min-height: 30px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; background: #2b3745; color: #eef7ff; cursor: pointer; }
     button:hover { background: #37485a; }
     .icon-button { width: 30px; padding: 0; }
@@ -63,11 +65,12 @@
     const shell = document.createElement('section');
     shell.className = 'shell';
     shell.innerHTML = `
-      <header class="head">
+      <header class="head" title="Drag to move the SLINK panel">
         <div class="mark" aria-hidden="true">SL</div>
         <div class="heading">
           <div class="title"></div>
           <div class="subtitle"></div>
+          <div class="drag-hint">Drag to move</div>
         </div>
         <button class="icon-button hide" type="button" title="Hide the SLINK page panel" aria-label="Hide the SLINK page panel">X</button>
       </header>
@@ -83,14 +86,89 @@
     shadow.append(style, shell);
 
     const content = shell.querySelector('.content');
+    const head = shell.querySelector('.head');
     const status = shell.querySelector('.status');
     const refresh = shell.querySelector('.refresh');
+    let drag = null;
+
+    function clampPosition(left, top) {
+      const bounds = shell.getBoundingClientRect();
+      const margin = 4;
+      return {
+        left: Math.round(Math.min(
+          Math.max(margin, Number(left) || margin),
+          Math.max(margin, global.innerWidth - bounds.width - margin)
+        )),
+        top: Math.round(Math.min(
+          Math.max(margin, Number(top) || margin),
+          Math.max(margin, global.innerHeight - bounds.height - margin)
+        ))
+      };
+    }
+
+    function setPosition(position, persist = false) {
+      if (!Number.isFinite(Number(position?.left)) || !Number.isFinite(Number(position?.top))) return;
+      const next = clampPosition(position.left, position.top);
+      shell.style.left = `${next.left}px`;
+      shell.style.top = `${next.top}px`;
+      shell.style.right = 'auto';
+      if (persist) void SLINK.core.storage.set('ui.pagePanelPosition', next);
+    }
+
+    function resetPosition() {
+      shell.style.removeProperty('left');
+      shell.style.removeProperty('top');
+      shell.style.removeProperty('right');
+      void SLINK.core.storage.remove('ui.pagePanelPosition');
+    }
+
+    head.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('button')) return;
+      const bounds = shell.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        left: bounds.left,
+        top: bounds.top
+      };
+      head.dataset.dragging = 'true';
+      head.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+
+    head.addEventListener('pointermove', event => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      setPosition({
+        left: drag.left + event.clientX - drag.startX,
+        top: drag.top + event.clientY - drag.startY
+      });
+    });
+
+    function finishDrag(event) {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const bounds = shell.getBoundingClientRect();
+      drag = null;
+      delete head.dataset.dragging;
+      setPosition({ left: bounds.left, top: bounds.top }, true);
+    }
+
+    head.addEventListener('pointerup', finishDrag);
+    head.addEventListener('pointercancel', finishDrag);
+    global.addEventListener('resize', () => {
+      if (shell.style.left) {
+        const bounds = shell.getBoundingClientRect();
+        setPosition({ left: bounds.left, top: bounds.top }, true);
+      }
+    });
 
     const api = {
       host,
       setHidden(hidden) {
         shell.hidden = Boolean(hidden);
       },
+      resetPosition,
+      setPosition,
       setStatus(message, tone = 'normal') {
         status.textContent = String(message || '');
         status.dataset.tone = String(tone || 'normal');
@@ -117,6 +195,10 @@
         shell.querySelector('.hide').addEventListener('click', () => void handler());
       }
     };
+
+    void SLINK.core.storage.get('ui.pagePanelPosition', null).then(position => {
+      if (position) setPosition(position);
+    });
 
     return Object.freeze(api);
   }

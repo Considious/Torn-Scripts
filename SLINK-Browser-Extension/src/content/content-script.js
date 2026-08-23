@@ -23,11 +23,15 @@
   ui.setHidden(hidden);
 
   chrome.storage.onChanged.addListener(changes => {
-    const key = SLINK.core.storage.fullKey('ui.pagePanelHidden');
-    if (changes[key]) ui.setHidden(Boolean(changes[key].newValue));
+    const hiddenKey = SLINK.core.storage.fullKey('ui.pagePanelHidden');
+    const positionKey = SLINK.core.storage.fullKey('ui.pagePanelPosition');
+    if (changes[hiddenKey]) ui.setHidden(Boolean(changes[hiddenKey].newValue));
+    if (changes[positionKey]?.newValue) ui.setPosition(changes[positionKey].newValue);
+    else if (changes[positionKey]) ui.resetPosition();
   });
 
   try {
+    await SLINK.core.messaging.send('content.ready', { url: global.location.href });
     const permissions = await SLINK.core.messaging.send('permissions.get');
     const result = await SLINK.modules.startAll({
       url: new URL(global.location.href),

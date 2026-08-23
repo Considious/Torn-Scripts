@@ -33,7 +33,16 @@ assert(manifest.version === packageJson.version, 'Manifest and package versions 
 assert(!JSON.stringify(manifest).includes('<all_urls>'), 'The extension must not request <all_urls>.');
 assert(manifest.permissions.includes('storage'), 'Storage permission is required.');
 assert(manifest.permissions.includes('alarms'), 'Alarms permission is required.');
-assert(manifest.host_permissions.length === 1 && manifest.host_permissions[0] === 'https://www.torn.com/*', 'Required host access must remain Torn-only.');
+assert(
+  manifest.host_permissions.length === 2 &&
+  manifest.host_permissions.includes('https://www.torn.com/*') &&
+  manifest.host_permissions.includes('https://slinkyleveling.richard-johnson554.workers.dev/*'),
+  'Required host access must be limited to Torn and the SLINK Worker.'
+);
+assert(
+  !manifest.optional_host_permissions.includes('https://slinkyleveling.richard-johnson554.workers.dev/*'),
+  'The required SLINK Worker must never be presented as optional access.'
+);
 
 assertFile(manifest.background.service_worker);
 assertFile(manifest.action.default_popup);
