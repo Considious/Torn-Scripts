@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.46
+// @version      1.4.47
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -352,6 +352,8 @@
     audioContext: null,
     drag: null,
     renderPending: false,
+    settingsInteractionUntil: 0,
+    settingsInteractionTimer: null,
     domObserver: null,
     domRefreshTimer: null,
     bazaarOneDollarTimer: null,
@@ -6942,9 +6944,21 @@
       : `<span class="alert-chip ${escapeHtml(alert.tone || '')}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${contents}</span>`;
   }
 
+  function deferBackgroundRenderWhileSettingsScroll() {
+    if (!state.settings.settingsOpen) return;
+    state.settingsInteractionUntil = Date.now() + 700;
+    if (state.settingsInteractionTimer) window.clearTimeout(state.settingsInteractionTimer);
+    state.settingsInteractionTimer = window.setTimeout(() => {
+      state.settingsInteractionTimer = null;
+      if (shadow.activeElement?.closest?.('input, select, textarea')) return;
+      if (state.renderPending && Date.now() >= state.settingsInteractionUntil) render({ force: true });
+    }, 725);
+  }
+
   function render({ force = false } = {}) {
     const activeEditor = shadow.activeElement?.closest?.('input, select, textarea');
-    if (!force && activeEditor) {
+    const settingsScrollActive = state.settings.settingsOpen && Date.now() < Number(state.settingsInteractionUntil || 0);
+    if (!force && (activeEditor || settingsScrollActive)) {
       state.renderPending = true;
       return;
     }
@@ -7331,6 +7345,7 @@
       }
     };
     restoreScroll();
+    window.requestAnimationFrame(restoreScroll);
   }
 
   function setSnooze(id, duration) {
@@ -7952,6 +7967,10 @@
       render({ force: true });
     }, 0);
   });
+
+  shadow.addEventListener('wheel', deferBackgroundRenderWhileSettingsScroll, { passive: true });
+  shadow.addEventListener('scroll', deferBackgroundRenderWhileSettingsScroll, true);
+  shadow.addEventListener('touchmove', deferBackgroundRenderWhileSettingsScroll, { passive: true });
 
   shadow.addEventListener('toggle', (event) => {
     const section = event.target.closest?.('[data-settings-section]');
