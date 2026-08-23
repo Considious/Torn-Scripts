@@ -8,7 +8,7 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.11.0 is identified as `0.11.0-batched-observations`.
+version. Release 0.13.0 is identified as `0.13.0-permissions`.
 
 ## Cloudflare configuration
 
@@ -20,6 +20,12 @@ The Worker expects:
 - `SESSION_SECRET`: the secret signing individual 12-hour member sessions;
 - `FFSCOUTER_API_KEY`: the operator-owned key used only by scheduled
   FFScouter leveling discovery.
+
+The main D1 database is also the permission authority. Every authenticated
+member begins with `slink.level`; an explicit `deny` row can revoke it. Migration
+0004 grants `admin.*` only to Considious [3853023]. Signed sessions carry the
+effective scopes so clients can route UI, while the Worker enforces scopes on
+protected routes.
 
 The discovery filter uses three optional, non-secret Worker variables:
 
@@ -127,20 +133,20 @@ available pool permits it.
 | `GET` | `/api/health` | Public | D1 connectivity and table counts |
 | `GET` | `/api/terms` | Public | Current required terms, fingerprint, link, and Leveling disclosure |
 | `POST` | `/api/auth` | Public | Record current consent, verify a Torn key once, and issue a version-bound session |
-| `GET` | `/api/session` | Member session | Inspect the signed session |
-| `GET` | `/api/targets` | Member session | Read paginated leveling targets |
-| `GET` | `/api/recommendations` | Member session | Return targets and renew collector coordination |
-| `POST` | `/api/collector/heartbeat` | Member session | Backward-compatible manual collector renewal |
-| `POST` | `/api/checks/claim` | Member session | Receive a deterministic share of due Torn status checks |
-| `POST` | `/api/observations` | Member session | Submit status observations |
-| `POST` | `/api/activity` | Member session | Share activity-snapshot matches |
-| `POST` | `/api/fair-fight` | Member session | Deprecated no-op; Fair Fight stays local |
-| `POST` | `/api/admin/bootstrap-targets` | Admin token | Refresh targets from the master CSV |
-| `POST` | `/api/admin/discover-targets` | Admin token | Run one FFScouter leveling-catalog discovery pass |
-| `GET` | `/api/admin/targets` | Admin token | Inspect paginated targets |
+| `GET` | `/api/session` | Signed session | Inspect the signed session and effective scopes |
+| `GET` | `/api/targets` | `slink.level` | Read paginated leveling targets |
+| `GET` | `/api/recommendations` | `slink.level` | Return targets and renew collector coordination |
+| `POST` | `/api/collector/heartbeat` | `slink.level` | Backward-compatible manual collector renewal |
+| `POST` | `/api/checks/claim` | `slink.level` | Receive a deterministic share of due Torn status checks; capacity zero additionally requires `admin.*` |
+| `POST` | `/api/observations` | `slink.level` | Submit status observations |
+| `POST` | `/api/activity` | `slink.level` | Share activity-snapshot matches |
+| `POST` | `/api/fair-fight` | `slink.level` | Deprecated no-op; Fair Fight stays local |
+| `POST` | `/api/admin/bootstrap-targets` | `admin.*` or admin token | Refresh targets from the master CSV |
+| `POST` | `/api/admin/discover-targets` | `admin.*` or admin token | Run one FFScouter leveling-catalog discovery pass |
+| `GET` | `/api/admin/targets` | `admin.*` or admin token | Inspect paginated targets |
 
-Member routes use `Authorization: Bearer <session token>`. Admin routes use
-`X-Admin-Token: <admin token>`.
+Protected routes use `Authorization: Bearer <session token>`. Admin routes also
+retain `X-Admin-Token: <admin token>` for operator tooling.
 
 The client derives its interval capacity from Considious Torn Core Lib's shared
 60-per-minute allowance. At the five-minute default it can accept up to 300
@@ -175,6 +181,10 @@ was manually created while 0.5.0 was being developed.
 
 Release 0.11.0 changes only how observation queries are grouped. It uses the
 existing schema and requires no migration.
+
+Migration 0004 creates `user_permissions` in the main database and seeds the
+sole `admin.*` grant for Considious [3853023]. Apply it before deploying Worker
+0.13.0 so authentication can issue signed permission scopes.
 
 The separate consent database uses
 `consent-database/0001-terms-acceptances.sql`. Run that schema only against the

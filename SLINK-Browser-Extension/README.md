@@ -2,7 +2,7 @@
 
 Chrome-first Manifest V3 client for Shared Live Intelligence NetworK systems.
 
-Version 0.2 adds SLINK Leveling as the first real module on top of the shared extension foundation:
+Version 0.3 adds Worker-issued permissions and the first protected administrative control on top of the Leveling foundation:
 
 - Torn-only content injection
 - a background service worker
@@ -10,7 +10,10 @@ Version 0.2 adds SLINK Leveling as the first real module on top of the shared ex
 - scheduled alarms
 - background/content messaging
 - browser capability declarations
-- server-supplied role and scope handling
+- D1-backed, Worker-issued role and scope handling
+- `slink.level` access for the complete Leveling service
+- a private `admin.*` namespace for Considious
+- an admin-only zero routine API-contribution override
 - a module registry
 - a movable, position-persistent in-page panel and toolbar popup
 - an automatic SLINK Worker connection check
@@ -66,9 +69,9 @@ SLINK uses two separate permission layers:
 1. **Browser capabilities** control which browser APIs and remote origins the installed extension may access. Torn, Torn API, FFScouter, and the SLINK Worker are core dependencies and are granted together at installation. There are no separate in-app permission buttons.
 2. **SLINK scopes** are supplied by the authenticated SLINK Worker and control which modules and server operations the Torn user may use.
 
-Before authentication, the bootstrap identity has only `diagnostics.read`. A successful Leveling Worker session adds `leveling.read`, `leveling.contribute`, and `leveling.configure`. Client-side scope checks are for routing and UI only; every protected Worker endpoint remains authoritative.
+Before authentication, the extension has no SLINK server scopes; local diagnostics remain available because they are installation checks, not protected SLINK data. A successful Worker session receives `slink.level`. Considious also receives `admin.*` from D1. The Worker signs those scopes into the session and remains authoritative for every protected route.
 
-Future private Admin modules will use separate `admin.*` scopes and server-side enforcement.
+`admin.*` exposes the zero routine API-contribution override in both the Torn panel and full dashboard. The Worker rejects a zero-capacity claim from any session without that scope. Authentication still performs one Torn key validation, and Leveling may refresh the administrator's own battle stats locally; the override applies to routine shared-service contribution checks.
 
 ## Interface rule
 

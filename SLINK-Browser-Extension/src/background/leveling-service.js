@@ -5,6 +5,7 @@
   const CLIENT_NAME = 'SLINK Browser Extension';
   const CLIENT_VERSION = SLINK.VERSION;
   const DEFAULT_POLL_SECONDS = 300;
+  const DEFAULT_API_CONTRIBUTION_LIMIT = 60;
   const MAX_DISPLAY = 40;
   const MAX_INTERVAL_CHECKS = 300;
   const PENDING_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -39,7 +40,14 @@
   }
 
   function defaultSettings() {
-    return { tornKey: '', ffKey: '', pollSeconds: DEFAULT_POLL_SECONDS, minFF: 1, maxFF: 3 };
+    return {
+      tornKey: '',
+      ffKey: '',
+      pollSeconds: DEFAULT_POLL_SECONDS,
+      apiContributionLimit: DEFAULT_API_CONTRIBUTION_LIMIT,
+      minFF: 1,
+      maxFF: 3
+    };
   }
 
   function defaultRuntime() {
@@ -119,7 +127,7 @@
     await SLINK.core.storage.set('permissions.snapshot', {
       userId: null,
       roles: ['foundation'],
-      scopes: ['diagnostics.read'],
+      scopes: [],
       source: 'local-bootstrap',
       issuedAt: Date.now(),
       expiresAt: 0
@@ -186,13 +194,18 @@
       const session = {
         token: response.session_token,
         expiresAt: Date.parse(response.expires_at) || 0,
-        userId: Number(response.user_id) || null
+        userId: Number(response.user_id) || null,
+        roles: Array.isArray(response.roles) ? response.roles : [],
+        scopes: Array.isArray(response.scopes) ? response.scopes : []
       };
+      if (!SLINK.core.permissions.hasScope(session, 'slink.level')) {
+        throw new Error('Your SLINK account does not have slink.level permission.');
+      }
       await SLINK.core.storage.set(KEYS.session, session);
       await SLINK.core.storage.set('permissions.snapshot', {
         userId: session.userId,
-        roles: ['member'],
-        scopes: ['diagnostics.read', 'leveling.read', 'leveling.contribute', 'leveling.configure'],
+        roles: session.roles,
+        scopes: session.scopes,
         source: 'slink-worker-session',
         issuedAt: Date.now(),
         expiresAt: session.expiresAt
@@ -381,9 +394,10 @@
   }
 
   async function publicStatus() {
-    const [currentSettings, currentRuntime, terms, accepted, session, usage, pending] = await Promise.all([
+    const [currentSettings, currentRuntime, terms, accepted, session, usage, pending, permissions] = await Promise.all([
       settings(), runtime(), fetchTerms(), acceptedCurrentTerms(),
-      SLINK.core.storage.get(KEYS.session, null), SLINK.core.tornApiLimiter.getUsage(), pendingChecks()
+      SLINK.core.storage.get(KEYS.session, null), SLINK.core.tornApiLimiter.getUsage(), pendingChecks(),
+      SLINK.core.storage.get('permissions.snapshot', null)
     ]);
     return {
       configured: Boolean(currentSettings.tornKey && accepted),
@@ -391,6 +405,7 @@
         hasTornKey: Boolean(currentSettings.tornKey),
         hasFfKey: Boolean(currentSettings.ffKey),
         pollSeconds: currentSettings.pollSeconds,
+        apiContributionLimit: currentSettings.apiContributionLimit,
         minFF: currentSettings.minFF,
         maxFF: currentSettings.maxFF
       },
@@ -401,16 +416,21 @@
         expiresAt: Number(session?.expiresAt) || 0
       },
       runtime: { ...currentRuntime, pendingChecks: pending.length },
+      permissions: SLINK.core.permissions.normalizeSnapshot(permissions || {}),
       tornApiUsage: usage
     };
   }
 
   async function saveSettings(input = {}) {
     const previous = await settings();
+    const requestedContributionLimit = Object.prototype.hasOwnProperty.call(input, 'apiContributionLimit')
+      ? (Number(input.apiContributionLimit) === 0 ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT)
+      : previous.apiContributionLimit;
     const next = {
       tornKey: input.clearTornKey ? '' : (String(input.tornKey || '').trim() || previous.tornKey),
       ffKey: input.clearFfKey ? '' : (String(input.ffKey || '').trim() || previous.ffKey),
       pollSeconds: clamp(input.pollSeconds || previous.pollSeconds, 60, 300),
+      apiContributionLimit: previous.apiContributionLimit,
       minFF: clamp(input.minFF || previous.minFF, 1, 3),
       maxFF: clamp(input.maxFF || previous.maxFF, 1, 3)
     };
@@ -426,7 +446,20 @@
       });
     }
     if (next.tornKey !== previous.tornKey || input.acceptTerms === true) await clearSession();
-    if (next.tornKey && await acceptedCurrentTerms()) await ensureSession(true);
+    if (next.tornKey && await acceptedCurrentTerms()) {
+      await ensureSession(true);
+      const permissions = await SLINK.core.storage.get('permissions.snapshot', null);
+      if (
+        requestedContributionLimit === 0 &&
+        !SLINK.core.permissions.hasScope(permissions, 'admin.*')
+      ) {
+        const error = new Error('Only admin.* may set routine API contribution to zero.');
+        error.code = 'SLINK_PERMISSION_DENIED';
+        throw error;
+      }
+      next.apiContributionLimit = requestedContributionLimit;
+      await SLINK.core.storage.set(KEYS.settings, next);
+    }
     return publicStatus();
   }
 
@@ -457,17 +490,30 @@
         const targets = await enrichFairFight(recommendations.targets || [], battleStats, currentSettings);
         let checks = await pendingChecks();
         if (recommendations.collector === true && options.contribute !== false) {
-          try {
-            await syncActivitySnapshots(false);
-          } catch (error) {
-            await saveRuntime({ lastError: `Activity sync: ${SLINK.core.format.errorMessage(error)}` });
+          const contributionLimit = Number(currentSettings.apiContributionLimit) === 0
+            ? 0
+            : DEFAULT_API_CONTRIBUTION_LIMIT;
+          if (contributionLimit > 0) {
+            try {
+              await syncActivitySnapshots(false);
+            } catch (error) {
+              await saveRuntime({ lastError: `Activity sync: ${SLINK.core.format.errorMessage(error)}` });
+            }
           }
-          const capacity = clamp(Math.floor(60 * (currentSettings.pollSeconds / 60)), 1, MAX_INTERVAL_CHECKS);
+          const capacity = contributionLimit === 0
+            ? 0
+            : clamp(
+              Math.floor(contributionLimit * (currentSettings.pollSeconds / 60)),
+              1,
+              MAX_INTERVAL_CHECKS
+            );
           const claim = await workerRequest('/api/checks/claim', {
             method: 'POST',
             body: { interval_capacity: capacity, poll_seconds: currentSettings.pollSeconds }
           });
-          checks = (await mergePending(claim.checks || [])).slice(0, capacity);
+          checks = capacity === 0
+            ? []
+            : (await mergePending(claim.checks || [])).slice(0, capacity);
         }
         await saveRuntime({
           targets,
@@ -476,7 +522,11 @@
           collectorExpiresAt: Number(recommendations.collector_expires_at) || 0,
           workerVersion: String(recommendations.version || ''),
           fairFightStatus: currentSettings.ffKey ? 'FFScouter refinement active' : 'Local Fair Fight estimates active',
-          cycleStatus: recommendations.collector ? 'Targets ready / collection assigned' : 'Targets ready / standby device',
+          cycleStatus: recommendations.collector
+            ? (currentSettings.apiContributionLimit === 0
+              ? 'Targets ready / admin contribution disabled'
+              : 'Targets ready / collection assigned')
+            : 'Targets ready / standby device',
           lastCycleAt: Date.now(),
           lastCycleChecked: checks.length
         });

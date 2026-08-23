@@ -97,6 +97,7 @@
 
       function settingsHtml() {
         const accepted = current?.terms?.accepted === true;
+        const admin = SLINK.core.permissions.hasScope(current?.permissions, 'admin.*');
         const showTerms = !accepted || termsOpen;
         const settings = current?.settings || {};
         return `
@@ -127,6 +128,12 @@
             <label>Poll seconds
               <input id="leveling-poll" type="number" min="60" max="300" value="${Number(settings.pollSeconds) || 300}">
             </label>
+            ${admin ? `
+              <label class="wide leveling-agree">
+                <input id="leveling-zero-contribution" type="checkbox" ${Number(settings.apiContributionLimit) === 0 ? 'checked' : ''}>
+                <span>Admin override: use zero routine Torn API calls for SLINK contribution</span>
+              </label>
+            ` : ''}
             <label>Minimum FF
               <input id="leveling-min-ff" type="number" min="1" max="3" step="0.1" value="${Number(settings.minFF) || 1}">
             </label>
@@ -234,6 +241,7 @@
             tornKey: root.querySelector('#leveling-torn-key')?.value || '',
             ffKey: root.querySelector('#leveling-ff-key')?.value || '',
             pollSeconds: root.querySelector('#leveling-poll')?.value,
+            apiContributionLimit: root.querySelector('#leveling-zero-contribution')?.checked ? 0 : 60,
             minFF: root.querySelector('#leveling-min-ff')?.value,
             maxFF: root.querySelector('#leveling-max-ff')?.value,
             acceptTerms: Boolean(accept?.checked && !current?.terms?.accepted)

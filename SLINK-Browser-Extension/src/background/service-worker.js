@@ -18,7 +18,7 @@ function bootstrapPermissions() {
   return {
     userId: null,
     roles: ['foundation'],
-    scopes: ['diagnostics.read'],
+    scopes: [],
     source: 'local-bootstrap',
     issuedAt: Date.now(),
     expiresAt: 0
@@ -161,14 +161,10 @@ const routes = {
   },
 
   async 'diagnostics.run'() {
-    const permissions = await getPermissionSnapshot();
-    SLINK.core.permissions.requireScopes(permissions, ['diagnostics.read']);
     return recordDiagnostic('manual');
   },
 
   async 'diagnostics.status'() {
-    const permissions = await getPermissionSnapshot();
-    SLINK.core.permissions.requireScopes(permissions, ['diagnostics.read']);
     return {
       lastRun: await SLINK.core.storage.get('diagnostics.lastRun', null),
       alarm: await chrome.alarms.get(CONNECTION_ALARM),

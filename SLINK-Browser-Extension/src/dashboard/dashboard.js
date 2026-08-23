@@ -75,9 +75,12 @@
     byId('page-panel').checked = !pagePanelHidden;
 
     const settings = leveling.settings;
+    const admin = SLINK.core.permissions.hasScope(leveling.permissions, 'admin.*');
     byId('torn-key').placeholder = settings.hasTornKey ? 'Saved - leave blank to keep' : 'Required';
     byId('ff-key').placeholder = settings.hasFfKey ? 'Saved - leave blank to keep' : 'Required for refined Fair Fight values';
     byId('poll-seconds').value = settings.pollSeconds;
+    byId('zero-contribution-row').hidden = !admin;
+    byId('zero-contribution').checked = admin && Number(settings.apiContributionLimit) === 0;
     byId('min-ff').value = settings.minFF;
     byId('max-ff').value = settings.maxFF;
 
@@ -163,6 +166,7 @@
         tornKey: byId('torn-key').value,
         ffKey: byId('ff-key').value,
         pollSeconds: byId('poll-seconds').value,
+        apiContributionLimit: byId('zero-contribution').checked ? 0 : 60,
         minFF: byId('min-ff').value,
         maxFF: byId('max-ff').value,
         acceptTerms: byId('accept-terms').checked && !leveling.terms.accepted

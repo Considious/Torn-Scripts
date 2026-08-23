@@ -51,7 +51,6 @@
     const normalized = normalizeSnapshot(snapshot);
     const required = String(requiredScope || '').trim();
     if (!required) return true;
-    if (normalized.roles.includes('admin')) return true;
     return normalized.scopes.some(scope => scopeMatches(scope, required));
   }
 

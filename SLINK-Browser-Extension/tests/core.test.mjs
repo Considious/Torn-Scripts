@@ -74,16 +74,15 @@ for (const file of [
 ]) load(context, file);
 
 const SLINK = context.SLINK_EXTENSION;
-assert(SLINK.VERSION === '0.2.0', 'Unexpected runtime version.');
+assert(SLINK.VERSION === '0.3.0', 'Unexpected runtime version.');
 assert(SLINK.core.format.escapeHtml('<a>') === '&lt;a&gt;', 'HTML escaping failed.');
 assert(SLINK.core.format.shortNumber(1_250_000) === '1.25M', 'Short-number formatting failed.');
 
 const permissions = SLINK.core.permissions;
 assert(Object.values(permissions.BROWSER_CAPABILITIES).every(capability => capability.optional === false), 'A core host was marked optional.');
-assert(permissions.hasScope({ scopes: ['leveling.read'] }, 'leveling.read'), 'Exact scope matching failed.');
-assert(permissions.hasScope({ scopes: ['leveling.*'] }, 'leveling.configure'), 'Wildcard scope matching failed.');
-assert(!permissions.hasScope({ scopes: ['leveling.read'] }, 'admin.users'), 'Unrelated scope was granted.');
-assert(permissions.hasScope({ roles: ['admin'] }, 'anything.at.all'), 'Admin role should satisfy client-side scope routing.');
+assert(permissions.hasScope({ scopes: ['slink.level'] }, 'slink.level'), 'Exact scope matching failed.');
+assert(permissions.hasScope({ scopes: ['admin.*'] }, 'admin.users'), 'Wildcard scope matching failed.');
+assert(!permissions.hasScope({ roles: ['admin'], scopes: ['slink.level'] }, 'admin.users'), 'Roles must not bypass signed scope checks.');
 
 await SLINK.core.storage.set('test.value', { working: true });
 assert((await SLINK.core.storage.get('test.value')).working, 'Extension storage adapter failed.');

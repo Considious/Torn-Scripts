@@ -43,7 +43,7 @@ const chrome = {
     }
   },
   runtime: {
-    getManifest() { return { version: '0.2.0' }; },
+    getManifest() { return { version: '0.3.0' }; },
     onInstalled,
     onMessage,
     onStartup
@@ -88,7 +88,9 @@ context = vm.createContext({
         ok: true,
         session_token: 'signed-test-session',
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        user_id: 3853023
+        user_id: 3853023,
+        roles: ['admin'],
+        scopes: ['admin.*', 'slink.level']
       };
       if (url.pathname === '/api/recommendations') body = {
         ok: true,
@@ -148,7 +150,7 @@ assert(onInstalled.listeners.length === 1, 'Install listener was not registered.
 assert(onStartup.listeners.length === 1, 'Startup listener was not registered.');
 assert(onAlarm.listeners.length === 1, 'Alarm listener was not registered.');
 assert(values.get('slink.ui.pagePanelHidden') === false, 'Default page-panel state was not created.');
-assert(values.get('slink.permissions.snapshot')?.scopes?.[0] === 'diagnostics.read', 'Safe bootstrap scope was not created.');
+assert(values.get('slink.permissions.snapshot')?.scopes?.length === 0, 'Unauthenticated bootstrap must not invent server scopes.');
 assert(alarms.has('slink.worker.connection'), 'Worker connection alarm was not created.');
 assert(values.get('slink.worker.lastStatus')?.connected === true, 'Automatic Worker connection was not persisted.');
 
@@ -165,7 +167,7 @@ async function send(type, payload = {}, sender = { id: 'test' }) {
 
 const status = await send('system.status');
 assert(status.ok, 'System status route failed.');
-assert(status.data.permissions.scopes.includes('diagnostics.read'), 'System status omitted bootstrap scopes.');
+assert(status.data.permissions.scopes.length === 0, 'System status invented an unauthenticated scope.');
 assert(status.data.capabilities.tornApi.granted === true, 'Capability status did not report the granted mock host.');
 assert(status.data.capabilities.ffscouter.granted === true, 'Required FFScouter capability was not granted.');
 assert(status.data.capabilities.slinkWorker.granted === true, 'Required Worker capability was not granted.');
@@ -185,9 +187,11 @@ const saved = await send('leveling.settings.save', {
   pollSeconds: 60,
   minFF: 1,
   maxFF: 3,
+  apiContributionLimit: 60,
   acceptTerms: true
 });
 assert(saved.ok && saved.data.session.authenticated, 'Leveling settings did not authenticate.');
+assert(saved.data.permissions.scopes.includes('admin.*'), 'Worker-issued admin scope was not persisted.');
 assert(!JSON.stringify(saved.data).includes('torn-test-key'), 'Public Leveling state leaked the Torn API key.');
 assert(!JSON.stringify(saved.data).includes('signed-test-session'), 'Public Leveling state leaked the Worker session token.');
 
@@ -200,6 +204,12 @@ const checked = await send('leveling.check', prepared.data.checks[0]);
 assert(checked.ok && checked.data.target_id === 123, 'Assigned Torn check failed.');
 const submitted = await send('leveling.observations.submit', { observations: [checked.data] });
 assert(submitted.ok && submitted.data.runtime.pendingChecks === 0, 'Accepted observation did not clear pending work.');
+
+const zeroContribution = await send('leveling.settings.save', { apiContributionLimit: 0 });
+assert(zeroContribution.ok, 'Admin zero-contribution setting failed.');
+assert(zeroContribution.data.settings.apiContributionLimit === 0, 'Admin zero-contribution override was not saved.');
+const zeroPrepared = await send('leveling.cycle.prepare');
+assert(zeroPrepared.ok && zeroPrepared.data.checks.length === 0, 'Admin zero-contribution mode still scheduled Torn checks.');
 
 const leader = await send('leveling.leader.claim', {}, { id: 'test', tab: { id: 7 } });
 assert(leader.ok && leader.data.leader, 'Torn tab did not acquire the local Leveling leader lease.');

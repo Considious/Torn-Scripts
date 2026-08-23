@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.12.0-hybrid-scheduler
+ * Release: 0.13.0-permissions
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.12.0-hybrid-scheduler';
+const WORKER_VERSION = '0.13.0-permissions';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -62,6 +62,8 @@ const HOSPITAL_WRITE_CHUNK_SIZE = 25;
 const LEASE_DELETE_CHUNK_SIZE = 50;
 
 const ALLOWED_FACTION_ID = 46978;
+const LEVELING_SCOPE = 'slink.level';
+const ADMIN_SCOPE = 'admin.*';
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
 const DEFAULT_CLIENT_POLL_SECONDS = 300;
 const MIN_CLIENT_POLL_SECONDS = 60;
@@ -152,11 +154,12 @@ const worker = {
             url.pathname === '/api/targets' &&
             request.method === 'GET'
         ) {
-            const session = await getAuthenticatedSession(request, env);
-
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
             return handleListTargets(url, env);
         }
@@ -165,76 +168,82 @@ const worker = {
             url.pathname === '/api/recommendations' &&
             request.method === 'GET'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleRecommendations(url, env, session);
+            return handleRecommendations(url, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/collector/heartbeat' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleCollectorHeartbeat(env, session);
+            return handleCollectorHeartbeat(env, authorization.session);
         }
 
         if (
             url.pathname === '/api/checks/claim' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleClaimChecks(request, env, session);
+            return handleClaimChecks(request, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/observations' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleObservations(request, env, session);
+            return handleObservations(request, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/activity' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleActivityReport(request, env, session);
+            return handleActivityReport(request, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/fair-fight' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
-
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
             return handleDeprecatedFairFightReport();
         }
@@ -327,6 +336,10 @@ async function handleHealth(env) {
             .prepare('SELECT COUNT(*) AS count FROM scheduler_queue')
             .first();
 
+        const permissionCount = await env.DB
+            .prepare('SELECT COUNT(*) AS count FROM user_permissions')
+            .first();
+
         const ffscouterTargetCount = await env.DB
             .prepare(`
                 SELECT COUNT(*) AS count
@@ -392,6 +405,7 @@ async function handleHealth(env) {
                 target_status: statusCount?.count ?? 0,
                 hospital_events: hospitalCount?.count ?? 0,
                 scheduler_queue: queueCount?.count ?? 0,
+                user_permissions: permissionCount?.count ?? 0,
                 ffscouter_targets: ffscouterTargetCount?.count ?? 0
             }
         });
@@ -445,6 +459,16 @@ async function handleAuthentication(request, env) {
                 {
                     ok: false,
                     error: 'Terms acceptance storage is not configured.'
+                },
+                500
+            );
+        }
+
+        if (!env.DB) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    error: 'Permission storage is not configured.'
                 },
                 500
             );
@@ -559,6 +583,13 @@ async function handleAuthentication(request, env) {
             );
         }
 
+
+        const permissions = await loadUserPermissions(env, userId);
+
+        if (!hasSessionScope(permissions, LEVELING_SCOPE)) {
+            return permissionDeniedResponse(LEVELING_SCOPE);
+        }
+
         const acceptedAt = Date.now();
         const issuedAt = Math.floor(acceptedAt / 1000);
         const expiresAt = issuedAt + SESSION_LIFETIME_SECONDS;
@@ -593,6 +624,8 @@ async function handleAuthentication(request, env) {
             session_id: sessionId,
             terms_version: TERMS_VERSION,
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
+            roles: permissions.roles,
+            scopes: permissions.scopes,
             iat: issuedAt,
             exp: expiresAt
         };
@@ -609,6 +642,8 @@ async function handleAuthentication(request, env) {
             faction_id: factionId,
             terms_version: TERMS_VERSION,
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
+            roles: permissions.roles,
+            scopes: permissions.scopes,
             terms_accepted_at: new Date(acceptedAt).toISOString(),
             expires_at: new Date(expiresAt * 1000).toISOString(),
             expires_in: SESSION_LIFETIME_SECONDS,
@@ -711,9 +746,74 @@ async function handleSessionCheck(request, env) {
         session_id: session.session_id,
         terms_version: session.terms_version,
         disclosure_version: session.disclosure_version,
+        roles: session.roles,
+        scopes: session.scopes,
         issued_at: new Date(session.iat * 1000).toISOString(),
         expires_at: new Date(session.exp * 1000).toISOString()
     });
+}
+
+
+async function authorizeRequest(request, env, requiredScope) {
+    const session = await getAuthenticatedSession(request, env);
+
+    if (!session) {
+        return { session: null, response: memberAuthenticationRequired() };
+    }
+
+    if (!hasSessionScope(session, requiredScope)) {
+        return {
+            session: null,
+            response: permissionDeniedResponse(requiredScope)
+        };
+    }
+
+    return { session, response: null };
+}
+
+
+async function loadUserPermissions(env, userId) {
+    const result = await env.DB
+        .prepare(`
+            SELECT scope, effect
+            FROM user_permissions
+            WHERE user_id = ?1
+            ORDER BY scope ASC
+        `)
+        .bind(userId)
+        .all();
+    const allowed = new Set([LEVELING_SCOPE]);
+    const denied = new Set();
+
+    for (const row of result.results || []) {
+        const scope = String(row?.scope || '').trim();
+        if (!scope) continue;
+        if (row.effect === 'deny') denied.add(scope);
+        else if (row.effect === 'allow') allowed.add(scope);
+    }
+
+    for (const scope of denied) allowed.delete(scope);
+
+    const scopes = [...allowed].sort();
+    return {
+        roles: scopes.includes(ADMIN_SCOPE) ? ['admin'] : ['member'],
+        scopes
+    };
+}
+
+
+function sessionScopeMatches(grantedScope, requiredScope) {
+    if (grantedScope === '*' || grantedScope === requiredScope) return true;
+    if (!grantedScope.endsWith('.*')) return false;
+    return requiredScope.startsWith(grantedScope.slice(0, -1));
+}
+
+
+function hasSessionScope(session, requiredScope) {
+    const required = String(requiredScope || '').trim();
+    if (!required) return true;
+    return (Array.isArray(session?.scopes) ? session.scopes : [])
+        .some(scope => sessionScopeMatches(String(scope), required));
 }
 
 
@@ -791,6 +891,10 @@ async function verifySessionToken(token, secret) {
             !payload.session_id ||
             payload.terms_version !== TERMS_VERSION ||
             payload.disclosure_version !== LEVELING_DISCLOSURE_VERSION ||
+            !Array.isArray(payload.roles) ||
+            !payload.roles.every(role => typeof role === 'string') ||
+            !Array.isArray(payload.scopes) ||
+            !payload.scopes.every(scope => typeof scope === 'string') ||
             !Number.isInteger(payload.iat) ||
             !Number.isInteger(payload.exp) ||
             payload.exp <= now ||
@@ -1604,6 +1708,12 @@ async function handleClaimChecks(request, env, session) {
             0,
             MAX_CHECK_PLAN_ROWS
         );
+        if (
+            intervalCapacity === 0 &&
+            !hasSessionScope(session, ADMIN_SCOPE)
+        ) {
+            return permissionDeniedResponse(ADMIN_SCOPE);
+        }
         const pollSeconds = boundedInteger(
             body?.poll_seconds,
             DEFAULT_CLIENT_POLL_SECONDS,
@@ -1630,6 +1740,20 @@ async function handleClaimChecks(request, env, session) {
                 now,
                 pollSeconds
             );
+        }
+
+        if (intervalCapacity === 0) {
+            return collectorLeaseResponse(collectorLease, {
+                count: 0,
+                capacity: 0,
+                interval_capacity: 0,
+                due_count: 0,
+                active_collectors: 0,
+                fair_share: 0,
+                claim_seconds: Math.floor(claimLifetimeMs / 1000),
+                admin_zero_contribution: true,
+                checks: []
+            });
         }
 
         if (!collectorLease.collector) {
@@ -2819,6 +2943,12 @@ function normalizeObservationSource(value) {
 // ================================================================
 
 async function isAdminRequest(request, env) {
+    const session = await getAuthenticatedSession(request, env);
+
+    if (hasSessionScope(session, ADMIN_SCOPE)) {
+        return true;
+    }
+
     const suppliedToken = request.headers.get('X-Admin-Token');
 
     if (!suppliedToken || !env.ADMIN_TOKEN) {
@@ -3185,6 +3315,18 @@ function memberAuthenticationRequired() {
             error: 'A valid SLINK Leveling session is required.'
         },
         401
+    );
+}
+
+
+function permissionDeniedResponse(requiredScope) {
+    return jsonResponse(
+        {
+            ok: false,
+            error: `SLINK permission required: ${requiredScope}`,
+            required_scope: requiredScope
+        },
+        403
     );
 }
 

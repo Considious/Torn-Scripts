@@ -54,6 +54,10 @@
             <input id="ff-key" type="password" autocomplete="off" placeholder="Required for refined Fair Fight values">
           </label>
           <label>Poll seconds<input id="poll-seconds" type="number" min="60" max="300"></label>
+          <label id="zero-contribution-row" class="wide toggle" hidden>
+            <input id="zero-contribution" type="checkbox">
+            Admin override: use zero routine Torn API calls for SLINK contribution
+          </label>
           <label>Minimum FF<input id="min-ff" type="number" min="1" max="3" step="0.1"></label>
           <label>Maximum FF<input id="max-ff" type="number" min="1" max="3" step="0.1"></label>
           <div class="form-actions wide">
@@ -79,6 +83,7 @@
     <script src="../core/runtime.js"></script>
     <script src="../core/format.js"></script>
     <script src="../core/storage.js"></script>
+    <script src="../core/permissions.js"></script>
     <script src="../core/messaging.js"></script>
     <script src="dashboard.js"></script>
   </body>

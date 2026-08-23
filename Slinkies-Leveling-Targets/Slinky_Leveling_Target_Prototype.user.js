@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.12.4
+// @version      0.13.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
 (async function () {
     'use strict';
 
-    // Release: 0.12.4-pda-api-key-options
+    // Release: 0.13.0-permissions
 
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -199,7 +199,7 @@
         PDA_API_KEY &&
         PDA_API_KEY !== PDA_API_KEY_TOKEN
     );
-    const SCRIPT_VERSION = '0.12.4';
+    const SCRIPT_VERSION = '0.13.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -227,6 +227,7 @@
     const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
     const BATTLE_STATS_CACHE_MS = 24 * 60 * 60 * 1000;
     const DEFAULT_POLL_SECONDS = 300;
+    const DEFAULT_API_CONTRIBUTION_LIMIT = 60;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
     const MAX_INTERVAL_CHECKS = 300;
@@ -243,6 +244,7 @@
         usePdaTornKey: 'slinkyLeveling.usePdaTornKey.v1',
         usePdaFfKey: 'slinkyLeveling.usePdaFfKey.v1',
         pollSeconds: 'slinkyLeveling.pollSeconds',
+        apiContributionLimit: 'slinkyLeveling.apiContributionLimit.v1',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
         collapsed: 'slinkyLeveling.collapsed',
@@ -250,6 +252,7 @@
         bubblePosition: 'slinkyLeveling.bubblePosition.v1',
         sessionToken: 'slinkyLeveling.workerSession.v1',
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
+        permissions: 'slinkyLeveling.permissions.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
         ffCache: 'slinkyLeveling.ffCache.v1',
         battleStats: 'slinkyLeveling.localBattleStats.v1',
@@ -456,6 +459,20 @@
     }
 
 
+    function permissionScopeMatches(grantedScope, requiredScope) {
+        if (grantedScope === '*' || grantedScope === requiredScope) return true;
+        if (!grantedScope.endsWith('.*')) return false;
+        return requiredScope.startsWith(grantedScope.slice(0, -1));
+    }
+
+
+    function hasPermission(requiredScope) {
+        const snapshot = loadJson(KEYS.permissions, {});
+        return (Array.isArray(snapshot?.scopes) ? snapshot.scopes : [])
+            .some(scope => permissionScopeMatches(String(scope), requiredScope));
+    }
+
+
     function getSettings() {
         const manualTornKey = String(
             GM_getValue(KEYS.tornKey, '') || ''
@@ -485,6 +502,13 @@
                 60,
                 300
             ),
+            apiContributionLimit: (
+                hasPermission('admin.*') &&
+                Number(GM_getValue(
+                    KEYS.apiContributionLimit,
+                    DEFAULT_API_CONTRIBUTION_LIMIT
+                )) === 0
+            ) ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT,
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 3),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 3),
             collapsed: Boolean(GM_getValue(KEYS.collapsed, false))
@@ -517,6 +541,15 @@
                 300
             )
         );
+        const requestedContributionLimit = Number(values.apiContributionLimit) === 0
+            ? 0
+            : DEFAULT_API_CONTRIBUTION_LIMIT;
+        GM_setValue(
+            KEYS.apiContributionLimit,
+            requestedContributionLimit === 0 && hasPermission('admin.*')
+                ? 0
+                : DEFAULT_API_CONTRIBUTION_LIMIT
+        );
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 3));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 3));
 
@@ -548,6 +581,12 @@
     function clearWorkerSession() {
         GM_setValue(KEYS.sessionToken, '');
         GM_setValue(KEYS.sessionExpiresAt, 0);
+        saveJson(KEYS.permissions, {
+            userId: null,
+            roles: [],
+            scopes: [],
+            source: 'signed-worker-session'
+        });
         state.collector = false;
         state.collectorExpiresAt = 0;
     }
@@ -643,8 +682,25 @@
                 );
             }
 
+            const permissions = {
+                userId: Number(response.user_id) || null,
+                roles: Array.isArray(response.roles) ? response.roles : [],
+                scopes: Array.isArray(response.scopes) ? response.scopes : [],
+                source: 'signed-worker-session',
+                issuedAt: Date.now(),
+                expiresAt: Date.parse(response.expires_at) || 0
+            };
+            if (!permissions.scopes.some(scope => {
+                return permissionScopeMatches(String(scope), 'slink.level');
+            })) {
+                throw new Error(
+                    'Your SLINK account does not have slink.level permission.'
+                );
+            }
+
             GM_setValue(KEYS.sessionToken, response.session_token);
             GM_setValue(KEYS.sessionExpiresAt, Date.parse(response.expires_at) || 0);
+            saveJson(KEYS.permissions, permissions);
             logClientEvent('authenticated', {
                 userId: response.user_id,
                 expiresAt: response.expires_at
@@ -874,7 +930,7 @@
             return;
         }
 
-        const settings = getSettings();
+        let settings = getSettings();
 
         if (!hasAcceptedCurrentTerms()) {
             clearWorkerSession();
@@ -902,6 +958,7 @@
 
         try {
             await ensureWorkerSession(false);
+            settings = getSettings();
 
             state.cycleStatus = 'Reading your locally cached strength range…';
             render();
@@ -945,9 +1002,14 @@
 
             state.cycleStatus = 'Running scheduled Torn checks…';
             render();
-            await syncActivitySnapshots(settings.tornKey, forceActivity);
+            if (settings.apiContributionLimit > 0) {
+                await syncActivitySnapshots(settings.tornKey, forceActivity);
+            }
 
-            const intervalCapacity = checkPlanCapacity(settings.pollSeconds);
+            const intervalCapacity = checkPlanCapacity(
+                settings.pollSeconds,
+                settings.apiContributionLimit
+            );
 
             const claim = await workerRequest('/api/checks/claim', {
                 method: 'POST',
@@ -963,11 +1025,15 @@
                 : [];
             const queuedChecks = mergePendingAndClaimedChecks(claimedChecks);
             savePendingChecks(queuedChecks);
-            const checks = queuedChecks.slice(0, intervalCapacity);
+            const checks = intervalCapacity === 0
+                ? []
+                : queuedChecks.slice(0, intervalCapacity);
             const retryCount = checks.filter(check => {
                 return Number(check.queued_at || 0) < cycleStartedAt;
             }).length;
-            state.cycleStatus = checks.length
+            state.cycleStatus = intervalCapacity === 0
+                ? 'Admin override active · Routine API contribution is zero'
+                : checks.length
                 ? `Running ${checks.length} scheduled Torn checks across ${formatMinutes(settings.pollSeconds)}…`
                 : 'No Torn checks are currently due';
             if (checks.length && retryCount) {
@@ -1025,10 +1091,16 @@
     }
 
 
-    function checkPlanCapacity(pollSeconds) {
-        const checksPerMinute = Number(TornLib.TORN_API_DEFAULT_LIMIT) || 60;
+    function checkPlanCapacity(pollSeconds, contributionLimit) {
+        const checksPerMinute = Number(contributionLimit);
+        if (checksPerMinute === 0) return 0;
         return clamp(
-            Math.floor(checksPerMinute * (Number(pollSeconds) / 60)),
+            Math.floor(
+                (Number.isFinite(checksPerMinute)
+                    ? checksPerMinute
+                    : DEFAULT_API_CONTRIBUTION_LIMIT) *
+                (Number(pollSeconds) / 60)
+            ),
             1,
             MAX_INTERVAL_CHECKS
         );
@@ -1991,6 +2063,7 @@
 
     function settingsHtml(settings) {
         const termsAccepted = hasAcceptedCurrentTerms();
+        const admin = hasPermission('admin.*');
         const showFullTerms = !termsAccepted || state.termsOpen;
         return `
             <div class="slp-settings">
@@ -2035,6 +2108,12 @@
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
                 </label>
+                ${admin ? `
+                    <label class="wide slp-key-toggle">
+                        <input id="slp-zero-contribution" type="checkbox" ${settings.apiContributionLimit === 0 ? 'checked' : ''}>
+                        <span>Admin override: use zero routine Torn API calls for SLINK contribution</span>
+                    </label>
+                ` : ''}
                 <label>Min FF
                     <input id="slp-min-ff" type="number" min="1" max="3" step=".1" value="${settings.minFF}">
                 </label>
@@ -2229,6 +2308,7 @@
                 usePdaTornKey: panel.querySelector('#slp-use-pda-torn-key')?.checked,
                 usePdaFfKey: panel.querySelector('#slp-use-pda-ff-key')?.checked,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
+                apiContributionLimit: panel.querySelector('#slp-zero-contribution')?.checked ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
                 maxFF: panel.querySelector('#slp-max-ff')?.value
             });
