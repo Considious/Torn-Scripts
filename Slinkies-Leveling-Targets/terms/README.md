@@ -1,12 +1,17 @@
 # SLINK API and data terms
 
 Terms are published in versioned folders and are never edited in place after
-release. Each folder contains the original Word document and an accessible
-Markdown transcription.
+release. Markdown is the canonical accessible version. A source Word document
+is retained when that version originated as a Word document.
 
 | Version | Effective date | Files |
 | --- | --- | --- |
+| `2026-08-23` | August 23, 2026 | [Markdown](2026-08-23/SLINK_API_Data_Terms_of_Service.md) |
 | `2026-08-14` | August 14, 2026 | [Markdown](2026-08-14/SLINK_API_Data_Terms_of_Service.md) · [Original Word document](2026-08-14/SLINK_API_Data_Terms_of_Service.docx) |
+
+Version `2026-08-23` fingerprint:
+
+- Markdown SHA-256: `1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600`
 
 Version `2026-08-14` fingerprints:
 
