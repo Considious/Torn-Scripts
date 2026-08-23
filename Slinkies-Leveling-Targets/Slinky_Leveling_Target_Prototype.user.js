@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.12.3
+// @version      0.12.4
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
 (async function () {
     'use strict';
 
-    // Release: 0.12.3-pda-core-loader-ui-recovery
+    // Release: 0.12.4-pda-api-key-options
 
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -192,7 +192,14 @@
     const TornLib = coreRuntime.library;
     const PDA_RUNTIME = coreRuntime.pda;
     const CORE_LOAD_MODE = coreRuntime.loadMode;
-    const SCRIPT_VERSION = '0.12.3';
+    const PDA_API_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
+    const PDA_API_KEY = String('###PDA-APIKEY###').trim();
+    const PDA_API_KEY_AVAILABLE = Boolean(
+        PDA_RUNTIME &&
+        PDA_API_KEY &&
+        PDA_API_KEY !== PDA_API_KEY_TOKEN
+    );
+    const SCRIPT_VERSION = '0.12.4';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -233,6 +240,8 @@
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
         ffKey: 'slinkyLeveling.ffApiKey',
+        usePdaTornKey: 'slinkyLeveling.usePdaTornKey.v1',
+        usePdaFfKey: 'slinkyLeveling.usePdaFfKey.v1',
         pollSeconds: 'slinkyLeveling.pollSeconds',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
@@ -436,10 +445,40 @@
     }
 
 
+    function storedBoolean(value, fallback = false) {
+        if (value === true || value === 1 || value === 'true' || value === '1') {
+            return true;
+        }
+        if (value === false || value === 0 || value === 'false' || value === '0') {
+            return false;
+        }
+        return fallback;
+    }
+
+
     function getSettings() {
+        const manualTornKey = String(
+            GM_getValue(KEYS.tornKey, '') || ''
+        ).trim();
+        const manualFfKey = String(
+            GM_getValue(KEYS.ffKey, '') || ''
+        ).trim();
+        const usePdaTornKey = PDA_API_KEY_AVAILABLE && storedBoolean(
+            GM_getValue(KEYS.usePdaTornKey, undefined),
+            !manualTornKey
+        );
+        const usePdaFfKey = PDA_API_KEY_AVAILABLE && storedBoolean(
+            GM_getValue(KEYS.usePdaFfKey, undefined),
+            false
+        );
+
         return {
-            tornKey: String(GM_getValue(KEYS.tornKey, '') || '').trim(),
-            ffKey: String(GM_getValue(KEYS.ffKey, '') || '').trim(),
+            tornKey: usePdaTornKey ? PDA_API_KEY : manualTornKey,
+            ffKey: usePdaFfKey ? PDA_API_KEY : manualFfKey,
+            manualTornKey,
+            manualFfKey,
+            usePdaTornKey,
+            usePdaFfKey,
             pollSeconds: clamp(
                 Number(GM_getValue(KEYS.pollSeconds, DEFAULT_POLL_SECONDS)) ||
                     DEFAULT_POLL_SECONDS,
@@ -455,11 +494,21 @@
 
     function saveSettings(values) {
         const previous = getSettings();
-        const tornKey = String(values.tornKey || '').trim();
-        const ffKey = String(values.ffKey || '').trim();
+        const manualTornKey = String(values.tornKey || '').trim();
+        const manualFfKey = String(values.ffKey || '').trim();
+        const usePdaTornKey = Boolean(
+            PDA_API_KEY_AVAILABLE && values.usePdaTornKey
+        );
+        const usePdaFfKey = Boolean(
+            PDA_API_KEY_AVAILABLE && values.usePdaFfKey
+        );
+        const tornKey = usePdaTornKey ? PDA_API_KEY : manualTornKey;
+        const ffKey = usePdaFfKey ? PDA_API_KEY : manualFfKey;
 
-        GM_setValue(KEYS.tornKey, tornKey);
-        GM_setValue(KEYS.ffKey, ffKey);
+        GM_setValue(KEYS.tornKey, manualTornKey);
+        GM_setValue(KEYS.ffKey, manualFfKey);
+        GM_setValue(KEYS.usePdaTornKey, usePdaTornKey);
+        GM_setValue(KEYS.usePdaFfKey, usePdaFfKey);
         GM_setValue(
             KEYS.pollSeconds,
             clamp(
@@ -1477,6 +1526,7 @@
 
     function buildDebugData() {
         const sessionExpiresAt = Number(GM_getValue(KEYS.sessionExpiresAt, 0)) || 0;
+        const settings = getSettings();
         return {
             scriptVersion: SCRIPT_VERSION,
             coreLibVersion: TornLib.VERSION,
@@ -1490,7 +1540,11 @@
             collector: state.collector,
             collectorExpiresAt: state.collectorExpiresAt,
             recommendations: state.targets.length,
-            pollSecondsConfigured: getSettings().pollSeconds,
+            pollSecondsConfigured: settings.pollSeconds,
+            pdaRuntime: PDA_RUNTIME,
+            pdaApiKeyAvailable: PDA_API_KEY_AVAILABLE,
+            usingPdaTornKey: settings.usePdaTornKey,
+            usingPdaFfKey: settings.usePdaFfKey,
             lastPrimaryPollAt: state.lastCycleAt,
             lastPrimaryChecked: state.lastCycleChecked,
             lastPrimaryReported: state.lastCycleReported,
@@ -1515,6 +1569,7 @@
         const lines = [
             `SLINK Leveling Service v${data.scriptVersion}`,
             `CoreLib: ${data.coreLibVersion} (${data.coreLoadMode})`,
+            `PDA key: ${data.pdaApiKeyAvailable ? 'available' : 'unavailable'} | Torn ${data.usingPdaTornKey ? 'PDA' : 'manual'} | FFScouter ${data.usingPdaFfKey ? 'PDA' : 'manual'}`,
             `Worker: ${data.workerVersion}`,
             `Authenticated: ${data.authenticated ? 'Yes' : 'No'}`,
             `Session expires: ${data.sessionExpiresAt ? new Date(data.sessionExpiresAt).toLocaleString() : 'None'}`,
@@ -1687,6 +1742,10 @@
             .slp-settings label { display:flex; flex-direction:column; gap:3px; color:#bbb; }
             .slp-settings .wide { grid-column:1 / -1; }
             .slp-settings input { width:100%; border:1px solid #555; border-radius:4px; background:#11151a; color:#eee; padding:5px 6px; }
+            .slp-settings input:disabled { opacity:.7; color:#a9d5ff; }
+            .slp-key-setting { display:flex; flex-direction:column; gap:3px; color:#bbb; }
+            .slp-key-toggle { flex-direction:row !important; align-items:center; gap:6px !important; color:#d9e9f7 !important; font-size:10px; }
+            .slp-key-toggle input { width:auto; margin:0; flex:0 0 auto; }
             .slp-disclosure { grid-column:1 / -1; color:#999; font-size:10px; }
             .slp-terms { grid-column:1 / -1; padding:9px; border:1px solid #4c6075; border-radius:6px; background:#18222d; color:#d9e9f7; }
             .slp-terms strong { display:block; margin-bottom:5px; color:#fff; }
@@ -1952,13 +2011,27 @@
                         <button class="slp-btn" id="slp-show-terms" type="button">View</button>
                     </div>
                 `}
-                <label class="wide">Torn API key
-                    <input id="slp-torn-key" type="password" value="${escapeHtml(settings.tornKey)}" autocomplete="off">
-                </label>
+                <div class="wide slp-key-setting">
+                    <label for="slp-torn-key">Torn API key</label>
+                    <input id="slp-torn-key" type="password" value="${escapeHtml(settings.manualTornKey)}" autocomplete="off" ${settings.usePdaTornKey ? 'disabled' : ''} placeholder="${settings.usePdaTornKey ? 'Using Torn PDA API key' : ''}">
+                    ${PDA_API_KEY_AVAILABLE ? `
+                        <label class="slp-key-toggle">
+                            <input id="slp-use-pda-torn-key" type="checkbox" ${settings.usePdaTornKey ? 'checked' : ''}>
+                            <span>Use Torn PDA's API key</span>
+                        </label>
+                    ` : ''}
+                </div>
                 <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
-                <label class="wide">FFScouter API key
-                    <input id="slp-ff-key" type="password" value="${escapeHtml(settings.ffKey)}" autocomplete="off">
-                </label>
+                <div class="wide slp-key-setting">
+                    <label for="slp-ff-key">FFScouter API key</label>
+                    <input id="slp-ff-key" type="password" value="${escapeHtml(settings.manualFfKey)}" autocomplete="off" ${settings.usePdaFfKey ? 'disabled' : ''} placeholder="${settings.usePdaFfKey ? 'Using Torn PDA API key' : ''}">
+                    ${PDA_API_KEY_AVAILABLE ? `
+                        <label class="slp-key-toggle">
+                            <input id="slp-use-pda-ff-key" type="checkbox" ${settings.usePdaFfKey ? 'checked' : ''}>
+                            <span>Use Torn PDA's API key for FFScouter too</span>
+                        </label>
+                    ` : ''}
+                </div>
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
                 </label>
@@ -2047,6 +2120,19 @@
 
 
     function bindEvents(panel) {
+        for (const [checkboxId, inputId, placeholder] of [
+            ['slp-use-pda-torn-key', 'slp-torn-key', 'Using Torn PDA API key'],
+            ['slp-use-pda-ff-key', 'slp-ff-key', 'Using Torn PDA API key']
+        ]) {
+            const checkbox = panel.querySelector(`#${checkboxId}`);
+            const input = panel.querySelector(`#${inputId}`);
+            checkbox?.addEventListener('change', () => {
+                if (!input) return;
+                input.disabled = checkbox.checked;
+                input.placeholder = checkbox.checked ? placeholder : '';
+            });
+        }
+
         panel.querySelector('#slp-expand')?.addEventListener('keydown', event => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
@@ -2140,6 +2226,8 @@
             saveSettings({
                 tornKey: panel.querySelector('#slp-torn-key')?.value,
                 ffKey: panel.querySelector('#slp-ff-key')?.value,
+                usePdaTornKey: panel.querySelector('#slp-use-pda-torn-key')?.checked,
+                usePdaFfKey: panel.querySelector('#slp-use-pda-ff-key')?.checked,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
                 maxFF: panel.querySelector('#slp-max-ff')?.value
