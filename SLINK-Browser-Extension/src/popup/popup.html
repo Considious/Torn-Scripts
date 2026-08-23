@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SLINK</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <header>
+      <div class="mark">SL</div>
+      <div>
+        <h1>SLINK</h1>
+        <p>Leveling and shared systems</p>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="section-heading">
+          <h2>Status</h2>
+          <span id="connection" class="badge">Checking</span>
+        </div>
+        <dl>
+          <div><dt>Version</dt><dd id="version">--</dd></div>
+          <div><dt>SLINK Worker</dt><dd id="worker">Checking</dd></div>
+          <div><dt>Leveling</dt><dd id="leveling">Checking</dd></div>
+          <div><dt>Roles</dt><dd id="roles">--</dd></div>
+          <div><dt>Scopes</dt><dd id="scopes">--</dd></div>
+          <div><dt>Last diagnostic</dt><dd id="last-diagnostic">--</dd></div>
+        </dl>
+      </section>
+
+      <section class="card">
+        <div class="section-heading"><h2>Interface</h2></div>
+        <button id="open-dashboard" class="dashboard-button" type="button">Open SLINK dashboard</button>
+        <label class="toggle-row">
+          <span>Show panel on Torn</span>
+          <input id="page-panel" type="checkbox">
+        </label>
+        <button id="reset-position" class="secondary wide" type="button">Reset panel position</button>
+      </section>
+
+      <section class="card">
+        <div class="section-heading">
+          <h2>Diagnostic report</h2>
+        </div>
+        <pre id="diagnostic-report" class="diagnostic-report">Run a diagnostic to create a readable report.</pre>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <div class="actions">
+        <button id="run-diagnostic" type="button">Run diagnostic</button>
+        <button id="refresh" class="secondary" type="button">Refresh</button>
+      </div>
+    </main>
+
+    <script src="../core/runtime.js"></script>
+    <script src="../core/format.js"></script>
+    <script src="../core/storage.js"></script>
+    <script src="../core/permissions.js"></script>
+    <script src="../core/messaging.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

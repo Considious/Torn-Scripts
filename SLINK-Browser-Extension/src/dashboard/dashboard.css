@@ -1,0 +1,54 @@
+:root { color-scheme:dark; font:14px/1.45 Arial,sans-serif; background:#0d131b; color:#edf6ff; }
+* { box-sizing:border-box; }
+body { margin:0; min-width:300px; background:radial-gradient(circle at top,#1b2b3c 0,#0d131b 480px); }
+button,.button,input { font:inherit; }
+button,.button { min-height:36px; padding:7px 12px; border:1px solid rgba(255,255,255,.15); border-radius:7px; background:#2f74ad; color:#fff; cursor:pointer; text-decoration:none; }
+button:hover,.button:hover { filter:brightness(1.12); }
+button:disabled { cursor:wait; opacity:.55; }
+.secondary { background:#293746; }
+.danger { background:#512c2c; color:#ffd0d0; }
+.small { min-height:28px; padding:3px 8px; font-size:12px; }
+.topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; gap:20px; padding:14px max(18px,calc((100vw - 1240px)/2)); border-bottom:1px solid rgba(255,255,255,.1); background:rgba(13,19,27,.94); backdrop-filter:blur(12px); }
+.brand,.top-actions,.row-actions,.form-actions,.section-heading { display:flex; align-items:center; gap:10px; }
+.brand>span { display:grid; place-items:center; width:42px; height:42px; border-radius:12px; background:linear-gradient(145deg,#3e8dd0,#193b5e); font-weight:800; }
+h1,h2,p { margin:0; }
+h1 { font-size:18px; }
+h2 { font-size:15px; }
+.brand p,.muted { color:#91a3b5; }
+.top-actions { flex-wrap:wrap; justify-content:flex-end; }
+.badge { padding:4px 9px; border-radius:999px; background:#3c4957; font-size:12px; }
+.badge.ready { background:#214a31; color:#bdf0ca; }
+.badge.error { background:#552d2d; color:#ffc4c4; }
+main { display:grid; grid-template-columns:minmax(300px,430px) minmax(440px,1fr); gap:14px; width:min(1240px,calc(100% - 28px)); margin:18px auto 40px; }
+.card { padding:15px; border:1px solid rgba(255,255,255,.1); border-radius:11px; background:rgba(22,31,42,.96); box-shadow:0 12px 30px rgba(0,0,0,.2); }
+.overview,.targets-card { grid-column:1/-1; }
+.section-heading { justify-content:space-between; margin-bottom:11px; }
+.stats { display:grid; grid-template-columns:repeat(5,1fr); gap:7px; }
+.stats>div { padding:10px; border-radius:8px; background:#111a24; text-align:center; }
+.stats b,.stats span { display:block; }
+.stats b { font-size:18px; }
+.stats span { color:#8194a7; font-size:11px; }
+.status-line { margin-top:10px; color:#a9d5ff; }
+.error { margin-top:10px; padding:8px 10px; border-radius:7px; background:#492929; color:#ffc3c3; }
+.row-actions { margin-top:12px; flex-wrap:wrap; }
+.toggle { display:flex; align-items:center; gap:7px; }
+.terms { padding:11px; border:1px solid #3b5770; border-radius:8px; background:#142130; }
+.terms p { margin:7px 0; }
+.terms a { color:#8fc9ff; }
+.agreement { display:flex; align-items:flex-start; gap:8px; margin-top:10px; }
+.settings-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+.settings-grid label { display:grid; gap:4px; color:#9fb0c0; }
+.settings-grid .wide { grid-column:1/-1; }
+input { min-width:0; padding:8px; border:1px solid #415467; border-radius:6px; background:#0e151e; color:#fff; }
+.form-actions { flex-wrap:wrap; }
+.targets { display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:9px; }
+.target { padding:11px; border:1px solid rgba(255,255,255,.09); border-radius:8px; background:#111a24; }
+.target-head,.target-meta,.target-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.target-head a { flex:1; color:#fff; font-weight:700; text-decoration:none; }
+.level { color:#ffd27a; }
+.target-meta { margin-top:6px; color:#94a7b9; }
+.pill { padding:2px 6px; border-radius:999px; background:#29394a; color:#e5f0fa; font-size:12px; }
+.target-actions { margin-top:9px; }
+.target-actions .button { min-height:30px; padding:4px 8px; font-size:12px; }
+pre { max-height:350px; margin:0; overflow:auto; padding:11px; border-radius:8px; background:#0b1118; color:#cbd9e7; white-space:pre-wrap; overflow-wrap:anywhere; }
+@media(max-width:800px){ .topbar{position:static;align-items:flex-start;flex-direction:column}.top-actions{justify-content:flex-start}main{grid-template-columns:1fr}.overview,.targets-card{grid-column:auto}.stats{grid-template-columns:repeat(2,1fr)}.settings-grid{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}.targets{grid-template-columns:1fr} }

@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "SLINK",
+  "version": "0.3.2",
+  "description": "Shared Live Intelligence NetworK with SLINK Leveling for Torn.",
+  "permissions": [
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.torn.com/*",
+    "https://api.torn.com/*",
+    "https://ffscouter.com/*",
+    "https://slinkyleveling.richard-johnson554.workers.dev/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_title": "SLINK",
+    "default_popup": "src/popup/popup.html"
+  },
+  "options_ui": {
+    "page": "src/dashboard/dashboard.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.torn.com/*"
+      ],
+      "run_at": "document_idle",
+      "js": [
+        "src/core/runtime.js",
+        "src/core/format.js",
+        "src/core/storage.js",
+        "src/core/permissions.js",
+        "src/core/messaging.js",
+        "src/core/modules.js",
+        "src/content/ui-shell.js",
+        "src/modules/leveling.js",
+        "src/content/content-script.js"
+      ]
+    }
+  ]
+}
