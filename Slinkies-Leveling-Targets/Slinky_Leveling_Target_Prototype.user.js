@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.12.4
+// @version      0.13.2
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
 (async function () {
     'use strict';
 
-    // Release: 0.12.4-pda-api-key-options
+    // Release: 0.13.2-client-scheduling
 
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -199,34 +199,39 @@
         PDA_API_KEY &&
         PDA_API_KEY !== PDA_API_KEY_TOKEN
     );
-    const SCRIPT_VERSION = '0.12.4';
+    const SCRIPT_VERSION = '0.13.2';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
-    const TERMS_VERSION = '2026-08-14';
+    const TERMS_VERSION = '2026-08-23';
     const TERMS_DOCUMENT_SHA256 =
-        '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
-    const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+        '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
+    const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
     const LEVELING_DISCLOSURE_SHA256 =
-        '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+        'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
     const TERMS_URL =
         'https://github.com/Considious/Torn-Scripts/blob/main/' +
-        'Slinkies-Leveling-Targets/terms/2026-08-14/' +
+        'Slinkies-Leveling-Targets/terms/2026-08-23/' +
         'SLINK_API_Data_Terms_of_Service.md';
     const LEVELING_TERMS_SUMMARY =
-        'Your Torn API key is sent to SLINK only for faction authentication ' +
-        'and is otherwise used locally for assigned Torn requests; ordinary ' +
-        'member keys are not stored remotely. SLINK persistently shares target ' +
-        'status, hospital timing, activity matches, competition measurements, ' +
-        'scheduling and coordination data with authorized Slinky\'s members. ' +
-        'Exact member battle stats and Fair Fight values stay in this browser. ' +
-        'Your Torn user ID, the accepted terms version, document fingerprint ' +
-        'and acceptance time are retained in SLINK\'s separate consent ledger.';
+        'Your Torn API key is sent to SLINK only to verify your Torn identity ' +
+        'and current faction and is otherwise used locally for assigned Torn ' +
+        'requests; ordinary user keys are not stored remotely. Leveling access ' +
+        'requires slink.level, granted automatically to current Slinky\'s ' +
+        'members or through an active direct grant. SLINK persistently shares ' +
+        'target status, hospital timing, activity matches, competition ' +
+        'measurements, scheduling and coordination data with authorized ' +
+        'slink.level users. Exact user battle stats and Fair Fight values stay ' +
+        'in this browser. The permissions service retains your Torn user ID ' +
+        'and effective grants; your accepted terms version, document ' +
+        'fingerprint and acceptance time are retained in SLINK\'s separate ' +
+        'consent ledger.';
 
     const ACTIVITY_WINDOW_DAYS = 7;
     const ACTIVITY_REFRESH_MS = 24 * 60 * 60 * 1000;
     const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
     const BATTLE_STATS_CACHE_MS = 24 * 60 * 60 * 1000;
     const DEFAULT_POLL_SECONDS = 300;
+    const DEFAULT_API_CONTRIBUTION_LIMIT = 60;
     const MAX_DISPLAY = 40;
     const MAX_CLIENT_EVENTS = 100;
     const MAX_INTERVAL_CHECKS = 300;
@@ -234,6 +239,10 @@
     const CHECK_PACING_GRACE_MS = 5_000;
     const LOCAL_CHECK_RETRY_MS = 24 * 60 * 60 * 1000;
     const MAX_LOCAL_PENDING_CHECKS = 600;
+    const ROUTINE_CHECK_BUCKET_MS = 5 * 60 * 1000;
+    const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+    const DAILY_FRESHNESS_START_UTC_MINUTE = (23 * 60) + 45;
+    const DAILY_FRESHNESS_BUCKETS = 3;
     const PDA_UI_HEARTBEAT_MS = 1_000;
     const PDA_UI_RECOVERY_GAP_MS = 3_000;
 
@@ -243,6 +252,7 @@
         usePdaTornKey: 'slinkyLeveling.usePdaTornKey.v1',
         usePdaFfKey: 'slinkyLeveling.usePdaFfKey.v1',
         pollSeconds: 'slinkyLeveling.pollSeconds',
+        apiContributionLimit: 'slinkyLeveling.apiContributionLimit.v1',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
         collapsed: 'slinkyLeveling.collapsed',
@@ -250,6 +260,7 @@
         bubblePosition: 'slinkyLeveling.bubblePosition.v1',
         sessionToken: 'slinkyLeveling.workerSession.v1',
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
+        permissions: 'slinkyLeveling.permissions.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
         ffCache: 'slinkyLeveling.ffCache.v1',
         battleStats: 'slinkyLeveling.localBattleStats.v1',
@@ -438,6 +449,21 @@
     }
 
 
+    function completeChecksLocally(completions) {
+        if (!completions.length) return;
+
+        const completedIds = completions.map(row => Number(row.target_id));
+        const completed = new Set(completedIds);
+
+        rememberCompletedChecks(completions, completedIds);
+        savePendingChecks(
+            loadPendingChecks().filter(check => {
+                return !completed.has(Number(check.id));
+            })
+        );
+    }
+
+
     function latestFairFightCacheTime(cache) {
         return Object.values(cache || {}).reduce((latest, row) => {
             return Math.max(latest, Number(row?.checkedAt) || 0);
@@ -453,6 +479,20 @@
             return false;
         }
         return fallback;
+    }
+
+
+    function permissionScopeMatches(grantedScope, requiredScope) {
+        if (grantedScope === '*' || grantedScope === requiredScope) return true;
+        if (!grantedScope.endsWith('.*')) return false;
+        return requiredScope.startsWith(grantedScope.slice(0, -1));
+    }
+
+
+    function hasPermission(requiredScope) {
+        const snapshot = loadJson(KEYS.permissions, {});
+        return (Array.isArray(snapshot?.scopes) ? snapshot.scopes : [])
+            .some(scope => permissionScopeMatches(String(scope), requiredScope));
     }
 
 
@@ -485,6 +525,13 @@
                 60,
                 300
             ),
+            apiContributionLimit: (
+                hasPermission('admin.*') &&
+                Number(GM_getValue(
+                    KEYS.apiContributionLimit,
+                    DEFAULT_API_CONTRIBUTION_LIMIT
+                )) === 0
+            ) ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT,
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 3),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 3),
             collapsed: Boolean(GM_getValue(KEYS.collapsed, false))
@@ -517,6 +564,15 @@
                 300
             )
         );
+        const requestedContributionLimit = Number(values.apiContributionLimit) === 0
+            ? 0
+            : DEFAULT_API_CONTRIBUTION_LIMIT;
+        GM_setValue(
+            KEYS.apiContributionLimit,
+            requestedContributionLimit === 0 && hasPermission('admin.*')
+                ? 0
+                : DEFAULT_API_CONTRIBUTION_LIMIT
+        );
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 3));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 3));
 
@@ -548,6 +604,12 @@
     function clearWorkerSession() {
         GM_setValue(KEYS.sessionToken, '');
         GM_setValue(KEYS.sessionExpiresAt, 0);
+        saveJson(KEYS.permissions, {
+            userId: null,
+            roles: [],
+            scopes: [],
+            source: 'signed-worker-session'
+        });
         state.collector = false;
         state.collectorExpiresAt = 0;
     }
@@ -643,8 +705,25 @@
                 );
             }
 
+            const permissions = {
+                userId: Number(response.user_id) || null,
+                roles: Array.isArray(response.roles) ? response.roles : [],
+                scopes: Array.isArray(response.scopes) ? response.scopes : [],
+                source: 'signed-worker-session',
+                issuedAt: Date.now(),
+                expiresAt: Date.parse(response.expires_at) || 0
+            };
+            if (!permissions.scopes.some(scope => {
+                return permissionScopeMatches(String(scope), 'slink.level');
+            })) {
+                throw new Error(
+                    'Your SLINK account does not have slink.level permission.'
+                );
+            }
+
             GM_setValue(KEYS.sessionToken, response.session_token);
             GM_setValue(KEYS.sessionExpiresAt, Date.parse(response.expires_at) || 0);
+            saveJson(KEYS.permissions, permissions);
             logClientEvent('authenticated', {
                 userId: response.user_id,
                 expiresAt: response.expires_at
@@ -874,7 +953,7 @@
             return;
         }
 
-        const settings = getSettings();
+        let settings = getSettings();
 
         if (!hasAcceptedCurrentTerms()) {
             clearWorkerSession();
@@ -902,6 +981,7 @@
 
         try {
             await ensureWorkerSession(false);
+            settings = getSettings();
 
             state.cycleStatus = 'Reading your locally cached strength range…';
             render();
@@ -945,29 +1025,41 @@
 
             state.cycleStatus = 'Running scheduled Torn checks…';
             render();
-            await syncActivitySnapshots(settings.tornKey, forceActivity);
+            if (settings.apiContributionLimit > 0) {
+                await syncActivitySnapshots(settings.tornKey, forceActivity);
+            }
 
-            const intervalCapacity = checkPlanCapacity(settings.pollSeconds);
+            const intervalCapacity = checkPlanCapacity(
+                settings.pollSeconds,
+                settings.apiContributionLimit
+            );
 
             const claim = await workerRequest('/api/checks/claim', {
                 method: 'POST',
                 body: {
+                    scheduling_mode: 'client_v1',
                     interval_capacity: intervalCapacity,
                     poll_seconds: settings.pollSeconds
                 }
             });
             state.collector = claim?.collector === true;
             state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
-            const claimedChecks = Array.isArray(claim?.checks)
-                ? claim.checks
-                : [];
+            const scheduledPlan = buildClientCheckPlan(
+                claim,
+                intervalCapacity
+            );
+            const claimedChecks = scheduledPlan.checks;
             const queuedChecks = mergePendingAndClaimedChecks(claimedChecks);
             savePendingChecks(queuedChecks);
-            const checks = queuedChecks.slice(0, intervalCapacity);
+            const checks = intervalCapacity === 0
+                ? []
+                : queuedChecks.slice(0, intervalCapacity);
             const retryCount = checks.filter(check => {
                 return Number(check.queued_at || 0) < cycleStartedAt;
             }).length;
-            state.cycleStatus = checks.length
+            state.cycleStatus = intervalCapacity === 0
+                ? 'Admin override active · Routine API contribution is zero'
+                : checks.length
                 ? `Running ${checks.length} scheduled Torn checks across ${formatMinutes(settings.pollSeconds)}…`
                 : 'No Torn checks are currently due';
             if (checks.length && retryCount) {
@@ -981,6 +1073,9 @@
                 settings.pollSeconds
             );
             const observations = checkResult.observations;
+            const localCompletions = checkResult.localCompletions;
+
+            completeChecksLocally(localCompletions);
 
             if (observations.length) {
                 const report = await submitObservations(observations);
@@ -1003,12 +1098,13 @@
 
             logClientEvent('cycle_completed', {
                 intervalCapacity,
-                dueChecks: Number(claim?.due_count) || 0,
-                activeCollectors: Number(claim?.active_collectors) || 0,
-                fairShare: Number(claim?.fair_share) || 0,
+                dueChecks: scheduledPlan.dueCount,
+                activeCollectors: scheduledPlan.activeCollectors,
+                fairShare: scheduledPlan.fairShare,
                 pendingBeforeRun: queuedChecks.length,
                 assigned: checks.length,
                 reported: observations.length,
+                completedLocally: localCompletions.length,
                 failures: failures.length
             });
             saveRuntimeState();
@@ -1025,12 +1121,264 @@
     }
 
 
-    function checkPlanCapacity(pollSeconds) {
-        const checksPerMinute = Number(TornLib.TORN_API_DEFAULT_LIMIT) || 60;
+    function checkPlanCapacity(pollSeconds, contributionLimit) {
+        const checksPerMinute = Number(contributionLimit);
+        if (checksPerMinute === 0) return 0;
         return clamp(
-            Math.floor(checksPerMinute * (Number(pollSeconds) / 60)),
+            Math.floor(
+                (Number.isFinite(checksPerMinute)
+                    ? checksPerMinute
+                    : DEFAULT_API_CONTRIBUTION_LIMIT) *
+                (Number(pollSeconds) / 60)
+            ),
             1,
             MAX_INTERVAL_CHECKS
+        );
+    }
+
+
+    function normalizeSchedulingStatus(value) {
+        const lower = String(value || 'Unknown').trim().toLowerCase();
+
+        if (lower.includes('federal')) return 'Federal';
+        if (lower.includes('hiding out') || lower.includes('hiding')) {
+            return 'Hiding Out';
+        }
+        if (lower.includes('hospital')) return 'Hospital';
+        if (lower.includes('travel') || lower.includes('flying')) {
+            return 'Traveling';
+        }
+        if (lower.includes('abroad')) return 'Abroad';
+        if (lower.includes('jail')) return 'Jail';
+        if (lower.includes('okay')) return 'Okay';
+        return 'Unknown';
+    }
+
+
+    function dailyFreshnessSlot(now = Date.now()) {
+        const date = new Date(now);
+        const utcMinute = (date.getUTCHours() * 60) + date.getUTCMinutes();
+
+        if (utcMinute < DAILY_FRESHNESS_START_UTC_MINUTE) return -1;
+
+        return Math.min(
+            DAILY_FRESHNESS_BUCKETS - 1,
+            Math.floor(
+                (utcMinute - DAILY_FRESHNESS_START_UTC_MINUTE) /
+                (ROUTINE_CHECK_BUCKET_MS / 60_000)
+            )
+        );
+    }
+
+
+    function dailyFreshnessWindowStart(now = Date.now()) {
+        const date = new Date(now);
+        return Date.UTC(
+            date.getUTCFullYear(),
+            date.getUTCMonth(),
+            date.getUTCDate(),
+            23,
+            45
+        );
+    }
+
+
+    function okayCheckBucketCount(tier) {
+        if (tier === 'Farmed') return 72;
+        if (tier === 'Crowded') return 12;
+        if (tier === 'Warm') return 6;
+        return 3;
+    }
+
+
+    function stableSchedulingHash(value) {
+        let hash = 2166136261;
+
+        for (const character of String(value)) {
+            hash ^= character.charCodeAt(0);
+            hash = Math.imul(hash, 16777619);
+        }
+
+        return hash >>> 0;
+    }
+
+
+    function collectorSchedulingKey(collector) {
+        return `${Number(collector?.user_id) || 0}:${String(collector?.session_id || '')}`;
+    }
+
+
+    function assignedCollectorKey(targetId, scheduleBucket, collectors) {
+        let winner = '';
+        let winnerScore = -1;
+
+        for (const collector of collectors) {
+            const key = collectorSchedulingKey(collector);
+            const score = stableSchedulingHash(
+                `${scheduleBucket}:${targetId}:${key}`
+            );
+
+            if (score > winnerScore || (score === winnerScore && key < winner)) {
+                winner = key;
+                winnerScore = score;
+            }
+        }
+
+        return winner;
+    }
+
+
+    function schedulingPriority(target) {
+        const status = normalizeSchedulingStatus(target.previous_status);
+        let statusPriority = 2;
+
+        if (status === 'Hospital' || status === 'Federal') statusPriority = 0;
+        else if (!Number(target.has_status)) statusPriority = 1;
+        else if (status === 'Okay') statusPriority = 3;
+
+        return [
+            Number(target.recommendation_leased) ? 1 : 0,
+            statusPriority,
+            Number(target.competition_score) || 0,
+            Number(target.previous_last_checked_at) || 0,
+            -(Number(target.level) || 0),
+            Number.isFinite(Number(target.total_stats))
+                ? Number(target.total_stats)
+                : Number.MAX_SAFE_INTEGER,
+            Number(target.id) || 0
+        ];
+    }
+
+
+    function compareSchedulingTargets(left, right) {
+        const leftPriority = schedulingPriority(left);
+        const rightPriority = schedulingPriority(right);
+
+        for (let index = 0; index < leftPriority.length; index++) {
+            if (leftPriority[index] !== rightPriority[index]) {
+                return leftPriority[index] - rightPriority[index];
+            }
+        }
+
+        return 0;
+    }
+
+
+    function targetSchedulingState(target, scheduleBucket, now) {
+        const targetId = Number(target.id);
+        const status = normalizeSchedulingStatus(target.previous_status);
+        const activityCutoff = Math.floor((now - ACTIVITY_WINDOW_MS) / 1000);
+        const activityLastSeen = Number(target.activity_last_seen_at) || 0;
+
+        if (!Number.isInteger(targetId) || targetId <= 0) {
+            return { due: false, freshnessCheckpointRequired: false };
+        }
+        if (activityLastSeen >= activityCutoff) {
+            return { due: false, freshnessCheckpointRequired: false };
+        }
+        if (Number(target.hiding_out) || Number(target.permanent_federal)) {
+            return { due: false, freshnessCheckpointRequired: false };
+        }
+        if (!Number(target.has_status)) {
+            return { due: true, freshnessCheckpointRequired: false };
+        }
+
+        if (status !== 'Okay') {
+            return {
+                due: (Number(target.next_check_at) || 0) <= now,
+                freshnessCheckpointRequired: false
+            };
+        }
+
+        const bucketCount = okayCheckBucketCount(target.competition_tier);
+        const routineDue = (
+            (scheduleBucket % bucketCount) ===
+            (Math.abs(targetId) % bucketCount)
+        );
+        const freshnessSlot = dailyFreshnessSlot(now);
+        const freshnessCheckpointRequired = (
+            freshnessSlot >= 0 &&
+            (Math.abs(targetId) % DAILY_FRESHNESS_BUCKETS) === freshnessSlot &&
+            (Number(target.previous_last_checked_at) || 0) <
+                dailyFreshnessWindowStart(now)
+        );
+
+        return {
+            due: routineDue || freshnessCheckpointRequired,
+            freshnessCheckpointRequired
+        };
+    }
+
+
+    function buildClientCheckPlan(claim, intervalCapacity) {
+        const collectors = Array.isArray(claim?.collector_roster)
+            ? claim.collector_roster
+            : [];
+        const targets = Array.isArray(claim?.targets) ? claim.targets : [];
+        const scheduleBucket = Number(claim?.schedule_bucket);
+        const now = Date.now();
+        const currentCollectorKey = `${Number(claim?.collector_user_id) || 0}:${String(claim?.collector_session_id || '')}`;
+
+        if (!collectors.length || !Number.isInteger(scheduleBucket)) {
+            return {
+                checks: [],
+                dueCount: 0,
+                activeCollectors: collectors.length,
+                fairShare: 0
+            };
+        }
+
+        const dueTargets = targets
+            .flatMap(target => {
+                const scheduling = targetSchedulingState(
+                    target,
+                    scheduleBucket,
+                    now
+                );
+                if (!scheduling.due) return [];
+
+                return [{
+                    ...target,
+                    freshness_checkpoint_required:
+                        scheduling.freshnessCheckpointRequired
+                }];
+            })
+            .sort(compareSchedulingTargets);
+        const ownedTargets = dueTargets.filter(target => {
+            return assignedCollectorKey(
+                Number(target.id),
+                scheduleBucket,
+                collectors
+            ) === currentCollectorKey;
+        });
+        const fairShare = ownedTargets.length;
+        const checks = ownedTargets
+            .slice(0, Math.max(0, Number(intervalCapacity) || 0))
+            .map(target => ({
+                ...target,
+                check_batch_id: String(claim?.batch_id || '')
+            }));
+
+        return {
+            checks,
+            dueCount: dueTargets.length,
+            activeCollectors: collectors.length,
+            fairShare
+        };
+    }
+
+
+    function canCompleteOkayLocally(target, observation) {
+        const observedStatus = normalizeSchedulingStatus(
+            `${observation?.state || ''} ${observation?.description || ''}`
+        );
+
+        return (
+            observedStatus === 'Okay' &&
+            normalizeSchedulingStatus(target?.previous_status) === 'Okay' &&
+            Number(target?.previous_status_until || 0) ===
+                Number(observation?.until || 0) &&
+            target?.freshness_checkpoint_required !== true
         );
     }
 
@@ -1043,6 +1391,7 @@
 
     async function runPacedChecks(apiKey, checks, pollSeconds) {
         const observations = [];
+        const localCompletions = [];
         const failures = [];
         const horizonMs = Math.max(
             0,
@@ -1063,13 +1412,26 @@
             }
 
             try {
-                observations.push(await getUserStatus(apiKey, target, 'normal'));
+                const observation = await getUserStatus(
+                    apiKey,
+                    target,
+                    'normal'
+                );
+
+                if (canCompleteOkayLocally(target, observation)) {
+                    localCompletions.push({
+                        target_id: Number(target.id),
+                        check_batch_id: String(target.check_batch_id || '')
+                    });
+                } else {
+                    observations.push(observation);
+                }
             } catch (error) {
                 failures.push({ target, error });
             }
         }));
 
-        return { observations, failures };
+        return { observations, localCompletions, failures };
     }
 
 
@@ -1991,6 +2353,7 @@
 
     function settingsHtml(settings) {
         const termsAccepted = hasAcceptedCurrentTerms();
+        const admin = hasPermission('admin.*');
         const showFullTerms = !termsAccepted || state.termsOpen;
         return `
             <div class="slp-settings">
@@ -2021,7 +2384,7 @@
                         </label>
                     ` : ''}
                 </div>
-                <div class="slp-disclosure">Used to verify Slinky membership and make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
+                <div class="slp-disclosure">Used to verify your Torn identity, current faction, and slink.level access, then make assigned Torn requests. Exact battle stats stay in this browser. Only a temporary target-stat range is sent to SLINK for safer assignments.</div>
                 <div class="wide slp-key-setting">
                     <label for="slp-ff-key">FFScouter API key</label>
                     <input id="slp-ff-key" type="password" value="${escapeHtml(settings.manualFfKey)}" autocomplete="off" ${settings.usePdaFfKey ? 'disabled' : ''} placeholder="${settings.usePdaFfKey ? 'Using Torn PDA API key' : ''}">
@@ -2035,6 +2398,12 @@
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
                 </label>
+                ${admin ? `
+                    <label class="wide slp-key-toggle">
+                        <input id="slp-zero-contribution" type="checkbox" ${settings.apiContributionLimit === 0 ? 'checked' : ''}>
+                        <span>Admin override: use zero routine Torn API calls for SLINK contribution</span>
+                    </label>
+                ` : ''}
                 <label>Min FF
                     <input id="slp-min-ff" type="number" min="1" max="3" step=".1" value="${settings.minFF}">
                 </label>
@@ -2229,6 +2598,7 @@
                 usePdaTornKey: panel.querySelector('#slp-use-pda-torn-key')?.checked,
                 usePdaFfKey: panel.querySelector('#slp-use-pda-ff-key')?.checked,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
+                apiContributionLimit: panel.querySelector('#slp-zero-contribution')?.checked ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
                 maxFF: panel.querySelector('#slp-max-ff')?.value
             });
