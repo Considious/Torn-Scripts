@@ -7,8 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const originalCaches = globalThis.caches;
-const WORKER_VERSION = '0.13.3-central-permissions';
+const WORKER_VERSION = '0.13.4-permissions-client-scheduling';
 const TERMS_VERSION = '2026-08-23';
 const TERMS_DOCUMENT_SHA256 =
     '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
@@ -21,11 +20,6 @@ const originalDateNow = Date.now;
 afterEach(() => {
     globalThis.fetch = originalFetch;
     Date.now = originalDateNow;
-    if (originalCaches === undefined) {
-        delete globalThis.caches;
-    } else {
-        globalThis.caches = originalCaches;
-    }
 });
 
 
@@ -561,7 +555,7 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
-    it('coordinates checks without writing per-target claims', async () => {
+    it('returns a shared scheduling snapshot without per-target claim writes', async () => {
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
         const firstToken = await sessionToken(1001);
@@ -614,25 +608,25 @@ describe('SLINK Leveling Worker', () => {
             ),
             env
         );
-        const firstIds = (await firstResponse.json()).checks.map(row => row.id);
-        const secondIds = (await secondResponse.json()).checks.map(row => row.id);
+        const firstPlan = await firstResponse.json();
+        const secondPlan = await secondResponse.json();
+        const firstIds = firstPlan.targets.map(row => row.id);
+        const secondIds = secondPlan.targets.map(row => row.id);
 
         assert.equal(db.writeChanges, writesBeforePlans);
-        assert.equal(firstIds.length, 2);
-        assert.equal(secondIds.length, 2);
+        assert.equal(firstPlan.coordination, 'client_rendezvous_hash');
+        assert.equal(firstPlan.schedule, 'client_deterministic_time_bucket');
+        assert.equal(firstPlan.capacity, 2);
+        assert.equal(firstPlan.count, 6);
+        assert.deepEqual(firstPlan.checks, []);
+        assert.deepEqual(firstIds, [1, 2, 3, 4, 5, 6]);
+        assert.deepEqual(secondIds, firstIds);
+        assert.deepEqual(secondPlan.collector_roster, firstPlan.collector_roster);
         assert.deepEqual(
-            firstIds.filter(id => assignedIds.includes(id)),
-            [],
-            'currently assigned targets should be scheduled after unassigned targets'
-        );
-        assert.deepEqual(
-            secondIds.filter(id => assignedIds.includes(id)),
-            [],
-            'assigned targets should remain last while unassigned work exists'
-        );
-        assert.deepEqual(
-            firstIds.filter(id => secondIds.includes(id)),
-            []
+            firstPlan.targets
+                .filter(row => Number(row.recommendation_leased) === 1)
+                .map(row => row.id),
+            assignedIds
         );
         assert.equal(
             db.sqlite
@@ -662,10 +656,9 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
-    it('reuses an unfinished edge batch and removes completed checks', async () => {
+    it('returns stable snapshots and accepts client retry batch IDs', async () => {
         const now = Date.UTC(2026, 7, 15, 12, 0, 0);
         Date.now = () => now;
-        globalThis.caches = { default: new MemoryCache() };
 
         const db = createDatabase();
         const env = { DB: db, SESSION_SECRET };
@@ -690,14 +683,13 @@ describe('SLINK Leveling Worker', () => {
         const secondResponse = await worker.fetch(claimRequest(), env);
         const second = await secondResponse.json();
 
-        assert.equal(first.cache_status, 'miss');
-        assert.equal(second.cache_status, 'hit');
-        assert.deepEqual(
-            second.checks.map(row => row.id),
-            first.checks.map(row => row.id)
-        );
+        assert.equal(first.cache_status, undefined);
+        assert.equal(second.cache_status, undefined);
+        assert.deepEqual(second.targets, first.targets);
+        assert.deepEqual(second.collector_roster, first.collector_roster);
+        assert.equal(first.schedule, 'client_deterministic_time_bucket');
 
-        const completed = first.checks[0];
+        const completed = first.targets[0];
         const observationResponse = await worker.fetch(
             authenticatedJsonRequest(
                 'https://worker.example/api/observations',
@@ -717,15 +709,17 @@ describe('SLINK Leveling Worker', () => {
         );
         assert.equal(observationResponse.status, 200);
 
-        const remainingResponse = await worker.fetch(claimRequest(), env);
-        const remaining = await remainingResponse.json();
-        assert.equal(remaining.cache_status, 'hit');
-        assert.equal(remaining.count, 1);
-        assert.notEqual(remaining.checks[0].id, completed.id);
+        const refreshedResponse = await worker.fetch(claimRequest(), env);
+        const refreshed = await refreshedResponse.json();
+        assert.equal(refreshed.count, first.count);
+        assert.equal(
+            refreshed.targets.find(row => row.id === completed.id).previous_status,
+            'Okay'
+        );
     });
 
 
-    it('schedules unchanged Okay targets from deterministic time buckets', async () => {
+    it('provides the state used for deterministic Okay time buckets', async () => {
         const now = Date.UTC(2026, 7, 15, 12, 0, 0);
         Date.now = () => now;
 
@@ -772,8 +766,15 @@ describe('SLINK Leveling Worker', () => {
         });
 
         assert.equal(response.status, 200);
-        assert.equal(body.schedule, 'deterministic_time_bucket');
-        assert.deepEqual(body.checks.map(row => row.id), expected);
+        assert.equal(body.schedule, 'client_deterministic_time_bucket');
+        assert.deepEqual(body.checks, []);
+        assert.deepEqual(body.targets.map(row => row.id), [1, 2, 3, 4, 5, 6]);
+        assert.deepEqual(
+            body.targets
+                .filter(row => row.id % 3 === scheduleBucket % 3)
+                .map(row => row.id),
+            expected
+        );
     });
 
 
@@ -1099,7 +1100,11 @@ describe('SLINK Leveling Worker', () => {
             ),
             env
         );
-        assert.equal((await pcChecks.json()).count, 2);
+        const pcSnapshot = await pcChecks.json();
+        assert.equal(pcSnapshot.count, 6);
+        assert.equal(pcSnapshot.capacity, 2);
+        assert.equal(pcSnapshot.collector_roster.length, 1);
+        assert.deepEqual(pcSnapshot.checks, []);
 
         const mobileChecks = await worker.fetch(
             authenticatedJsonRequest(
@@ -1135,7 +1140,7 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
-    it('divides all due checks between active Torn users', async () => {
+    it('returns one identical scheduling snapshot to all active collectors', async () => {
         let now = 1_800_000_000_000;
         Date.now = () => now;
 
@@ -1171,17 +1176,23 @@ describe('SLINK Leveling Worker', () => {
             plans.push(await response.json());
         }
 
-        const claimedIds = plans.flatMap(plan => plan.checks.map(row => row.id));
         for (const plan of plans) {
-            assert.equal(plan.due_count, 6);
+            assert.equal(plan.due_count, 0);
             assert.equal(plan.active_collectors, 3);
-            assert.equal(plan.fair_share, 2);
-            assert.equal(plan.capacity, 2);
+            assert.equal(plan.fair_share, 0);
+            assert.equal(plan.capacity, 300);
             assert.equal(plan.interval_capacity, 300);
             assert.equal(plan.claim_seconds, 420);
-            assert.equal(plan.count, 2);
+            assert.equal(plan.count, 6);
+            assert.equal(plan.coordination, 'client_rendezvous_hash');
+            assert.equal(plan.collector_roster.length, 3);
+            assert.deepEqual(plan.targets.map(row => row.id), [1, 2, 3, 4, 5, 6]);
+            assert.deepEqual(plan.checks, []);
         }
-        assert.equal(new Set(claimedIds).size, 6);
+        assert.deepEqual(plans[1].targets, plans[0].targets);
+        assert.deepEqual(plans[2].targets, plans[0].targets);
+        assert.deepEqual(plans[1].collector_roster, plans[0].collector_roster);
+        assert.deepEqual(plans[2].collector_roster, plans[0].collector_roster);
 
         now += 420_001;
         const reclaimed = await worker.fetch(
@@ -1193,7 +1204,7 @@ describe('SLINK Leveling Worker', () => {
             env
         );
         assert.equal(reclaimed.status, 200);
-        assert.equal((await reclaimed.json()).count, 2);
+        assert.equal((await reclaimed.json()).count, 6);
     });
 
 
@@ -1623,21 +1634,6 @@ class D1StatementAdapter {
                 last_row_id: Number(result.lastInsertRowid || 0)
             }
         };
-    }
-}
-
-
-class MemoryCache {
-    constructor() {
-        this.responses = new Map();
-    }
-
-    async match(request) {
-        return this.responses.get(request.url)?.clone();
-    }
-
-    async put(request, response) {
-        this.responses.set(request.url, response.clone());
     }
 }
 

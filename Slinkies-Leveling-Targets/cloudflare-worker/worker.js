@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.13.3-central-permissions
+ * Release: 0.13.4-permissions-client-scheduling
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.13.3-central-permissions';
+const WORKER_VERSION = '0.13.4-permissions-client-scheduling';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -55,6 +55,7 @@ const MAX_TARGET_STATS_FILTER = Number.MAX_SAFE_INTEGER;
 // supplies its live request capacity from Considious Torn Core Lib.
 const MAX_MEMBER_BATCH_ROWS = 200;
 const MAX_CHECK_PLAN_ROWS = 300;
+const MAX_CHECK_SNAPSHOT_ROWS = 2_000;
 const MAX_ACTIVITY_TARGETS_PER_REQUEST = 1_000;
 const MAX_JSON_BODY_BYTES = 256 * 1024;
 // D1 allows 100 bound parameters and 50 queries per Free-plan invocation.
@@ -86,10 +87,8 @@ const NON_OKAY_RECHECK_MS = 10 * 60 * 1000;
 const HOSPITAL_RECHECK_GRACE_MS = 60 * 1000;
 const RAPID_REHOSP_WINDOW_MS = 60 * 60 * 1000;
 const ROUTINE_CHECK_BUCKET_MS = 5 * 60 * 1000;
-const CHECK_BATCH_CACHE_SECONDS = 30 * 60;
-const CHECK_BATCH_MAX_AGE_BUCKETS = Math.ceil(
-    (CHECK_BATCH_CACHE_SECONDS * 1000) / ROUTINE_CHECK_BUCKET_MS
-);
+// Local retry queues may finish a batch up to 30 minutes after it was issued.
+const CHECK_BATCH_MAX_AGE_BUCKETS = 6;
 const DAILY_FRESHNESS_START_UTC_MINUTE = (23 * 60) + 45;
 const DAILY_FRESHNESS_BUCKETS = 3;
 const OKAY_RECHECK_PRIME_MS = 15 * 60 * 1000;
@@ -1874,23 +1873,6 @@ async function handleClaimChecks(request, env, session) {
             });
         }
 
-        // Edge cache is a fast retry mirror, never the source of truth. It is
-        // data-center local and may be absent (including on workers.dev), so
-        // the client queue and deterministic bucket remain the recovery path.
-        const cachedBatch = await readCheckBatchCache(
-            request,
-            session,
-            batchId
-        );
-
-        if (cachedBatch) {
-            return collectorLeaseResponse(collectorLease, {
-                ...cachedBatch,
-                count: cachedBatch.checks.length,
-                cache_status: 'hit'
-            });
-        }
-
         const activeCollectorResult = await env.DB
             .prepare(`
                 SELECT user_id, session_id
@@ -1902,14 +1884,14 @@ async function handleClaimChecks(request, env, session) {
             .all();
         const activeCollectorList = activeCollectorResult.results || [];
         const activeCollectors = activeCollectorList.length;
-        const collectorIndex = activeCollectorList.findIndex(row => {
+        const collectorIsEligible = activeCollectorList.some(row => {
             return (
                 Number(row.user_id) === Number(session.user_id) &&
                 row.session_id === session.session_id
             );
         });
 
-        if (collectorIndex < 0 || activeCollectors < 1) {
+        if (!collectorIsEligible || activeCollectors < 1) {
             return collectorLeaseResponse(collectorLease, {
                 count: 0,
                 capacity: 0,
@@ -1918,18 +1900,21 @@ async function handleClaimChecks(request, env, session) {
                 active_collectors: activeCollectors,
                 fair_share: 0,
                 claim_seconds: Math.floor(claimLifetimeMs / 1000),
+                schedule_bucket: scheduleBucket,
+                batch_id: batchId,
+                collector_user_id: session.user_id,
+                collector_session_id: session.session_id,
+                collector_roster: activeCollectorList,
+                targets: [],
                 checks: []
             });
         }
 
-        const candidateLimit = Math.max(
-            1,
-            intervalCapacity * activeCollectors
-        );
-        // Routine Okay checks are computed from target ID + a five-minute
-        // bucket. Only exception states retain a durable next_check_at.
+        // Return a compact state snapshot rather than constructing a complete
+        // schedule once per collector. Every client receives the same inputs
+        // and independently reaches the same owner for each due target.
         const freshnessSlot = dailyFreshnessSlot(now);
-        const candidateResult = await env.DB
+        const snapshotResult = await env.DB
             .prepare(`
                 SELECT
                     t.id,
@@ -1937,10 +1922,24 @@ async function handleClaimChecks(request, env, session) {
                     t.level,
                     t.total_stats,
                     t.sources,
+                    CASE WHEN ts.target_id IS NULL THEN 0 ELSE 1 END
+                        AS has_status,
                     COALESCE(ts.status, 'Unknown') AS previous_status,
                     CAST(COALESCE(ts.status_until, '0') AS INTEGER)
                         AS previous_status_until,
-                    COUNT(*) OVER () AS due_count
+                    CAST(COALESCE(ts.last_checked_at, '0') AS INTEGER)
+                        AS previous_last_checked_at,
+                    CAST(COALESCE(ts.next_check_at, '0') AS INTEGER)
+                        AS next_check_at,
+                    COALESCE(ts.competition_score, 0) AS competition_score,
+                    COALESCE(ts.competition_tier, 'Prime') AS competition_tier,
+                    COALESCE(ts.hiding_out, 0) AS hiding_out,
+                    COALESCE(ts.permanent_federal, 0) AS permanent_federal,
+                    activity.last_seen_at AS activity_last_seen_at,
+                    CASE
+                        WHEN assigned_target.target_id IS NULL THEN 0
+                        ELSE 1
+                    END AS recommendation_leased
                 FROM targets AS t
                 LEFT JOIN target_status AS ts
                     ON ts.target_id = t.id
@@ -1949,112 +1948,34 @@ async function handleClaimChecks(request, env, session) {
                 LEFT JOIN client_target_leases AS assigned_target
                     ON assigned_target.target_id = t.id
                    AND assigned_target.expires_at > ?1
-                WHERE (
-                    activity.last_seen_at IS NULL
-                    OR activity.last_seen_at < ?2
-                )
-                  AND COALESCE(ts.hiding_out, 0) = 0
-                  AND COALESCE(ts.permanent_federal, 0) = 0
-                  AND (
-                    ts.target_id IS NULL
-                    OR (
-                        LOWER(COALESCE(ts.status, 'unknown')) = 'okay'
-                        AND (
-                            (
-                                CAST(?3 AS INTEGER) % CASE
-                                    WHEN ts.competition_tier = 'Farmed' THEN 72
-                                    WHEN ts.competition_tier = 'Crowded' THEN 12
-                                    WHEN ts.competition_tier = 'Warm' THEN 6
-                                    ELSE 3
-                                END
-                            ) = (
-                                t.id % CASE
-                                    WHEN ts.competition_tier = 'Farmed' THEN 72
-                                    WHEN ts.competition_tier = 'Crowded' THEN 12
-                                    WHEN ts.competition_tier = 'Warm' THEN 6
-                                    ELSE 3
-                                END
-                            )
-                            OR (
-                                ?4 >= 0
-                                AND (t.id % ${DAILY_FRESHNESS_BUCKETS}) = ?4
-                            )
-                        )
-                    )
-                    OR (
-                        LOWER(COALESCE(ts.status, 'unknown')) <> 'okay'
-                        AND CAST(COALESCE(ts.next_check_at, '0') AS INTEGER) <= ?1
-                    )
-                  )
-                ORDER BY
-                    CASE
-                        WHEN assigned_target.target_id IS NULL THEN 0
-                        ELSE 1
-                    END ASC,
-                    CASE
-                        WHEN LOWER(COALESCE(ts.status, '')) IN ('hospital', 'federal')
-                            THEN 0
-                        WHEN ts.target_id IS NULL THEN 1
-                        WHEN LOWER(COALESCE(ts.status, 'unknown')) = 'unknown'
-                            THEN 2
-                        WHEN LOWER(COALESCE(ts.status, '')) = 'okay'
-                            THEN 3
-                        ELSE 2
-                    END ASC,
-                    COALESCE(ts.competition_score, 0) ASC,
-                    CAST(COALESCE(ts.last_checked_at, '0') AS INTEGER) ASC,
-                    t.level DESC,
-                    COALESCE(t.total_stats, 9223372036854775807) ASC,
-                    t.id ASC
-                LIMIT ?5
+                ORDER BY t.id ASC
+                LIMIT ?2
             `)
             .bind(
                 now,
-                Math.floor((now - ACTIVITY_WINDOW_MS) / 1000),
-                scheduleBucket,
-                freshnessSlot,
-                candidateLimit
+                MAX_CHECK_SNAPSHOT_ROWS
             )
             .all();
-        const candidates = candidateResult.results || [];
-        const dueCount = Number(candidates[0]?.due_count || 0);
-        const fairShare = dueCount > 0
-            ? Math.ceil(dueCount / activeCollectors)
-            : 0;
-        const capacity = Math.min(intervalCapacity, fairShare);
-        const checks = candidates
-            .filter((candidate, index) => {
-                return index % activeCollectors === collectorIndex;
-            })
-            .slice(0, capacity)
-            .map(candidate => {
-                const check = { ...candidate };
-                delete check.due_count;
-                check.check_batch_id = batchId;
-                return check;
-            });
+        const targets = snapshotResult.results || [];
 
-        const batch = {
-            count: checks.length,
-            capacity,
+        return collectorLeaseResponse(collectorLease, {
+            count: targets.length,
+            capacity: intervalCapacity,
             interval_capacity: intervalCapacity,
-            due_count: dueCount,
+            due_count: 0,
             active_collectors: activeCollectors,
-            fair_share: fairShare,
+            fair_share: 0,
             claim_seconds: Math.floor(claimLifetimeMs / 1000),
-            coordination: 'deterministic_shard',
-            schedule: 'deterministic_time_bucket',
+            coordination: 'client_rendezvous_hash',
+            schedule: 'client_deterministic_time_bucket',
             schedule_bucket: scheduleBucket,
             batch_id: batchId,
             daily_freshness_window: freshnessSlot >= 0,
-            checks
-        };
-
-        await writeCheckBatchCache(request, session, batch);
-
-        return collectorLeaseResponse(collectorLease, {
-            ...batch,
-            cache_status: 'miss'
+            collector_user_id: session.user_id,
+            collector_session_id: session.session_id,
+            collector_roster: activeCollectorList,
+            targets,
+            checks: []
         });
     } catch (error) {
         return requestOrWorkerErrorResponse('Could not claim checks.', error);
@@ -2069,83 +1990,6 @@ function routineCheckBucket(now = Date.now()) {
 
 function checkBatchId(session, scheduleBucket) {
     return `${session.session_id}:${scheduleBucket}`;
-}
-
-
-function checkBatchCacheKey(request, session, batchId) {
-    const url = new URL(request.url);
-    url.pathname = '/__slink-internal/check-batch';
-    url.search = new URLSearchParams({
-        session: session.session_id,
-        batch: batchId
-    }).toString();
-    return new Request(url.toString(), { method: 'GET' });
-}
-
-
-function defaultWorkerCache() {
-    return globalThis.caches?.default || null;
-}
-
-
-async function readCheckBatchCache(request, session, batchId) {
-    const cache = defaultWorkerCache();
-
-    if (!cache) {
-        return null;
-    }
-
-    try {
-        const response = await cache.match(
-            checkBatchCacheKey(request, session, batchId)
-        );
-
-        if (!response) {
-            return null;
-        }
-
-        const batch = await response.json();
-
-        if (
-            batch?.batch_id !== batchId ||
-            !Array.isArray(batch?.checks)
-        ) {
-            return null;
-        }
-
-        return batch;
-    } catch (error) {
-        console.warn(JSON.stringify({
-            event: 'check_batch_cache_read_failed',
-            error: errorMessage(error)
-        }));
-        return null;
-    }
-}
-
-
-async function writeCheckBatchCache(request, session, batch) {
-    const cache = defaultWorkerCache();
-
-    if (!cache || !batch?.batch_id) {
-        return;
-    }
-
-    try {
-        await cache.put(
-            checkBatchCacheKey(request, session, batch.batch_id),
-            Response.json(batch, {
-                headers: {
-                    'Cache-Control': `public, max-age=${CHECK_BATCH_CACHE_SECONDS}`
-                }
-            })
-        );
-    } catch (error) {
-        console.warn(JSON.stringify({
-            event: 'check_batch_cache_write_failed',
-            error: errorMessage(error)
-        }));
-    }
 }
 
 
@@ -2174,39 +2018,6 @@ function validateObservationBatchId(session, value, now) {
     }
 
     return supplied;
-}
-
-
-async function markCheckBatchesComplete(request, session, plans) {
-    const completedByBatch = new Map();
-
-    for (const plan of plans) {
-        if (!plan.checkBatchId) {
-            continue;
-        }
-
-        const completed = completedByBatch.get(plan.checkBatchId) || new Set();
-        completed.add(plan.statusRow.targetId);
-        completedByBatch.set(plan.checkBatchId, completed);
-    }
-
-    for (const [batchId, completed] of completedByBatch) {
-        const batch = await readCheckBatchCache(
-            request,
-            session,
-            batchId
-        );
-
-        if (!batch) {
-            continue;
-        }
-
-        batch.checks = batch.checks.filter(check => {
-            return !completed.has(Number(check.id));
-        });
-        batch.count = batch.checks.length;
-        await writeCheckBatchCache(request, session, batch);
-    }
 }
 
 
@@ -2257,11 +2068,6 @@ async function handleObservations(request, env, session) {
         }
 
         await persistTargetObservations(env, acceptedPlans);
-        await markCheckBatchesComplete(
-            request,
-            session,
-            acceptedPlans
-        );
 
         return jsonResponse({
             ok: rejected.length === 0,

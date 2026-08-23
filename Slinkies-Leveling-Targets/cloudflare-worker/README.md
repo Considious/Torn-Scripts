@@ -9,9 +9,8 @@ deployment credentials or member API keys.
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
 version. The current release is identified as
-`0.13.3-central-permissions`. It retains the read-optimized client scheduling
-introduced in 0.12.0 while moving product access to the standalone permissions
-database.
+`0.13.4-permissions-client-scheduling`. It combines the read-optimized client
+scheduling protocol with the standalone permissions database.
 
 ## Cloudflare configuration
 
@@ -130,12 +129,13 @@ and released after that user has no live collector device.
 Collector ownership is keyed by signed session ID, allowing another device to
 take over after the collector lease expires.
 
-Scheduled checks are shared by active Torn user, not by device. A single ordered
-query finds due work, and the Worker deterministically divides that result among
-the active user collectors. PC and mobile sessions belonging to the same Torn
-user therefore consume one share, with only the elected session doing the work.
-The same active-collector list always produces disjoint assignments, without
-inserting, refreshing, or deleting per-target claim rows in D1.
+Scheduled checks are shared by active Torn user, not by device. The Worker reads
+one bounded target-state snapshot and returns the same active-collector roster
+and scheduling bucket to each elected collector. Each client then applies the
+same due-time rules, recommendation priority, and rendezvous hash, producing
+disjoint assignments without another Worker request or per-target claim rows in
+D1. PC and mobile sessions for one Torn user still consume one collector share,
+because only that user's elected session participates.
 
 Recommendation ranking is source-neutral. Baldr, Legacy, Extra, and every other
 source label are metadata only and never boost or penalize a target. The
@@ -157,7 +157,7 @@ available pool permits it.
 | `GET` | `/api/targets` | `slink.level` | Read paginated leveling targets |
 | `GET` | `/api/recommendations` | `slink.level` | Return targets and renew collector coordination |
 | `POST` | `/api/collector/heartbeat` | `slink.level` | Backward-compatible manual collector renewal |
-| `POST` | `/api/checks/claim` | `slink.level` | Receive a deterministic share of due Torn status checks |
+| `POST` | `/api/checks/claim` | `slink.level` | Receive the bounded state snapshot and collector roster used for client scheduling |
 | `POST` | `/api/observations` | `slink.level` | Submit status observations |
 | `POST` | `/api/activity` | `slink.level` | Share activity-snapshot matches |
 | `POST` | `/api/fair-fight` | `slink.level` | Deprecated no-op; Fair Fight stays local |
@@ -170,11 +170,11 @@ the sole administrator's signed session or `X-Admin-Token: <admin token>`.
 
 The client derives its interval capacity from Considious Torn Core Lib's shared
 60-per-minute allowance. At the five-minute default it can accept up to 300
-checks, but the Worker returns only that user's equal share of the work that is
-actually due. The client spaces those checks across the interval and every Torn
-request still passes through Core Lib, so other installed scripts remain part
-of the same rate limit. Observation uploads use up to 200 rows per Worker
-request to avoid unnecessary invocations.
+checks. It computes the due set and its deterministic share from the Worker's
+snapshot, then spaces those checks across the interval. Every Torn request still
+passes through Core Lib, so other installed scripts remain part of the same rate
+limit. Observation uploads use up to 200 rows per Worker request to avoid
+unnecessary invocations.
 
 Only the `admin.*` session may set its routine API contribution capacity to
 zero. All other users must contribute through the normal Core Lib-controlled
@@ -189,12 +189,12 @@ The maximum 200-observation upload is sized to use no more than 44 D1 statements
 including the worst case where every row creates a hospital event and releases a
 lease.
 
-Targets currently assigned in a member recommendation list sort behind
-unassigned targets when the Worker creates scheduled Torn API check batches.
+The snapshot marks targets currently assigned in a recommendation list. Clients
+sort those targets behind unassigned work when creating Torn API check plans.
 Opening an assigned target through the panel starts the userscript in that attack
 tab; visible status and hospital time are submitted as an attack-page observation
-and enter the same server-side scheduling routine. Assigned targets remain a
-fallback for API checks if no unassigned due work is available.
+and enter the same shared state. Assigned targets remain a fallback for API
+checks if no unassigned due work is available.
 
 ## Migrations
 
