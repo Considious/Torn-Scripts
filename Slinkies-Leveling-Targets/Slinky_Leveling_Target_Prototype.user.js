@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.12.2
+// @version      0.12.3
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -15,6 +15,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      ffscouter.com
+// @connect      raw.githubusercontent.com
 // @connect      slinkyleveling.richard-johnson554.workers.dev
 // @run-at       document-end
 // ==/UserScript==
@@ -22,7 +23,60 @@
 (async function () {
     'use strict';
 
-    // Release: 0.12.2-mobile-ui-controls
+    // Release: 0.12.3-pda-core-loader-ui-recovery
+
+    const PDA_CORE_LIB_URL =
+        'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
+        'shared/Considious_Torn_Lib.js?v=1.3.6';
+    const PDA_CORE_LOAD_PROMISE_KEY = '__slinkLevelingPdaCoreLoad_v1_3_6';
+
+
+    function isPdaRuntime() {
+        return Boolean(
+            typeof globalThis.PDA_httpGet === 'function' ||
+            typeof globalThis.PDA_evaluateJavascript === 'function' ||
+            typeof globalThis.flutter_inappwebview?.callHandler === 'function'
+        );
+    }
+
+
+    async function waitForInitialRuntime(timeoutMs = 5_000) {
+        const startedAt = Date.now();
+
+        while (Date.now() - startedAt < timeoutMs) {
+            if (globalThis.ConsidiousTornLib) {
+                return 'core';
+            }
+            if (isPdaRuntime()) {
+                return 'pda';
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        return 'missing';
+    }
+
+
+    async function waitForPdaCoreHandlers(timeoutMs = 5_000) {
+        const startedAt = Date.now();
+
+        while (Date.now() - startedAt < timeoutMs) {
+            if (
+                typeof globalThis.PDA_httpGet === 'function' &&
+                typeof globalThis.PDA_evaluateJavascript === 'function'
+            ) {
+                return {
+                    httpGet: globalThis.PDA_httpGet,
+                    evaluateJavascript: globalThis.PDA_evaluateJavascript
+                };
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        throw new Error('Torn PDA core-loading handlers did not become available.');
+    }
 
     async function waitForTornLib(timeoutMs = 5_000) {
         const startedAt = Date.now();
@@ -35,16 +89,87 @@
             await new Promise(resolve => setTimeout(resolve, 100));
         }
 
+        throw new Error('Considious Torn Library did not become available.');
+    }
+
+
+    function pdaResponseText(response) {
+        if (typeof response === 'string') return response;
+        if (typeof response?.responseText === 'string') return response.responseText;
+        if (typeof response?.data === 'string') return response.data;
+        return '';
+    }
+
+
+    async function loadTornLibThroughPda() {
+        if (globalThis.ConsidiousTornLib) {
+            return globalThis.ConsidiousTornLib;
+        }
+
+        if (!globalThis[PDA_CORE_LOAD_PROMISE_KEY]) {
+            globalThis[PDA_CORE_LOAD_PROMISE_KEY] = (async () => {
+                const handlers = await waitForPdaCoreHandlers();
+                const response = await handlers.httpGet(PDA_CORE_LIB_URL, {
+                    Accept: 'text/plain'
+                });
+                const status = Number(response?.status) || 0;
+
+                if (status && (status < 200 || status >= 300)) {
+                    throw new Error(`Core Lib download returned HTTP ${status}.`);
+                }
+
+                const source = pdaResponseText(response);
+                if (!source || !source.includes('ConsidiousTornLib')) {
+                    throw new Error('Core Lib download was empty or invalid.');
+                }
+
+                await handlers.evaluateJavascript(
+                    `${source}\n//# sourceURL=SLINK-PDA-Core-Lib.js`
+                );
+                return waitForTornLib();
+            })();
+        }
+
+        try {
+            return await globalThis[PDA_CORE_LOAD_PROMISE_KEY];
+        } catch (error) {
+            delete globalThis[PDA_CORE_LOAD_PROMISE_KEY];
+            throw error;
+        }
+    }
+
+
+    async function resolveTornLib() {
+        const runtime = await waitForInitialRuntime();
+
+        if (runtime === 'core') {
+            return {
+                library: globalThis.ConsidiousTornLib,
+                pda: isPdaRuntime(),
+                loadMode: isPdaRuntime()
+                    ? 'pda-preloaded'
+                    : (globalThis.ConsidiousTornLib.LOAD_MODE || 'unknown')
+            };
+        }
+
+        if (runtime === 'pda') {
+            return {
+                library: await loadTornLibThroughPda(),
+                pda: true,
+                loadMode: 'pda-remote'
+            };
+        }
+
         throw new Error(
-            'Considious Torn Library did not become available within 5 seconds.'
+            'Core Lib was not supplied by @require and Torn PDA was not detected.'
         );
     }
 
 
-    let TornLib;
+    let coreRuntime;
 
     try {
-        TornLib = await waitForTornLib();
+        coreRuntime = await resolveTornLib();
     } catch (error) {
         console.error(
             '[SLINK Leveling] Core Lib failed to load:',
@@ -54,15 +179,20 @@
         alert(
             'SLINK Leveling could not start.\n\n' +
             'Considious Torn Core did not load.\n\n' +
-            'Torn PDA users: make sure "Core Lib" is installed, enabled, ' +
-            'and set to Injection Time: Start.'
+            (isPdaRuntime()
+                ? 'Torn PDA could not download Core Lib automatically. ' +
+                    'Check your connection and reload Torn.'
+                : 'Check that your userscript manager allowed the @require dependency.')
         );
 
         return;
     }
 
 
-    const SCRIPT_VERSION = '0.12.2';
+    const TornLib = coreRuntime.library;
+    const PDA_RUNTIME = coreRuntime.pda;
+    const CORE_LOAD_MODE = coreRuntime.loadMode;
+    const SCRIPT_VERSION = '0.12.3';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-14';
@@ -97,6 +227,8 @@
     const CHECK_PACING_GRACE_MS = 5_000;
     const LOCAL_CHECK_RETRY_MS = 24 * 60 * 60 * 1000;
     const MAX_LOCAL_PENDING_CHECKS = 600;
+    const PDA_UI_HEARTBEAT_MS = 1_000;
+    const PDA_UI_RECOVERY_GAP_MS = 3_000;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
@@ -117,7 +249,8 @@
         pendingChecks: 'slinkyLeveling.pendingChecks.v1',
         completedCheckBatches: 'slinkyLeveling.completedCheckBatches.v1',
         acceptedConsentVersion: 'slinkyLeveling.acceptedConsentVersion.v1',
-        uiHidden: 'slinkyLeveling.uiHidden.v1'
+        uiHidden: 'slinkyLeveling.uiHidden.v1',
+        uiHeartbeat: 'slinkyLeveling.uiHeartbeat.v1'
     };
 
     const persistedRuntime = loadJson(KEYS.runtimeState, {});
@@ -154,7 +287,8 @@
         leader: null
     };
     let panelDragController = null;
-    const PDA_CORE_MODE = TornLib.LOAD_MODE === 'standalone';
+    let pdaUiHeartbeatTimer = null;
+    const PDA_CORE_MODE = PDA_RUNTIME;
 
 
     // ================================================================
@@ -1368,7 +1502,7 @@
             lastFairFightAt: state.lastFairFightAt,
             lastFairFightRequested: state.lastFairFightRequested,
             lastFairFightSaved: state.lastFairFightSaved,
-            coreLoadMode: TornLib.LOAD_MODE || 'unknown',
+            coreLoadMode: CORE_LOAD_MODE,
             uiHidden: isUiHidden(),
             lastError: state.lastError || '',
             recentEvents: state.clientEvents.slice(-20).reverse()
@@ -1412,18 +1546,70 @@
     // UI
     // ================================================================
 
-    function isUiHidden() {
+    function readUiHiddenRecord() {
         const stored = loadJson(KEYS.uiHidden, false);
-        return stored === true || stored?.hidden === true;
+
+        if (stored === true || stored === 'true') {
+            return { hidden: true };
+        }
+        if (!stored || stored === false || stored === 'false') {
+            return { hidden: false };
+        }
+        if (typeof stored === 'string') {
+            try {
+                const parsed = JSON.parse(stored);
+                return parsed && typeof parsed === 'object'
+                    ? parsed
+                    : { hidden: Boolean(parsed) };
+            } catch {
+                return { hidden: false };
+            }
+        }
+
+        return typeof stored === 'object'
+            ? stored
+            : { hidden: false };
+    }
+
+
+    function isUiHidden() {
+        return readUiHiddenRecord().hidden === true;
     }
 
 
     function setUiHidden(hidden) {
-        saveJson(
+        GM_setValue(
             KEYS.uiHidden,
-            hidden
+            JSON.stringify(hidden
                 ? { hidden: true, hiddenAt: Date.now() }
-                : { hidden: false, restoredAt: Date.now() }
+                : { hidden: false, restoredAt: Date.now() })
+        );
+    }
+
+
+    function refreshPdaUiHeartbeat() {
+        if (!PDA_RUNTIME) return;
+        GM_setValue(KEYS.uiHeartbeat, Date.now());
+    }
+
+
+    function recoverPdaUiAfterReenable() {
+        if (!PDA_RUNTIME) return;
+
+        const lastHeartbeat = Number(GM_getValue(KEYS.uiHeartbeat, 0)) || 0;
+        const heartbeatGap = lastHeartbeat ? Date.now() - lastHeartbeat : Infinity;
+
+        if (isUiHidden() && heartbeatGap >= PDA_UI_RECOVERY_GAP_MS) {
+            setUiHidden(false);
+            console.info(
+                '[SLINK Leveling] Restored the PDA interface after a fresh script activation.'
+            );
+        }
+
+        refreshPdaUiHeartbeat();
+        pdaUiHeartbeatTimer = setInterval(
+            refreshPdaUiHeartbeat,
+            PDA_UI_HEARTBEAT_MS
         );
     }
 
@@ -1912,11 +2098,16 @@
             render();
         });
         panel.querySelector('#slp-hide-forever')?.addEventListener('click', () => {
+            const recoveryMessage = PDA_RUNTIME
+                ? 'The interface will remain hidden while this PDA script stays ' +
+                    'active. Disable the script for a few seconds and re-enable ' +
+                    'it to restore the interface.\n\n'
+                : 'The interface will remain hidden until you restore it from ' +
+                    'the userscript menu, or disable and re-enable the plugin.\n\n';
             const confirmed = window.confirm(
                 'This will hide the SLINK interface, including the bubble. ' +
-                'Background API contribution will continue. The interface will ' +
-                'remain hidden until you restore it from the userscript menu, ' +
-                'or disable and re-enable the plugin where supported.\n\n' +
+                'Background API contribution will continue. ' +
+                recoveryMessage +
                 'Hide the interface now?'
             );
             if (!confirmed) return;
@@ -1999,6 +2190,7 @@
     async function start() {
         installStyles();
         registerUiRecoveryCommand();
+        recoverPdaUiAfterReenable();
         initializePanel();
 
         state.leader = TornLib.createTabLeaderLease('slinky-leveling-targets', {
