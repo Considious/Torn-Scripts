@@ -13,6 +13,10 @@ access is then resolved from this database:
   grant in `user_scope_grants`;
 - Considious [3853023] receives `admin.*` through a permanent direct grant.
 
+Product Workers must additionally reject `admin.*` for every user except Torn
+ID `3853023`. The Leveling Worker performs that hard check, so an accidental or
+malicious grant row cannot create another administrator.
+
 Each product Worker binds this same database as `PERMISSIONS_DB` and enforces
 its own required scope. Browser clients never connect to D1 directly.
 
@@ -89,3 +93,7 @@ WHERE user_id = 1234567
 
 Existing signed product sessions may remain valid until their short session
 expiration. New authentication attempts use the current database state.
+
+The Leveling Worker reads this database only when authenticating a session, not
+on every polling request. Active paid grants cap the signed session expiration
+at the purchase expiration; all other sessions last no more than 12 hours.

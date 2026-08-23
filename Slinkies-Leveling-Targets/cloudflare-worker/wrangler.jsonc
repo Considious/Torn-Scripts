@@ -15,6 +15,8 @@
       "database_name": "slink-consent-ledger",
       "database_id": "283aee6d-a1b9-44eb-8b3b-f48aa7274711"
     }
+    // Add the existing slink-permissions database here after copying its D1
+    // database ID from Cloudflare. The required binding name is PERMISSIONS_DB.
   ],
   "secrets": {
     "required": [

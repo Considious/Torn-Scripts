@@ -8,7 +8,10 @@ deployment credentials or member API keys.
 
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
-version. Release 0.11.0 is identified as `0.11.0-batched-observations`.
+version. The current release is identified as
+`0.13.3-central-permissions`. It retains the read-optimized client scheduling
+introduced in 0.12.0 while moving product access to the standalone permissions
+database.
 
 ## Cloudflare configuration
 
@@ -16,6 +19,8 @@ The Worker expects:
 
 - `DB`: the existing D1 database;
 - `CONSENT_DB`: the separate append-only SLINK terms acceptance database;
+- `PERMISSIONS_DB`: the standalone `slink-permissions` D1 database described in
+  [`../../SLINK-Permissions`](../../SLINK-Permissions/README.md);
 - `ADMIN_TOKEN`: the secret protecting `/api/admin/*`;
 - `SESSION_SECRET`: the secret signing individual 12-hour member sessions;
 - `FFSCOUTER_API_KEY`: the operator-owned key used only by scheduled
@@ -32,15 +37,15 @@ Keep all secrets in Cloudflare and out of this repository.
 ## Required versioned consent
 
 The full SLINK API & Data Terms are published in versioned folders under
-[`../terms`](../terms/README.md). The August 14, 2026 release is consent version
-`2026-08-14`. Its original Word document is preserved alongside an accessible
-Markdown transcription.
+[`../terms`](../terms/README.md). The current August 23, 2026 release is consent
+version `2026-08-23` and includes the paid-product access model.
 
 Authentication fails closed unless the request explicitly accepts the current
 version. The Worker performs this check before contacting Torn. After Torn
-returns the member identity, the Worker writes one permanent acceptance row for
-that Torn user, terms version, service, and disclosure version to `CONSENT_DB`;
-only then does it issue the session. Re-authentication to the same versions uses
+returns the user's identity and current faction, the Worker resolves active
+`slink.level` grants from `PERMISSIONS_DB`, writes one permanent acceptance row
+for that Torn user, terms version, service, and disclosure version to
+`CONSENT_DB`, and only then issues the session. Re-authentication to the same versions uses
 the existing row without overwriting its original timestamp. Future overall
 terms or Leveling-disclosure versions create another row, and sessions carrying
 older versions stop authenticating.
@@ -51,6 +56,27 @@ acceptance time, client identity/version, and the explicit-checkbox method. It
 does not store the Torn API key, IP address, or browser user-agent. The Worker
 has no update or deletion path for acceptance records, and database triggers
 reject accidental updates or deletions.
+
+## Product access and permissions
+
+Current Slinky's faction members receive `slink.level` from the faction grant
+for faction `46978`. A nonmember must have an active direct `slink.level` grant,
+normally from a purchase or a manual assignment. Future grants, expired grants,
+and revoked grants do not authorize a session. When the effective Leveling
+grant expires in less than 12 hours, the signed session expires at that same
+time instead of outliving the purchase.
+
+`admin.*` is reserved for Considious, Torn user `3853023`. The Worker filters
+that scope from every other user's resolved grants even if an erroneous D1 row
+exists. Normal Leveling routes require `slink.level`; signed admin sessions may
+also access `/api/admin/*`, while the existing `X-Admin-Token` remains available
+for operator automation.
+
+Permissions are read during authentication and embedded in the signed session.
+Routine recommendation and collection requests therefore do not query the
+permissions database on every poll. Revoked or changed grants take effect on
+the next authentication; existing sessions remain bounded by their signed
+expiration, with a maximum lifetime of 12 hours.
 
 ## Data ownership
 
@@ -127,20 +153,20 @@ available pool permits it.
 | `GET` | `/api/health` | Public | D1 connectivity and table counts |
 | `GET` | `/api/terms` | Public | Current required terms, fingerprint, link, and Leveling disclosure |
 | `POST` | `/api/auth` | Public | Record current consent, verify a Torn key once, and issue a version-bound session |
-| `GET` | `/api/session` | Member session | Inspect the signed session |
-| `GET` | `/api/targets` | Member session | Read paginated leveling targets |
-| `GET` | `/api/recommendations` | Member session | Return targets and renew collector coordination |
-| `POST` | `/api/collector/heartbeat` | Member session | Backward-compatible manual collector renewal |
-| `POST` | `/api/checks/claim` | Member session | Receive a deterministic share of due Torn status checks |
-| `POST` | `/api/observations` | Member session | Submit status observations |
-| `POST` | `/api/activity` | Member session | Share activity-snapshot matches |
-| `POST` | `/api/fair-fight` | Member session | Deprecated no-op; Fair Fight stays local |
-| `POST` | `/api/admin/bootstrap-targets` | Admin token | Refresh targets from the master CSV |
-| `POST` | `/api/admin/discover-targets` | Admin token | Run one FFScouter leveling-catalog discovery pass |
-| `GET` | `/api/admin/targets` | Admin token | Inspect paginated targets |
+| `GET` | `/api/session` | Signed session | Inspect roles and effective scopes |
+| `GET` | `/api/targets` | `slink.level` | Read paginated leveling targets |
+| `GET` | `/api/recommendations` | `slink.level` | Return targets and renew collector coordination |
+| `POST` | `/api/collector/heartbeat` | `slink.level` | Backward-compatible manual collector renewal |
+| `POST` | `/api/checks/claim` | `slink.level` | Receive a deterministic share of due Torn status checks |
+| `POST` | `/api/observations` | `slink.level` | Submit status observations |
+| `POST` | `/api/activity` | `slink.level` | Share activity-snapshot matches |
+| `POST` | `/api/fair-fight` | `slink.level` | Deprecated no-op; Fair Fight stays local |
+| `POST` | `/api/admin/bootstrap-targets` | `admin.*` or admin token | Refresh targets from the master CSV |
+| `POST` | `/api/admin/discover-targets` | `admin.*` or admin token | Run one FFScouter leveling-catalog discovery pass |
+| `GET` | `/api/admin/targets` | `admin.*` or admin token | Inspect paginated targets |
 
-Member routes use `Authorization: Bearer <session token>`. Admin routes use
-`X-Admin-Token: <admin token>`.
+Scoped routes use `Authorization: Bearer <session token>`. Admin routes accept
+the sole administrator's signed session or `X-Admin-Token: <admin token>`.
 
 The client derives its interval capacity from Considious Torn Core Lib's shared
 60-per-minute allowance. At the five-minute default it can accept up to 300
@@ -149,6 +175,11 @@ actually due. The client spaces those checks across the interval and every Torn
 request still passes through Core Lib, so other installed scripts remain part
 of the same rate limit. Observation uploads use up to 200 rows per Worker
 request to avoid unnecessary invocations.
+
+Only the `admin.*` session may set its routine API contribution capacity to
+zero. All other users must contribute through the normal Core Lib-controlled
+allowance; the Worker rejects a zero-capacity claim even if a client bypasses
+the GUI restriction.
 
 Release 0.11.0 also handles each observation upload as bounded D1 batches.
 Targets, prior statuses, and seven-day hospital history are preloaded in groups;
@@ -181,6 +212,12 @@ The separate consent database uses
 consent database, then bind it to the Worker as `CONSENT_DB`. It is intentionally
 not numbered as a migration for the main target database.
 
+The standalone permissions database uses
+[`../../SLINK-Permissions/migrations/0001-permissions.sql`](../../SLINK-Permissions/migrations/0001-permissions.sql).
+Bind that database as `PERMISSIONS_DB`. It is intentionally separate from the
+Leveling target database so future SLINK products can use the same grants
+without routing through Leveling.
+
 ## Test
 
 Run `npm test` in this directory. The test suite uses Node's built-in test
@@ -189,4 +226,5 @@ low-write coordination, scheduling, activity, personal target-stat ranges,
 source-neutral ranking, unique target leasing,
 local-only Fair Fight estimates, collector failover, fair check sharing,
 interval pacing, fail-closed versioned consent, append-only acceptance records,
-old-session invalidation, parsing, and CORS.
+old-session invalidation, centralized grants, purchase-expiry capping,
+admin-only zero contribution, parsing, and CORS.

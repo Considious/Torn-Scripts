@@ -1,41 +1,44 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.12.0-hybrid-scheduler
+ * Release: 0.13.3-central-permissions
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.12.0-hybrid-scheduler';
+const WORKER_VERSION = '0.13.3-central-permissions';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
     'Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
 const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
 
-const TERMS_VERSION = '2026-08-14';
-const TERMS_EFFECTIVE_AT = '2026-08-14';
+const TERMS_VERSION = '2026-08-23';
+const TERMS_EFFECTIVE_AT = '2026-08-23';
 const TERMS_URL =
     'https://github.com/Considious/Torn-Scripts/blob/main/' +
-    'Slinkies-Leveling-Targets/terms/2026-08-14/' +
+    'Slinkies-Leveling-Targets/terms/2026-08-23/' +
     'SLINK_API_Data_Terms_of_Service.md';
 const TERMS_DOCUMENT_SHA256 =
-    '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
+    '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
 const LEVELING_SERVICE_ID = 'slink-leveling-service';
-const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
 const LEVELING_DISCLOSURE_SHA256 =
-    '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+    'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
 const LEVELING_TERMS_SUMMARY =
-    'Your Torn API key is sent to SLINK only for faction authentication and ' +
-    'is otherwise used locally for assigned Torn requests; ordinary member ' +
-    'keys are not stored remotely. SLINK persistently shares target status, ' +
-    'hospital timing, activity matches, competition measurements, scheduling ' +
-    'and coordination data with authorized Slinky\'s members. Exact member ' +
-    'battle stats and Fair Fight values stay in this browser. Your Torn user ' +
-    'ID, the accepted terms version, document fingerprint and acceptance time ' +
-    'are retained in SLINK\'s separate consent ledger.';
+    'Your Torn API key is sent to SLINK only to verify your Torn identity and ' +
+    'current faction and is otherwise used locally for assigned Torn requests; ' +
+    'ordinary user keys are not stored remotely. Leveling access requires ' +
+    'slink.level, granted automatically to current Slinky\'s members or through ' +
+    'an active direct grant. SLINK persistently shares target status, hospital ' +
+    'timing, activity matches, competition measurements, scheduling and ' +
+    'coordination data with authorized slink.level users. Exact user battle ' +
+    'stats and Fair Fight values stay in this browser. The permissions service ' +
+    'retains your Torn user ID and effective grants; your accepted terms ' +
+    'version, document fingerprint and acceptance time are retained in SLINK\'s ' +
+    'separate consent ledger.';
 
 const IMPORT_BATCH_SIZE = 50;
 const FFSCOUTER_DISCOVERY_LIMIT = 50;
@@ -61,7 +64,9 @@ const STATUS_WRITE_CHUNK_SIZE = 10;
 const HOSPITAL_WRITE_CHUNK_SIZE = 25;
 const LEASE_DELETE_CHUNK_SIZE = 50;
 
-const ALLOWED_FACTION_ID = 46978;
+const LEVELING_SCOPE = 'slink.level';
+const ADMIN_SCOPE = 'admin.*';
+const SOLE_ADMIN_USER_ID = 3853023;
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
 const DEFAULT_CLIENT_POLL_SECONDS = 300;
 const MIN_CLIENT_POLL_SECONDS = 60;
@@ -152,11 +157,12 @@ const worker = {
             url.pathname === '/api/targets' &&
             request.method === 'GET'
         ) {
-            const session = await getAuthenticatedSession(request, env);
-
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
             return handleListTargets(url, env);
         }
@@ -165,76 +171,82 @@ const worker = {
             url.pathname === '/api/recommendations' &&
             request.method === 'GET'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleRecommendations(url, env, session);
+            return handleRecommendations(url, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/collector/heartbeat' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleCollectorHeartbeat(env, session);
+            return handleCollectorHeartbeat(env, authorization.session);
         }
 
         if (
             url.pathname === '/api/checks/claim' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleClaimChecks(request, env, session);
+            return handleClaimChecks(request, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/observations' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleObservations(request, env, session);
+            return handleObservations(request, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/activity' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
-
-            return handleActivityReport(request, env, session);
+            return handleActivityReport(request, env, authorization.session);
         }
 
         if (
             url.pathname === '/api/fair-fight' &&
             request.method === 'POST'
         ) {
-            const session = await getAuthenticatedSession(request, env);
-
-            if (!session) {
-                return memberAuthenticationRequired();
-            }
+            const authorization = await authorizeRequest(
+                request,
+                env,
+                LEVELING_SCOPE
+            );
+            if (authorization.response) return authorization.response;
 
             return handleDeprecatedFairFightReport();
         }
@@ -374,11 +386,60 @@ async function handleHealth(env) {
             );
         }
 
+        if (!env.PERMISSIONS_DB) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    version: WORKER_VERSION,
+                    database: 'connected',
+                    consent_database: 'connected',
+                    permissions_database: 'not_configured',
+                    terms: {
+                        version: TERMS_VERSION,
+                        effective_at: TERMS_EFFECTIVE_AT
+                    },
+                    error: 'The PERMISSIONS_DB binding is required.'
+                },
+                500
+            );
+        }
+
+        let directGrantCount;
+        let factionGrantCount;
+
+        try {
+            [directGrantCount, factionGrantCount] = await Promise.all([
+                env.PERMISSIONS_DB
+                    .prepare('SELECT COUNT(*) AS count FROM user_scope_grants')
+                    .first(),
+                env.PERMISSIONS_DB
+                    .prepare('SELECT COUNT(*) AS count FROM faction_scope_grants')
+                    .first()
+            ]);
+        } catch (error) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    version: WORKER_VERSION,
+                    database: 'connected',
+                    consent_database: 'connected',
+                    permissions_database: 'error',
+                    terms: {
+                        version: TERMS_VERSION,
+                        effective_at: TERMS_EFFECTIVE_AT
+                    },
+                    error: errorMessage(error)
+                },
+                500
+            );
+        }
+
         return jsonResponse({
             ok: true,
             version: WORKER_VERSION,
             database: 'connected',
             consent_database: 'connected',
+            permissions_database: 'connected',
             ffscouter_collector: env.FFSCOUTER_API_KEY
                 ? 'configured'
                 : 'not_configured',
@@ -392,6 +453,8 @@ async function handleHealth(env) {
                 target_status: statusCount?.count ?? 0,
                 hospital_events: hospitalCount?.count ?? 0,
                 scheduler_queue: queueCount?.count ?? 0,
+                user_scope_grants: directGrantCount?.count ?? 0,
+                faction_scope_grants: factionGrantCount?.count ?? 0,
                 ffscouter_targets: ffscouterTargetCount?.count ?? 0
             }
         });
@@ -425,7 +488,7 @@ function handleTerms() {
 
 
 // ================================================================
-// Member authentication and sessions
+// Torn identity, product authorization, and sessions
 // ================================================================
 
 async function handleAuthentication(request, env) {
@@ -445,6 +508,16 @@ async function handleAuthentication(request, env) {
                 {
                     ok: false,
                     error: 'Terms acceptance storage is not configured.'
+                },
+                500
+            );
+        }
+
+        if (!env.PERMISSIONS_DB) {
+            return jsonResponse(
+                {
+                    ok: false,
+                    error: 'Permission storage is not configured.'
                 },
                 500
             );
@@ -537,7 +610,7 @@ async function handleAuthentication(request, env) {
         }
 
         const userId = Number(tornData?.info?.user?.id);
-        const factionId = Number(tornData?.info?.user?.faction_id);
+        const factionId = Number(tornData?.info?.user?.faction_id || 0);
 
         if (!Number.isInteger(userId) || userId <= 0) {
             return jsonResponse(
@@ -549,19 +622,40 @@ async function handleAuthentication(request, env) {
             );
         }
 
-        if (factionId !== ALLOWED_FACTION_ID) {
+        if (!Number.isInteger(factionId) || factionId < 0) {
             return jsonResponse(
                 {
                     ok: false,
-                    error: 'This service is restricted to Slinky faction members.'
+                    error: 'Torn did not return a valid faction identity.'
                 },
-                403
+                401
             );
         }
 
         const acceptedAt = Date.now();
+        const permissions = await loadUserPermissions(
+            env,
+            userId,
+            factionId,
+            acceptedAt
+        );
+
+        if (!hasSessionScope(permissions, LEVELING_SCOPE)) {
+            return permissionDeniedResponse(LEVELING_SCOPE);
+        }
+
         const issuedAt = Math.floor(acceptedAt / 1000);
-        const expiresAt = issuedAt + SESSION_LIFETIME_SECONDS;
+        const permissionExpiresAt = permissions.expiresAt === null
+            ? Number.POSITIVE_INFINITY
+            : Math.floor(permissions.expiresAt / 1000);
+        const expiresAt = Math.min(
+            issuedAt + SESSION_LIFETIME_SECONDS,
+            permissionExpiresAt
+        );
+
+        if (!Number.isFinite(expiresAt) || expiresAt <= issuedAt) {
+            return permissionDeniedResponse(LEVELING_SCOPE);
+        }
         const sessionId = crypto.randomUUID();
 
         try {
@@ -593,6 +687,8 @@ async function handleAuthentication(request, env) {
             session_id: sessionId,
             terms_version: TERMS_VERSION,
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
+            roles: permissions.roles,
+            scopes: permissions.scopes,
             iat: issuedAt,
             exp: expiresAt
         };
@@ -609,9 +705,11 @@ async function handleAuthentication(request, env) {
             faction_id: factionId,
             terms_version: TERMS_VERSION,
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
+            roles: permissions.roles,
+            scopes: permissions.scopes,
             terms_accepted_at: new Date(acceptedAt).toISOString(),
             expires_at: new Date(expiresAt * 1000).toISOString(),
-            expires_in: SESSION_LIFETIME_SECONDS,
+            expires_in: expiresAt - issuedAt,
             session_token: sessionToken
         });
     } catch (error) {
@@ -711,9 +809,114 @@ async function handleSessionCheck(request, env) {
         session_id: session.session_id,
         terms_version: session.terms_version,
         disclosure_version: session.disclosure_version,
+        roles: session.roles,
+        scopes: session.scopes,
         issued_at: new Date(session.iat * 1000).toISOString(),
         expires_at: new Date(session.exp * 1000).toISOString()
     });
+}
+
+
+async function authorizeRequest(request, env, requiredScope) {
+    const session = await getAuthenticatedSession(request, env);
+
+    if (!session) {
+        return { session: null, response: memberAuthenticationRequired() };
+    }
+
+    if (!hasSessionScope(session, requiredScope)) {
+        return {
+            session: null,
+            response: permissionDeniedResponse(requiredScope)
+        };
+    }
+
+    return { session, response: null };
+}
+
+
+async function loadUserPermissions(env, userId, factionId, now = Date.now()) {
+    const result = await env.PERMISSIONS_DB
+        .prepare(`
+            SELECT scope, expires_at
+            FROM user_scope_grants
+            WHERE user_id = ?1
+              AND status = 'active'
+              AND starts_at <= ?3
+              AND (expires_at IS NULL OR expires_at > ?3)
+
+            UNION ALL
+
+            SELECT scope, expires_at
+            FROM faction_scope_grants
+            WHERE faction_id = ?2
+              AND status = 'active'
+              AND starts_at <= ?3
+              AND (expires_at IS NULL OR expires_at > ?3)
+            ORDER BY scope ASC
+        `)
+        .bind(userId, factionId, now)
+        .all();
+    const scopeExpirations = new Map();
+
+    for (const row of result.results || []) {
+        const scope = String(row?.scope || '').trim();
+        if (!scope) continue;
+
+        // admin.* is deliberately non-delegable even if an accidental row is
+        // inserted into D1 for another Torn user.
+        if (
+            userId !== SOLE_ADMIN_USER_ID &&
+            sessionScopeMatches(scope, ADMIN_SCOPE)
+        ) continue;
+
+        const expiration = row.expires_at === null || row.expires_at === undefined
+            ? null
+            : Number(row.expires_at);
+        const current = scopeExpirations.get(scope);
+
+        if (!scopeExpirations.has(scope)) {
+            scopeExpirations.set(scope, expiration);
+        } else if (current === null || expiration === null) {
+            scopeExpirations.set(scope, null);
+        } else {
+            scopeExpirations.set(scope, Math.max(current, expiration));
+        }
+    }
+
+    const scopes = [...scopeExpirations.keys()].sort();
+    const levelingGrantExpirations = [...scopeExpirations.entries()]
+        .filter(([scope]) => sessionScopeMatches(scope, LEVELING_SCOPE))
+        .map(([, expiration]) => expiration);
+    const levelingExpiresAt = levelingGrantExpirations.some(value => value === null)
+        ? null
+        : Math.max(...levelingGrantExpirations.filter(Number.isFinite));
+    return {
+        roles: scopes.includes(ADMIN_SCOPE) ? ['admin'] : ['member'],
+        scopes,
+        expiresAt: Number.isFinite(levelingExpiresAt)
+            ? levelingExpiresAt
+            : null
+    };
+}
+
+
+function sessionScopeMatches(grantedScope, requiredScope) {
+    if (grantedScope === '*' || grantedScope === requiredScope) return true;
+    if (!grantedScope.endsWith('.*')) return false;
+    return requiredScope.startsWith(grantedScope.slice(0, -1));
+}
+
+
+function hasSessionScope(session, requiredScope) {
+    const required = String(requiredScope || '').trim();
+    if (!required) return true;
+    if (
+        required === ADMIN_SCOPE &&
+        session?.user_id !== SOLE_ADMIN_USER_ID
+    ) return false;
+    return (Array.isArray(session?.scopes) ? session.scopes : [])
+        .some(scope => sessionScopeMatches(String(scope), required));
 }
 
 
@@ -786,16 +989,22 @@ async function verifySessionToken(token, secret) {
         if (
             !Number.isInteger(payload.user_id) ||
             payload.user_id <= 0 ||
-            payload.faction_id !== ALLOWED_FACTION_ID ||
+            !Number.isInteger(payload.faction_id) ||
+            payload.faction_id < 0 ||
             typeof payload.session_id !== 'string' ||
             !payload.session_id ||
             payload.terms_version !== TERMS_VERSION ||
             payload.disclosure_version !== LEVELING_DISCLOSURE_VERSION ||
+            !Array.isArray(payload.roles) ||
+            !payload.roles.every(role => typeof role === 'string') ||
+            !Array.isArray(payload.scopes) ||
+            !payload.scopes.every(scope => typeof scope === 'string') ||
             !Number.isInteger(payload.iat) ||
             !Number.isInteger(payload.exp) ||
             payload.exp <= now ||
             payload.iat > now ||
-            payload.exp - payload.iat !== SESSION_LIFETIME_SECONDS
+            payload.exp - payload.iat <= 0 ||
+            payload.exp - payload.iat > SESSION_LIFETIME_SECONDS
         ) {
             return null;
         }
@@ -1604,6 +1813,12 @@ async function handleClaimChecks(request, env, session) {
             0,
             MAX_CHECK_PLAN_ROWS
         );
+        if (
+            intervalCapacity === 0 &&
+            !hasSessionScope(session, ADMIN_SCOPE)
+        ) {
+            return permissionDeniedResponse(ADMIN_SCOPE);
+        }
         const pollSeconds = boundedInteger(
             body?.poll_seconds,
             DEFAULT_CLIENT_POLL_SECONDS,
@@ -1630,6 +1845,20 @@ async function handleClaimChecks(request, env, session) {
                 now,
                 pollSeconds
             );
+        }
+
+        if (intervalCapacity === 0) {
+            return collectorLeaseResponse(collectorLease, {
+                count: 0,
+                capacity: 0,
+                interval_capacity: 0,
+                due_count: 0,
+                active_collectors: 0,
+                fair_share: 0,
+                claim_seconds: Math.floor(claimLifetimeMs / 1000),
+                admin_zero_contribution: true,
+                checks: []
+            });
         }
 
         if (!collectorLease.collector) {
@@ -2819,6 +3048,15 @@ function normalizeObservationSource(value) {
 // ================================================================
 
 async function isAdminRequest(request, env) {
+    const session = await getAuthenticatedSession(request, env);
+
+    if (
+        session?.user_id === SOLE_ADMIN_USER_ID &&
+        hasSessionScope(session, ADMIN_SCOPE)
+    ) {
+        return true;
+    }
+
     const suppliedToken = request.headers.get('X-Admin-Token');
 
     if (!suppliedToken || !env.ADMIN_TOKEN) {
@@ -3185,6 +3423,18 @@ function memberAuthenticationRequired() {
             error: 'A valid SLINK Leveling session is required.'
         },
         401
+    );
+}
+
+
+function permissionDeniedResponse(requiredScope) {
+    return jsonResponse(
+        {
+            ok: false,
+            error: `SLINK permission required: ${requiredScope}`,
+            required_scope: requiredScope
+        },
+        403
     );
 }
 

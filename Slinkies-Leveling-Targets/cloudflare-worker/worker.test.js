@@ -8,13 +8,13 @@ import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
-const WORKER_VERSION = '0.12.0-hybrid-scheduler';
-const TERMS_VERSION = '2026-08-14';
+const WORKER_VERSION = '0.13.3-central-permissions';
+const TERMS_VERSION = '2026-08-23';
 const TERMS_DOCUMENT_SHA256 =
-    '398d720e740d2d22fc4c594c2ae7b787aa8a8e267c93a4e7c7c354eb1888f2f4';
-const LEVELING_DISCLOSURE_VERSION = '2026-08-14';
+    '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
+const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
 const LEVELING_DISCLOSURE_SHA256 =
-    '336b08215844da186a78031b0a01fbb2090d0ca32c86bb243b8e36f098bcb18d';
+    'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
 const SESSION_SECRET = 'test-session-secret';
 const originalDateNow = Date.now;
 
@@ -35,6 +35,7 @@ describe('SLINK Leveling Worker', () => {
         const env = {
             DB: db,
             CONSENT_DB: createConsentDatabase(),
+            PERMISSIONS_DB: createPermissionsDatabase(),
             ADMIN_TOKEN: 'correct-admin-token'
         };
 
@@ -66,6 +67,7 @@ describe('SLINK Leveling Worker', () => {
             version: WORKER_VERSION,
             database: 'connected',
             consent_database: 'connected',
+            permissions_database: 'connected',
             ffscouter_collector: 'not_configured',
             ffscouter_filters: {
                 minimum_level: 30,
@@ -82,6 +84,8 @@ describe('SLINK Leveling Worker', () => {
                 target_status: 0,
                 hospital_events: 0,
                 scheduler_queue: 0,
+                user_scope_grants: 1,
+                faction_scope_grants: 1,
                 ffscouter_targets: 0
             }
         });
@@ -127,23 +131,15 @@ describe('SLINK Leveling Worker', () => {
         assert.match(terms.document_url, /SLINK_API_Data_Terms_of_Service\.md$/);
         const publishedTerms = readFileSync(
             new URL(
-                '../terms/2026-08-14/SLINK_API_Data_Terms_of_Service.md',
+                '../terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md',
                 import.meta.url
             )
         );
         assert.equal(
-            createHash('sha256').update(publishedTerms).digest('hex'),
+            createHash('sha256')
+                .update(publishedTerms.toString('utf8').replace(/\r\n/g, '\n'))
+                .digest('hex'),
             TERMS_DOCUMENT_SHA256
-        );
-        const originalTerms = readFileSync(
-            new URL(
-                '../terms/2026-08-14/SLINK_API_Data_Terms_of_Service.docx',
-                import.meta.url
-            )
-        );
-        assert.equal(
-            createHash('sha256').update(originalTerms).digest('hex'),
-            '5303acaf9a596a5799f15731faa7b55e4862172048a8474b5d18c372b6e8d99d'
         );
         assert.equal(
             createHash('sha256')
@@ -169,7 +165,12 @@ describe('SLINK Leveling Worker', () => {
         };
 
         const consentDb = createConsentDatabase();
-        const env = { SESSION_SECRET, CONSENT_DB: consentDb };
+        const env = {
+            DB: createDatabase(),
+            SESSION_SECRET,
+            CONSENT_DB: consentDb,
+            PERMISSIONS_DB: createPermissionsDatabase()
+        };
         const unconfiguredResponse = await worker.fetch(
             jsonRequest('https://worker.example/api/auth', {
                 api_key: 'test-torn-key',
@@ -216,6 +217,8 @@ describe('SLINK Leveling Worker', () => {
             LEVELING_DISCLOSURE_VERSION
         );
         assert.equal(authBody.expires_in, 43200);
+        assert.deepEqual(authBody.roles, ['admin']);
+        assert.deepEqual(authBody.scopes, ['admin.*', 'slink.level']);
         assert.ok(authBody.session_token);
         assert.equal(tornRequests, 1);
 
@@ -279,11 +282,103 @@ describe('SLINK Leveling Worker', () => {
         assert.equal(sessionResponse.status, 200);
         const sessionBody = await sessionResponse.json();
         assert.equal(sessionBody.authenticated, true);
+        assert.deepEqual(sessionBody.roles, ['admin']);
+        assert.deepEqual(sessionBody.scopes, ['admin.*', 'slink.level']);
         assert.equal(sessionBody.terms_version, TERMS_VERSION);
         assert.equal(
             sessionBody.disclosure_version,
             LEVELING_DISCLOSURE_VERSION
         );
+    });
+
+
+    it('uses faction membership as a free grant and permits active paid non-members', async () => {
+        const now = 1_800_000_000_000;
+        Date.now = () => now;
+        let tornIdentity = { id: 7001, faction_id: 46978 };
+        globalThis.fetch = async () => Response.json({
+            info: { user: tornIdentity }
+        });
+
+        const permissionsDb = createPermissionsDatabase();
+        const env = {
+            DB: createDatabase(),
+            SESSION_SECRET,
+            CONSENT_DB: createConsentDatabase(),
+            PERMISSIONS_DB: permissionsDb
+        };
+        const authenticate = () => worker.fetch(
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key',
+                terms_accepted: true,
+                terms_version: TERMS_VERSION,
+                terms_sha256: TERMS_DOCUMENT_SHA256,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+                client_name: 'Permission model test',
+                client_version: '0.13.3'
+            }),
+            env
+        );
+
+        const factionResponse = await authenticate();
+        assert.equal(factionResponse.status, 200);
+        assert.deepEqual((await factionResponse.json()).scopes, ['slink.level']);
+
+        tornIdentity = { id: 7002, faction_id: 12345 };
+        const unentitledResponse = await authenticate();
+        assert.equal(unentitledResponse.status, 403);
+        assert.equal(
+            (await unentitledResponse.json()).required_scope,
+            'slink.level'
+        );
+
+        permissionsDb.sqlite.prepare(`
+            INSERT INTO user_scope_grants (
+                user_id, scope, source, status, starts_at, expires_at,
+                granted_by, external_reference, note, created_at, updated_at
+            )
+            VALUES (?1, 'slink.level', 'purchase', 'active', ?2, ?3,
+                3853023, 'ORDER-7002', '30 minute test access', ?2, ?2)
+        `).run(7002, now - 1_000, now + (30 * 60 * 1000));
+        permissionsDb.sqlite.prepare(`
+            INSERT INTO user_scope_grants (
+                user_id, scope, source, status, starts_at, expires_at,
+                granted_by, note, created_at, updated_at
+            )
+            VALUES (?1, 'admin.*', 'manual', 'active', ?2, NULL,
+                3853023, 'Must be ignored for non-owner', ?2, ?2)
+        `).run(7002, now - 1_000);
+
+        const paidResponse = await authenticate();
+        const paidBody = await paidResponse.json();
+        assert.equal(paidResponse.status, 200);
+        assert.equal(paidBody.faction_id, 12345);
+        assert.deepEqual(paidBody.roles, ['member']);
+        assert.deepEqual(paidBody.scopes, ['slink.level']);
+        assert.equal(paidBody.expires_in, 30 * 60);
+
+        tornIdentity = { id: 7003, faction_id: 0 };
+        permissionsDb.sqlite.prepare(`
+            INSERT INTO user_scope_grants (
+                user_id, scope, source, status, starts_at, expires_at,
+                granted_by, external_reference, note, created_at, updated_at
+            )
+            VALUES (?1, 'slink.level', 'purchase', 'active', ?2, ?3,
+                3853023, 'ORDER-EXPIRED', 'Expired test access', ?2, ?2)
+        `).run(7003, now - 10_000, now - 1_000);
+        assert.equal((await authenticate()).status, 403);
+
+        tornIdentity = { id: 7004, faction_id: 0 };
+        permissionsDb.sqlite.prepare(`
+            INSERT INTO user_scope_grants (
+                user_id, scope, source, status, starts_at, expires_at,
+                granted_by, external_reference, note, created_at, updated_at
+            )
+            VALUES (?1, 'slink.level', 'manual', 'revoked', ?2, NULL,
+                3853023, NULL, 'Revoked test access', ?2, ?2)
+        `).run(7004, now - 10_000);
+        assert.equal((await authenticate()).status, 403);
     });
 
 
@@ -308,6 +403,77 @@ describe('SLINK Leveling Worker', () => {
             const response = await worker.fetch(request, env);
             assert.equal(response.status, 401);
         }
+    });
+
+
+    it('enforces slink.level and reserves zero contribution for the sole admin', async () => {
+        const db = createDatabase();
+        const env = { DB: db, SESSION_SECRET };
+        const noLevelToken = await sessionToken(
+            9001,
+            crypto.randomUUID(),
+            []
+        );
+        const deniedLevel = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/targets',
+                noLevelToken
+            ),
+            env
+        );
+        assert.equal(deniedLevel.status, 403);
+        assert.equal((await deniedLevel.json()).required_scope, 'slink.level');
+
+        const memberToken = await sessionToken(9002);
+        const deniedZero = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                memberToken,
+                { interval_capacity: 0, poll_seconds: 300 }
+            ),
+            env
+        );
+        assert.equal(deniedZero.status, 403);
+        assert.equal((await deniedZero.json()).required_scope, 'admin.*');
+
+        const forgedAdmin = await sessionToken(
+            9002,
+            crypto.randomUUID(),
+            ['admin.*', 'slink.level']
+        );
+        const deniedForgedAdmin = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/admin/targets?limit=1',
+                forgedAdmin
+            ),
+            env
+        );
+        assert.equal(deniedForgedAdmin.status, 401);
+
+        const adminToken = await sessionToken(
+            3853023,
+            crypto.randomUUID(),
+            ['admin.*', 'slink.level']
+        );
+        const allowedZero = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/checks/claim',
+                adminToken,
+                { interval_capacity: 0, poll_seconds: 300 }
+            ),
+            env
+        );
+        assert.equal(allowedZero.status, 200);
+        assert.equal((await allowedZero.json()).admin_zero_contribution, true);
+
+        const bearerAdmin = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/admin/targets?limit=1',
+                adminToken
+            ),
+            env
+        );
+        assert.equal(bearerAdmin.status, 200);
     });
 
 
@@ -1236,6 +1402,8 @@ describe('SLINK Leveling Worker', () => {
                 session_id: crypto.randomUUID(),
                 terms_version: TERMS_VERSION,
                 disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                roles: ['admin'],
+                scopes: ['admin.*', 'slink.level'],
                 iat: now - 43201,
                 exp: now - 1
             },
@@ -1354,6 +1522,21 @@ function createConsentDatabase() {
 }
 
 
+function createPermissionsDatabase() {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(
+        readFileSync(
+            new URL(
+                '../../SLINK-Permissions/migrations/0001-permissions.sql',
+                import.meta.url
+            ),
+            'utf8'
+        )
+    );
+    return new D1DatabaseAdapter(sqlite);
+}
+
+
 class D1DatabaseAdapter {
     constructor(sqlite) {
         this.sqlite = sqlite;
@@ -1459,7 +1642,11 @@ class MemoryCache {
 }
 
 
-async function sessionToken(userId, sessionId = crypto.randomUUID()) {
+async function sessionToken(
+    userId,
+    sessionId = crypto.randomUUID(),
+    scopes = ['slink.level']
+) {
     const now = Math.floor(Date.now() / 1000);
     return testing.createSessionToken(
         {
@@ -1468,6 +1655,8 @@ async function sessionToken(userId, sessionId = crypto.randomUUID()) {
             session_id: sessionId,
             terms_version: TERMS_VERSION,
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
+            roles: scopes.includes('admin.*') ? ['admin'] : ['member'],
+            scopes,
             iat: now,
             exp: now + 43200
         },
