@@ -6,7 +6,8 @@ importScripts(
   '../core/messaging.js',
   '../core/http.js',
   '../core/worker-client.js',
-  '../core/torn-api-limiter.js'
+  '../core/torn-api-limiter.js',
+  'leveling-service.js'
 );
 
 const SLINK = globalThis.SLINK_EXTENSION;
@@ -69,12 +70,13 @@ async function capabilityStatus() {
 }
 
 async function recordDiagnostic(source) {
-  const [worker, capabilities, tornApiUsage, alarm, pageInjection] = await Promise.all([
+  const [worker, capabilities, tornApiUsage, alarm, pageInjection, leveling] = await Promise.all([
     SLINK.core.workerClient.probe({ deep: true }),
     capabilityStatus(),
     SLINK.core.tornApiLimiter.getUsage(),
     chrome.alarms.get(CONNECTION_ALARM),
-    SLINK.core.storage.get('diagnostics.pageInjection', null)
+    SLINK.core.storage.get('diagnostics.pageInjection', null),
+    SLINK.services.leveling.publicStatus()
   ]);
   await SLINK.core.storage.set('worker.lastStatus', worker);
 
@@ -92,6 +94,13 @@ async function recordDiagnostic(source) {
     },
     worker,
     pageInjection,
+    leveling: {
+      configured: leveling.configured,
+      authenticated: leveling.session.authenticated,
+      targets: leveling.runtime.targets.length,
+      pendingChecks: leveling.runtime.pendingChecks,
+      collector: leveling.runtime.collector
+    },
     capabilities,
     tornApiUsage
   };
@@ -117,7 +126,14 @@ const routes = {
       SLINK.core.tornApiLimiter.getUsage(),
       connectionStatus()
     ]);
-    return { permissions, capabilities, lastDiagnostic, tornApiUsage, worker };
+    return {
+      permissions,
+      capabilities,
+      lastDiagnostic,
+      tornApiUsage,
+      worker,
+      leveling: await SLINK.services.leveling.publicStatus()
+    };
   },
 
   async 'permissions.get'() {
@@ -158,7 +174,9 @@ const routes = {
       alarm: await chrome.alarms.get(CONNECTION_ALARM),
       worker: await connectionStatus()
     };
-  }
+  },
+
+  ...SLINK.services.leveling.routes
 };
 
 chrome.runtime.onMessage.addListener(SLINK.core.messaging.createRouter(routes));

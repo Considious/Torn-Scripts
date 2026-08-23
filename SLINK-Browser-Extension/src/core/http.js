@@ -63,10 +63,30 @@
     return data;
   }
 
+  async function requestText(capabilityName, input, options = {}) {
+    const url = validateUrl(capabilityName, input);
+    if (!await hasCapability(capabilityName)) {
+      const error = new Error(`${SLINK.core.permissions.getCapability(capabilityName).label} permission has not been granted.`);
+      error.code = 'SLINK_BROWSER_PERMISSION_REQUIRED';
+      throw error;
+    }
+
+    const response = await fetch(url, options);
+    const text = await response.text();
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}`);
+      error.code = 'SLINK_HTTP_ERROR';
+      error.status = response.status;
+      throw error;
+    }
+    return text;
+  }
+
   SLINK.define('core', 'http', Object.freeze({
     CAPABILITY_ORIGINS,
     hasCapability,
     requestJson,
+    requestText,
     validateUrl
   }));
 })(globalThis);

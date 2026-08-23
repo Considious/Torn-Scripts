@@ -4,7 +4,7 @@
   const SLINK = global.SLINK_EXTENSION;
   if (!SLINK) throw new Error('SLINK runtime must load before the UI shell.');
 
-  const HOST_ID = 'slink-extension-foundation';
+  const HOST_ID = 'slink-extension-panel';
 
   const STYLES = `
     :host { all: initial; }
@@ -41,6 +41,7 @@
     .label { color: #93a7ba; }
     .value { overflow-wrap: anywhere; color: #f5f9ff; }
     .actions { display: flex; gap: 6px; padding: 0 10px 10px; }
+    .actions:empty { display: none; }
     .actions button { flex: 1; padding: 4px 8px; }
     @media (max-width: 420px) {
       .shell { right: 4px; top: 4px; width: min(300px, calc(100vw - 8px)); }
@@ -76,9 +77,7 @@
       </header>
       <div class="status" role="status"></div>
       <div class="content"></div>
-      <div class="actions">
-        <button class="refresh" type="button">Run diagnostic</button>
-      </div>
+      <div class="actions"></div>
     `;
 
     shell.querySelector('.title').textContent = options.title || 'SLINK';
@@ -88,7 +87,9 @@
     const content = shell.querySelector('.content');
     const head = shell.querySelector('.head');
     const status = shell.querySelector('.status');
-    const refresh = shell.querySelector('.refresh');
+    const actions = shell.querySelector('.actions');
+    const moduleStyle = document.createElement('style');
+    shadow.appendChild(moduleStyle);
     let drag = null;
 
     function clampPosition(left, top) {
@@ -169,6 +170,35 @@
       },
       resetPosition,
       setPosition,
+      setTitle(value) {
+        shell.querySelector('.title').textContent = String(value || 'SLINK');
+      },
+      setSubtitle(value) {
+        shell.querySelector('.subtitle').textContent = String(value || '');
+      },
+      setModuleStyles(value) {
+        moduleStyle.textContent = String(value || '');
+      },
+      setContentHtml(value) {
+        content.innerHTML = String(value || '');
+      },
+      getContentElement() {
+        return content;
+      },
+      setActions(definitions) {
+        actions.replaceChildren();
+        for (const definition of definitions || []) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = String(definition.label || 'Action');
+          button.disabled = Boolean(definition.disabled);
+          if (definition.id) button.dataset.action = String(definition.id);
+          if (typeof definition.onClick === 'function') {
+            button.addEventListener('click', event => void definition.onClick(event));
+          }
+          actions.appendChild(button);
+        }
+      },
       setStatus(message, tone = 'normal') {
         status.textContent = String(message || '');
         status.dataset.tone = String(tone || 'normal');
@@ -187,9 +217,6 @@
           item.append(label, value);
           content.appendChild(item);
         }
-      },
-      onRefresh(handler) {
-        refresh.addEventListener('click', () => void handler());
       },
       onHide(handler) {
         shell.querySelector('.hide').addEventListener('click', () => void handler());

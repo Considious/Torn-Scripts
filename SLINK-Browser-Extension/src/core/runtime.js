@@ -3,7 +3,7 @@
 
   if (global.SLINK_EXTENSION) return;
 
-  const VERSION = '0.1.1';
+  const VERSION = '0.2.0';
   const STORAGE_PREFIX = 'slink.';
 
   const runtime = {
@@ -11,6 +11,7 @@
     STORAGE_PREFIX,
     core: Object.create(null),
     modules: Object.create(null),
+    services: Object.create(null),
     define(group, name, value) {
       if (!runtime[group] || typeof runtime[group] !== 'object') {
         throw new Error(`Unknown SLINK namespace: ${group}`);

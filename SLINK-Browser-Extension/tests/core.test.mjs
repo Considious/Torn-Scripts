@@ -74,11 +74,12 @@ for (const file of [
 ]) load(context, file);
 
 const SLINK = context.SLINK_EXTENSION;
-assert(SLINK.VERSION === '0.1.1', 'Unexpected runtime version.');
+assert(SLINK.VERSION === '0.2.0', 'Unexpected runtime version.');
 assert(SLINK.core.format.escapeHtml('<a>') === '&lt;a&gt;', 'HTML escaping failed.');
 assert(SLINK.core.format.shortNumber(1_250_000) === '1.25M', 'Short-number formatting failed.');
 
 const permissions = SLINK.core.permissions;
+assert(Object.values(permissions.BROWSER_CAPABILITIES).every(capability => capability.optional === false), 'A core host was marked optional.');
 assert(permissions.hasScope({ scopes: ['leveling.read'] }, 'leveling.read'), 'Exact scope matching failed.');
 assert(permissions.hasScope({ scopes: ['leveling.*'] }, 'leveling.configure'), 'Wildcard scope matching failed.');
 assert(!permissions.hasScope({ scopes: ['leveling.read'] }, 'admin.users'), 'Unrelated scope was granted.');
@@ -146,4 +147,4 @@ const routed = await new Promise(resolve => {
 });
 assert(routed.ok && routed.data.value === 7, 'Message router returned the wrong response.');
 
-console.log('Core storage, scopes, modules, HTTP guard, limiter, and messaging checks passed.');
+console.log('Core storage, required hosts, scopes, modules, HTTP guard, limiter, and messaging checks passed.');

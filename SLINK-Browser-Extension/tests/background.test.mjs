@@ -37,12 +37,13 @@ const chrome = {
     async contains({ origins }) {
       return origins.every(origin => [
         'https://api.torn.com/*',
+        'https://ffscouter.com/*',
         'https://slinkyleveling.richard-johnson554.workers.dev/*'
       ].includes(origin));
     }
   },
   runtime: {
-    getManifest() { return { version: '0.1.1' }; },
+    getManifest() { return { version: '0.2.0' }; },
     onInstalled,
     onMessage,
     onStartup
@@ -67,22 +68,68 @@ let context;
 context = vm.createContext({
   chrome,
   console,
-  fetch: async input => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({
+  fetch: async (input, options = {}) => {
+    const url = new URL(String(input));
+    let body = { ok: true };
+    if (url.hostname === 'slinkyleveling.richard-johnson554.workers.dev') {
+      if (url.pathname === '/') body = { ok: true, service: 'SLINK Leveling API', version: 'test-worker' };
+      if (url.pathname === '/api/health') body = { ok: true, version: 'test-worker', database: 'connected', consent_database: 'connected' };
+      if (url.pathname === '/api/terms') body = {
+        ok: true,
+        version: 'test-terms',
+        effective_at: '2026-08-14',
+        document_url: 'https://example.test/terms',
+        document_sha256: 'terms-hash',
+        disclosure_version: 'test-disclosure',
+        disclosure_sha256: 'disclosure-hash',
+        leveling_service_summary: 'Test disclosure.'
+      };
+      if (url.pathname === '/api/auth') body = {
+        ok: true,
+        session_token: 'signed-test-session',
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        user_id: 3853023
+      };
+      if (url.pathname === '/api/recommendations') body = {
+        ok: true,
+        version: 'test-worker',
+        collector: true,
+        collector_expires_at: Date.now() + 300_000,
+        targets: [{ id: 123, name: 'Target', level: 50, status: 'Okay', total_stats: 1000 }]
+      };
+      if (url.pathname === '/api/checks/claim') body = {
+        ok: true,
+        collector: true,
+        checks: [{ id: 123, check_batch_id: 'batch-1' }]
+      };
+      if (url.pathname === '/api/targets') body = { ok: true, targets: [{ id: 123 }] };
+      if (url.pathname === '/api/observations') body = {
+        ok: true,
+        accepted_count: 1,
+        rejected_count: 0,
+        accepted: [{ target_id: 123 }],
+        rejected: []
+      };
+    } else if (url.hostname === 'api.torn.com') {
+      if (url.pathname.endsWith('/battlestats')) body = {
+        battlestats: { strength: 100, defense: 100, speed: 100, dexterity: 100, total: 400 }
+      };
+      else if (url.pathname.endsWith('/snapshot')) body = 'id,name\n123,Target\n';
+      else body = { profile: { status: { state: 'Okay', description: 'Okay', until: 0 } } };
+    } else if (url.hostname === 'ffscouter.com') {
+      body = [{ player_id: 123, fair_fight: 2, bs_estimate: 1000, source: 'FFScouter' }];
+    }
+    return {
       ok: true,
-      service: 'SLINK Leveling API',
-      version: 'test-worker',
-      ...(String(input).endsWith('/api/health') ? {
-        database: 'connected',
-        consent_database: 'connected'
-      } : {})
-    })
-  }),
+      status: 200,
+      text: async () => typeof body === 'string' ? body : JSON.stringify(body),
+      requestMethod: options.method || 'GET'
+    };
+  },
   setTimeout,
   clearTimeout,
   URL,
+  URLSearchParams,
   importScripts(...relativePaths) {
     for (const relativePath of relativePaths) {
       const filename = path.resolve(workerDirectory, relativePath);
@@ -120,9 +167,10 @@ const status = await send('system.status');
 assert(status.ok, 'System status route failed.');
 assert(status.data.permissions.scopes.includes('diagnostics.read'), 'System status omitted bootstrap scopes.');
 assert(status.data.capabilities.tornApi.granted === true, 'Capability status did not report the granted mock host.');
-assert(status.data.capabilities.ffscouter.granted === false, 'Capability status reported an ungranted host.');
+assert(status.data.capabilities.ffscouter.granted === true, 'Required FFScouter capability was not granted.');
 assert(status.data.capabilities.slinkWorker.granted === true, 'Required Worker capability was not granted.');
 assert(status.data.worker.connected === true, 'System status did not report a real Worker connection.');
+assert(status.data.leveling.terms.accepted === false, 'Fresh Leveling terms should require acceptance.');
 
 const injection = await send(
   'content.ready',
@@ -131,15 +179,41 @@ const injection = await send(
 );
 assert(injection.ok && injection.data.tabId === 7, 'Torn page injection was not recorded.');
 
+const saved = await send('leveling.settings.save', {
+  tornKey: 'torn-test-key',
+  ffKey: 'ff-test-key',
+  pollSeconds: 60,
+  minFF: 1,
+  maxFF: 3,
+  acceptTerms: true
+});
+assert(saved.ok && saved.data.session.authenticated, 'Leveling settings did not authenticate.');
+assert(!JSON.stringify(saved.data).includes('torn-test-key'), 'Public Leveling state leaked the Torn API key.');
+assert(!JSON.stringify(saved.data).includes('signed-test-session'), 'Public Leveling state leaked the Worker session token.');
+
+const prepared = await send('leveling.cycle.prepare');
+assert(prepared.ok && prepared.data.status.runtime.targets.length === 1, 'Leveling cycle did not load recommendations.');
+assert(prepared.data.checks.length === 1, 'Leveling cycle did not preserve assigned checks.');
+assert(prepared.data.status.runtime.targets[0].fair_fight === 2, 'FFScouter result was not applied locally.');
+
+const checked = await send('leveling.check', prepared.data.checks[0]);
+assert(checked.ok && checked.data.target_id === 123, 'Assigned Torn check failed.');
+const submitted = await send('leveling.observations.submit', { observations: [checked.data] });
+assert(submitted.ok && submitted.data.runtime.pendingChecks === 0, 'Accepted observation did not clear pending work.');
+
+const leader = await send('leveling.leader.claim', {}, { id: 'test', tab: { id: 7 } });
+assert(leader.ok && leader.data.leader, 'Torn tab did not acquire the local Leveling leader lease.');
+
 const diagnostic = await send('diagnostics.run');
 assert(diagnostic.ok && diagnostic.data.source === 'manual', 'Manual diagnostic route failed.');
 assert(values.get('slink.diagnostics.lastRun')?.source === 'manual', 'Manual diagnostic result was not persisted.');
 assert(diagnostic.data.worker.database === 'connected', 'Diagnostic did not include deep Worker health.');
 assert(diagnostic.data.pageInjection.tabId === 7, 'Diagnostic did not include Torn injection state.');
+assert(diagnostic.data.leveling.configured === true, 'Diagnostic did not include Leveling configuration state.');
 
 values.delete('slink.worker.lastStatus');
 onAlarm.fire({ name: 'slink.worker.connection' });
 await new Promise(resolve => setTimeout(resolve, 0));
 assert(values.get('slink.worker.lastStatus')?.connected === true, 'Alarm connection status was not persisted.');
 
-console.log('Background startup, alarm, capability, route, and diagnostic checks passed.');
+console.log('Background startup, required capabilities, Leveling auth/collection, routes, alarms, and diagnostics passed.');

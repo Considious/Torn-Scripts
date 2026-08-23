@@ -10,8 +10,8 @@
 
   const SLINK = global.SLINK_EXTENSION;
   const ui = SLINK.core.uiShell.createShell({
-    title: 'SLINK Foundation',
-    subtitle: 'No SLINK systems are enabled yet'
+    title: 'SLINK',
+    subtitle: 'Starting systems...'
   });
 
   ui.onHide(async () => {

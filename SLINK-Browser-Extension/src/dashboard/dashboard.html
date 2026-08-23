@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SLINK Dashboard</title>
+    <link rel="stylesheet" href="dashboard.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span>SL</span><div><h1>SLINK Dashboard</h1><p>Shared Live Intelligence NetworK</p></div></div>
+      <div class="top-actions">
+        <span id="connection" class="badge">Checking</span>
+        <a class="button secondary" href="https://www.torn.com/" target="_blank" rel="noopener noreferrer">Open Torn</a>
+        <button id="refresh-all" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="card overview">
+        <div class="section-heading"><h2>SLINK Leveling</h2><span id="leveling-role" class="muted">Setup required</span></div>
+        <div class="stats">
+          <div><b id="target-count">0</b><span>Targets</span></div>
+          <div><b id="assigned-count">0</b><span>Assigned</span></div>
+          <div><b id="reported-count">0</b><span>Reported</span></div>
+          <div><b id="pending-count">0</b><span>Pending</span></div>
+          <div><b id="api-usage">0/60</b><span>API / min</span></div>
+        </div>
+        <p id="leveling-status" class="status-line">Loading Leveling state...</p>
+        <p id="leveling-error" class="error" hidden></p>
+        <div class="row-actions">
+          <button id="refresh-targets" type="button">Refresh recommendations</button>
+          <label class="toggle"><input id="page-panel" type="checkbox"> Show movable panel on Torn</label>
+          <button id="reset-position" class="secondary" type="button">Reset panel position</button>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <div class="section-heading"><h2>Leveling setup</h2><span id="session-state" class="muted">Not authenticated</span></div>
+        <div id="terms" class="terms">
+          <div class="section-heading"><strong>SLINK API &amp; Data Terms</strong><button id="toggle-terms" class="small secondary" type="button">View terms</button></div>
+          <div id="terms-full" hidden>
+            <p id="terms-summary"></p>
+            <a id="terms-link" href="#" target="_blank" rel="noopener noreferrer">Read the complete terms</a>
+            <label class="agreement"><input id="accept-terms" type="checkbox"> <span id="agreement-label">I agree to the current terms.</span></label>
+          </div>
+          <p id="terms-accepted" class="muted"></p>
+        </div>
+        <form id="settings-form" class="settings-grid">
+          <label class="wide">Torn API key
+            <input id="torn-key" type="password" autocomplete="off" placeholder="Required">
+          </label>
+          <label class="wide">FFScouter API key
+            <input id="ff-key" type="password" autocomplete="off" placeholder="Required for refined Fair Fight values">
+          </label>
+          <label>Poll seconds<input id="poll-seconds" type="number" min="60" max="300"></label>
+          <label>Minimum FF<input id="min-ff" type="number" min="1" max="3" step="0.1"></label>
+          <label>Maximum FF<input id="max-ff" type="number" min="1" max="3" step="0.1"></label>
+          <div class="form-actions wide">
+            <button type="submit">Save and authenticate</button>
+            <button id="clear-session" class="secondary" type="button">Clear session</button>
+            <button id="clear-ff" class="secondary" type="button">Remove FFScouter key</button>
+            <button id="clear-torn" class="danger" type="button">Remove Torn key</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card targets-card">
+        <div class="section-heading"><h2>Recommendations</h2><span id="target-summary" class="muted">No targets loaded</span></div>
+        <div id="targets" class="targets"></div>
+      </section>
+
+      <section class="card diagnostic-card">
+        <div class="section-heading"><h2>Extension diagnostic</h2><button id="run-diagnostic" type="button">Run diagnostic</button></div>
+        <pre id="diagnostic">Run a diagnostic to see the extension, Torn injection, and Worker health report.</pre>
+      </section>
+    </main>
+
+    <script src="../core/runtime.js"></script>
+    <script src="../core/format.js"></script>
+    <script src="../core/storage.js"></script>
+    <script src="../core/messaging.js"></script>
+    <script src="dashboard.js"></script>
+  </body>
+</html>

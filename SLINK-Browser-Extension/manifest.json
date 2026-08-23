@@ -1,19 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "SLINK Foundation",
-  "version": "0.1.1",
-  "description": "Shared Live Intelligence NetworK extension foundation for Torn.",
+  "name": "SLINK",
+  "version": "0.2.0",
+  "description": "Shared Live Intelligence NetworK with SLINK Leveling for Torn.",
   "permissions": [
     "alarms",
     "storage"
   ],
   "host_permissions": [
     "https://www.torn.com/*",
-    "https://slinkyleveling.richard-johnson554.workers.dev/*"
-  ],
-  "optional_host_permissions": [
     "https://api.torn.com/*",
-    "https://ffscouter.com/*"
+    "https://ffscouter.com/*",
+    "https://slinkyleveling.richard-johnson554.workers.dev/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -21,6 +19,10 @@
   "action": {
     "default_title": "SLINK",
     "default_popup": "src/popup/popup.html"
+  },
+  "options_ui": {
+    "page": "src/dashboard/dashboard.html",
+    "open_in_tab": true
   },
   "content_scripts": [
     {
@@ -36,7 +38,7 @@
         "src/core/messaging.js",
         "src/core/modules.js",
         "src/content/ui-shell.js",
-        "src/modules/diagnostics.js",
+        "src/modules/leveling.js",
         "src/content/content-script.js"
       ]
     }

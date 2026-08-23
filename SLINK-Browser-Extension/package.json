@@ -1,8 +1,8 @@
 {
   "name": "slink-browser-extension",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
-  "description": "Chrome-first SLINK browser extension foundation.",
+  "description": "Chrome-first SLINK browser extension with SLINK Leveling.",
   "scripts": {
     "test": "node tests/validate-extension.mjs && node tests/core.test.mjs && node tests/background.test.mjs"
   }

@@ -7,12 +7,12 @@
   const BROWSER_CAPABILITIES = Object.freeze({
     tornApi: Object.freeze({
       label: 'Torn API',
-      optional: true,
+      optional: false,
       origins: Object.freeze(['https://api.torn.com/*'])
     }),
     ffscouter: Object.freeze({
       label: 'FFScouter',
-      optional: true,
+      optional: false,
       origins: Object.freeze(['https://ffscouter.com/*'])
     }),
     slinkWorker: Object.freeze({
