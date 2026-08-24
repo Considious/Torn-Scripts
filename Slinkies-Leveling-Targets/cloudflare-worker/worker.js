@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.13.4-permissions-client-scheduling
+ * Release: 0.14.0-donated-virtual-collectors
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.13.4-permissions-client-scheduling';
+const WORKER_VERSION = '0.14.0-donated-virtual-collectors';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -24,6 +24,7 @@ const TERMS_URL =
 const TERMS_DOCUMENT_SHA256 =
     '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
 const LEVELING_SERVICE_ID = 'slink-leveling-service';
+const CONTRIBUTION_LEVELING_SERVICE_ID = 'slink.level';
 const LEVELING_DISCLOSURE_VERSION = '2026-08-23';
 const LEVELING_DISCLOSURE_SHA256 =
     'e1d595a7c8c9e5a8f105bf52d7157c4d40b91314293725391422b14de97fd91d';
@@ -56,6 +57,7 @@ const MAX_TARGET_STATS_FILTER = Number.MAX_SAFE_INTEGER;
 const MAX_MEMBER_BATCH_ROWS = 200;
 const MAX_CHECK_PLAN_ROWS = 300;
 const MAX_CHECK_SNAPSHOT_ROWS = 2_000;
+const MAX_VIRTUAL_CHECK_ROWS = 10;
 const MAX_ACTIVITY_TARGETS_PER_REQUEST = 1_000;
 const MAX_JSON_BODY_BYTES = 256 * 1024;
 // D1 allows 100 bound parameters and 50 queries per Free-plan invocation.
@@ -105,7 +107,7 @@ const textEncoder = new TextEncoder();
 // ================================================================
 
 const worker = {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
         if (request.method === 'OPTIONS') {
@@ -177,7 +179,13 @@ const worker = {
             );
             if (authorization.response) return authorization.response;
 
-            return handleRecommendations(url, env, authorization.session);
+            const response = await handleRecommendations(
+                url,
+                env,
+                authorization.session
+            );
+            scheduleVirtualCollector(ctx, env, authorization.session);
+            return response;
         }
 
         if (
@@ -2845,6 +2853,7 @@ function normalizeObservationSource(value) {
 
     if (source === 'attack_page') return 'attack_page';
     if (source === 'torn_api') return 'torn_api';
+    if (source === 'donated_torn_api') return 'donated_torn_api';
     return 'client';
 }
 
@@ -3230,6 +3239,118 @@ function memberAuthenticationRequired() {
         },
         401
     );
+}
+
+
+function scheduleVirtualCollector(ctx, env, session) {
+    if (
+        Number(session?.user_id) === SOLE_ADMIN_USER_ID ||
+        !env.CONTRIBUTION_SERVICE ||
+        !env.CONTRIBUTION_SERVICE_TOKEN
+    ) return;
+
+    const work = runVirtualCollectorCycle(env, session).catch(error => {
+        console.error(JSON.stringify({
+            event: 'slink_leveling_virtual_collector_failed',
+            version: WORKER_VERSION,
+            user_id: Number(session?.user_id) || 0,
+            error: errorMessage(error)
+        }));
+    });
+    if (ctx?.waitUntil) ctx.waitUntil(work);
+}
+
+
+async function runVirtualCollectorCycle(env, session) {
+    const targets = await selectVirtualCheckTargets(env, Date.now());
+    const response = await env.CONTRIBUTION_SERVICE.fetch(
+        new Request('https://slink-contribution.internal/api/internal/collect', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-SLINK-Service-Token': env.CONTRIBUTION_SERVICE_TOKEN
+            },
+            body: JSON.stringify({
+                service_id: CONTRIBUTION_LEVELING_SERVICE_ID,
+                user_id: Number(session.user_id),
+                is_admin: false,
+                targets
+            })
+        })
+    );
+    const result = await response.json();
+    if (!response.ok || result?.ok !== true) {
+        throw new Error(
+            result?.error ||
+            'Contribution service rejected the collection request.'
+        );
+    }
+
+    const observations = Array.isArray(result?.observations)
+        ? result.observations.slice(0, MAX_VIRTUAL_CHECK_ROWS)
+        : [];
+    if (!observations.length) return result;
+
+    const now = Date.now();
+    const context = await loadObservationContext(env, observations, now);
+    const virtualSession = {
+        user_id: positiveIntegerOrNull(result?.donor_user_id) || session.user_id,
+        session_id: String(result?.virtual_session_id || 'virtual-collector'),
+        scopes: [LEVELING_SCOPE]
+    };
+    const plans = [];
+    for (const observation of observations) {
+        try {
+            plans.push(prepareTargetObservation(
+                virtualSession,
+                observation,
+                context,
+                now
+            ));
+        } catch (error) {
+            console.error(JSON.stringify({
+                event: 'slink_leveling_virtual_observation_rejected',
+                target_id: positiveIntegerOrNull(observation?.target_id),
+                error: errorMessage(error)
+            }));
+        }
+    }
+    await persistTargetObservations(env, plans);
+    return { ...result, persisted_count: plans.length };
+}
+
+
+async function selectVirtualCheckTargets(env, now) {
+    const activityCutoff = Math.floor((now - ACTIVITY_WINDOW_MS) / 1000);
+    const result = await env.DB
+        .prepare(`
+            SELECT t.id
+            FROM targets AS t
+            LEFT JOIN target_status AS status
+                ON status.target_id = t.id
+            LEFT JOIN target_activity AS activity
+                ON activity.target_id = t.id
+            WHERE (
+                    activity.last_seen_at IS NULL
+                    OR activity.last_seen_at < ?1
+                  )
+              AND COALESCE(status.hiding_out, 0) = 0
+              AND COALESCE(status.permanent_federal, 0) = 0
+              AND (
+                    status.target_id IS NULL
+                    OR CAST(COALESCE(status.next_check_at, '0') AS INTEGER) <= ?2
+                  )
+            ORDER BY
+                CASE WHEN status.target_id IS NULL THEN 0 ELSE 1 END ASC,
+                COALESCE(status.competition_score, 0) ASC,
+                CAST(COALESCE(status.last_checked_at, '0') AS INTEGER) ASC,
+                t.level DESC,
+                t.id ASC
+            LIMIT ?3
+        `)
+        .bind(activityCutoff, now, MAX_VIRTUAL_CHECK_ROWS)
+        .all();
+    return (result.results || []).map(row => ({ id: Number(row.id) }));
 }
 
 

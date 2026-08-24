@@ -28,12 +28,14 @@ describe('SLINK Contribution Service', () => {
         );
         assert.deepEqual(await health.json(), {
             ok: true,
-            version: '0.1.0-encrypted-key-vault',
+            version: '0.2.0-demand-collectors',
             database: 'connected',
             encryption_secret: 'configured',
             service_token: 'configured',
             active_donations: 0,
-            queued_jobs: 0
+            queued_jobs: 0,
+            active_services: 0,
+            active_virtual_collectors: 0
         });
 
         const terms = await worker.fetch(
@@ -182,6 +184,85 @@ describe('SLINK Contribution Service', () => {
         );
         assert.equal((await fetched.json()).job.result.profile.status.state, 'Okay');
     });
+
+
+    it('runs a donated key as a prioritized virtual collector only for non-admin demand', async () => {
+        const env = createEnv();
+        globalThis.fetch = tornFetch({ accessType: 'Public Only', accessLevel: 1 });
+        await worker.fetch(donationRequest('virtual-key'), env);
+
+        const admin = await worker.fetch(
+            jsonRequest(
+                'https://contribution.example/api/internal/collect',
+                {
+                    service_id: 'slink.level',
+                    user_id: 3853023,
+                    is_admin: true,
+                    targets: [{ id: 123 }]
+                },
+                { 'X-SLINK-Service-Token': SERVICE_TOKEN }
+            ),
+            env
+        );
+        const adminBody = await admin.json();
+        assert.equal(adminBody.reason, 'admin_activity_excluded');
+        assert.equal(adminBody.observations.length, 0);
+
+        const member = await worker.fetch(
+            jsonRequest(
+                'https://contribution.example/api/internal/collect',
+                {
+                    service_id: 'slink.level',
+                    user_id: 1234567,
+                    is_admin: false,
+                    targets: [{ id: 123 }]
+                },
+                { 'X-SLINK-Service-Token': SERVICE_TOKEN }
+            ),
+            env
+        );
+        const memberBody = await member.json();
+        assert.equal(member.status, 200);
+        assert.equal(memberBody.active, true);
+        assert.equal(memberBody.observations[0].target_id, 123);
+        assert.equal(memberBody.observations[0].state, 'Okay');
+        assert.ok(memberBody.virtual_session_id);
+
+        const session = env.PERMISSIONS_DB.sqlite
+            .prepare("SELECT * FROM virtual_collector_sessions WHERE status = 'active'")
+            .get();
+        assert.equal(session.service_id, 'slink.level');
+        assert.equal(session.donor_user_id, 3853023);
+
+        const now = Date.now();
+        env.PERMISSIONS_DB.sqlite.prepare(`
+            UPDATE contribution_services
+            SET enabled = 1
+            WHERE service_id = 'slink.mug-watch'
+        `).run();
+        env.PERMISSIONS_DB.sqlite.prepare(`
+            INSERT INTO contribution_service_activity (
+                service_id, user_id, is_admin, last_seen_at, active_until
+            )
+            VALUES ('slink.mug-watch', 2222, 0, ?, ?)
+        `).run(now, now + 60_000);
+        const deferred = await worker.fetch(
+            jsonRequest(
+                'https://contribution.example/api/internal/collect',
+                {
+                    service_id: 'slink.level',
+                    user_id: 1234567,
+                    is_admin: false,
+                    targets: [{ id: 123 }]
+                },
+                { 'X-SLINK-Service-Token': SERVICE_TOKEN }
+            ),
+            env
+        );
+        const deferredBody = await deferred.json();
+        assert.equal(deferredBody.deferred, true);
+        assert.equal(deferredBody.selected_service, 'slink.mug-watch');
+    });
 });
 
 
@@ -191,6 +272,15 @@ function createEnv() {
         readFileSync(
             new URL(
                 '../SLINK-Permissions/migrations/0002-donated-api-keys.sql',
+                import.meta.url
+            ),
+            'utf8'
+        )
+    );
+    sqlite.exec(
+        readFileSync(
+            new URL(
+                '../SLINK-Permissions/migrations/0003-demand-driven-collectors.sql',
                 import.meta.url
             ),
             'utf8'

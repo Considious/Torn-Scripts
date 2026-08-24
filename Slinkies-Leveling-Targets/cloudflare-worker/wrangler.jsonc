@@ -3,7 +3,14 @@
   "name": "slinkyleveling",
   "main": "worker.js",
   "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
   "keep_vars": true,
+  "services": [
+    {
+      "binding": "CONTRIBUTION_SERVICE",
+      "service": "slinkcontributionworker"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -22,7 +29,8 @@
     "required": [
       "ADMIN_TOKEN",
       "SESSION_SECRET",
-      "FFSCOUTER_API_KEY"
+      "FFSCOUTER_API_KEY",
+      "CONTRIBUTION_SERVICE_TOKEN"
     ]
   },
   "triggers": {

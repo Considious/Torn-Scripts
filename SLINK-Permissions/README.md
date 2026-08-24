@@ -35,6 +35,13 @@ in this same database. Those tables are owned by the separate SLINK
 Contribution Worker. Product Workers submit allowlisted work to that service
 and must not read encrypted key columns directly.
 
+Then run
+[`migrations/0003-demand-driven-collectors.sql`](migrations/0003-demand-driven-collectors.sql)
+to add product priorities, recent non-admin demand, one-hour empty-pool
+backoff, and virtual collector sessions. `slink.level` is enabled at priority
+200. The future `slink.mug-watch` entry is seeded at priority 300 but remains
+disabled until that product exists.
+
 The initial migration is additive and rerunnable. It seeds the Slinky's faction
 grant and the sole owner administration grant.
 

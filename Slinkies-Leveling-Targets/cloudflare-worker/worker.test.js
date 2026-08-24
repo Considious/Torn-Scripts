@@ -7,7 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.13.4-permissions-client-scheduling';
+const WORKER_VERSION = '0.14.0-donated-virtual-collectors';
 const TERMS_VERSION = '2026-08-23';
 const TERMS_DOCUMENT_SHA256 =
     '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
@@ -468,6 +468,79 @@ describe('SLINK Leveling Worker', () => {
             env
         );
         assert.equal(bearerAdmin.status, 200);
+    });
+
+
+    it('runs donated collection in the background for members but never for admin-only use', async () => {
+        const db = createDatabase();
+        const contributionRequests = [];
+        const env = {
+            DB: db,
+            SESSION_SECRET,
+            CONTRIBUTION_SERVICE_TOKEN: 'shared-service-token',
+            CONTRIBUTION_SERVICE: {
+                async fetch(request) {
+                    contributionRequests.push(await request.clone().json());
+                    assert.equal(
+                        request.headers.get('X-SLINK-Service-Token'),
+                        'shared-service-token'
+                    );
+                    return Response.json({
+                        ok: true,
+                        donor_user_id: 7777,
+                        virtual_session_id: 'virtual-test-session',
+                        observations: [{
+                            target_id: 1,
+                            state: 'Hospital',
+                            description: 'In hospital',
+                            until: Math.floor(Date.now() / 1000) + 600,
+                            source: 'donated_torn_api'
+                        }]
+                    });
+                }
+            }
+        };
+
+        const adminBackground = [];
+        const adminToken = await sessionToken(
+            3853023,
+            'admin-virtual-test',
+            ['admin.*', 'slink.level']
+        );
+        await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=1',
+                adminToken
+            ),
+            env,
+            { waitUntil: promise => adminBackground.push(promise) }
+        );
+        assert.equal(adminBackground.length, 0);
+        assert.equal(contributionRequests.length, 0);
+
+        const memberBackground = [];
+        const memberToken = await sessionToken(9002, 'member-virtual-test');
+        await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=1',
+                memberToken
+            ),
+            env,
+            { waitUntil: promise => memberBackground.push(promise) }
+        );
+        assert.equal(memberBackground.length, 1);
+        await Promise.all(memberBackground);
+        assert.equal(contributionRequests.length, 1);
+        assert.equal(contributionRequests[0].service_id, 'slink.level');
+        assert.equal(contributionRequests[0].user_id, 9002);
+        assert.equal(contributionRequests[0].is_admin, false);
+        assert.ok(contributionRequests[0].targets.length > 0);
+        assert.equal(
+            db.sqlite
+                .prepare('SELECT status FROM target_status WHERE target_id = 1')
+                .get().status,
+            'Hospital'
+        );
     });
 
 

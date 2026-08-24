@@ -1,14 +1,14 @@
 /**
  * SLINK Contribution Service
  *
- * Release: 0.1.0-encrypted-key-vault
+ * Release: 0.2.0-demand-collectors
  *
  * Stores only authenticated-encryption ciphertext in D1. Plaintext Torn API
  * keys exist only in request memory during donation validation or scheduled
  * execution and are never returned by an endpoint or written to logs.
  */
 
-const WORKER_VERSION = '0.1.0-encrypted-key-vault';
+const WORKER_VERSION = '0.2.0-demand-collectors';
 const TERMS_VERSION = '2026-08-23';
 const TERMS_EFFECTIVE_AT = '2026-08-23';
 const TERMS_URL =
@@ -34,12 +34,16 @@ const MAX_JSON_BODY_BYTES = 32 * 1024;
 const MAX_JOB_RESULT_BYTES = 128 * 1024;
 const MAX_SCHEDULED_JOBS = 10;
 const MAX_JOB_ATTEMPTS = 5;
-const JOB_RETRY_MS = 5 * 60 * 1000;
+const JOB_RETRY_MS = 60 * 60 * 1000;
+const SERVICE_ACTIVITY_MS = 15 * 60 * 1000;
+const SERVICE_COLLECTION_INTERVAL_MS = 5 * 60 * 1000;
+const VIRTUAL_COLLECTOR_IDLE_MS = 20 * 60 * 1000;
+const MAX_VIRTUAL_CHECKS = 10;
 const textEncoder = new TextEncoder();
 
 
 const worker = {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
         if (request.method === 'OPTIONS') {
             return new Response(null, { status: 204, headers: corsHeaders() });
         }
@@ -63,7 +67,7 @@ const worker = {
         }
 
         if (url.pathname === '/api/donations' && request.method === 'POST') {
-            return handleDonation(request, env);
+            return handleDonation(request, env, ctx);
         }
 
         if (url.pathname === '/api/donations' && request.method === 'GET') {
@@ -75,7 +79,14 @@ const worker = {
         }
 
         if (url.pathname === '/api/internal/jobs' && request.method === 'POST') {
-            return handleCreateJob(request, env);
+            return handleCreateJob(request, env, ctx);
+        }
+
+        if (
+            url.pathname === '/api/internal/collect' &&
+            request.method === 'POST'
+        ) {
+            return handleVirtualCollection(request, env);
         }
 
         if (
@@ -90,6 +101,15 @@ const worker = {
 
     async scheduled(controller, env) {
         const result = await runScheduledJobs(env, controller.scheduledTime);
+        try {
+            await cleanDemandState(env, controller.scheduledTime);
+        } catch (error) {
+            console.error(JSON.stringify({
+                event: 'slink_contribution_demand_cleanup_failed',
+                version: WORKER_VERSION,
+                error: errorMessage(error)
+            }));
+        }
         console.log(JSON.stringify({
             event: 'slink_contribution_schedule',
             version: WORKER_VERSION,
@@ -113,6 +133,7 @@ async function handleHealth(env) {
     }
 
     try {
+        const now = Date.now();
         const [activeKeys, queuedJobs] = await Promise.all([
             env.PERMISSIONS_DB
                 .prepare(`
@@ -129,6 +150,22 @@ async function handleHealth(env) {
                 `)
                 .first()
         ]);
+        const [activeServices, virtualCollectors] = await Promise.all([
+            optionalCount(
+                env,
+                `SELECT COUNT(DISTINCT service_id) AS count
+                 FROM contribution_service_activity
+                 WHERE is_admin = 0 AND active_until > ?1`,
+                [now]
+            ),
+            optionalCount(
+                env,
+                `SELECT COUNT(*) AS count
+                 FROM virtual_collector_sessions
+                 WHERE status = 'active' AND last_used_at > ?1`,
+                [now - VIRTUAL_COLLECTOR_IDLE_MS]
+            )
+        ]);
 
         return jsonResponse({
             ok: true,
@@ -141,7 +178,9 @@ async function handleHealth(env) {
                 ? 'configured'
                 : 'not_configured',
             active_donations: Number(activeKeys?.count) || 0,
-            queued_jobs: Number(queuedJobs?.count) || 0
+            queued_jobs: Number(queuedJobs?.count) || 0,
+            active_services: activeServices,
+            active_virtual_collectors: virtualCollectors
         });
     } catch (error) {
         return jsonResponse({
@@ -150,6 +189,20 @@ async function handleHealth(env) {
             database: 'error',
             error: errorMessage(error)
         }, 500);
+    }
+}
+
+
+async function optionalCount(env, sql, bindings = []) {
+    try {
+        const row = await env.PERMISSIONS_DB
+            .prepare(sql)
+            .bind(...bindings)
+            .first();
+        return Number(row?.count) || 0;
+    } catch {
+        // Keeps the existing vault healthy during the migration rollout.
+        return 0;
     }
 }
 
@@ -169,7 +222,7 @@ function handleTerms() {
 }
 
 
-async function handleDonation(request, env) {
+async function handleDonation(request, env, ctx) {
     try {
         requireDonationConfiguration(env);
         const body = await readJsonBody(request);
@@ -260,6 +313,10 @@ async function handleDonation(request, env) {
             )
             .run();
 
+        if (ctx?.waitUntil) {
+            ctx.waitUntil(wakeContributionWork(env, acceptedAt));
+        }
+
         return jsonResponse({
             ok: true,
             donated: true,
@@ -320,7 +377,7 @@ async function handleDonationRevocation(request, env) {
 }
 
 
-async function handleCreateJob(request, env) {
+async function handleCreateJob(request, env, ctx) {
     try {
         if (!await isServiceRequest(request, env)) {
             return serviceAuthenticationRequired();
@@ -348,7 +405,208 @@ async function handleCreateJob(request, env) {
             )
             .run();
 
+        if (ctx?.waitUntil) {
+            ctx.waitUntil(runScheduledJobs(env, now));
+        }
+
         return jsonResponse({ ok: true, accepted: true, job_id: id }, 202);
+    } catch (error) {
+        return requestErrorResponse(error);
+    }
+}
+
+
+async function handleVirtualCollection(request, env) {
+    try {
+        if (!await isServiceRequest(request, env)) {
+            return serviceAuthenticationRequired();
+        }
+        requireDonationConfiguration(env);
+        const body = await readJsonBody(request);
+        const serviceId = String(body?.service_id || '').trim().slice(0, 100);
+        const userId = positiveInteger(body?.user_id);
+        const isAdmin = body?.is_admin === true;
+        const targets = normalizeVirtualTargets(body?.targets);
+        if (!serviceId || !userId) {
+            throw new RequestValidationError('service_id and user_id are required.');
+        }
+
+        const now = Date.now();
+        const service = await env.PERMISSIONS_DB
+            .prepare(`
+                SELECT service_id, display_name, priority, enabled
+                FROM contribution_services
+                WHERE service_id = ?1
+            `)
+            .bind(serviceId)
+            .first();
+        if (!service || Number(service.enabled) !== 1) {
+            throw new RequestValidationError('The contribution service is not enabled.');
+        }
+
+        await env.PERMISSIONS_DB
+            .prepare(`
+                INSERT INTO contribution_service_activity (
+                    service_id, user_id, is_admin, last_seen_at, active_until
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(service_id, user_id) DO UPDATE SET
+                    is_admin = excluded.is_admin,
+                    last_seen_at = excluded.last_seen_at,
+                    active_until = excluded.active_until
+            `)
+            .bind(
+                serviceId,
+                userId,
+                isAdmin ? 1 : 0,
+                now,
+                now + SERVICE_ACTIVITY_MS
+            )
+            .run();
+
+        if (isAdmin) {
+            return jsonResponse({
+                ok: true,
+                active: false,
+                reason: 'admin_activity_excluded',
+                observations: []
+            });
+        }
+
+        const selectedService = await highestPriorityActiveService(env, now);
+        if (selectedService?.service_id !== serviceId) {
+            return jsonResponse({
+                ok: true,
+                active: true,
+                deferred: true,
+                reason: 'higher_priority_service_active',
+                selected_service: selectedService?.service_id || null,
+                observations: []
+            });
+        }
+
+        if (!targets.length) {
+            return jsonResponse({ ok: true, active: true, observations: [] });
+        }
+        const attempt = await claimServiceAttempt(env, serviceId, now);
+        if (!attempt.claimed) {
+            return jsonResponse({
+                ok: true,
+                active: true,
+                deferred: true,
+                reason: 'service_cooldown',
+                retry_at: attempt.retryAt,
+                observations: []
+            });
+        }
+
+        const donor = await nextDonatedKey(env);
+        if (!donor) {
+            await recordServiceState(
+                env,
+                serviceId,
+                now,
+                now + JOB_RETRY_MS,
+                'waiting_for_key'
+            );
+            return jsonResponse({
+                ok: true,
+                active: true,
+                waiting_for_key: true,
+                retry_at: now + JOB_RETRY_MS,
+                observations: []
+            });
+        }
+
+        const sessionId = await activateVirtualCollector(
+            env,
+            serviceId,
+            donor.user_id,
+            now
+        );
+        try {
+            const apiKey = await decryptApiKey(
+                donor.encrypted_key,
+                donor.encryption_iv,
+                donor.user_id,
+                env.API_KEY_ENCRYPTION_KEY
+            );
+            const observations = [];
+            const failures = [];
+            for (const target of targets) {
+                try {
+                    const data = await performTornBasicRequest(target.id, apiKey);
+                    observations.push(tornBasicObservation(target.id, data));
+                } catch (error) {
+                    if (error?.code === 'TORN_KEY_INVALID') throw error;
+                    failures.push({ target_id: target.id, error: errorMessage(error) });
+                }
+            }
+
+            await env.PERMISSIONS_DB.batch([
+                env.PERMISSIONS_DB
+                    .prepare(`
+                        UPDATE donated_api_keys
+                        SET last_used_at = ?2,
+                            last_validated_at = ?2,
+                            failure_count = 0,
+                            last_error = NULL,
+                            updated_at = ?2
+                        WHERE user_id = ?1
+                    `)
+                    .bind(donor.user_id, now),
+                env.PERMISSIONS_DB
+                    .prepare(`
+                        UPDATE virtual_collector_sessions
+                        SET last_used_at = ?2,
+                            status = 'active',
+                            ended_at = NULL
+                        WHERE session_id = ?1
+                    `)
+                    .bind(sessionId, now)
+            ]);
+            await recordServiceState(
+                env,
+                serviceId,
+                now,
+                now + SERVICE_COLLECTION_INTERVAL_MS,
+                'completed'
+            );
+            return jsonResponse({
+                ok: true,
+                active: true,
+                service_id: serviceId,
+                virtual_session_id: sessionId,
+                donor_user_id: Number(donor.user_id),
+                observations,
+                failures
+            });
+        } catch (error) {
+            const invalid = error?.code === 'TORN_KEY_INVALID';
+            await env.PERMISSIONS_DB.batch([
+                env.PERMISSIONS_DB
+                    .prepare(`
+                        UPDATE donated_api_keys
+                        SET status = CASE WHEN ?3 = 1 THEN 'invalid' ELSE status END,
+                            encrypted_key = CASE WHEN ?3 = 1 THEN NULL ELSE encrypted_key END,
+                            encryption_iv = CASE WHEN ?3 = 1 THEN NULL ELSE encryption_iv END,
+                            failure_count = failure_count + 1,
+                            last_error = ?2,
+                            updated_at = ?4
+                        WHERE user_id = ?1
+                    `)
+                    .bind(donor.user_id, errorMessage(error).slice(0, 300), invalid ? 1 : 0, now),
+                env.PERMISSIONS_DB
+                    .prepare(`
+                        UPDATE virtual_collector_sessions
+                        SET status = 'ended', ended_at = ?2, last_used_at = ?2
+                        WHERE session_id = ?1
+                    `)
+                    .bind(sessionId, now)
+            ]);
+            await recordServiceState(env, serviceId, now, now + JOB_RETRY_MS, 'collector_error');
+            throw error;
+        }
     } catch (error) {
         return requestErrorResponse(error);
     }
@@ -386,6 +644,208 @@ async function handleGetJob(request, env, jobId) {
     } catch (error) {
         return requestErrorResponse(error);
     }
+}
+
+
+async function wakeContributionWork(env, now = Date.now()) {
+    try {
+        await env.PERMISSIONS_DB
+            .prepare(`
+                UPDATE contribution_service_state
+                SET next_attempt_at = 0,
+                    updated_at = ?1
+            `)
+            .bind(now)
+            .run();
+    } catch {
+        // Migration 0003 may not have been applied during a rolling deploy.
+    }
+    await env.PERMISSIONS_DB
+        .prepare(`
+            UPDATE contribution_jobs
+            SET available_at = ?1,
+                updated_at = ?1
+            WHERE status = 'queued'
+              AND available_at > ?1
+        `)
+        .bind(now)
+        .run();
+    return runScheduledJobs(env, now);
+}
+
+
+async function cleanDemandState(env, now = Date.now()) {
+    await env.PERMISSIONS_DB.batch([
+        env.PERMISSIONS_DB
+            .prepare(`
+                DELETE FROM contribution_service_activity
+                WHERE active_until <= ?1
+            `)
+            .bind(now),
+        env.PERMISSIONS_DB
+            .prepare(`
+                UPDATE virtual_collector_sessions
+                SET status = 'idle',
+                    ended_at = ?1
+                WHERE status = 'active'
+                  AND last_used_at <= ?2
+            `)
+            .bind(now, now - VIRTUAL_COLLECTOR_IDLE_MS)
+    ]);
+}
+
+
+async function highestPriorityActiveService(env, now) {
+    return env.PERMISSIONS_DB
+        .prepare(`
+            SELECT service.service_id, service.priority
+            FROM contribution_services AS service
+            WHERE service.enabled = 1
+              AND EXISTS (
+                    SELECT 1
+                    FROM contribution_service_activity AS activity
+                    WHERE activity.service_id = service.service_id
+                      AND activity.is_admin = 0
+                      AND activity.active_until > ?1
+              )
+            ORDER BY service.priority DESC, service.service_id ASC
+            LIMIT 1
+        `)
+        .bind(now)
+        .first();
+}
+
+
+async function claimServiceAttempt(env, serviceId, now) {
+    const retryAt = now + SERVICE_COLLECTION_INTERVAL_MS;
+    const result = await env.PERMISSIONS_DB
+        .prepare(`
+            INSERT INTO contribution_service_state (
+                service_id, next_attempt_at, last_attempt_at,
+                last_completed_at, last_result, updated_at
+            )
+            VALUES (?1, ?2, ?3, NULL, 'running', ?3)
+            ON CONFLICT(service_id) DO UPDATE SET
+                next_attempt_at = excluded.next_attempt_at,
+                last_attempt_at = excluded.last_attempt_at,
+                last_result = 'running',
+                updated_at = excluded.updated_at
+            WHERE contribution_service_state.next_attempt_at <= ?3
+        `)
+        .bind(serviceId, retryAt, now)
+        .run();
+    if (Number(result.meta?.changes)) {
+        return { claimed: true, retryAt };
+    }
+    const state = await env.PERMISSIONS_DB
+        .prepare(`
+            SELECT next_attempt_at
+            FROM contribution_service_state
+            WHERE service_id = ?1
+        `)
+        .bind(serviceId)
+        .first();
+    return { claimed: false, retryAt: Number(state?.next_attempt_at) || retryAt };
+}
+
+
+async function recordServiceState(
+    env,
+    serviceId,
+    now,
+    nextAttemptAt,
+    result
+) {
+    await env.PERMISSIONS_DB
+        .prepare(`
+            INSERT INTO contribution_service_state (
+                service_id, next_attempt_at, last_attempt_at,
+                last_completed_at, last_result, updated_at
+            )
+            VALUES (
+                ?1, ?2, ?3,
+                CASE WHEN ?4 = 'completed' THEN ?3 ELSE NULL END,
+                ?4, ?3
+            )
+            ON CONFLICT(service_id) DO UPDATE SET
+                next_attempt_at = excluded.next_attempt_at,
+                last_attempt_at = excluded.last_attempt_at,
+                last_completed_at = CASE
+                    WHEN excluded.last_result = 'completed'
+                        THEN excluded.last_attempt_at
+                    ELSE contribution_service_state.last_completed_at
+                END,
+                last_result = excluded.last_result,
+                updated_at = excluded.updated_at
+        `)
+        .bind(serviceId, nextAttemptAt, now, result)
+        .run();
+}
+
+
+async function nextDonatedKey(env) {
+    return env.PERMISSIONS_DB
+        .prepare(`
+            SELECT *
+            FROM donated_api_keys
+            WHERE status = 'active'
+              AND encrypted_key IS NOT NULL
+              AND encryption_iv IS NOT NULL
+            ORDER BY COALESCE(last_used_at, 0) ASC, failure_count ASC, user_id ASC
+            LIMIT 1
+        `)
+        .first();
+}
+
+
+async function activateVirtualCollector(env, serviceId, donorUserId, now) {
+    const sessionId = `virtual:${serviceId}:${donorUserId}`;
+    await env.PERMISSIONS_DB
+        .prepare(`
+            INSERT INTO virtual_collector_sessions (
+                session_id, service_id, donor_user_id, status,
+                started_at, last_used_at, ended_at
+            )
+            VALUES (?1, ?2, ?3, 'active', ?4, ?4, NULL)
+            ON CONFLICT(session_id) DO UPDATE SET
+                status = 'active',
+                last_used_at = excluded.last_used_at,
+                ended_at = NULL
+        `)
+        .bind(sessionId, serviceId, donorUserId, now)
+        .run();
+    return sessionId;
+}
+
+
+function normalizeVirtualTargets(value) {
+    const seen = new Set();
+    const targets = [];
+    for (const row of Array.isArray(value) ? value : []) {
+        const id = positiveInteger(row?.id ?? row?.target_id);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        targets.push({ id });
+        if (targets.length >= MAX_VIRTUAL_CHECKS) break;
+    }
+    return targets;
+}
+
+
+function tornBasicObservation(targetId, data) {
+    const source = data?.profile ?? data?.basic ?? data?.user ?? data;
+    const status = source?.status ?? data?.status ?? {};
+    const state = status?.state ?? status?.description ??
+        status?.details ?? source?.state ?? 'Unknown';
+    return {
+        target_id: targetId,
+        state: String(state || 'Unknown').slice(0, 50),
+        description: String(
+            status?.description ?? status?.details ?? state ?? 'Unknown'
+        ).slice(0, 500),
+        until: Number(status?.until) || 0,
+        source: 'donated_torn_api'
+    };
 }
 
 
@@ -441,17 +901,7 @@ async function executeContributionJob(env, job, now) {
         .run();
     if (!Number(claim.meta?.changes)) return 'skipped';
 
-    const donor = await env.PERMISSIONS_DB
-        .prepare(`
-            SELECT *
-            FROM donated_api_keys
-            WHERE status = 'active'
-              AND encrypted_key IS NOT NULL
-              AND encryption_iv IS NOT NULL
-            ORDER BY COALESCE(last_used_at, 0) ASC, failure_count ASC, user_id ASC
-            LIMIT 1
-        `)
-        .first();
+    const donor = await nextDonatedKey(env);
 
     if (!donor) {
         const attempts = Number(job.attempts) + 1;
@@ -553,6 +1003,11 @@ async function performAllowlistedJob(job, apiKey) {
     const targetId = positiveInteger(payload.target_id);
     if (!targetId) throw new RequestValidationError('A valid target_id is required.');
 
+    return performTornBasicRequest(targetId, apiKey);
+}
+
+
+async function performTornBasicRequest(targetId, apiKey) {
     const response = await fetch(
         `https://api.torn.com/v2/user/${encodeURIComponent(targetId)}/basic`,
         {

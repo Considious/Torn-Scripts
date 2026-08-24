@@ -9,8 +9,9 @@ deployment credentials or member API keys.
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
 version. The current release is identified as
-`0.13.4-permissions-client-scheduling`. It combines the read-optimized client
-scheduling protocol with the standalone permissions database.
+`0.14.0-donated-virtual-collectors`. It keeps the read-optimized client
+scheduler and adds demand-driven donated-key collection for active non-admin
+users.
 
 ## Cloudflare configuration
 
@@ -20,8 +21,12 @@ The Worker expects:
 - `CONSENT_DB`: the separate append-only SLINK terms acceptance database;
 - `PERMISSIONS_DB`: the standalone `slink-permissions` D1 database described in
   [`../../SLINK-Permissions`](../../SLINK-Permissions/README.md);
+- `CONTRIBUTION_SERVICE`: a Worker service binding to
+  `slinkcontributionworker`;
 - `ADMIN_TOKEN`: the secret protecting `/api/admin/*`;
 - `SESSION_SECRET`: the secret signing individual 12-hour member sessions;
+- `CONTRIBUTION_SERVICE_TOKEN`: the same trusted service secret configured on
+  `slinkcontributionworker`, used only across the Worker service binding;
 - `FFSCOUTER_API_KEY`: the operator-owned key used only by scheduled
   FFScouter leveling discovery.
 
