@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.49
+// @version      1.4.50
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -352,7 +352,14 @@
     audioContext: null,
     drag: null,
     renderPending: false,
-    settingsUiActionActive: false,
+    renderForcePending: false,
+    dashboardUiActionActive: false,
+    dashboardScrollUntil: 0,
+    dashboardScrollTimer: null,
+    liveHeaderAlertsMarkup: '',
+    liveAlertListMarkup: '',
+    liveToolbarMarkup: '',
+    liveTrackedAwardsMarkup: '',
     domObserver: null,
     domObserverSidebar: null,
     domObserverMain: null,
@@ -6972,13 +6979,109 @@
       : `<span class="alert-chip ${escapeHtml(alert.tone || '')}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${contents}</span>`;
   }
 
-  function markSettingsUiAction() {
-    if (!state.settings.settingsOpen) return;
-    state.settingsUiActionActive = true;
-    queueMicrotask(() => { state.settingsUiActionActive = false; });
+  function alertToolbarMarkup(turtleSeconds) {
+    return `
+      <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
+      <button data-action="snooze-all" data-duration="${TORN_DAY_MS}">Snooze all 1d</button>
+      <button data-action="set-turtle-timer" ${state.turtleChecking ? 'disabled' : ''}>${state.turtleChecking ? 'Checking hospital…' : turtleSeconds > 0 ? `Reset Turtle (${formatDuration(turtleSeconds)})` : 'Set Turtle timer'}</button>
+      ${turtleSeconds > 0 ? '<button data-action="clear-turtle-timer" title="Cancel the saved Turtle timer">Cancel Turtle</button>' : ''}
+    `;
   }
 
-  function patchSettingsLiveUi() {
+  function alertListMarkup(alerts) {
+    if (!alerts.length) {
+      return `<div class="empty"><strong>${state.settings.apiKey ? 'You’re caught up.' : 'Visible-page checks are active.'}</strong>${state.settings.apiKey ? 'No active, unsnoozed reminders.' : 'Add an API key in Settings for reminders that are not exposed on this page.'}</div>`;
+    }
+    return alerts.map((alert) => `
+      <article class="alert ${escapeHtml(alert.tone)} ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:') ? 'market-listing-alert' : ''}" data-alert-card="${escapeHtml(alert.id)}">
+        <span class="tone" aria-hidden="true"></span>
+        <div class="alert-copy">
+          <div class="alert-title">${alertTitleMarkup(alert)}</div>
+          <div class="alert-detail" title="${escapeHtml(alert.detail)}">${escapeHtml(alert.detail)}</div>
+        </div>
+        <div class="alert-actions">
+          ${alertActionLinks(alert).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
+          ${alert.shareText ? `
+            <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the compact listing and HTML link">Copy</button>
+            <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing directly to Faction Chat' : 'Copy this listing first to unlock Faction Chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to Faction</button>
+          ` : ''}
+          ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:')
+            ? `<button data-action="snooze" data-alert-id="${escapeHtml(alert.id)}" data-duration="300000" title="Snooze 5 minutes">5m</button>`
+            : ''}
+          <button data-action="snooze" data-alert-id="${escapeHtml(alert.id)}" data-duration="3600000" title="Snooze 1 hour">1h</button>
+          <button data-action="snooze" data-alert-id="${escapeHtml(alert.id)}" data-duration="${TORN_DAY_MS}" title="Snooze 1 day">1d</button>
+          ${alert.noDisable ? '' : `<button data-action="disable" data-alert-id="${escapeHtml(alert.id)}" title="Turn off until re-enabled in Settings">Off</button>`}
+        </div>
+      </article>
+    `).join('');
+  }
+
+  function patchAlertList(list, alerts, markup) {
+    if (!list) return;
+    if (!alerts.length) {
+      if (state.liveAlertListMarkup !== markup) list.innerHTML = markup;
+      return;
+    }
+    const template = document.createElement('template');
+    template.innerHTML = markup;
+    const nextCards = Array.from(template.content.querySelectorAll('[data-alert-card]'));
+    const existingCards = new Map(Array.from(list.querySelectorAll(':scope > [data-alert-card]'))
+      .map((card) => [card.getAttribute('data-alert-card'), card]));
+    const retained = new Set();
+    nextCards.forEach((nextCard, index) => {
+      const id = nextCard.getAttribute('data-alert-card');
+      let card = existingCards.get(id);
+      if (card) {
+        retained.add(card);
+        if (card.className !== nextCard.className) card.className = nextCard.className;
+        if (card.innerHTML !== nextCard.innerHTML) card.innerHTML = nextCard.innerHTML;
+      } else {
+        card = nextCard;
+        retained.add(card);
+      }
+      const currentAtIndex = list.children[index];
+      if (currentAtIndex !== card) list.insertBefore(card, currentAtIndex || null);
+    });
+    Array.from(list.children).forEach((child) => {
+      if (!retained.has(child)) child.remove();
+    });
+  }
+
+  function markDashboardUiAction() {
+    state.dashboardUiActionActive = true;
+    queueMicrotask(() => { state.dashboardUiActionActive = false; });
+  }
+
+  function flushDashboardScrollRender() {
+    state.dashboardScrollTimer = null;
+    const remaining = Number(state.dashboardScrollUntil || 0) - Date.now();
+    if (remaining > 0) {
+      state.dashboardScrollTimer = window.setTimeout(flushDashboardScrollRender, remaining + 20);
+      return;
+    }
+    if ((state.renderPending || state.renderForcePending) && !shadow.activeElement?.closest?.('input, select, textarea')) {
+      const force = state.renderForcePending;
+      state.renderForcePending = false;
+      render({ force });
+    }
+  }
+
+  function noteDashboardScroll() {
+    if (!shadow.querySelector('.body')) return;
+    state.dashboardScrollUntil = Date.now() + 220;
+    if (state.dashboardScrollTimer) window.clearTimeout(state.dashboardScrollTimer);
+    state.dashboardScrollTimer = window.setTimeout(flushDashboardScrollRender, 240);
+  }
+
+  function handleDashboardWheel(event) {
+    const wheelSensitiveEditor = state.settings.settingsOpen
+      ? event.target?.closest?.('input[type="number"], select')
+      : null;
+    if (wheelSensitiveEditor && shadow.activeElement === wheelSensitiveEditor) wheelSensitiveEditor.blur();
+    noteDashboardScroll();
+  }
+
+  function patchDashboardLiveUi() {
     const allAlerts = publishedAlerts();
     const alerts = allAlerts.filter(alertVisible);
     const snoozedCount = allAlerts.filter((alert) => alert.active && state.settings.enabled[alert.id] !== false && !alertVisible(alert)).length;
@@ -6988,26 +7091,52 @@
       count.style.background = alerts.length ? '#ffca55' : '#71d69b';
     }
     const chips = shadow.querySelector('[data-live-alert-chips]');
-    if (chips) chips.innerHTML = alerts.map(headerAlertChip).join('');
+    const headerAlertsMarkup = alerts.map(headerAlertChip).join('');
+    if (chips && state.liveHeaderAlertsMarkup !== headerAlertsMarkup) chips.innerHTML = headerAlertsMarkup;
+    state.liveHeaderAlertsMarkup = headerAlertsMarkup;
     const usage = shadow.querySelector('[data-live-api-usage]');
     if (usage) usage.textContent = `Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute`;
     const source = shadow.querySelector('[data-live-source-summary]');
     if (source) source.textContent = `${sourceSummary()}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}`;
+    if (state.settings.settingsOpen || state.settings.activeView !== 'alerts') return;
+    const turtleSeconds = Math.max(0, Math.ceil((Number(state.settings.turtleEndAt) - Date.now()) / 1000));
+    const toolbarMarkup = alertToolbarMarkup(turtleSeconds);
+    const toolbar = shadow.querySelector('[data-live-alert-toolbar]');
+    if (toolbar && state.liveToolbarMarkup !== toolbarMarkup) toolbar.innerHTML = toolbarMarkup;
+    state.liveToolbarMarkup = toolbarMarkup;
+    const listMarkup = alertListMarkup(alerts);
+    const list = shadow.querySelector('[data-live-alert-list]');
+    if (state.liveAlertListMarkup !== listMarkup) patchAlertList(list, alerts, listMarkup);
+    state.liveAlertListMarkup = listMarkup;
+    const trackedMarkup = trackedAwardsMarkup();
+    const tracked = shadow.querySelector('[data-live-tracked-awards]');
+    if (tracked && state.liveTrackedAwardsMarkup !== trackedMarkup) tracked.innerHTML = trackedMarkup;
+    state.liveTrackedAwardsMarkup = trackedMarkup;
   }
 
   function render({ force = false } = {}) {
-    if (!force && state.settings.settingsOpen && shadow.querySelector('.settings') && !state.settingsUiActionActive) {
+    const userAction = state.dashboardUiActionActive;
+    const dashboardScrollActive = Boolean(shadow.querySelector('.body'))
+      && Date.now() < Number(state.dashboardScrollUntil || 0);
+    if (!userAction && dashboardScrollActive) {
+      state.renderPending = true;
+      state.renderForcePending ||= force;
+      return;
+    }
+    const livePatchableView = state.settings.settingsOpen || state.settings.activeView === 'alerts';
+    if (!force && livePatchableView && shadow.querySelector('.body') && !userAction) {
       state.renderPending = false;
-      patchSettingsLiveUi();
+      patchDashboardLiveUi();
       return;
     }
     const activeEditor = shadow.activeElement?.closest?.('input, select, textarea');
-    if (!force && activeEditor) {
+    if (!force && activeEditor && !userAction) {
       state.renderPending = true;
       return;
     }
-    state.settingsUiActionActive = false;
+    state.dashboardUiActionActive = false;
     state.renderPending = false;
+    state.renderForcePending = false;
     const previousBody = shadow.querySelector('.body');
     const previousPawnList = shadow.querySelector('.pawn-candidate-list');
     const previousScrollTop = previousBody?.scrollTop || 0;
@@ -7079,7 +7208,7 @@
         .icon-button { width: 28px; height: 26px; padding: 0; font-size: 15px; }
         .view-button { height: 26px; padding: 0 8px; color: #d7e7f2; font-size: 11px; font-weight: 750; }
         .view-button.active { border-color: rgba(113,214,155,.58); color: #dff8e9; background: #234134; }
-        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; overflow-anchor: none; }
+        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; overflow-anchor: auto; overscroll-behavior: contain; }
         .panel.user-sized .body { flex: 1 1 auto; max-height: none; }
         .status { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px; color: #aeb7c1; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; }
         .status span { flex: 1; }
@@ -7341,42 +7470,16 @@
             ${state.settings.settingsOpen ? settingsMarkup() : ''}
             ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? dollarBazaarsMarkup() : state.settings.activeView === 'networth' && !state.settings.settingsOpen ? networthMarkup() : `
               <div class="status"><span data-live-source-summary>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
-              <div class="toolbar">
-                <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
-                <button data-action="snooze-all" data-duration="${TORN_DAY_MS}">Snooze all 1d</button>
-                <button data-action="set-turtle-timer" ${state.turtleChecking ? 'disabled' : ''}>${state.turtleChecking ? 'Checking hospital…' : turtleSeconds > 0 ? `Reset Turtle (${formatDuration(turtleSeconds)})` : 'Set Turtle timer'}</button>
-                ${turtleSeconds > 0 ? '<button data-action="clear-turtle-timer" title="Cancel the saved Turtle timer">Cancel Turtle</button>' : ''}
-              </div>
-              <div class="alerts">
-              ${alerts.length ? alerts.map((alert) => `
-                <article class="alert ${escapeHtml(alert.tone)} ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:') ? 'market-listing-alert' : ''}">
-                  <span class="tone" aria-hidden="true"></span>
-                  <div class="alert-copy">
-                    <div class="alert-title">${alertTitleMarkup(alert)}</div>
-                    <div class="alert-detail" title="${escapeHtml(alert.detail)}">${escapeHtml(alert.detail)}</div>
-                  </div>
-                  <div class="alert-actions">
-                    ${alertActionLinks(alert).map((link) => `<a data-tdd-nav href="${escapeHtml(link.href)}">${escapeHtml(link.label || 'Open')}</a>`).join('')}
-                    ${alert.shareText ? `
-                      <button data-action="copy-alert" data-alert-id="${escapeHtml(alert.id)}" data-copy-text="${escapeHtml(alert.shareText)}" title="Copy the compact listing and HTML link">Copy</button>
-                      <button data-action="send-chat" data-alert-id="${escapeHtml(alert.id)}" title="${chatShareArmed(alert.id) ? 'Send the copied listing directly to Faction Chat' : 'Copy this listing first to unlock Faction Chat sending'}" ${chatShareArmed(alert.id) ? '' : 'disabled'}>Send to Faction</button>
-                    ` : ''}
-                    ${String(alert.id).startsWith('market:') || String(alert.id).startsWith('bazaar:')
-                      ? `<button data-action="snooze" data-alert-id="${alert.id}" data-duration="300000" title="Snooze 5 minutes">5m</button>`
-                      : ''}
-                    <button data-action="snooze" data-alert-id="${alert.id}" data-duration="3600000" title="Snooze 1 hour">1h</button>
-                    <button data-action="snooze" data-alert-id="${alert.id}" data-duration="${TORN_DAY_MS}" title="Snooze 1 day">1d</button>
-                    ${alert.noDisable ? '' : `<button data-action="disable" data-alert-id="${alert.id}" title="Turn off until re-enabled in Settings">Off</button>`}
-                  </div>
-                </article>
-              `).join('') : `
-                <div class="empty"><strong>${state.settings.apiKey ? 'You’re caught up.' : 'Visible-page checks are active.'}</strong>${state.settings.apiKey ? 'No active, unsnoozed reminders.' : 'Add an API key in Settings for reminders that are not exposed on this page.'}</div>
-              `}
-              </div>
-              ${trackedAwardsMarkup()}
+              <div class="toolbar" data-live-alert-toolbar>${alertToolbarMarkup(turtleSeconds)}</div>
+              <div class="alerts" data-live-alert-list>${alertListMarkup(alerts)}</div>
+              <div data-live-tracked-awards style="display:contents">${trackedAwardsMarkup()}</div>
             `}
           </div>`}
       </section>`;
+    state.liveHeaderAlertsMarkup = alerts.map(headerAlertChip).join('');
+    state.liveToolbarMarkup = alertToolbarMarkup(turtleSeconds);
+    state.liveAlertListMarkup = alertListMarkup(alerts);
+    state.liveTrackedAwardsMarkup = trackedAwardsMarkup();
     const restoreScroll = () => {
       const nextBody = shadow.querySelector('.body');
       if (nextBody) {
@@ -7410,7 +7513,7 @@
     }
     const button = event.target.closest('[data-action]');
     if (!button) return;
-    markSettingsUiAction();
+    markDashboardUiAction();
     const action = button.dataset.action;
     if (!soundsMuted() && (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm)) ensureAudioContext();
     if (action === 'toggle-mute') {
@@ -7753,7 +7856,7 @@
   });
 
   shadow.addEventListener('change', (event) => {
-    markSettingsUiAction();
+    markDashboardUiAction();
     const cityStockToggle = event.target.closest('[data-city-stock-alert]');
     if (cityStockToggle) {
       const itemId = Math.max(0, Math.trunc(Number(cityStockToggle.dataset.cityStockAlert) || 0));
@@ -8010,9 +8113,13 @@
   shadow.addEventListener('focusout', () => {
     window.setTimeout(() => {
       if (!state.renderPending || shadow.activeElement?.closest?.('input, select, textarea')) return;
-      render({ force: true });
+      render();
     }, 0);
   });
+
+  shadow.addEventListener('wheel', handleDashboardWheel, { passive: true });
+  shadow.addEventListener('scroll', noteDashboardScroll, true);
+  shadow.addEventListener('touchmove', noteDashboardScroll, { passive: true });
 
   shadow.addEventListener('toggle', (event) => {
     const section = event.target.closest?.('[data-settings-section]');
