@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.52
+// @version      1.4.53
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -77,12 +77,12 @@
   const WEAV3R_CATEGORY_MAX_PAGES = 6;
   const DOLLAR_BAZAAR_LIMIT = 50;
   const CITY_SHOP_TARGETS = [
-    { id: 392, name: 'Pepper Spray', label: 'Pepper Spray', shop: "Big Al's Gun Shop" },
-    { id: 731, name: 'Empty Blood Bag', label: 'Empty Blood Bags', shop: 'Pharmacy' },
-    { id: 10, name: 'Chainsaw', label: 'Chainsaws', shop: "Big Al's Gun Shop" },
-    { id: 180, name: 'Bottle of Beer', label: 'Beer', shop: "Bits 'n' Bobs" },
-    { id: 310, name: 'Lollipop', label: 'Lollipops', shop: "Sally's Sweet Shop" },
-    { id: 956, name: 'Blank DVDs', label: 'Blank DVDs', shop: 'Cyber Force' },
+    { id: 392, name: 'Pepper Spray', label: 'Pepper Spray', shop: "Big Al's Gun Shop", href: 'https://www.torn.com/bigalgunshop.php' },
+    { id: 731, name: 'Empty Blood Bag', label: 'Empty Blood Bags', shop: 'Pharmacy', href: 'https://www.torn.com/shops.php?step=pharmacy' },
+    { id: 10, name: 'Chainsaw', label: 'Chainsaws', shop: "Big Al's Gun Shop", href: 'https://www.torn.com/bigalgunshop.php' },
+    { id: 180, name: 'Bottle of Beer', label: 'Beer', shop: "Bits 'n' Bobs", href: 'https://www.torn.com/shops.php?step=bitsnbobs' },
+    { id: 310, name: 'Lollipop', label: 'Lollipops', shop: "Sally's Sweet Shop", href: 'https://www.torn.com/shops.php?step=candy' },
+    { id: 956, name: 'Blank DVDs', label: 'Blank DVDs', shop: 'Cyber Force', href: 'https://www.torn.com/shops.php?step=cyberforce' },
   ];
   const API_HARD_LIMIT = 60;
   const API_SLOW_LIMIT = 30;
@@ -5895,7 +5895,8 @@
         active: boughtInCityToday !== null && boughtInCityToday < 100 && Number(item.stock) > 0,
         title: `${item.label} in stock at ${item.shopName || item.shop}`,
         detail: `${Number(item.stock).toLocaleString()} available at ${item.shopName || item.shop}${item.defaultStock !== null && item.defaultStock !== undefined ? ` (normal restock ${Number(item.defaultStock).toLocaleString()})` : ''}. ${boughtInCityToday ?? 0} / 100 city items bought today.`,
-        links: [{ label: item.shopName || item.shop, href: 'https://www.torn.com/city.php' }],
+        links: [{ label: item.shopName || item.shop, href: item.href }],
+        shareText: `City Stock | ${escapeHtml(item.label)} | ${Number(item.stock).toLocaleString()} available at ${escapeHtml(item.shopName || item.shop)}${Number(item.price) > 0 ? ` | $${Number(item.price).toLocaleString()} each` : ''} | ${boughtInCityToday ?? 0}/100 city items bought | ${chatAnchor(item.href, item.shopName || item.shop)}`,
         tone: 'urgent',
         noDisable: true,
       }));
