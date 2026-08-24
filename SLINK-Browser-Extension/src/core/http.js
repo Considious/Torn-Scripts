@@ -7,7 +7,8 @@
   const CAPABILITY_ORIGINS = Object.freeze({
     tornApi: 'https://api.torn.com',
     ffscouter: 'https://ffscouter.com',
-    slinkWorker: 'https://slinkyleveling.richard-johnson554.workers.dev'
+    slinkWorker: 'https://slinkyleveling.richard-johnson554.workers.dev',
+    contributionWorker: 'https://slinkcontribution.richard-johnson554.workers.dev'
   });
 
   async function hasCapability(name) {

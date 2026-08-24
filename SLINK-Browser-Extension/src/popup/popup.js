@@ -114,7 +114,7 @@
   elements.openDashboard.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
   elements.resetPosition.addEventListener('click', async () => {
-    await SLINK.core.storage.remove('ui.pagePanelPosition');
+    await SLINK.core.storage.remove('ui.main.position');
     elements.resetPosition.textContent = 'Position reset';
     setTimeout(() => { elements.resetPosition.textContent = 'Reset panel position'; }, 1200);
   });

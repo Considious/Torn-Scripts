@@ -15,6 +15,8 @@
 
     const normalized = Object.freeze({
       id,
+      title: String(definition.title || id),
+      defaultShowInTorn: definition.defaultShowInTorn !== false,
       requiredScopes: Object.freeze([...(definition.requiredScopes || [])]),
       matches: typeof definition.matches === 'function' ? definition.matches : () => true,
       start: definition.start,
@@ -47,8 +49,16 @@
         continue;
       }
 
-      const instance = await module.start(context);
-      running.set(module.id, { module, instance });
+      if (typeof context.moduleVisible === 'function' && !await context.moduleVisible(module)) {
+        skipped.push({ id: module.id, reason: 'hidden-by-user' });
+        continue;
+      }
+
+      const moduleUi = context.ui?.createModuleView
+        ? await context.ui.createModuleView(module)
+        : context.ui;
+      const instance = await module.start({ ...context, module, ui: moduleUi });
+      running.set(module.id, { module, instance, moduleUi });
       started.push(module.id);
     }
 
@@ -59,6 +69,7 @@
     for (const [id, entry] of [...running.entries()].reverse()) {
       if (entry.module.stop) await entry.module.stop(entry.instance);
       else if (typeof entry.instance?.stop === 'function') await entry.instance.stop();
+      if (typeof entry.moduleUi?.remove === 'function') entry.moduleUi.remove();
       running.delete(id);
     }
   }

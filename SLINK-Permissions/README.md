@@ -29,6 +29,12 @@ its own required scope. Browser clients never connect to D1 directly.
    authorization. For the Leveling Worker, keep `DB` bound to
    `slinkies-leveling-data` and `CONSENT_DB` bound to the consent ledger.
 
+For encrypted, extension-wide API key donations, also run
+[`migrations/0002-donated-api-keys.sql`](migrations/0002-donated-api-keys.sql)
+in this same database. Those tables are owned by the separate SLINK
+Contribution Worker. Product Workers submit allowlisted work to that service
+and must not read encrypted key columns directly.
+
 The initial migration is additive and rerunnable. It seeds the Slinky's faction
 grant and the sole owner administration grant.
 

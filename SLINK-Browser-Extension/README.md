@@ -2,8 +2,8 @@
 
 Chrome-first Manifest V3 client for Shared Live Intelligence NetworK systems.
 
-Version 0.3.2 adds Worker-issued permissions, protected administrative controls,
-and the read-optimized Leveling collection protocol:
+Version 0.4.0 adds the multi-feature interface foundation and encrypted,
+extension-wide Public Only API key donations:
 
 - Torn-only content injection
 - a background service worker
@@ -15,8 +15,14 @@ and the read-optimized Leveling collection protocol:
 - `slink.level` access for the complete Leveling service
 - a private `admin.*` namespace for Considious
 - an admin-only zero routine API-contribution override
-- a module registry
-- a movable, position-persistent in-page panel and toolbar popup
+- a permission-aware module registry with per-module Torn visibility
+- a tabbed main Torn panel for enabled modules
+- per-module pop-out/pop-back-in controls and persistent movable positions
+- centralized theme tokens for future interface themes
+- a dashboard-level API Donation area with its own optional Torn tab
+- remote AES-GCM storage for donated Public Only keys through the separate
+  SLINK Contribution Service
+- revocation that erases remote encrypted key material
 - an automatic SLINK Worker connection check
 - a readable, selectable diagnostic report
 - a full-tab SLINK dashboard outside Torn
@@ -28,10 +34,16 @@ and the read-optimized Leveling collection protocol:
 - local completion of unchanged `Okay` checks without a Worker or D1 request
 - activity-snapshot and attack-page observation reporting
 
-The Torn and FFScouter API keys and signed SLINK session stay in extension-local
+The Leveling Torn and FFScouter API keys and signed SLINK session stay in extension-local
 background storage and are never returned to the Torn content script or dashboard.
 The Torn key is sent to the SLINK Worker only during authentication, matching the
 current Leveling terms and Worker contract.
+
+A donated Public Only key follows a different, explicit consent flow. It is
+validated and encrypted by the SLINK Contribution Service for allowlisted
+public requests while the donor is offline. Feature modules cannot retrieve
+the plaintext key. The extension retains only a random management token used
+to view or revoke the donation.
 
 ## Load it in Chrome
 
@@ -60,7 +72,7 @@ Torn page content script
     <-> runtime messages
 Extension service worker
     <-> extension storage / alarms / approved remote APIs
-SLINK Worker, Torn API, and FFScouter
+SLINK Workers, Torn API, and FFScouter
 ```
 
 `src/core` contains shared extension-safe replacements for the reusable parts of Core Lib. Page-specific DOM work stays in `src/content`; privileged network and scheduling work stays in `src/background`.
@@ -80,8 +92,10 @@ Before authentication, the extension has no SLINK server scopes; local diagnosti
 
 SLINK overlay panels must be movable with mouse and touch, persist their last
 position, remain clamped inside the visible viewport, and provide a position
-reset. New modules should use the shared UI shell instead of creating immovable
-overlay windows.
+reset. Every feature uses the shared tabbed shell. A feature can be popped into
+its own movable window and returned to the main panel without losing state.
+Tabs are created only when the user's scope permits the module and its **Show
+GUI in Torn** preference is enabled.
 
 ## Adding a module
 
@@ -90,6 +104,8 @@ A module registers an ID, its required SLINK scopes, a URL matcher, and `start`/
 ```javascript
 SLINK_EXTENSION.modules.register({
   id: 'example',
+  title: 'Example',
+  defaultShowInTorn: false,
   requiredScopes: ['example.read'],
   matches: url => url.hostname === 'www.torn.com',
   async start(context) {

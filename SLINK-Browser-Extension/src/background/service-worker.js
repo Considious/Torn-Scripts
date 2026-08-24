@@ -7,7 +7,8 @@ importScripts(
   '../core/http.js',
   '../core/worker-client.js',
   '../core/torn-api-limiter.js',
-  'leveling-service.js'
+  'leveling-service.js',
+  'contribution-service.js'
 );
 
 const SLINK = globalThis.SLINK_EXTENSION;
@@ -70,8 +71,9 @@ async function capabilityStatus() {
 }
 
 async function recordDiagnostic(source) {
-  const [worker, capabilities, tornApiUsage, alarm, pageInjection, leveling] = await Promise.all([
+  const [worker, contributionWorker, capabilities, tornApiUsage, alarm, pageInjection, leveling] = await Promise.all([
     SLINK.core.workerClient.probe({ deep: true }),
+    SLINK.services.contribution.health(),
     capabilityStatus(),
     SLINK.core.tornApiLimiter.getUsage(),
     chrome.alarms.get(CONNECTION_ALARM),
@@ -93,6 +95,7 @@ async function recordDiagnostic(source) {
       periodMinutes: Number(alarm?.periodInMinutes) || null
     },
     worker,
+    contributionWorker,
     pageInjection,
     leveling: {
       configured: leveling.configured,
@@ -132,7 +135,8 @@ const routes = {
       lastDiagnostic,
       tornApiUsage,
       worker,
-      leveling: await SLINK.services.leveling.publicStatus()
+      leveling: await SLINK.services.leveling.publicStatus(),
+      contribution: await SLINK.services.contribution.status().catch(() => ({ configured:false, donation:null }))
     };
   },
 
@@ -172,7 +176,8 @@ const routes = {
     };
   },
 
-  ...SLINK.services.leveling.routes
+  ...SLINK.services.leveling.routes,
+  ...SLINK.services.contributionRoutes
 };
 
 chrome.runtime.onMessage.addListener(SLINK.core.messaging.createRouter(routes));

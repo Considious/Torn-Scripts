@@ -67,6 +67,7 @@ for (const file of [
   'src/core/format.js',
   'src/core/storage.js',
   'src/core/permissions.js',
+  'src/core/themes.js',
   'src/core/messaging.js',
   'src/core/modules.js',
   'src/core/http.js',
@@ -75,12 +76,14 @@ for (const file of [
 ]) load(context, file);
 
 const SLINK = context.SLINK_EXTENSION;
-assert(SLINK.VERSION === '0.3.2', 'Unexpected runtime version.');
+assert(SLINK.VERSION === '0.4.0', 'Unexpected runtime version.');
 assert(SLINK.core.format.escapeHtml('<a>') === '&lt;a&gt;', 'HTML escaping failed.');
 assert(SLINK.core.format.shortNumber(1_250_000) === '1.25M', 'Short-number formatting failed.');
 
 const permissions = SLINK.core.permissions;
 assert(Object.values(permissions.BROWSER_CAPABILITIES).every(capability => capability.optional === false), 'A core host was marked optional.');
+assert(permissions.BROWSER_CAPABILITIES.contributionWorker, 'Contribution Worker capability is missing.');
+assert(SLINK.core.themes.get().tokens['--slink-bg'], 'Theme token registry is missing.');
 assert(permissions.hasScope({ scopes: ['slink.level'] }, 'slink.level'), 'Exact scope matching failed.');
 assert(permissions.hasScope({ scopes: ['admin.*'] }, 'admin.users'), 'Wildcard scope matching failed.');
 assert(!permissions.hasScope({ roles: ['admin'], scopes: ['slink.level'] }, 'admin.users'), 'Roles must not bypass signed scope checks.');

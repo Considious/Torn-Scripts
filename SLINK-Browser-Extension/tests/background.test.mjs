@@ -12,6 +12,7 @@ const claimRequestBodies = [];
 let observationRequests = 0;
 let claimScheduleBucket = 300;
 let tornStatusState = 'Okay';
+let contributionActive = false;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -42,12 +43,13 @@ const chrome = {
       return origins.every(origin => [
         'https://api.torn.com/*',
         'https://ffscouter.com/*',
-        'https://slinkyleveling.richard-johnson554.workers.dev/*'
+        'https://slinkyleveling.richard-johnson554.workers.dev/*',
+        'https://slinkcontribution.richard-johnson554.workers.dev/*'
       ].includes(origin));
     }
   },
   runtime: {
-    getManifest() { return { version: '0.3.2' }; },
+    getManifest() { return { version: '0.4.0' }; },
     onInstalled,
     onMessage,
     onStartup
@@ -146,6 +148,21 @@ context = vm.createContext({
           rejected: []
         };
       }
+    } else if (url.hostname === 'slinkcontribution.richard-johnson554.workers.dev') {
+      if (url.pathname === '/api/health') body = { ok:true, version:'test-contribution', database:'connected' };
+      if (url.pathname === '/api/terms') body = {
+        ok:true, version:'2026-08-23', document_url:'https://example.test/donation-terms', document_sha256:'terms-hash',
+        disclosure_version:'2026-08-23', disclosure_sha256:'summary-hash', summary:'Encrypted offline donation test.'
+      };
+      if (url.pathname === '/api/donations' && options.method === 'POST') {
+        contributionActive = true;
+        body = { ok:true, donated:true, user_id:3853023, access_type:'Public Only', status:'active', terms_version:'2026-08-23', donated_at:new Date().toISOString(), management_token:'management-secret' };
+      } else if (url.pathname === '/api/donations' && options.method === 'DELETE') {
+        contributionActive = false;
+        body = { ok:true, revoked:true, user_id:3853023 };
+      } else if (url.pathname === '/api/donations') {
+        body = { ok:true, donation:{ user_id:3853023, access_type:'Public Only', status:contributionActive ? 'active' : 'revoked', active:contributionActive } };
+      }
     } else if (url.hostname === 'api.torn.com') {
       if (url.pathname.endsWith('/battlestats')) body = {
         battlestats: { strength: 100, defense: 100, speed: 100, dexterity: 100, total: 400 }
@@ -213,8 +230,18 @@ assert(status.data.permissions.scopes.length === 0, 'System status invented an u
 assert(status.data.capabilities.tornApi.granted === true, 'Capability status did not report the granted mock host.');
 assert(status.data.capabilities.ffscouter.granted === true, 'Required FFScouter capability was not granted.');
 assert(status.data.capabilities.slinkWorker.granted === true, 'Required Worker capability was not granted.');
+assert(status.data.capabilities.contributionWorker.granted === true, 'Required contribution capability was not granted.');
 assert(status.data.worker.connected === true, 'System status did not report a real Worker connection.');
 assert(status.data.leveling.terms.accepted === false, 'Fresh Leveling terms should require acceptance.');
+
+const donated = await send('contribution.donate', { apiKey:'public-only-test-key', acceptTerms:true });
+assert(donated.ok && donated.data.donation.active, 'Public Only donation route failed.');
+assert(!JSON.stringify(donated.data).includes('public-only-test-key'), 'Donation response leaked the Torn key.');
+assert(!JSON.stringify(donated.data).includes('management-secret'), 'Donation response leaked the management token.');
+assert(values.get('slink.contribution.managementToken') === 'management-secret', 'Donation management token was not saved locally.');
+const revoked = await send('contribution.revoke');
+assert(revoked.ok && !revoked.data.configured, 'Donation revocation route failed.');
+assert(!values.has('slink.contribution.managementToken'), 'Revocation did not remove the local management token.');
 
 const injection = await send(
   'content.ready',

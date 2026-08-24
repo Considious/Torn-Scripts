@@ -79,7 +79,9 @@
 
   SLINK.modules.register({
     id: 'leveling',
-    requiredScopes: [],
+    title: 'SLINK Leveling',
+    defaultShowInTorn: true,
+    requiredScopes: ['slink.level'],
     matches: url => url.hostname === 'www.torn.com',
 
     async start(context) {

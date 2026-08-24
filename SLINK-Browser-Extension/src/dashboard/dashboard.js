@@ -5,7 +5,9 @@
   const byId = id => document.getElementById(id);
   let leveling = null;
   let termsExpanded = false;
-  let pagePanelHidden = false;
+  let levelingInTorn = true;
+  let contribution = null;
+  let contributionTerms = null;
 
   function setBusy(button, busy) {
     button.disabled = busy;
@@ -72,7 +74,8 @@
     byId('session-state').textContent = leveling.session.authenticated
       ? `Authenticated as ${leveling.session.userId}`
       : 'Not authenticated';
-    byId('page-panel').checked = !pagePanelHidden;
+    byId('page-panel').checked = levelingInTorn;
+    byId('page-panel').disabled = !SLINK.core.permissions.hasScope(leveling.permissions, 'slink.level');
 
     const settings = leveling.settings;
     const admin = SLINK.core.permissions.hasScope(leveling.permissions, 'admin.*');
@@ -99,6 +102,17 @@
     if (runtime.lastError) showError(runtime.lastError);
   }
 
+  function renderContribution() {
+    const donation = contribution?.donation;
+    const active = donation?.active === true;
+    byId('donation-state').textContent = active ? `Active for Torn user ${donation.user_id}` : 'No active donation';
+    byId('donation-summary').textContent = contributionTerms?.summary || 'Current donation terms are unavailable.';
+    byId('donation-terms-link').href = contributionTerms?.document_url || '#';
+    byId('donation-agreement').textContent = `I agree to donation terms ${contributionTerms?.version || ''}.`;
+    byId('donation-submit').textContent = active ? 'Replace encrypted key' : 'Encrypt and donate key';
+    byId('donation-revoke').hidden = !active;
+  }
+
   function formatDiagnostic(report) {
     if (!report) return 'Run a diagnostic to create a report.';
     const lines = [
@@ -117,6 +131,8 @@
       `Main database: ${report.worker?.database || 'not checked'}`,
       `Consent database: ${report.worker?.consentDatabase || 'not checked'}`,
       `Permissions database: ${report.worker?.permissionsDatabase || 'not checked'}`,
+      `Contribution service: ${report.contributionWorker?.ok ? 'CONNECTED' : 'NOT CONNECTED'}`,
+      `Contribution database: ${report.contributionWorker?.database || 'not checked'}`,
       '',
       `Leveling configured: ${report.leveling?.configured ? 'YES' : 'NO'}`,
       `Leveling authenticated: ${report.leveling?.authenticated ? 'YES' : 'NO'}`,
@@ -131,12 +147,19 @@
 
   async function refresh() {
     clearError();
-    const status = await SLINK.core.messaging.send('system.status');
+    const [status, donationTerms] = await Promise.all([
+      SLINK.core.messaging.send('system.status'),
+      SLINK.core.messaging.send('contribution.terms').catch(() => null)
+    ]);
     leveling = status.leveling;
-    pagePanelHidden = await SLINK.core.storage.get('ui.pagePanelHidden', false);
+    contribution = status.contribution;
+    contributionTerms = donationTerms;
+    levelingInTorn = await SLINK.core.storage.get('ui.modules.leveling.showInTorn', true);
+    byId('donation-in-torn').checked = await SLINK.core.storage.get('ui.modules.contribution.showInTorn', false);
     byId('connection').textContent = status.worker.connected ? 'Worker connected' : 'Worker offline';
     byId('connection').className = status.worker.connected ? 'badge ready' : 'badge error';
     renderLeveling();
+    renderContribution();
     byId('diagnostic').textContent = formatDiagnostic(status.lastDiagnostic);
   }
 
@@ -153,10 +176,11 @@
   });
   byId('toggle-terms').addEventListener('click', () => { termsExpanded = !termsExpanded; renderLeveling(); });
   byId('page-panel').addEventListener('change', async event => {
-    pagePanelHidden = !event.currentTarget.checked;
-    await SLINK.core.storage.set('ui.pagePanelHidden', pagePanelHidden);
+    levelingInTorn = event.currentTarget.checked;
+    await SLINK.core.storage.set('ui.modules.leveling.showInTorn', levelingInTorn);
+    if (levelingInTorn) await SLINK.core.storage.set('ui.pagePanelHidden', false);
   });
-  byId('reset-position').addEventListener('click', () => SLINK.core.storage.remove('ui.pagePanelPosition'));
+  byId('reset-position').addEventListener('click', () => SLINK.core.storage.remove('ui.main.position'));
   byId('settings-form').addEventListener('submit', async event => {
     event.preventDefault();
     clearError();
@@ -190,6 +214,41 @@
     try { byId('diagnostic').textContent = formatDiagnostic(await SLINK.core.messaging.send('diagnostics.run')); }
     catch (error) { showError(error); }
     finally { setBusy(event.currentTarget, false); }
+  });
+
+  for (const button of document.querySelectorAll('.dashboard-tab')) {
+    button.addEventListener('click', () => {
+      for (const item of document.querySelectorAll('.dashboard-tab')) item.classList.toggle('active', item === button);
+      for (const page of document.querySelectorAll('[data-page]')) page.hidden = page.dataset.page !== button.dataset.tab;
+    });
+  }
+
+  byId('donation-in-torn').addEventListener('change', async event => {
+    await SLINK.core.storage.set('ui.modules.contribution.showInTorn', event.currentTarget.checked);
+    if (event.currentTarget.checked) await SLINK.core.storage.set('ui.pagePanelHidden', false);
+  });
+  byId('donation-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const submit = byId('donation-submit');
+    setBusy(submit, true);
+    byId('donation-message').textContent = '';
+    try {
+      contribution = await SLINK.core.messaging.send('contribution.donate', {
+        apiKey:byId('donation-key').value,
+        acceptTerms:byId('donation-accept').checked
+      });
+      byId('donation-key').value = '';
+      byId('donation-accept').checked = false;
+      byId('donation-message').textContent = 'Donation active. Only encrypted key material is stored remotely.';
+      renderContribution();
+    } catch (error) { byId('donation-message').textContent = SLINK.core.format.errorMessage(error); }
+    finally { setBusy(submit, false); }
+  });
+  byId('donation-revoke').addEventListener('click', async () => {
+    if (!confirm('Revoke this donation? Its encrypted key material will be erased and it can no longer be used.')) return;
+    contribution = await SLINK.core.messaging.send('contribution.revoke');
+    byId('donation-message').textContent = 'Donation revoked and encrypted key material erased.';
+    renderContribution();
   });
 
   await refresh();

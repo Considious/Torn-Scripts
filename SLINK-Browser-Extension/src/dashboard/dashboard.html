@@ -16,8 +16,14 @@
       </div>
     </header>
 
+    <nav class="dashboard-tabs" aria-label="SLINK features">
+      <button class="dashboard-tab active" data-tab="leveling" type="button">SLINK Leveling</button>
+      <button class="dashboard-tab" data-tab="contribution" type="button">API Donation</button>
+      <button class="dashboard-tab" data-tab="diagnostics" type="button">Diagnostics</button>
+    </nav>
+
     <main>
-      <section class="card overview">
+      <section class="card overview" data-page="leveling">
         <div class="section-heading"><h2>SLINK Leveling</h2><span id="leveling-role" class="muted">Setup required</span></div>
         <div class="stats">
           <div><b id="target-count">0</b><span>Targets</span></div>
@@ -30,12 +36,12 @@
         <p id="leveling-error" class="error" hidden></p>
         <div class="row-actions">
           <button id="refresh-targets" type="button">Refresh recommendations</button>
-          <label class="toggle"><input id="page-panel" type="checkbox"> Show movable panel on Torn</label>
+          <label class="toggle"><input id="page-panel" type="checkbox"> Show GUI in Torn</label>
           <button id="reset-position" class="secondary" type="button">Reset panel position</button>
         </div>
       </section>
 
-      <section class="card settings-card">
+      <section class="card settings-card" data-page="leveling">
         <div class="section-heading"><h2>Leveling setup</h2><span id="session-state" class="muted">Not authenticated</span></div>
         <div id="terms" class="terms">
           <div class="section-heading"><strong>SLINK API &amp; Data Terms</strong><button id="toggle-terms" class="small secondary" type="button">View terms</button></div>
@@ -69,12 +75,31 @@
         </form>
       </section>
 
-      <section class="card targets-card">
+      <section class="card targets-card" data-page="leveling">
         <div class="section-heading"><h2>Recommendations</h2><span id="target-summary" class="muted">No targets loaded</span></div>
         <div id="targets" class="targets"></div>
       </section>
 
-      <section class="card diagnostic-card">
+      <section class="card donation-card" data-page="contribution" hidden>
+        <div class="section-heading"><h2>Donate a Public Only API key</h2><span id="donation-state" class="muted">Checking...</span></div>
+        <p id="donation-summary" class="donation-summary">Loading the current donation terms...</p>
+        <p><a id="donation-terms-link" href="#" target="_blank" rel="noopener noreferrer">Read the complete API Key Donation Terms</a></p>
+        <p class="muted">The key is validated as Public Only, encrypted before it is stored, and can support approved SLINK public-data jobs while your devices are offline. Feature modules never receive the plaintext key.</p>
+        <form id="donation-form" class="settings-grid">
+          <label class="wide">Torn Public Only API key
+            <input id="donation-key" type="password" autocomplete="off" placeholder="Public Only key">
+          </label>
+          <label class="wide agreement"><input id="donation-accept" type="checkbox"><span id="donation-agreement">I agree to the current donation terms.</span></label>
+          <label class="wide toggle"><input id="donation-in-torn" type="checkbox"> Show API Donation GUI in Torn</label>
+          <div class="form-actions wide">
+            <button id="donation-submit" type="submit">Encrypt and donate key</button>
+            <button id="donation-revoke" class="danger" type="button">Revoke donation</button>
+          </div>
+        </form>
+        <p id="donation-message" class="status-line"></p>
+      </section>
+
+      <section class="card diagnostic-card" data-page="diagnostics" hidden>
         <div class="section-heading"><h2>Extension diagnostic</h2><button id="run-diagnostic" type="button">Run diagnostic</button></div>
         <pre id="diagnostic">Run a diagnostic to see the extension, Torn injection, and Worker health report.</pre>
       </section>
@@ -84,6 +109,7 @@
     <script src="../core/format.js"></script>
     <script src="../core/storage.js"></script>
     <script src="../core/permissions.js"></script>
+    <script src="../core/themes.js"></script>
     <script src="../core/messaging.js"></script>
     <script src="dashboard.js"></script>
   </body>

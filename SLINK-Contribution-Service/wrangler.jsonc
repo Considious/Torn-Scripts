@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "slinkcontribution",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-23",
+  "keep_vars": true,
+  "d1_databases": [
+    {
+      "binding": "PERMISSIONS_DB",
+      "database_name": "slink-permissions",
+      "database_id": "REPLACE_WITH_EXISTING_SLINK_PERMISSIONS_DATABASE_ID"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "API_KEY_ENCRYPTION_KEY",
+      "CONTRIBUTION_SERVICE_TOKEN"
+    ]
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}
