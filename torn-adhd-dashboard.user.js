@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.50
+// @version      1.4.51
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -352,14 +352,6 @@
     audioContext: null,
     drag: null,
     renderPending: false,
-    renderForcePending: false,
-    dashboardUiActionActive: false,
-    dashboardScrollUntil: 0,
-    dashboardScrollTimer: null,
-    liveHeaderAlertsMarkup: '',
-    liveAlertListMarkup: '',
-    liveToolbarMarkup: '',
-    liveTrackedAwardsMarkup: '',
     domObserver: null,
     domObserverSidebar: null,
     domObserverMain: null,
@@ -2584,7 +2576,7 @@
   }
 
   function clusterFallbackRefreshMs() {
-    return state.settings.slowApiMode ? 5 * 60_000 : 2 * 60_000;
+    return 5 * 60_000;
   }
 
   function marketRefreshMs(marketType = 'points') {
@@ -3954,7 +3946,6 @@
         state.forceRefreshPending = true;
         if (manualRequestId) state.forceRefreshRequestId = manualRequestId;
       }
-      render();
       return;
     }
     const expiredSnoozes = new Set(releaseExpiredSnoozes());
@@ -3985,7 +3976,6 @@
               : 'Manual refresh was handed to the Dashboard API-owner tab.',
         });
       }
-      render();
       return;
     }
     if (manualRequestId) {
@@ -4015,7 +4005,6 @@
       || refillsDue || cityItemsDue || playerAddictionDue;
     const marketWatchesActive = activeMarketWatches();
     state.syncing = true;
-    render();
     const tasks = [];
     try {
       tasks.push((async () => {
@@ -4124,7 +4113,6 @@
           }
           state.raceCheckPending = true;
           state.raceCheckComplete = false;
-          render();
           const racePromise = !raceReminderDue || liveRaceKnown
             ? Promise.resolve(true)
             : guardedRequest('races', () => api('user/races', {
@@ -4208,12 +4196,12 @@
           if (clusterRingAlreadyAchieved()) {
             delete state.errors.clusterRingStatus;
             state.lastClusterUpdated = now;
-            publishAlertGroups(['clusterRing']);
+            if (!state.readyAlertGroups.has('clusterRing')) publishAlertGroups(['clusterRing']);
             return;
           }
           const cachedStatusKnown = Array.isArray(state.data.shopliftingStatus?.shoplifting?.jewelry_store);
           if (!force && !snoozeExpiredFor('clusterRing') && cachedStatusKnown && now - state.lastClusterUpdated < clusterFallbackRefreshMs()) {
-            publishAlertGroups(['clusterRing']);
+            if (!state.readyAlertGroups.has('clusterRing')) publishAlertGroups(['clusterRing']);
             return;
           }
           const clusterRetryAt = Number(state.nextApiChecks?.clusterRingStatus) || 0;
@@ -4310,7 +4298,13 @@
               return;
             }
             delete state.errors.cityItemsStatus;
-            deferApiCheck('cityItems', remaining > 0 ? Date.now() + CITY_SHOP_REFRESH_MS : nextTornResetAtMs());
+            if (remaining > 0) {
+              deferApiCheck('cityItems', Date.now() + CITY_SHOP_REFRESH_MS);
+            } else {
+              delete state.data.cityShops;
+              delete state.errors.cityShopStock;
+              deferApiCheck('cityItems', nextTornResetAtMs());
+            }
             publishAlertGroups(['cityItem']);
           })());
         }
@@ -4424,9 +4418,11 @@
         publishAlertGroups(['bazaar']);
       }
       await Promise.all(tasks);
-      if (cityItemsEnabled) {
+      if (cityItemsEnabled && cityItemsRemainingToday() > 0) {
+        const previousCityShopFetchedAt = Number(state.data.cityShops?.__fetchedAt) || 0;
         await refreshCityShopStockIfNeeded({ force });
-        publishAlertGroups(['cityItem']);
+        const cityShopChanged = (Number(state.data.cityShops?.__fetchedAt) || 0) !== previousCityShopFetchedAt;
+        if (cityShopChanged || !state.readyAlertGroups.has('cityItem')) publishAlertGroups(['cityItem']);
       }
       state.lastUpdated = Date.now();
       saveCheckCache();
@@ -4448,7 +4444,6 @@
             : 'Manual refresh completed; the enabled daily checks accepted their latest API responses.',
         });
       }
-      render();
       if (rerunForcedRefresh) window.setTimeout(() => refresh({ force: true, manualRequestId: rerunRequestId }), 0);
     }
   }
@@ -6093,6 +6088,8 @@
   function publishAlertGroups(groups) {
     const targets = new Set((groups || []).filter(Boolean));
     if (!targets.size) return false;
+    const previousSnapshot = JSON.stringify(state.alertSnapshot);
+    const previousReadyGroups = [...state.readyAlertGroups].sort().join('\n');
     const fresh = createAlerts();
     const retained = state.alertSnapshot.filter((alert) => !targets.has(alertGroupForId(alert.id)));
     const replacements = fresh.filter((alert) => targets.has(alertGroupForId(alert.id)));
@@ -6101,8 +6098,10 @@
     targets.forEach((group) => state.readyAlertGroups.add(group));
     state.alertSnapshotReady = state.readyAlertGroups.size > 0;
     saveCheckCache();
-    render();
-    return true;
+    const snapshotChanged = previousSnapshot !== JSON.stringify(state.alertSnapshot);
+    const readinessChanged = previousReadyGroups !== [...state.readyAlertGroups].sort().join('\n');
+    if (snapshotChanged || readinessChanged) render();
+    return snapshotChanged || readinessChanged;
   }
 
   function publishAlertSnapshot() {
@@ -6756,7 +6755,7 @@
           <button data-action="clear-local-cache" class="subtle" ${state.syncing ? 'disabled' : ''}>Clear local cache + refresh</button>
         </div>
         <div class="api-controls">
-          <strong data-live-api-usage>Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
+          <strong>Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
           <label><input type="checkbox" data-field="slow-api-mode" ${state.settings.slowApiMode ? 'checked' : ''}> Slow API mode (30/min ceiling; low-priority checks yield first)</label>
           <label>Pause Torn API
             <select data-field="api-pause-duration">
@@ -7016,127 +7015,13 @@
     `).join('');
   }
 
-  function patchAlertList(list, alerts, markup) {
-    if (!list) return;
-    if (!alerts.length) {
-      if (state.liveAlertListMarkup !== markup) list.innerHTML = markup;
-      return;
-    }
-    const template = document.createElement('template');
-    template.innerHTML = markup;
-    const nextCards = Array.from(template.content.querySelectorAll('[data-alert-card]'));
-    const existingCards = new Map(Array.from(list.querySelectorAll(':scope > [data-alert-card]'))
-      .map((card) => [card.getAttribute('data-alert-card'), card]));
-    const retained = new Set();
-    nextCards.forEach((nextCard, index) => {
-      const id = nextCard.getAttribute('data-alert-card');
-      let card = existingCards.get(id);
-      if (card) {
-        retained.add(card);
-        if (card.className !== nextCard.className) card.className = nextCard.className;
-        if (card.innerHTML !== nextCard.innerHTML) card.innerHTML = nextCard.innerHTML;
-      } else {
-        card = nextCard;
-        retained.add(card);
-      }
-      const currentAtIndex = list.children[index];
-      if (currentAtIndex !== card) list.insertBefore(card, currentAtIndex || null);
-    });
-    Array.from(list.children).forEach((child) => {
-      if (!retained.has(child)) child.remove();
-    });
-  }
-
-  function markDashboardUiAction() {
-    state.dashboardUiActionActive = true;
-    queueMicrotask(() => { state.dashboardUiActionActive = false; });
-  }
-
-  function flushDashboardScrollRender() {
-    state.dashboardScrollTimer = null;
-    const remaining = Number(state.dashboardScrollUntil || 0) - Date.now();
-    if (remaining > 0) {
-      state.dashboardScrollTimer = window.setTimeout(flushDashboardScrollRender, remaining + 20);
-      return;
-    }
-    if ((state.renderPending || state.renderForcePending) && !shadow.activeElement?.closest?.('input, select, textarea')) {
-      const force = state.renderForcePending;
-      state.renderForcePending = false;
-      render({ force });
-    }
-  }
-
-  function noteDashboardScroll() {
-    if (!shadow.querySelector('.body')) return;
-    state.dashboardScrollUntil = Date.now() + 220;
-    if (state.dashboardScrollTimer) window.clearTimeout(state.dashboardScrollTimer);
-    state.dashboardScrollTimer = window.setTimeout(flushDashboardScrollRender, 240);
-  }
-
-  function handleDashboardWheel(event) {
-    const wheelSensitiveEditor = state.settings.settingsOpen
-      ? event.target?.closest?.('input[type="number"], select')
-      : null;
-    if (wheelSensitiveEditor && shadow.activeElement === wheelSensitiveEditor) wheelSensitiveEditor.blur();
-    noteDashboardScroll();
-  }
-
-  function patchDashboardLiveUi() {
-    const allAlerts = publishedAlerts();
-    const alerts = allAlerts.filter(alertVisible);
-    const snoozedCount = allAlerts.filter((alert) => alert.active && state.settings.enabled[alert.id] !== false && !alertVisible(alert)).length;
-    const count = shadow.querySelector('[data-live-alert-count]');
-    if (count) {
-      count.textContent = String(alerts.length);
-      count.style.background = alerts.length ? '#ffca55' : '#71d69b';
-    }
-    const chips = shadow.querySelector('[data-live-alert-chips]');
-    const headerAlertsMarkup = alerts.map(headerAlertChip).join('');
-    if (chips && state.liveHeaderAlertsMarkup !== headerAlertsMarkup) chips.innerHTML = headerAlertsMarkup;
-    state.liveHeaderAlertsMarkup = headerAlertsMarkup;
-    const usage = shadow.querySelector('[data-live-api-usage]');
-    if (usage) usage.textContent = `Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute`;
-    const source = shadow.querySelector('[data-live-source-summary]');
-    if (source) source.textContent = `${sourceSummary()}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}`;
-    if (state.settings.settingsOpen || state.settings.activeView !== 'alerts') return;
-    const turtleSeconds = Math.max(0, Math.ceil((Number(state.settings.turtleEndAt) - Date.now()) / 1000));
-    const toolbarMarkup = alertToolbarMarkup(turtleSeconds);
-    const toolbar = shadow.querySelector('[data-live-alert-toolbar]');
-    if (toolbar && state.liveToolbarMarkup !== toolbarMarkup) toolbar.innerHTML = toolbarMarkup;
-    state.liveToolbarMarkup = toolbarMarkup;
-    const listMarkup = alertListMarkup(alerts);
-    const list = shadow.querySelector('[data-live-alert-list]');
-    if (state.liveAlertListMarkup !== listMarkup) patchAlertList(list, alerts, listMarkup);
-    state.liveAlertListMarkup = listMarkup;
-    const trackedMarkup = trackedAwardsMarkup();
-    const tracked = shadow.querySelector('[data-live-tracked-awards]');
-    if (tracked && state.liveTrackedAwardsMarkup !== trackedMarkup) tracked.innerHTML = trackedMarkup;
-    state.liveTrackedAwardsMarkup = trackedMarkup;
-  }
-
   function render({ force = false } = {}) {
-    const userAction = state.dashboardUiActionActive;
-    const dashboardScrollActive = Boolean(shadow.querySelector('.body'))
-      && Date.now() < Number(state.dashboardScrollUntil || 0);
-    if (!userAction && dashboardScrollActive) {
-      state.renderPending = true;
-      state.renderForcePending ||= force;
-      return;
-    }
-    const livePatchableView = state.settings.settingsOpen || state.settings.activeView === 'alerts';
-    if (!force && livePatchableView && shadow.querySelector('.body') && !userAction) {
-      state.renderPending = false;
-      patchDashboardLiveUi();
-      return;
-    }
     const activeEditor = shadow.activeElement?.closest?.('input, select, textarea');
-    if (!force && activeEditor && !userAction) {
+    if (!force && activeEditor) {
       state.renderPending = true;
       return;
     }
-    state.dashboardUiActionActive = false;
     state.renderPending = false;
-    state.renderForcePending = false;
     const previousBody = shadow.querySelector('.body');
     const previousPawnList = shadow.querySelector('.pawn-candidate-list');
     const previousScrollTop = previousBody?.scrollTop || 0;
@@ -7192,7 +7077,7 @@
         .header:active { cursor: grabbing; }
         .title { min-width: 0; flex: 1; font-weight: 750; letter-spacing: .2px; }
         .count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; margin-left: 6px; border-radius: 999px; color: #141414; background: ${alerts.length ? '#ffca55' : '#71d69b'}; font-size: 12px; font-weight: 800; }
-        .header-alerts { max-width: 255px; display: flex; align-items: center; gap: 4px; overflow-x: auto; overscroll-behavior: contain; scrollbar-width: none; }
+        .header-alerts { max-width: 255px; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
         .header-alerts::-webkit-scrollbar { display: none; }
         .alert-chip { min-width: 27px; height: 27px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 2px 5px; border: 1px solid rgba(255,202,85,.42); border-radius: 7px; color: #fff; background: #3b3424; text-decoration: none; white-space: nowrap; }
         .alert-chip.urgent { border-color: rgba(255,104,104,.55); background: #4a2929; }
@@ -7208,7 +7093,7 @@
         .icon-button { width: 28px; height: 26px; padding: 0; font-size: 15px; }
         .view-button { height: 26px; padding: 0 8px; color: #d7e7f2; font-size: 11px; font-weight: 750; }
         .view-button.active { border-color: rgba(113,214,155,.58); color: #dff8e9; background: #234134; }
-        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; overflow-anchor: auto; overscroll-behavior: contain; }
+        .body { min-height: 0; max-height: min(72vh, 700px); overflow: auto; overflow-anchor: none; }
         .panel.user-sized .body { flex: 1 1 auto; max-height: none; }
         .status { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px; color: #aeb7c1; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 12px; }
         .status span { flex: 1; }
@@ -7456,8 +7341,8 @@
       </style>
       <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
-          <div class="title">Daily Dashboard <span class="count" data-live-alert-count>${alerts.length}</span></div>
-          <nav class="header-alerts" data-live-alert-chips aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
+          <div class="title">Daily Dashboard <span class="count">${alerts.length}</span></div>
+          <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
           <button class="view-button ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-awards" title="${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open medals and honors'}">${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Alerts' : 'Awards'}</button>
           <button class="view-button dollar-button ${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-dollar-bazaars" title="${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open Weaver $1 Bazaars'}">${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Alerts' : '$1'}</button>
           <button class="view-button networth-button ${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-networth" title="${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open net worth tracking'}">${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'Alerts' : 'NW'}</button>
@@ -7469,17 +7354,13 @@
           <div class="body">
             ${state.settings.settingsOpen ? settingsMarkup() : ''}
             ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? dollarBazaarsMarkup() : state.settings.activeView === 'networth' && !state.settings.settingsOpen ? networthMarkup() : `
-              <div class="status"><span data-live-source-summary>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
-              <div class="toolbar" data-live-alert-toolbar>${alertToolbarMarkup(turtleSeconds)}</div>
-              <div class="alerts" data-live-alert-list>${alertListMarkup(alerts)}</div>
-              <div data-live-tracked-awards style="display:contents">${trackedAwardsMarkup()}</div>
+              <div class="status"><span>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
+              <div class="toolbar">${alertToolbarMarkup(turtleSeconds)}</div>
+              <div class="alerts">${alertListMarkup(alerts)}</div>
+              ${trackedAwardsMarkup()}
             `}
           </div>`}
       </section>`;
-    state.liveHeaderAlertsMarkup = alerts.map(headerAlertChip).join('');
-    state.liveToolbarMarkup = alertToolbarMarkup(turtleSeconds);
-    state.liveAlertListMarkup = alertListMarkup(alerts);
-    state.liveTrackedAwardsMarkup = trackedAwardsMarkup();
     const restoreScroll = () => {
       const nextBody = shadow.querySelector('.body');
       if (nextBody) {
@@ -7513,7 +7394,6 @@
     }
     const button = event.target.closest('[data-action]');
     if (!button) return;
-    markDashboardUiAction();
     const action = button.dataset.action;
     if (!soundsMuted() && (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm)) ensureAudioContext();
     if (action === 'toggle-mute') {
@@ -7856,7 +7736,6 @@
   });
 
   shadow.addEventListener('change', (event) => {
-    markDashboardUiAction();
     const cityStockToggle = event.target.closest('[data-city-stock-alert]');
     if (cityStockToggle) {
       const itemId = Math.max(0, Math.trunc(Number(cityStockToggle.dataset.cityStockAlert) || 0));
@@ -8116,10 +7995,6 @@
       render();
     }, 0);
   });
-
-  shadow.addEventListener('wheel', handleDashboardWheel, { passive: true });
-  shadow.addEventListener('scroll', noteDashboardScroll, true);
-  shadow.addEventListener('touchmove', noteDashboardScroll, { passive: true });
 
   shadow.addEventListener('toggle', (event) => {
     const section = event.target.closest?.('[data-settings-section]');
@@ -8395,7 +8270,6 @@
         groups.push('raceTravel');
       }
       publishAlertGroups(groups);
-      render();
       if (becameExplicitlyInactive && !state.syncing) refresh();
     }, 600);
   }
@@ -8466,8 +8340,12 @@
     });
     GM_addValueChangeListener(CHECK_CACHE_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote || ownsDashboardNetworkLease()) return;
+      const previousSnapshot = JSON.stringify(state.alertSnapshot);
+      const previousReadyGroups = [...state.readyAlertGroups].sort().join('\n');
       applyCheckCache(loadCheckCache());
-      render();
+      const snapshotChanged = previousSnapshot !== JSON.stringify(state.alertSnapshot);
+      const readinessChanged = previousReadyGroups !== [...state.readyAlertGroups].sort().join('\n');
+      if (snapshotChanged || readinessChanged) render();
     });
     GM_addValueChangeListener(STORAGE_KEY, (_key, _oldValue, _newValue, remote) => {
       if (!remote) return;
