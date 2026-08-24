@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.48
+// @version      1.4.49
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -354,6 +354,10 @@
     renderPending: false,
     settingsUiActionActive: false,
     domObserver: null,
+    domObserverSidebar: null,
+    domObserverMain: null,
+    domObserverUrl: '',
+    domObserverRebindTimer: null,
     domRefreshTimer: null,
     bazaarOneDollarTimer: null,
     bazaarCatalogRequestedAt: 0,
@@ -1197,6 +1201,18 @@
     return /\/bazaar\.php$/i.test(location.pathname);
   }
 
+  function onItemMarketPage() {
+    const url = new URL(location.href);
+    const sid = String(url.searchParams.get('sid') || '').toLowerCase();
+    return sid === 'itemmarket'
+      || /\/itemmarket\.php$/i.test(url.pathname)
+      || /(?:^|\/)itemmarket(?:\/|$)/i.test(url.hash.replace(/^#\/?/, ''));
+  }
+
+  function onPurchaseOpportunityPage() {
+    return onBazaarPage() || onItemMarketPage();
+  }
+
   function ensurePurchaseHighlightStyles() {
     if (document.getElementById('tdd-purchase-highlight-styles')) return;
     const style = document.createElement('style');
@@ -1349,12 +1365,7 @@
   }
 
   function formatBazaarOneDollarListings() {
-    if (!focusedTornPage()) return;
-    if (!onBazaarPage()) {
-      document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => card.removeAttribute('data-tdd-bazaar-one-dollar'));
-      document.querySelectorAll('[data-tdd-bazaar-shop-profit]').forEach((card) => card.removeAttribute('data-tdd-bazaar-shop-profit'));
-      return;
-    }
+    if (!focusedTornPage() || !onBazaarPage()) return;
     ensurePurchaseHighlightStyles();
     requestPurchaseSellPriceCatalog();
     const cards = new Set(bazaarListingCards());
@@ -1465,7 +1476,7 @@
   }
 
   function formatItemMarketPurchaseOpportunities() {
-    if (!focusedTornPage()) return;
+    if (!focusedTornPage() || !onItemMarketPage()) return;
     const rows = new Set(itemMarketSellerRows());
     document.querySelectorAll('[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]').forEach((row) => {
       if (!rows.has(row)) {
@@ -1900,8 +1911,23 @@
     setQuickPurchaseButtonStyle(button, 'height', `${Math.round(height * 10) / 10}px`);
   }
 
+  function clearQuickPurchaseControls({ resetFlow = true } = {}) {
+    if (state.bazaarOneDollarTimer) window.clearTimeout(state.bazaarOneDollarTimer);
+    state.bazaarOneDollarTimer = null;
+    if (state.quickPurchaseSyncTimer) window.clearTimeout(state.quickPurchaseSyncTimer);
+    state.quickPurchaseSyncTimer = null;
+    state.quickPurchaseOverlays.forEach((button) => button.remove());
+    state.quickPurchaseOverlays.clear();
+    document.getElementById('tdd-quick-buy-layer')?.remove();
+    if (resetFlow) state.quickPurchaseFlow = null;
+  }
+
   function syncHighlightedQuickPurchaseControls() {
     if (!focusedTornPage()) return;
+    if (!onPurchaseOpportunityPage() && !state.quickPurchaseFlow) {
+      clearQuickPurchaseControls();
+      return;
+    }
     const desired = desiredQuickPurchaseControls();
     const now = Date.now();
     state.quickPurchaseOverlays.forEach((button, controlKey) => {
@@ -1943,6 +1969,8 @@
   }
 
   function scheduleQuickPurchaseControlSync(delay = 40) {
+    if (!focusedTornPage()) return;
+    if (!onPurchaseOpportunityPage() && !state.quickPurchaseFlow && !state.quickPurchaseOverlays.size) return;
     if (state.quickPurchaseSyncTimer) return;
     state.quickPurchaseSyncTimer = window.setTimeout(() => {
       state.quickPurchaseSyncTimer = null;
@@ -2061,6 +2089,7 @@
   }
 
   function schedulePurchaseOpportunityFormatting(delay = 200) {
+    if (!focusedTornPage() || !onPurchaseOpportunityPage()) return;
     if (state.bazaarOneDollarTimer) return;
     state.bazaarOneDollarTimer = window.setTimeout(() => {
       state.bazaarOneDollarTimer = null;
@@ -8061,15 +8090,108 @@
     state.resizing = null;
   });
 
+  function activePageNeedsDomObservation() {
+    const sid = String(new URL(location.href).searchParams.get('sid') || '').toLowerCase();
+    return sid === 'crimes' || sid === 'racing' || onPurchaseOpportunityPage();
+  }
+
+  function mutationTouchesRoot(record, root) {
+    if (!root) return false;
+    const target = record.target?.nodeType === Node.ELEMENT_NODE
+      ? record.target
+      : record.target?.parentElement;
+    return target === root || Boolean(target && root.contains(target));
+  }
+
+  function scheduleTornDomObserverRebind(delay = 80) {
+    if (state.domObserverRebindTimer) return;
+    state.domObserverRebindTimer = window.setTimeout(() => {
+      state.domObserverRebindTimer = null;
+      configureTornDomObserver();
+    }, delay);
+  }
+
+  function handlePurchasePageScroll() {
+    if (!state.settings.highlightedQuickBuyEnabled || !focusedTornPage()) return;
+    scheduleQuickPurchaseControlSync();
+  }
+
+  function configureTornDomObserver() {
+    window.removeEventListener('scroll', handlePurchasePageScroll, true);
+    state.domObserver?.disconnect();
+    state.domObserverSidebar = null;
+    state.domObserverMain = null;
+    state.domObserverUrl = location.href;
+    if (!focusedTornPage() || !document.body) return;
+    const purchasePage = onPurchaseOpportunityPage();
+    if (purchasePage) window.addEventListener('scroll', handlePurchasePageScroll, true);
+    else clearQuickPurchaseControls();
+    if (!state.domObserver) {
+      state.domObserver = new MutationObserver((records) => {
+        if (!focusedTornPage()) return;
+        if (state.domObserverUrl !== location.href) {
+          scheduleTornDomObserverRebind(0);
+          return;
+        }
+        if (records.some((record) => record.target === document.body)) scheduleTornDomObserverRebind();
+        const sidebarChanged = records.some((record) => mutationTouchesRoot(record, state.domObserverSidebar));
+        const mainChanged = records.some((record) => mutationTouchesRoot(record, state.domObserverMain));
+        if (sidebarChanged || mainChanged) scheduleVisiblePageSignalRefresh();
+        if (mainChanged && onPickpocketPage()) schedulePickpocketFormatting();
+        if (mainChanged && onPurchaseOpportunityPage()) schedulePurchaseOpportunityFormatting();
+      });
+    }
+    // Watch only direct body children so Torn can replace a major page root
+    // without making every chat/message mutation observable to this script.
+    state.domObserver.observe(document.body, { childList: true, subtree: false });
+    const options = {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['title', 'aria-label', 'aria-disabled', 'disabled', 'data-disabled', 'data-tooltip', 'class', 'style', 'fill', 'stroke', 'href', 'src'],
+    };
+    const sidebar = sidebarRoot();
+    if (sidebar && sidebar !== document.body) {
+      state.domObserverSidebar = sidebar;
+      state.domObserver.observe(sidebar, options);
+    }
+    if (activePageNeedsDomObservation()) {
+      const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+      if (main && main !== document.body && main !== sidebar) {
+        state.domObserverMain = main;
+        state.domObserver.observe(main, options);
+      } else {
+        // Relevant Torn layouts occasionally omit the standard main wrapper.
+        // Full-page observation is allowed only on these explicitly scoped routes.
+        state.domObserverMain = document.body;
+        state.domObserver.observe(document.body, options);
+      }
+    }
+  }
+
+  function handleTornRouteChange() {
+    if (!focusedTornPage()) return;
+    configureTornDomObserver();
+    scheduleVisiblePageSignalRefresh();
+    if (onPickpocketPage()) schedulePickpocketFormatting(0);
+    else if (state.pickpocketFormattedCount || document.getElementById('tdd-pickpocket-filter')) cleanupPickpocketFormatting();
+    if (onPurchaseOpportunityPage()) schedulePurchaseOpportunityFormatting(0);
+    else clearQuickPurchaseControls();
+  }
+
   document.addEventListener('visibilitychange', () => {
     state.windowFocused = document.hasFocus();
     if (focusedTornPage()) {
+      configureTornDomObserver();
       refresh({ domOnly: true });
       schedulePickpocketFormatting(0);
       schedulePurchaseOpportunityFormatting(0);
     } else {
       state.windowFocused = false;
-      state.quickPurchaseFlow = null;
+      window.removeEventListener('scroll', handlePurchasePageScroll, true);
+      state.domObserver?.disconnect();
+      clearQuickPurchaseControls();
       state.dom = { capturedAt: Date.now(), source: 'paused' };
       state.pickpocketFormattedCount = 0;
       render();
@@ -8078,6 +8200,7 @@
 
   window.addEventListener('focus', () => {
     state.windowFocused = true;
+    configureTornDomObserver();
     refresh({ domOnly: true });
     schedulePickpocketFormatting(0);
     schedulePurchaseOpportunityFormatting(0);
@@ -8085,16 +8208,17 @@
 
   window.addEventListener('blur', () => {
     state.windowFocused = false;
-    state.quickPurchaseFlow = null;
+    window.removeEventListener('scroll', handlePurchasePageScroll, true);
+    state.domObserver?.disconnect();
+    clearQuickPurchaseControls();
     state.dom = { capturedAt: Date.now(), source: 'api-fallback' };
     state.pickpocketFormattedCount = 0;
     if (state.raceCheckComplete && !state.raceCheckPending) publishAlertGroups(['raceTravel']);
     render();
   });
 
-  window.addEventListener('hashchange', () => schedulePickpocketFormatting(0));
-  window.addEventListener('popstate', () => schedulePickpocketFormatting(0));
-  window.addEventListener('scroll', () => scheduleQuickPurchaseControlSync(), true);
+  window.addEventListener('hashchange', handleTornRouteChange);
+  window.addEventListener('popstate', handleTornRouteChange);
   document.addEventListener('click', handleHighlightedQuickPurchaseClick, true);
   document.addEventListener('click', handleBazaarPurchaseClick, true);
 
@@ -8324,33 +8448,11 @@
   window.setTimeout(() => refresh(), 800);
   if (state.settings.activeView === 'dollarBazaars') window.setTimeout(() => refreshDollarBazaars(), 900);
   if (state.settings.settingsOpen && !itemCatalogFresh()) loadItemCatalog();
-  if (document.body) {
-    state.domObserver = new MutationObserver((records) => {
-      if (!focusedTornPage()) return;
-      const pageChanged = records.some((record) => {
-        const target = record.target?.nodeType === Node.ELEMENT_NODE
-          ? record.target
-          : record.target?.parentElement;
-        return !target?.closest?.('#tdd-quick-buy-layer, #tdd-purchase-highlight-styles');
-      });
-      if (!pageChanged) return;
-      scheduleVisiblePageSignalRefresh();
-      schedulePickpocketFormatting();
-      schedulePurchaseOpportunityFormatting();
-    });
-    state.domObserver.observe(document.body, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-      attributes: true,
-      attributeFilter: ['title', 'aria-label', 'aria-disabled', 'disabled', 'data-disabled', 'data-tooltip', 'class', 'style', 'fill', 'stroke', 'href', 'src'],
-    });
-  }
-  schedulePickpocketFormatting(0);
-  schedulePurchaseOpportunityFormatting(0);
+  configureTornDomObserver();
+  if (onPickpocketPage()) schedulePickpocketFormatting(0);
+  if (onPurchaseOpportunityPage()) schedulePurchaseOpportunityFormatting(0);
   state.pickpocketHeartbeat = window.setInterval(() => {
-    if (focusedTornPage()) schedulePickpocketFormatting(0);
-    else state.pickpocketFormattedCount = 0;
+    if (onPickpocketPage()) schedulePickpocketFormatting(0);
   }, 1_500);
   state.coreTimer = window.setInterval(() => refresh(), CORE_REFRESH_MS);
   state.networthTimer = window.setInterval(() => {
