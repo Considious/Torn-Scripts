@@ -7,7 +7,7 @@ import { afterEach, describe, it } from 'node:test';
 import worker, { testing } from './worker.js';
 
 const originalFetch = globalThis.fetch;
-const WORKER_VERSION = '0.14.0-donated-virtual-collectors';
+const WORKER_VERSION = '0.15.0-contributor-only-demand';
 const TERMS_VERSION = '2026-08-23';
 const TERMS_DOCUMENT_SHA256 =
     '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
@@ -286,6 +286,68 @@ describe('SLINK Leveling Worker', () => {
     });
 
 
+    it('issues restricted contributor sessions and pauses claims without user demand', async () => {
+        globalThis.fetch = async () => Response.json({
+            info: { user: { id: 7001, faction_id: 46978 } }
+        });
+        const db = createDatabase();
+        const env = {
+            DB: db,
+            SESSION_SECRET,
+            CONSENT_DB: createConsentDatabase(),
+            PERMISSIONS_DB: createPermissionsDatabase()
+        };
+        const response = await worker.fetch(
+            jsonRequest('https://worker.example/api/auth', {
+                api_key: 'test-torn-key',
+                terms_accepted: true,
+                terms_version: TERMS_VERSION,
+                terms_sha256: TERMS_DOCUMENT_SHA256,
+                disclosure_version: LEVELING_DISCLOSURE_VERSION,
+                disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
+                contributor_only: true,
+                client_name: 'Contributor test',
+                client_version: '0.14.0'
+            }),
+            env
+        );
+        const auth = await response.json();
+        assert.equal(response.status, 200);
+        assert.equal(auth.session_kind, 'contributor');
+        assert.deepEqual(auth.roles, ['contributor']);
+        assert.deepEqual(auth.scopes, ['slink.contribute']);
+
+        const deniedRecommendations = await worker.fetch(
+            authenticatedRequest(
+                'https://worker.example/api/recommendations?limit=1',
+                auth.session_token
+            ),
+            env
+        );
+        assert.equal(deniedRecommendations.status, 403);
+
+        db.sqlite.prepare('DELETE FROM leveling_user_activity').run();
+        const idleClaim = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/contributor/checks/claim',
+                auth.session_token,
+                { interval_capacity: 60, poll_seconds: 300 }
+            ),
+            env
+        );
+        const idle = await idleClaim.json();
+        assert.equal(idleClaim.status, 200);
+        assert.equal(idle.demand_active, false);
+        assert.equal(idle.poll_seconds, 1200);
+        assert.deepEqual(idle.checks, []);
+        assert.equal(
+            db.sqlite.prepare('SELECT COUNT(*) AS count FROM client_user_collectors').get().count,
+            0,
+            'idle contributors must not create collector writes'
+        );
+    });
+
+
     it('uses faction membership as a free grant and permits active paid non-members', async () => {
         const now = 1_800_000_000_000;
         Date.now = () => now;
@@ -507,27 +569,31 @@ describe('SLINK Leveling Worker', () => {
             'admin-virtual-test',
             ['admin.*', 'slink.level']
         );
-        await worker.fetch(
-            authenticatedRequest(
-                'https://worker.example/api/recommendations?limit=1',
-                adminToken
+        const adminActivity = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/user/activity',
+                adminToken,
+                {}
             ),
             env,
             { waitUntil: promise => adminBackground.push(promise) }
         );
+        assert.equal((await adminActivity.json()).admin_excluded, true);
         assert.equal(adminBackground.length, 0);
         assert.equal(contributionRequests.length, 0);
 
         const memberBackground = [];
         const memberToken = await sessionToken(9002, 'member-virtual-test');
-        await worker.fetch(
-            authenticatedRequest(
-                'https://worker.example/api/recommendations?limit=1',
-                memberToken
+        const memberActivity = await worker.fetch(
+            authenticatedJsonRequest(
+                'https://worker.example/api/user/activity',
+                memberToken,
+                {}
             ),
             env,
             { waitUntil: promise => memberBackground.push(promise) }
         );
+        assert.equal((await memberActivity.json()).active, true);
         assert.equal(memberBackground.length, 1);
         await Promise.all(memberBackground);
         assert.equal(contributionRequests.length, 1);
@@ -1571,6 +1637,20 @@ function createDatabase() {
             'utf8'
         )
     );
+    sqlite.exec(
+        readFileSync(
+            new URL('./migrations/0004-active-user-demand.sql', import.meta.url),
+            'utf8'
+        )
+    );
+    sqlite.prepare(`
+        INSERT INTO leveling_user_activity (
+            session_id,
+            user_id,
+            last_interaction_at,
+            active_until
+        ) VALUES (?, ?, ?, ?)
+    `).run('test-active-demand', 9002, Date.now(), Date.now() + 86_400_000);
 
     const insert = sqlite.prepare(`
         INSERT INTO targets (id, name, level, total_stats, sources)

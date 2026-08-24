@@ -81,7 +81,7 @@
     id: 'leveling',
     title: 'SLINK Leveling',
     defaultShowInTorn: true,
-    requiredScopes: ['slink.level'],
+    requiredScopes: [],
     matches: url => url.hostname === 'www.torn.com',
 
     async start(context) {
@@ -93,6 +93,7 @@
       let cycleTimer = null;
       let leaderTimer = null;
       let localError = '';
+      let lastActivityTouchAt = 0;
 
       context.ui.setTitle('SLINK Leveling');
       context.ui.setModuleStyles(MODULE_STYLES);
@@ -129,6 +130,10 @@
             </label>
             <label>Poll seconds
               <input id="leveling-poll" type="number" min="60" max="300" value="${Number(settings.pollSeconds) || 300}">
+            </label>
+            <label class="wide leveling-agree">
+              <input id="leveling-contributor-only" type="checkbox" ${settings.contributorOnly ? 'checked' : ''}>
+              <span>Contribute API only — supply checks when Leveling is in use, without receiving targets or counting as an active user.</span>
             </label>
             ${admin ? `
               <label class="wide leveling-agree">
@@ -192,7 +197,7 @@
         const runtime = current?.runtime || {};
         const usage = current?.tornApiUsage || { count: 0, limit: 60 };
         context.ui.setSubtitle(current?.session?.authenticated
-          ? `${runtime.collector ? 'API collector' : 'Standby device'} / Worker ${runtime.workerVersion || 'connected'}`
+          ? `${runtime.contributorOnly || runtime.idle ? 'API contributor' : (runtime.collector ? 'API collector' : 'Standby device')} / Worker ${runtime.workerVersion || 'connected'}`
           : 'Setup required');
         context.ui.setStatus(
           localError || runtime.lastError || runtime.cycleStatus || 'SLINK Leveling ready.',
@@ -221,6 +226,7 @@
 
       function bindEvents() {
         const root = context.ui.getContentElement();
+        root.addEventListener('pointerdown', () => void markActivity(), { once: true });
         root.querySelector('#leveling-show-terms')?.addEventListener('click', () => { termsOpen = true; render(); });
         root.querySelector('#leveling-hide-terms')?.addEventListener('click', () => { termsOpen = false; render(); });
         root.querySelector('#leveling-clear-session')?.addEventListener('click', async () => {
@@ -244,6 +250,7 @@
             ffKey: root.querySelector('#leveling-ff-key')?.value || '',
             pollSeconds: root.querySelector('#leveling-poll')?.value,
             apiContributionLimit: root.querySelector('#leveling-zero-contribution')?.checked ? 0 : 60,
+            contributorOnly: root.querySelector('#leveling-contributor-only')?.checked === true,
             minFF: root.querySelector('#leveling-min-ff')?.value,
             maxFF: root.querySelector('#leveling-max-ff')?.value,
             acceptTerms: Boolean(accept?.checked && !current?.terms?.accepted)
@@ -269,6 +276,15 @@
             if (runAfterSave) void runCycle(true);
           }
         });
+      }
+
+      async function markActivity() {
+        if (!current?.configured || current?.settings?.contributorOnly) return;
+        if (Date.now() - lastActivityTouchAt < 60_000) return;
+        lastActivityTouchAt = Date.now();
+        try {
+          current = await SLINK.core.messaging.send('leveling.activity.touch');
+        } catch {}
       }
 
       async function refreshStatus() {
@@ -306,6 +322,7 @@
 
       async function runCycle(force = false) {
         if (busy || stopped) return;
+        if (force) await markActivity();
         if (!await isLeader()) {
           if (force) localError = 'Another Torn tab is currently coordinating SLINK Leveling.';
           render();
@@ -328,7 +345,8 @@
           busy = false;
           render();
           const elapsed = Date.now() - startedAt;
-          scheduleNext(Math.max(5_000, Number(current?.settings?.pollSeconds || 300) * 1000 - elapsed));
+          const nextPollSeconds = Number(current?.runtime?.nextPollSeconds || current?.settings?.pollSeconds || 300);
+          scheduleNext(Math.max(5_000, nextPollSeconds * 1000 - elapsed));
         }
       }
 

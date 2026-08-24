@@ -69,19 +69,22 @@
     byId('reported-count').textContent = runtime.lastCycleReported || 0;
     byId('pending-count').textContent = runtime.pendingChecks || 0;
     byId('api-usage').textContent = `${leveling.tornApiUsage.count}/${leveling.tornApiUsage.limit}`;
-    byId('leveling-role').textContent = runtime.collector ? 'API collector' : (leveling.configured ? 'Standby device' : 'Setup required');
+    byId('leveling-role').textContent = runtime.contributorOnly || runtime.idle
+      ? 'API contributor'
+      : (runtime.collector ? 'API collector' : (leveling.configured ? 'Standby device' : 'Setup required'));
     byId('leveling-status').textContent = runtime.cycleStatus || 'Ready';
     byId('session-state').textContent = leveling.session.authenticated
       ? `Authenticated as ${leveling.session.userId}`
       : 'Not authenticated';
     byId('page-panel').checked = levelingInTorn;
-    byId('page-panel').disabled = !SLINK.core.permissions.hasScope(leveling.permissions, 'slink.level');
+    byId('page-panel').disabled = false;
 
     const settings = leveling.settings;
     const admin = SLINK.core.permissions.hasScope(leveling.permissions, 'admin.*');
     byId('torn-key').placeholder = settings.hasTornKey ? 'Saved - leave blank to keep' : 'Required';
     byId('ff-key').placeholder = settings.hasFfKey ? 'Saved - leave blank to keep' : 'Required for refined Fair Fight values';
     byId('poll-seconds').value = settings.pollSeconds;
+    byId('contributor-only').checked = settings.contributorOnly === true;
     byId('zero-contribution-row').hidden = !admin;
     byId('zero-contribution').checked = admin && Number(settings.apiContributionLimit) === 0;
     byId('min-ff').value = settings.minFF;
@@ -168,6 +171,7 @@
     setBusy(event.currentTarget, true);
     clearError();
     try {
+      leveling = await SLINK.core.messaging.send('leveling.activity.touch');
       const response = await SLINK.core.messaging.send('leveling.cycle.prepare', { contribute: false });
       leveling = response.status;
       renderLeveling();
@@ -192,6 +196,7 @@
         ffKey: byId('ff-key').value,
         pollSeconds: byId('poll-seconds').value,
         apiContributionLimit: byId('zero-contribution').checked ? 0 : 60,
+        contributorOnly: byId('contributor-only').checked,
         minFF: byId('min-ff').value,
         maxFF: byId('max-ff').value,
         acceptTerms: byId('accept-terms').checked && !leveling.terms.accepted

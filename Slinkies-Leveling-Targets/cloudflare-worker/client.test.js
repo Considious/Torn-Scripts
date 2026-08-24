@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.13\.2/);
+        assert.match(client, /@version\s+0\.14\.0/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -38,7 +38,10 @@ describe('SLINK Leveling Service thin client', () => {
             '/api/targets',
             '/api/recommendations',
             '/api/checks/claim',
+            '/api/contributor/checks/claim',
             '/api/observations',
+            '/api/contributor/observations',
+            '/api/user/activity',
             '/api/activity'
         ]) {
             assert.ok(client.includes(endpoint), `missing ${endpoint}`);

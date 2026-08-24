@@ -2,7 +2,13 @@
 
 Chrome-first Manifest V3 client for Shared Live Intelligence NetworK systems.
 
-Version 0.4.1 adds the multi-feature interface foundation and encrypted,
+Version 0.5.0 adds demand-aware API contribution to the multi-feature
+interface foundation. Leveling can now run in **Contribute API only** mode:
+it supplies assigned checks without showing targets or counting as an active
+Leveling user. A normal Leveling session also stops creating demand after 20
+minutes without interface activity and resumes as soon as the user interacts.
+
+Version 0.4.1 added the multi-feature interface foundation and encrypted,
 extension-wide Public Only API key donations:
 
 - Torn-only content injection

@@ -9,7 +9,12 @@ deployment credentials or member API keys.
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
 version. The current release is identified as
-`0.14.0-donated-virtual-collectors`. It keeps the read-optimized client
+`0.15.0-contributor-only-demand`. It adds restricted contributor-only sessions
+and a 20-minute active-user demand window. Contributor and donated-key clients
+receive work only while a non-admin Leveling user is actively interacting;
+otherwise they back off for 20 minutes without creating collector writes.
+
+The previous `0.14.0-donated-virtual-collectors` release kept the read-optimized client
 scheduler and adds demand-driven donated-key collection for active non-admin
 users.
 
@@ -161,9 +166,12 @@ available pool permits it.
 | `GET` | `/api/session` | Signed session | Inspect roles and effective scopes |
 | `GET` | `/api/targets` | `slink.level` | Read paginated leveling targets |
 | `GET` | `/api/recommendations` | `slink.level` | Return targets and renew collector coordination |
+| `POST` | `/api/user/activity` | `slink.level` | Record an explicit interface interaction and maintain the 20-minute real-user demand window |
 | `POST` | `/api/collector/heartbeat` | `slink.level` | Backward-compatible manual collector renewal |
 | `POST` | `/api/checks/claim` | `slink.level` | Receive the bounded state snapshot and collector roster used for client scheduling |
 | `POST` | `/api/observations` | `slink.level` | Submit status observations |
+| `POST` | `/api/contributor/checks/claim` | `slink.contribute` | Receive scheduled contribution work only while real-user demand exists |
+| `POST` | `/api/contributor/observations` | `slink.contribute` | Submit contributor-only observations without product access |
 | `POST` | `/api/activity` | `slink.level` | Share activity-snapshot matches |
 | `POST` | `/api/fair-fight` | `slink.level` | Deprecated no-op; Fair Fight stays local |
 | `POST` | `/api/admin/bootstrap-targets` | `admin.*` or admin token | Refresh targets from the master CSV |
@@ -211,6 +219,12 @@ was manually created while 0.5.0 was being developed.
 
 Release 0.11.0 changes only how observation queries are grouped. It uses the
 existing schema and requires no migration.
+
+Release 0.15.0 requires
+[`migrations/0004-active-user-demand.sql`](migrations/0004-active-user-demand.sql)
+on the main Leveling D1 database. It creates the small activity table used to
+expire real-user demand after 20 minutes. Apply it before or alongside the
+Worker deployment; it does not alter existing target data.
 
 The separate consent database uses
 `consent-database/0001-terms-acceptances.sql`. Run that schema only against the

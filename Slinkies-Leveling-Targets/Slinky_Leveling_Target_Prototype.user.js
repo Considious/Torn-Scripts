@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.13.2
+// @version      0.14.0
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
 (async function () {
     'use strict';
 
-    // Release: 0.13.2-client-scheduling
+    // Release: 0.14.0-contributor-only-demand
 
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -199,7 +199,7 @@
         PDA_API_KEY &&
         PDA_API_KEY !== PDA_API_KEY_TOKEN
     );
-    const SCRIPT_VERSION = '0.13.2';
+    const SCRIPT_VERSION = '0.14.0';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-23';
@@ -245,6 +245,9 @@
     const DAILY_FRESHNESS_BUCKETS = 3;
     const PDA_UI_HEARTBEAT_MS = 1_000;
     const PDA_UI_RECOVERY_GAP_MS = 3_000;
+    const USER_IDLE_MS = 20 * 60 * 1000;
+    const DEMAND_REPORT_INTERVAL_MS = 5 * 60 * 1000;
+    const NO_DEMAND_POLL_SECONDS = 20 * 60;
 
     const KEYS = {
         tornKey: 'slinkyLeveling.tornApiKey',
@@ -253,6 +256,7 @@
         usePdaFfKey: 'slinkyLeveling.usePdaFfKey.v1',
         pollSeconds: 'slinkyLeveling.pollSeconds',
         apiContributionLimit: 'slinkyLeveling.apiContributionLimit.v1',
+        contributorOnly: 'slinkyLeveling.contributorOnly.v1',
         minFF: 'slinkyLeveling.minFF',
         maxFF: 'slinkyLeveling.maxFF',
         collapsed: 'slinkyLeveling.collapsed',
@@ -260,6 +264,10 @@
         bubblePosition: 'slinkyLeveling.bubblePosition.v1',
         sessionToken: 'slinkyLeveling.workerSession.v1',
         sessionExpiresAt: 'slinkyLeveling.workerSessionExpiresAt.v1',
+        contributorSessionToken: 'slinkyLeveling.contributorSession.v1',
+        contributorSessionExpiresAt: 'slinkyLeveling.contributorSessionExpiresAt.v1',
+        lastUserInteractionAt: 'slinkyLeveling.lastUserInteractionAt.v1',
+        lastDemandReportAt: 'slinkyLeveling.lastDemandReportAt.v1',
         permissions: 'slinkyLeveling.permissions.v1',
         lastActivitySyncAt: 'slinkyLeveling.lastActivitySyncAt.v1',
         ffCache: 'slinkyLeveling.ffCache.v1',
@@ -291,6 +299,10 @@
         workerVersion: '',
         collector: false,
         collectorExpiresAt: 0,
+        contributorMode: false,
+        idle: false,
+        nextPollSeconds: DEFAULT_POLL_SECONDS,
+        lastInteractionTouchAt: 0,
         cycleStatus: '',
         fairFightStatus: '',
         lastCycleAt: Number(persistedRuntime.lastCycleAt) || 0,
@@ -405,11 +417,13 @@
     }
 
 
-    function mergePendingAndClaimedChecks(claimedChecks) {
+    function mergePendingAndClaimedChecks(claimedChecks, contributorAuth = false) {
         const completedBatches = loadCompletedCheckBatches();
         const merged = new Map();
 
-        for (const check of loadPendingChecks()) {
+        for (const check of loadPendingChecks().filter(check => {
+            return (check?.contributor_auth === true) === contributorAuth;
+        })) {
             merged.set(Number(check.id), check);
         }
 
@@ -424,6 +438,7 @@
             if (!merged.has(Number(check.id))) {
                 merged.set(Number(check.id), {
                     ...check,
+                    contributor_auth: contributorAuth,
                     queued_at: Date.now()
                 });
             }
@@ -532,6 +547,7 @@
                     DEFAULT_API_CONTRIBUTION_LIMIT
                 )) === 0
             ) ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT,
+            contributorOnly: Boolean(GM_getValue(KEYS.contributorOnly, false)),
             minFF: clamp(Number(GM_getValue(KEYS.minFF, 1)) || 1, 1, 3),
             maxFF: clamp(Number(GM_getValue(KEYS.maxFF, 3)) || 3, 1, 3),
             collapsed: Boolean(GM_getValue(KEYS.collapsed, false))
@@ -564,7 +580,9 @@
                 300
             )
         );
-        const requestedContributionLimit = Number(values.apiContributionLimit) === 0
+        const requestedContributionLimit = values.contributorOnly
+            ? DEFAULT_API_CONTRIBUTION_LIMIT
+            : Number(values.apiContributionLimit) === 0
             ? 0
             : DEFAULT_API_CONTRIBUTION_LIMIT;
         GM_setValue(
@@ -573,6 +591,7 @@
                 ? 0
                 : DEFAULT_API_CONTRIBUTION_LIMIT
         );
+        GM_setValue(KEYS.contributorOnly, Boolean(values.contributorOnly));
         GM_setValue(KEYS.minFF, clamp(Number(values.minFF) || 1, 1, 3));
         GM_setValue(KEYS.maxFF, clamp(Number(values.maxFF) || 3, 1, 3));
 
@@ -601,10 +620,16 @@
     }
 
 
-    function clearWorkerSession() {
-        GM_setValue(KEYS.sessionToken, '');
-        GM_setValue(KEYS.sessionExpiresAt, 0);
-        saveJson(KEYS.permissions, {
+    function clearWorkerSession(contributorOnly = false) {
+        GM_setValue(
+            contributorOnly ? KEYS.contributorSessionToken : KEYS.sessionToken,
+            ''
+        );
+        GM_setValue(
+            contributorOnly ? KEYS.contributorSessionExpiresAt : KEYS.sessionExpiresAt,
+            0
+        );
+        if (!contributorOnly) saveJson(KEYS.permissions, {
             userId: null,
             roles: [],
             scopes: [],
@@ -631,15 +656,21 @@
     // Authenticated Worker client
     // ================================================================
 
-    async function ensureWorkerSession(force = false) {
+    async function ensureWorkerSession(force = false, contributorOnly = false) {
         if (!hasAcceptedCurrentTerms()) {
             throw new Error(
                 'Review and accept the current SLINK API & Data Terms before authentication.'
             );
         }
 
-        const token = String(GM_getValue(KEYS.sessionToken, '') || '').trim();
-        const expiresAt = Number(GM_getValue(KEYS.sessionExpiresAt, 0)) || 0;
+        const tokenKey = contributorOnly
+            ? KEYS.contributorSessionToken
+            : KEYS.sessionToken;
+        const expiresKey = contributorOnly
+            ? KEYS.contributorSessionExpiresAt
+            : KEYS.sessionExpiresAt;
+        const token = String(GM_getValue(tokenKey, '') || '').trim();
+        const expiresAt = Number(GM_getValue(expiresKey, 0)) || 0;
 
         if (!force && token && expiresAt > Date.now() + 60_000) {
             return token;
@@ -681,7 +712,8 @@
                         disclosure_version: LEVELING_DISCLOSURE_VERSION,
                         disclosure_sha256: LEVELING_DISCLOSURE_SHA256,
                         client_name: SCRIPT_NAME,
-                        client_version: SCRIPT_VERSION
+                        client_version: SCRIPT_VERSION,
+                        contributor_only: contributorOnly
                     }
                 });
                 await TornLib.finishTornApiLog(reservation, {
@@ -713,17 +745,18 @@
                 issuedAt: Date.now(),
                 expiresAt: Date.parse(response.expires_at) || 0
             };
+            const requiredScope = contributorOnly ? 'slink.contribute' : 'slink.level';
             if (!permissions.scopes.some(scope => {
-                return permissionScopeMatches(String(scope), 'slink.level');
+                return permissionScopeMatches(String(scope), requiredScope);
             })) {
                 throw new Error(
-                    'Your SLINK account does not have slink.level permission.'
+                    `Your SLINK account does not have ${requiredScope} permission.`
                 );
             }
 
-            GM_setValue(KEYS.sessionToken, response.session_token);
-            GM_setValue(KEYS.sessionExpiresAt, Date.parse(response.expires_at) || 0);
-            saveJson(KEYS.permissions, permissions);
+            GM_setValue(tokenKey, response.session_token);
+            GM_setValue(expiresKey, Date.parse(response.expires_at) || 0);
+            if (!contributorOnly) saveJson(KEYS.permissions, permissions);
             logClientEvent('authenticated', {
                 userId: response.user_id,
                 expiresAt: response.expires_at
@@ -739,12 +772,13 @@
         const method = String(options.method || 'GET').toUpperCase();
         const auth = options.auth !== false;
         const retryAuthentication = options.retryAuthentication !== false;
+        const contributorAuth = options.contributorAuth === true;
         const headers = {
             Accept: 'application/json'
         };
 
         if (auth) {
-            const token = await ensureWorkerSession(false);
+            const token = await ensureWorkerSession(false, contributorAuth);
             headers.Authorization = `Bearer ${token}`;
         }
 
@@ -771,8 +805,8 @@
         }
 
         if (response.status === 401 && auth && retryAuthentication) {
-            clearWorkerSession();
-            await ensureWorkerSession(true);
+            clearWorkerSession(contributorAuth);
+            await ensureWorkerSession(true, contributorAuth);
             return workerRequest(path, {
                 ...options,
                 retryAuthentication: false
@@ -946,6 +980,55 @@
     // Browser-side data collection assigned by Cloudflare
     // ================================================================
 
+    async function syncUserDemand(force = false) {
+        const settings = getSettings();
+        if (settings.contributorOnly) return false;
+        const lastInteractionAt = Number(
+            GM_getValue(KEYS.lastUserInteractionAt, 0)
+        ) || 0;
+        if (!lastInteractionAt || Date.now() - lastInteractionAt >= USER_IDLE_MS) {
+            return false;
+        }
+        const lastReportAt = Number(GM_getValue(KEYS.lastDemandReportAt, 0)) || 0;
+        if (!force && Date.now() - lastReportAt < DEMAND_REPORT_INTERVAL_MS) {
+            return true;
+        }
+        await workerRequest('/api/user/activity', {
+            method: 'POST',
+            body: { last_interaction_at: lastInteractionAt }
+        });
+        GM_setValue(KEYS.lastDemandReportAt, Date.now());
+        return true;
+    }
+
+
+    async function recordUserInteraction() {
+        const settings = getSettings();
+        if (settings.contributorOnly || !settings.tornKey || !hasAcceptedCurrentTerms()) {
+            return;
+        }
+        GM_setValue(KEYS.lastUserInteractionAt, Date.now());
+        state.idle = false;
+        state.contributorMode = false;
+        state.nextPollSeconds = settings.pollSeconds;
+        try {
+            await syncUserDemand(true);
+        } catch (error) {
+            logClientEvent('demand_heartbeat_failed', {
+                error: TornLib.errorMessage(error)
+            });
+        }
+    }
+
+
+    async function handleUiInteraction() {
+        if (Date.now() - state.lastInteractionTouchAt < 60_000) return;
+        state.lastInteractionTouchAt = Date.now();
+        const wasIdle = state.idle;
+        await recordUserInteraction();
+        if (wasIdle && state.leader?.isLeader()) void runCycle(false);
+    }
+
     async function runCycle(forceActivity = false) {
         if (state.polling) return;
         if (!state.leader?.isLeader()) {
@@ -980,8 +1063,21 @@
         render();
 
         try {
+            const lastInteractionAt = Number(
+                GM_getValue(KEYS.lastUserInteractionAt, 0)
+            ) || 0;
+            const contributorMode = settings.contributorOnly ||
+                Date.now() - lastInteractionAt >= USER_IDLE_MS;
+            if (contributorMode) {
+                await runContributorCycle(settings, cycleStartedAt);
+                return;
+            }
             await ensureWorkerSession(false);
             settings = getSettings();
+            await syncUserDemand(false);
+            state.contributorMode = false;
+            state.idle = false;
+            state.nextPollSeconds = settings.pollSeconds;
 
             state.cycleStatus = 'Reading your locally cached strength range…';
             render();
@@ -1134,6 +1230,89 @@
             1,
             MAX_INTERVAL_CHECKS
         );
+    }
+
+
+    async function runContributorCycle(settings, cycleStartedAt) {
+        await ensureWorkerSession(false, true);
+        state.targets = [];
+        state.recommendationTargets = [];
+        state.fairFightStatus = '';
+        state.contributorMode = true;
+        state.idle = !settings.contributorOnly;
+
+        const intervalCapacity = checkPlanCapacity(
+            settings.pollSeconds,
+            settings.apiContributionLimit
+        );
+        const claim = intervalCapacity > 0
+            ? await workerRequest('/api/contributor/checks/claim', {
+                method: 'POST',
+                contributorAuth: true,
+                body: {
+                    scheduling_mode: 'client_v1',
+                    interval_capacity: intervalCapacity,
+                    poll_seconds: settings.pollSeconds
+                }
+            })
+            : {
+                checks: [],
+                demand_active: false,
+                poll_seconds: NO_DEMAND_POLL_SECONDS
+            };
+
+        state.collector = claim?.collector === true;
+        state.collectorExpiresAt = Number(claim?.collector_expires_at) || 0;
+        state.nextPollSeconds = claim?.demand_active === false
+            ? (Number(claim.poll_seconds) || NO_DEMAND_POLL_SECONDS)
+            : settings.pollSeconds;
+
+        if (claim?.demand_active === false || intervalCapacity === 0) {
+            state.lastCycleAt = Date.now();
+            state.lastCycleChecked = 0;
+            state.lastCycleReported = 0;
+            state.cycleStatus = 'Contributing only · Waiting for an active user';
+            saveRuntimeState();
+            return;
+        }
+
+        const scheduledPlan = buildClientCheckPlan(claim, intervalCapacity);
+        const queuedChecks = mergePendingAndClaimedChecks(
+            scheduledPlan.checks,
+            true
+        );
+        savePendingChecks(queuedChecks);
+        const checks = queuedChecks.slice(0, intervalCapacity);
+        state.cycleStatus = checks.length
+            ? `Contributing only · Running ${checks.length} scheduled checks`
+            : 'Contributing only · No Torn checks are currently due';
+        render();
+
+        const checkResult = await runPacedChecks(
+            settings.tornKey,
+            checks,
+            settings.pollSeconds
+        );
+        completeChecksLocally(checkResult.localCompletions);
+        if (checkResult.observations.length) {
+            const report = await submitObservations(
+                checkResult.observations,
+                true
+            );
+            state.lastCycleReported = Number(report.accepted_count) || 0;
+            reconcilePendingChecks(checkResult.observations, report);
+        } else {
+            state.lastCycleReported = 0;
+        }
+        state.lastCycleAt = Date.now();
+        state.lastCycleChecked = checks.length;
+        state.cycleStatus = 'Contributing only · Assigned checks complete';
+        logClientEvent('contributor_cycle_completed', {
+            startedAt: cycleStartedAt,
+            assigned: checks.length,
+            reported: checkResult.observations.length
+        });
+        saveRuntimeState();
     }
 
 
@@ -1467,7 +1646,7 @@
     }
 
 
-    async function submitObservations(observations) {
+    async function submitObservations(observations, contributorAuth = false) {
         const batchSize = OBSERVATION_BATCH_SIZE;
         const combined = {
             ok: true,
@@ -1478,8 +1657,12 @@
         };
 
         for (let offset = 0; offset < observations.length; offset += batchSize) {
-            const response = await workerRequest('/api/observations', {
+            const response = await workerRequest(
+                contributorAuth
+                    ? '/api/contributor/observations'
+                    : '/api/observations', {
                 method: 'POST',
+                contributorAuth,
                 body: { observations: observations.slice(offset, offset + batchSize) }
             });
             combined.ok = combined.ok && response.ok !== false;
@@ -1858,7 +2041,7 @@
 
     function scheduleNextPoll(cycleStartedAt = 0) {
         if (state.timer) clearTimeout(state.timer);
-        const intervalMs = getSettings().pollSeconds * 1000;
+        const intervalMs = (Number(state.nextPollSeconds) || getSettings().pollSeconds) * 1000;
         const elapsedMs = cycleStartedAt
             ? Math.max(0, Date.now() - cycleStartedAt)
             : 0;
@@ -2059,6 +2242,9 @@
             margin: 4
         });
         installBubbleEdgeBehavior(panel);
+        panel.addEventListener('pointerdown', () => {
+            void handleUiInteraction();
+        });
         return panel;
     }
 
@@ -2288,7 +2474,9 @@
         const leader = Boolean(state.leader?.isLeader());
         const busy = state.polling || state.authenticating;
         const usage = TornLib.getTornApiUsage({ limit: TornLib.TORN_API_DEFAULT_LIMIT });
-        const clientRole = !leader
+        const clientRole = state.contributorMode
+            ? 'API contributor'
+            : !leader
             ? 'Standby tab'
             : (state.collector ? 'API collector' : 'Standby device');
 
@@ -2397,6 +2585,10 @@
                 </div>
                 <label>Poll seconds
                     <input id="slp-poll" type="number" min="60" max="300" value="${settings.pollSeconds}">
+                </label>
+                <label class="wide slp-key-toggle">
+                    <input id="slp-contributor-only" type="checkbox" ${settings.contributorOnly ? 'checked' : ''}>
+                    <span>Contribute API only — help when Leveling is active without receiving targets or counting as an active user</span>
                 </label>
                 ${admin ? `
                     <label class="wide slp-key-toggle">
@@ -2588,6 +2780,16 @@
                 return;
             }
 
+            const contributorOnly = panel.querySelector('#slp-contributor-only')?.checked === true;
+            if (contributorOnly && !getSettings().contributorOnly) {
+                try {
+                    await workerRequest('/api/user/activity', {
+                        method: 'POST',
+                        body: { active: false }
+                    });
+                } catch {}
+            }
+
             GM_setValue(
                 KEYS.acceptedConsentVersion,
                 `${TERMS_VERSION}:${LEVELING_DISCLOSURE_VERSION}`
@@ -2599,10 +2801,16 @@
                 usePdaFfKey: panel.querySelector('#slp-use-pda-ff-key')?.checked,
                 pollSeconds: panel.querySelector('#slp-poll')?.value,
                 apiContributionLimit: panel.querySelector('#slp-zero-contribution')?.checked ? 0 : DEFAULT_API_CONTRIBUTION_LIMIT,
+                contributorOnly,
                 minFF: panel.querySelector('#slp-min-ff')?.value,
                 maxFF: panel.querySelector('#slp-max-ff')?.value
             });
             clearWorkerSession();
+            clearWorkerSession(true);
+            if (!getSettings().contributorOnly) {
+                GM_setValue(KEYS.lastUserInteractionAt, Date.now());
+                await syncUserDemand(true);
+            }
             state.settingsOpen = false;
             scheduleNextPoll();
             await runCycle(false);

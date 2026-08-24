@@ -60,6 +60,10 @@
             <input id="ff-key" type="password" autocomplete="off" placeholder="Required for refined Fair Fight values">
           </label>
           <label>Poll seconds<input id="poll-seconds" type="number" min="60" max="300"></label>
+          <label class="wide toggle">
+            <input id="contributor-only" type="checkbox">
+            Contribute API only — help when Leveling is active without receiving targets or counting as a user
+          </label>
           <label id="zero-contribution-row" class="wide toggle" hidden>
             <input id="zero-contribution" type="checkbox">
             Admin override: use zero routine Torn API calls for SLINK contribution

@@ -1,14 +1,14 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.14.0-donated-virtual-collectors
+ * Release: 0.15.0-contributor-only-demand
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.14.0-donated-virtual-collectors';
+const WORKER_VERSION = '0.15.0-contributor-only-demand';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
@@ -68,9 +68,12 @@ const HOSPITAL_WRITE_CHUNK_SIZE = 25;
 const LEASE_DELETE_CHUNK_SIZE = 50;
 
 const LEVELING_SCOPE = 'slink.level';
+const CONTRIBUTOR_SCOPE = 'slink.contribute';
 const ADMIN_SCOPE = 'admin.*';
 const SOLE_ADMIN_USER_ID = 3853023;
 const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
+const USER_DEMAND_LIFETIME_MS = 20 * 60 * 1000;
+const NO_DEMAND_POLL_SECONDS = 20 * 60;
 const DEFAULT_CLIENT_POLL_SECONDS = 300;
 const MIN_CLIENT_POLL_SECONDS = 60;
 const MAX_CLIENT_POLL_SECONDS = 300;
@@ -179,13 +182,25 @@ const worker = {
             );
             if (authorization.response) return authorization.response;
 
-            const response = await handleRecommendations(
-                url,
+            return handleRecommendations(url, env, authorization.session);
+        }
+
+        if (
+            url.pathname === '/api/user/activity' &&
+            request.method === 'POST'
+        ) {
+            const authorization = await authorizeRequest(
+                request,
                 env,
-                authorization.session
+                LEVELING_SCOPE
             );
-            scheduleVirtualCollector(ctx, env, authorization.session);
-            return response;
+            if (authorization.response) return authorization.response;
+            return handleUserDemandActivity(
+                request,
+                env,
+                authorization.session,
+                ctx
+            );
         }
 
         if (
@@ -213,7 +228,11 @@ const worker = {
             );
             if (authorization.response) return authorization.response;
 
-            return handleClaimChecks(request, env, authorization.session);
+            return handleDemandAwareClaimChecks(
+                request,
+                env,
+                authorization.session
+            );
         }
 
         if (
@@ -227,6 +246,28 @@ const worker = {
             );
             if (authorization.response) return authorization.response;
 
+            return handleObservations(request, env, authorization.session);
+        }
+
+        if (
+            url.pathname === '/api/contributor/checks/claim' &&
+            request.method === 'POST'
+        ) {
+            const authorization = await authorizeContributorRequest(request, env);
+            if (authorization.response) return authorization.response;
+            return handleDemandAwareClaimChecks(
+                request,
+                env,
+                authorization.session
+            );
+        }
+
+        if (
+            url.pathname === '/api/contributor/observations' &&
+            request.method === 'POST'
+        ) {
+            const authorization = await authorizeContributorRequest(request, env);
+            if (authorization.response) return authorization.response;
             return handleObservations(request, env, authorization.session);
         }
 
@@ -520,16 +561,6 @@ async function handleAuthentication(request, env) {
             );
         }
 
-        if (!env.PERMISSIONS_DB) {
-            return jsonResponse(
-                {
-                    ok: false,
-                    error: 'Permission storage is not configured.'
-                },
-                500
-            );
-        }
-
         let body;
 
         try {
@@ -563,6 +594,7 @@ async function handleAuthentication(request, env) {
                 428
             );
         }
+        const contributorOnly = body?.contributor_only === true;
 
         /*
          * The Torn API key is used only by this request to verify identity.
@@ -640,16 +672,28 @@ async function handleAuthentication(request, env) {
         }
 
         const acceptedAt = Date.now();
-        const permissions = await loadUserPermissions(
+        if (!env.PERMISSIONS_DB) {
+            return jsonResponse({
+                ok: false,
+                error: 'Permission storage is not configured.'
+            }, 500);
+        }
+        const productPermissions = await loadUserPermissions(
             env,
             userId,
             factionId,
             acceptedAt
         );
-
-        if (!hasSessionScope(permissions, LEVELING_SCOPE)) {
+        if (!hasSessionScope(productPermissions, LEVELING_SCOPE)) {
             return permissionDeniedResponse(LEVELING_SCOPE);
         }
+        const permissions = contributorOnly
+            ? {
+                roles: ['contributor'],
+                scopes: [CONTRIBUTOR_SCOPE],
+                expiresAt: productPermissions.expiresAt
+            }
+            : productPermissions;
 
         const issuedAt = Math.floor(acceptedAt / 1000);
         const permissionExpiresAt = permissions.expiresAt === null
@@ -696,6 +740,7 @@ async function handleAuthentication(request, env) {
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
             roles: permissions.roles,
             scopes: permissions.scopes,
+            session_kind: contributorOnly ? 'contributor' : 'product',
             iat: issuedAt,
             exp: expiresAt
         };
@@ -714,6 +759,7 @@ async function handleAuthentication(request, env) {
             disclosure_version: LEVELING_DISCLOSURE_VERSION,
             roles: permissions.roles,
             scopes: permissions.scopes,
+            session_kind: contributorOnly ? 'contributor' : 'product',
             terms_accepted_at: new Date(acceptedAt).toISOString(),
             expires_at: new Date(expiresAt * 1000).toISOString(),
             expires_in: expiresAt - issuedAt,
@@ -818,6 +864,7 @@ async function handleSessionCheck(request, env) {
         disclosure_version: session.disclosure_version,
         roles: session.roles,
         scopes: session.scopes,
+        session_kind: session.session_kind || 'product',
         issued_at: new Date(session.iat * 1000).toISOString(),
         expires_at: new Date(session.exp * 1000).toISOString()
     });
@@ -835,6 +882,27 @@ async function authorizeRequest(request, env, requiredScope) {
         return {
             session: null,
             response: permissionDeniedResponse(requiredScope)
+        };
+    }
+
+    return { session, response: null };
+}
+
+
+async function authorizeContributorRequest(request, env) {
+    const session = await getAuthenticatedSession(request, env);
+
+    if (!session) {
+        return { session: null, response: memberAuthenticationRequired() };
+    }
+
+    if (
+        !hasSessionScope(session, CONTRIBUTOR_SCOPE) &&
+        !hasSessionScope(session, LEVELING_SCOPE)
+    ) {
+        return {
+            session: null,
+            response: permissionDeniedResponse(CONTRIBUTOR_SCOPE)
         };
     }
 
@@ -1991,6 +2059,119 @@ async function handleClaimChecks(request, env, session) {
 }
 
 
+async function handleUserDemandActivity(request, env, session, ctx) {
+    const now = Date.now();
+
+    // Admin testing must never keep paid-user demand alive by itself.
+    if (Number(session?.user_id) === SOLE_ADMIN_USER_ID) {
+        return jsonResponse({
+            ok: true,
+            active: false,
+            admin_excluded: true,
+            active_until: null
+        });
+    }
+
+    const body = await readJsonBody(request);
+    if (body?.active === false) {
+        await env.DB
+            .prepare('DELETE FROM leveling_user_activity WHERE session_id = ?1')
+            .bind(session.session_id)
+            .run();
+        return jsonResponse({
+            ok: true,
+            active: false,
+            contributor_only: true,
+            active_until: null
+        });
+    }
+    const suppliedInteractionAt = Number(body?.last_interaction_at);
+    const lastInteractionAt = Number.isFinite(suppliedInteractionAt)
+        ? Math.min(now, Math.max(0, suppliedInteractionAt))
+        : now;
+    const activeUntil = lastInteractionAt + USER_DEMAND_LIFETIME_MS;
+
+    if (activeUntil <= now) {
+        await env.DB
+            .prepare('DELETE FROM leveling_user_activity WHERE session_id = ?1')
+            .bind(session.session_id)
+            .run();
+        return jsonResponse({
+            ok: true,
+            active: false,
+            idle: true,
+            active_until: null
+        });
+    }
+    await env.DB
+        .prepare(`
+            INSERT INTO leveling_user_activity (
+                session_id,
+                user_id,
+                last_interaction_at,
+                active_until
+            ) VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(session_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                last_interaction_at = excluded.last_interaction_at,
+                active_until = excluded.active_until
+        `)
+        .bind(session.session_id, session.user_id, lastInteractionAt, activeUntil)
+        .run();
+
+    scheduleVirtualCollector(ctx, env, session);
+
+    return jsonResponse({
+        ok: true,
+        active: true,
+        active_until: new Date(activeUntil).toISOString(),
+        idle_after_seconds: Math.floor(USER_DEMAND_LIFETIME_MS / 1000)
+    });
+}
+
+
+async function handleDemandAwareClaimChecks(request, env, session) {
+    if (!(await hasActiveUserDemand(env, Date.now()))) {
+        return jsonResponse({
+            ok: true,
+            demand_active: false,
+            collector: false,
+            count: 0,
+            capacity: 0,
+            due_count: 0,
+            poll_seconds: NO_DEMAND_POLL_SECONDS,
+            checks: [],
+            targets: []
+        });
+    }
+
+    return handleClaimChecks(request, env, session);
+}
+
+
+async function hasActiveUserDemand(env, now) {
+    try {
+        const row = await env.DB
+            .prepare(`
+                SELECT 1 AS active
+                FROM leveling_user_activity
+                WHERE active_until > ?1
+                  AND user_id <> ?2
+                LIMIT 1
+            `)
+            .bind(now, SOLE_ADMIN_USER_ID)
+            .first();
+        return row?.active === 1;
+    } catch (error) {
+        // Keep rolling deployments functional until migration 0004 is applied.
+        if (String(errorMessage(error)).includes('leveling_user_activity')) {
+            return true;
+        }
+        throw error;
+    }
+}
+
+
 function routineCheckBucket(now = Date.now()) {
     return Math.floor(now / ROUTINE_CHECK_BUCKET_MS);
 }
@@ -2582,6 +2763,18 @@ async function cleanExpiredCoordinationRows(env, now) {
             .prepare('DELETE FROM client_user_collectors WHERE expires_at <= ?1')
             .bind(now)
     ]);
+
+    try {
+        await env.DB
+            .prepare('DELETE FROM leveling_user_activity WHERE active_until <= ?1')
+            .bind(now)
+            .run();
+    } catch (error) {
+        // Migration 0004 may briefly lag a rolling Worker deployment.
+        if (!String(errorMessage(error)).includes('leveling_user_activity')) {
+            throw error;
+        }
+    }
 }
 
 

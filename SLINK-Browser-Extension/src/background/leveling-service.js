@@ -15,6 +15,9 @@
   const DAILY_FRESHNESS_BUCKETS = 3;
   const FF_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
   const BATTLE_STATS_CACHE_MS = 24 * 60 * 60 * 1000;
+  const USER_IDLE_MS = 20 * 60 * 1000;
+  const DEMAND_REPORT_INTERVAL_MS = 5 * 60 * 1000;
+  const NO_DEMAND_POLL_SECONDS = 20 * 60;
   const WORKER_BASE = SLINK.core.workerClient.BASE_URL;
 
   const KEYS = Object.freeze({
@@ -22,6 +25,9 @@
     terms: 'leveling.terms.v1',
     acceptedTerms: 'leveling.acceptedTerms.v1',
     session: 'leveling.session.v1',
+    contributorSession: 'leveling.contributorSession.v1',
+    lastInteractionAt: 'leveling.lastInteractionAt.v1',
+    lastDemandReportAt: 'leveling.lastDemandReportAt.v1',
     runtime: 'leveling.runtime.v1',
     pendingChecks: 'leveling.pendingChecks.v1',
     completedCheckBatches: 'leveling.completedCheckBatches.v1',
@@ -50,6 +56,7 @@
       ffKey: '',
       pollSeconds: DEFAULT_POLL_SECONDS,
       apiContributionLimit: DEFAULT_API_CONTRIBUTION_LIMIT,
+      contributorOnly: false,
       minFF: 1,
       maxFF: 3
     };
@@ -67,7 +74,10 @@
       workerVersion: '',
       lastCycleAt: 0,
       lastCycleChecked: 0,
-      lastCycleReported: 0
+      lastCycleReported: 0,
+      contributorOnly: false,
+      idle: false,
+      nextPollSeconds: DEFAULT_POLL_SECONDS
     };
   }
 
@@ -139,10 +149,15 @@
     });
   }
 
+  async function clearContributorSession() {
+    await SLINK.core.storage.remove(KEYS.contributorSession);
+  }
+
   async function workerRequest(path, options = {}, retried = false) {
     const headers = { Accept: 'application/json', ...(options.headers || {}) };
+    const contributor = options.sessionKind === 'contributor';
     if (options.auth !== false) {
-      const session = await ensureSession();
+      const session = await ensureSession(false, contributor);
       headers.Authorization = `Bearer ${session.token}`;
     }
     const requestOptions = { method: options.method || 'GET', headers, cache: 'no-store' };
@@ -154,15 +169,16 @@
       return await SLINK.core.http.requestJson('slinkWorker', `${WORKER_BASE}${path}`, requestOptions);
     } catch (error) {
       if (error.status === 401 && options.auth !== false && !retried) {
-        await clearSession();
-        await ensureSession(true);
+        if (contributor) await clearContributorSession();
+        else await clearSession();
+        await ensureSession(true, contributor);
         return workerRequest(path, options, true);
       }
       throw error;
     }
   }
 
-  async function ensureSession(force = false) {
+  async function ensureSession(force = false, contributorOnly = false) {
     if (authenticatingPromise) return authenticatingPromise;
     authenticatingPromise = (async () => {
       const terms = await fetchTerms();
@@ -171,7 +187,8 @@
         error.code = 'SLINK_TERMS_REQUIRED';
         throw error;
       }
-      const existing = await SLINK.core.storage.get(KEYS.session, null);
+      const sessionKey = contributorOnly ? KEYS.contributorSession : KEYS.session;
+      const existing = await SLINK.core.storage.get(sessionKey, null);
       if (!force && existing?.token && Number(existing.expiresAt) > Date.now() + 60_000) return existing;
 
       const currentSettings = await settings();
@@ -192,7 +209,8 @@
           disclosure_version: terms.disclosureVersion,
           disclosure_sha256: terms.disclosureSha256,
           client_name: CLIENT_NAME,
-          client_version: CLIENT_VERSION
+          client_version: CLIENT_VERSION,
+          contributor_only: contributorOnly
         }
       });
       if (!response?.session_token) throw new Error('SLINK did not return a session token.');
@@ -203,11 +221,12 @@
         roles: Array.isArray(response.roles) ? response.roles : [],
         scopes: Array.isArray(response.scopes) ? response.scopes : []
       };
-      if (!SLINK.core.permissions.hasScope(session, 'slink.level')) {
-        throw new Error('Your SLINK account does not have slink.level permission.');
+      const requiredScope = contributorOnly ? 'slink.contribute' : 'slink.level';
+      if (!SLINK.core.permissions.hasScope(session, requiredScope)) {
+        throw new Error(`Your SLINK account does not have ${requiredScope} permission.`);
       }
-      await SLINK.core.storage.set(KEYS.session, session);
-      await SLINK.core.storage.set('permissions.snapshot', {
+      await SLINK.core.storage.set(sessionKey, session);
+      if (!contributorOnly) await SLINK.core.storage.set('permissions.snapshot', {
         userId: session.userId,
         roles: session.roles,
         scopes: session.scopes,
@@ -222,6 +241,34 @@
     } finally {
       authenticatingPromise = null;
     }
+  }
+
+  async function syncUserDemand(force = false) {
+    const currentSettings = await settings();
+    if (currentSettings.contributorOnly) return { active: false, contributor_only: true };
+    const lastInteractionAt = Number(await SLINK.core.storage.get(KEYS.lastInteractionAt, 0)) || 0;
+    if (!lastInteractionAt || Date.now() - lastInteractionAt >= USER_IDLE_MS) {
+      return { active: false, idle: true };
+    }
+    const lastReportAt = Number(await SLINK.core.storage.get(KEYS.lastDemandReportAt, 0)) || 0;
+    if (!force && Date.now() - lastReportAt < DEMAND_REPORT_INTERVAL_MS) {
+      return { active: true, cached: true };
+    }
+    const result = await workerRequest('/api/user/activity', {
+      method: 'POST',
+      body: { last_interaction_at: lastInteractionAt }
+    });
+    await SLINK.core.storage.set(KEYS.lastDemandReportAt, Date.now());
+    return result;
+  }
+
+  async function touchActivity() {
+    const currentSettings = await settings();
+    if (currentSettings.contributorOnly) return publicStatus();
+    await SLINK.core.storage.set(KEYS.lastInteractionAt, Date.now());
+    await syncUserDemand(true);
+    await saveRuntime({ idle: false, contributorOnly: false, nextPollSeconds: currentSettings.pollSeconds });
+    return publicStatus();
   }
 
   async function tornJson(url) {
@@ -385,14 +432,21 @@
     await SLINK.core.storage.set(KEYS.completedCheckBatches, batches);
   }
 
-  async function mergePending(claimed) {
+  async function mergePending(claimed, contributorAuth = false) {
     const completed = await completedCheckBatches();
-    const merged = new Map((await pendingChecks()).map(check => [Number(check.id), check]));
+    const existing = (await pendingChecks()).filter(check => {
+      return (check?.contributor_auth === true) === contributorAuth;
+    });
+    const merged = new Map(existing.map(check => [Number(check.id), check]));
     for (const check of claimed || []) {
       const targetId = Number(check?.id);
       const batchId = String(check?.check_batch_id || '').trim();
       if ((completed[batchId]?.targetIds || []).map(Number).includes(targetId)) continue;
-      if (!merged.has(targetId)) merged.set(targetId, { ...check, queuedAt: Date.now() });
+      if (!merged.has(targetId)) merged.set(targetId, {
+        ...check,
+        contributor_auth: contributorAuth,
+        queuedAt: Date.now()
+      });
     }
     const result = [...merged.values()].slice(0, 600);
     await SLINK.core.storage.set(KEYS.pendingChecks, result);
@@ -588,11 +642,13 @@
   }
 
   async function publicStatus() {
-    const [currentSettings, currentRuntime, terms, accepted, session, usage, pending, permissions] = await Promise.all([
+    const [currentSettings, currentRuntime, terms, accepted, productSession, contributorSession, usage, pending, permissions] = await Promise.all([
       settings(), runtime(), fetchTerms(), acceptedCurrentTerms(),
-      SLINK.core.storage.get(KEYS.session, null), SLINK.core.tornApiLimiter.getUsage(), pendingChecks(),
+      SLINK.core.storage.get(KEYS.session, null), SLINK.core.storage.get(KEYS.contributorSession, null),
+      SLINK.core.tornApiLimiter.getUsage(), pendingChecks(),
       SLINK.core.storage.get('permissions.snapshot', null)
     ]);
+    const session = currentSettings.contributorOnly ? contributorSession : productSession;
     return {
       configured: Boolean(currentSettings.tornKey && accepted),
       settings: {
@@ -600,6 +656,7 @@
         hasFfKey: Boolean(currentSettings.ffKey),
         pollSeconds: currentSettings.pollSeconds,
         apiContributionLimit: currentSettings.apiContributionLimit,
+        contributorOnly: currentSettings.contributorOnly,
         minFF: currentSettings.minFF,
         maxFF: currentSettings.maxFF
       },
@@ -607,7 +664,8 @@
       session: {
         authenticated: Boolean(session?.token && Number(session.expiresAt) > Date.now()),
         userId: session?.userId || null,
-        expiresAt: Number(session?.expiresAt) || 0
+        expiresAt: Number(session?.expiresAt) || 0,
+        kind: currentSettings.contributorOnly ? 'contributor' : 'product'
       },
       runtime: { ...currentRuntime, pendingChecks: pending.length },
       permissions: SLINK.core.permissions.normalizeSnapshot(permissions || {}),
@@ -625,9 +683,25 @@
       ffKey: input.clearFfKey ? '' : (String(input.ffKey || '').trim() || previous.ffKey),
       pollSeconds: clamp(input.pollSeconds || previous.pollSeconds, 60, 300),
       apiContributionLimit: previous.apiContributionLimit,
+      contributorOnly: Object.prototype.hasOwnProperty.call(input, 'contributorOnly')
+        ? input.contributorOnly === true
+        : previous.contributorOnly,
       minFF: clamp(input.minFF || previous.minFF, 1, 3),
       maxFF: clamp(input.maxFF || previous.maxFF, 1, 3)
     };
+    if (
+      next.contributorOnly &&
+      !previous.contributorOnly &&
+      previous.tornKey &&
+      await acceptedCurrentTerms()
+    ) {
+      try {
+        await workerRequest('/api/user/activity', {
+          method: 'POST',
+          body: { active: false }
+        });
+      } catch {}
+    }
     await SLINK.core.storage.set(KEYS.settings, next);
     if (input.acceptTerms === true) {
       const terms = await fetchTerms(true);
@@ -639,19 +713,33 @@
         acceptedAt: Date.now()
       });
     }
-    if (next.tornKey !== previous.tornKey || input.acceptTerms === true) await clearSession();
+    if (
+      next.tornKey !== previous.tornKey ||
+      next.contributorOnly !== previous.contributorOnly ||
+      input.acceptTerms === true
+    ) {
+      await clearSession();
+      await clearContributorSession();
+    }
     if (next.tornKey && await acceptedCurrentTerms()) {
-      await ensureSession(true);
-      const permissions = await SLINK.core.storage.get('permissions.snapshot', null);
-      if (
-        requestedContributionLimit === 0 &&
-        !SLINK.core.permissions.hasScope(permissions, 'admin.*')
-      ) {
-        const error = new Error('Only admin.* may set routine API contribution to zero.');
-        error.code = 'SLINK_PERMISSION_DENIED';
-        throw error;
+      if (next.contributorOnly) {
+        next.apiContributionLimit = DEFAULT_API_CONTRIBUTION_LIMIT;
+        await ensureSession(true, true);
+      } else {
+        await ensureSession(true);
+        const permissions = await SLINK.core.storage.get('permissions.snapshot', null);
+        if (
+          requestedContributionLimit === 0 &&
+          !SLINK.core.permissions.hasScope(permissions, 'admin.*')
+        ) {
+          const error = new Error('Only admin.* may set routine API contribution to zero.');
+          error.code = 'SLINK_PERMISSION_DENIED';
+          throw error;
+        }
+        next.apiContributionLimit = requestedContributionLimit;
+        await SLINK.core.storage.set(KEYS.lastInteractionAt, Date.now());
+        await syncUserDemand(true);
       }
-      next.apiContributionLimit = requestedContributionLimit;
       await SLINK.core.storage.set(KEYS.settings, next);
     }
     return publicStatus();
@@ -664,7 +752,13 @@
       if (!currentSettings.tornKey || !await acceptedCurrentTerms()) return { status: await publicStatus(), checks: [] };
       await saveRuntime({ polling: true, lastError: '', cycleStatus: 'Connecting to the SLINK Network...' });
       try {
+        const lastInteractionAt = Number(await SLINK.core.storage.get(KEYS.lastInteractionAt, 0)) || 0;
+        const contributorMode = currentSettings.contributorOnly || Date.now() - lastInteractionAt >= USER_IDLE_MS;
+        if (contributorMode) {
+          return await prepareContributorCycle(currentSettings);
+        }
         await ensureSession();
+        await syncUserDemand(false);
         let battleStats = null;
         try { battleStats = await ensureBattleStats(); } catch (error) {
           await saveRuntime({ lastError: `Local Fair Fight estimate: ${SLINK.core.format.errorMessage(error)}` });
@@ -726,7 +820,10 @@
               : 'Targets ready / collection assigned')
             : 'Targets ready / standby device',
           lastCycleAt: Date.now(),
-          lastCycleChecked: checks.length
+          lastCycleChecked: checks.length,
+          contributorOnly: false,
+          idle: false,
+          nextPollSeconds: currentSettings.pollSeconds
         });
         return { status: await publicStatus(), checks };
       } catch (error) {
@@ -739,6 +836,54 @@
     } finally {
       cyclePromise = null;
     }
+  }
+
+  async function prepareContributorCycle(currentSettings) {
+    await ensureSession(false, true);
+    const capacity = Number(currentSettings.apiContributionLimit) === 0
+      ? 0
+      : clamp(
+        Math.floor(DEFAULT_API_CONTRIBUTION_LIMIT * (currentSettings.pollSeconds / 60)),
+        1,
+        MAX_INTERVAL_CHECKS
+      );
+    const claim = capacity > 0
+      ? await workerRequest('/api/contributor/checks/claim', {
+        method: 'POST',
+        sessionKind: 'contributor',
+        body: {
+          scheduling_mode: 'client_v1',
+          interval_capacity: capacity,
+          poll_seconds: currentSettings.pollSeconds
+        }
+      })
+      : { checks: [], demand_active: false, poll_seconds: NO_DEMAND_POLL_SECONDS };
+    const checks = claim.demand_active === false || capacity === 0
+      ? []
+      : (await mergePending(buildClientCheckPlan(claim, capacity), true)).slice(0, capacity);
+    const nextPollSeconds = claim.demand_active === false
+      ? (Number(claim.poll_seconds) || NO_DEMAND_POLL_SECONDS)
+      : currentSettings.pollSeconds;
+    await saveRuntime({
+      targets: [],
+      polling: false,
+      collector: claim.collector === true,
+      collectorExpiresAt: Number(claim.collector_expires_at) || 0,
+      workerVersion: String(claim.version || ''),
+      fairFightStatus: '',
+      cycleStatus: claim.demand_active === false
+        ? 'Contributing only / waiting for an active user'
+        : 'Contributing only / collection assigned',
+      lastCycleAt: Date.now(),
+      lastCycleChecked: checks.length,
+      contributorOnly: currentSettings.contributorOnly,
+      idle: !currentSettings.contributorOnly,
+      nextPollSeconds
+    });
+    return {
+      status: await publicStatus(),
+      checks: checks.map(check => ({ ...check, contributor_auth: true }))
+    };
   }
 
   async function checkTarget(input) {
@@ -757,7 +902,8 @@
       description: String(status?.description ?? status?.details ?? state ?? 'Unknown'),
       until: Number(status?.until) || 0,
       check_batch_id: batchId || undefined,
-      source: 'torn_api'
+      source: 'torn_api',
+      contributor_auth: input?.contributor_auth === true || target.contributor_auth === true
     };
     if (canCompleteOkayLocally(target, observation)) {
       await completePendingLocally(target, observation);
@@ -771,7 +917,15 @@
       ? input.observations.filter(row => row?.completed_locally !== true).slice(0, 300)
       : [];
     if (!observations.length) return publicStatus();
-    const response = await workerRequest('/api/observations', { method: 'POST', body: { observations } });
+    const contributor = observations.some(row => row?.contributor_auth === true);
+    const response = await workerRequest(
+      contributor ? '/api/contributor/observations' : '/api/observations',
+      {
+        method: 'POST',
+        sessionKind: contributor ? 'contributor' : 'product',
+        body: { observations }
+      }
+    );
     const finished = new Set([
       ...(response.accepted || []).map(row => Number(row.target_id)),
       ...(response.rejected || []).map(row => Number(row.target_id))
@@ -818,7 +972,12 @@
       'leveling.status': publicStatus,
       'leveling.terms': () => fetchTerms(true),
       'leveling.settings.save': saveSettings,
-      'leveling.session.clear': async () => { await clearSession(); return publicStatus(); },
+      'leveling.activity.touch': touchActivity,
+      'leveling.session.clear': async () => {
+        await clearSession();
+        await clearContributorSession();
+        return publicStatus();
+      },
       'leveling.cycle.prepare': prepareCycle,
       'leveling.check': checkTarget,
       'leveling.observations.submit': submitObservations,
