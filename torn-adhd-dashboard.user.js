@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.51
+// @version      1.4.52
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -55,6 +55,8 @@
   const EDUCATION_OC_REFRESH_MS = 7 * 60_000;
   const RACE_TRAVEL_REFRESH_MS = 3 * 60_000;
   const CITY_SHOP_REFRESH_MS = 5 * 60_000;
+  const QUICK_PURCHASE_TRANSITION_TIMEOUT_MS = 2_500;
+  const QUICK_PURCHASE_FLOW_TIMEOUT_MS = 10_000;
   const API_TRANSITION_SETTLE_MS = 5_000;
   const TORN_RESET_SETTLE_MS = 15_000;
   const ITEM_MARKET_FALLBACK_REFRESH_MS = 30_000;
@@ -1212,11 +1214,22 @@
     return onBazaarPage() || onItemMarketPage();
   }
 
+  function targetedBazaarListing() {
+    if (!onBazaarPage()) return null;
+    const params = new URL(location.href).searchParams;
+    if (params.get('highlight') !== '1') return null;
+    const sellerId = Math.trunc(Number(params.get('userId')) || 0);
+    const itemId = Math.trunc(Number(params.get('itemId')) || 0);
+    const price = Math.trunc(Number(params.get('price')) || 0);
+    return sellerId > 0 && itemId > 0 && price > 0 ? { sellerId, itemId, price } : null;
+  }
+
   function ensurePurchaseHighlightStyles() {
     if (document.getElementById('tdd-purchase-highlight-styles')) return;
     const style = document.createElement('style');
     style.id = 'tdd-purchase-highlight-styles';
     style.textContent = `
+      [data-tdd-bazaar-targeted],
       [data-tdd-bazaar-one-dollar],
       [data-tdd-item-market-one-dollar] {
         outline: 4px solid #39ff14 !important;
@@ -1258,6 +1271,10 @@
       button[data-tdd-quick-buy]:disabled {
         opacity: .6;
         cursor: wait;
+      }
+      button[data-tdd-quick-buy][data-tdd-quick-buy-passive="true"] {
+        opacity: .45;
+        pointer-events: none;
       }
     `;
     document.head?.appendChild(style);
@@ -1320,6 +1337,11 @@
     return match ? Math.trunc(Number(match[1])) : 0;
   }
 
+  function bazaarCardMatchesTarget(card, target = targetedBazaarListing()) {
+    if (!target) return false;
+    return bazaarCardItemId(card) === target.itemId && bazaarCardPrice(card) === target.price;
+  }
+
   function bazaarCardStock(card) {
     const stockText = card?.querySelector?.('[data-testid="amount-value"]')?.textContent
       || String(card?.textContent || '').match(/([\d,]+)\s+in stock/i)?.[1]
@@ -1368,6 +1390,10 @@
     ensurePurchaseHighlightStyles();
     requestPurchaseSellPriceCatalog();
     const cards = new Set(bazaarListingCards());
+    const target = targetedBazaarListing();
+    document.querySelectorAll('[data-tdd-bazaar-targeted]').forEach((card) => {
+      if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-targeted');
+    });
     document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => {
       if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-one-dollar');
     });
@@ -1376,6 +1402,7 @@
     });
     cards.forEach((card) => {
       const { oneDollar, shopProfit } = bazaarPurchaseOpportunity(card);
+      card.toggleAttribute('data-tdd-bazaar-targeted', bazaarCardMatchesTarget(card, target));
       card.toggleAttribute('data-tdd-bazaar-one-dollar', oneDollar);
       card.toggleAttribute('data-tdd-bazaar-shop-profit', shopProfit);
     });
@@ -1393,14 +1420,39 @@
     return match ? Number(match[1].replaceAll(',', '')) : null;
   }
 
-  function itemMarketRowItemId(row) {
-    const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
-    const match = `${image?.getAttribute('src') || ''} ${image?.getAttribute('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
+  function itemImageId(image) {
+    const match = `${image?.getAttribute?.('src') || ''} ${image?.getAttribute?.('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
     return match ? Math.trunc(Number(match[1])) : 0;
   }
 
+  function itemMarketPageItemId() {
+    const locationMatch = `${location.search}&${location.hash}`.match(/(?:^|[?&#/])(?:itemid|item_id)=(\d+)/i);
+    if (locationMatch) return Math.trunc(Number(locationMatch[1]));
+    const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+    const ids = [...new Set(Array.from(main?.querySelectorAll?.('img[src*="/images/items/"], img[srcset*="/images/items/"]') || [])
+      .map(itemImageId)
+      .filter((itemId) => itemId > 0))];
+    return ids.length === 1 ? ids[0] : 0;
+  }
+
+  function itemMarketPageItemName(itemId = itemMarketPageItemId()) {
+    const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+    const matchingImage = itemId > 0
+      ? main?.querySelector?.(`img[src*="/images/items/${itemId}/"], img[srcset*="/images/items/${itemId}/"]`)
+      : null;
+    return String(matchingImage?.getAttribute('alt') || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function itemMarketRowItemId(row) {
+    const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+    return itemImageId(image) || itemMarketPageItemId();
+  }
+
   function itemMarketRowItemName(row) {
-    return String(row?.querySelector?.('img[src*="/images/items/"]')?.getAttribute('alt') || '')
+    const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+    return String(image?.getAttribute('alt') || itemMarketPageItemName(itemImageId(image) || itemMarketPageItemId()))
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -1632,7 +1684,9 @@
   function highlightedQuickPurchaseListing(kind, element) {
     if (!state.settings.highlightedQuickBuyEnabled || !element?.isConnected) return false;
     if (kind === 'bazaar') {
-      return element.hasAttribute('data-tdd-bazaar-one-dollar') || element.hasAttribute('data-tdd-bazaar-shop-profit');
+      return element.hasAttribute('data-tdd-bazaar-targeted')
+        || element.hasAttribute('data-tdd-bazaar-one-dollar')
+        || element.hasAttribute('data-tdd-bazaar-shop-profit');
     }
     return element.hasAttribute('data-tdd-item-market-one-dollar') || element.hasAttribute('data-tdd-item-market-shop-profit');
   }
@@ -1646,7 +1700,7 @@
   }
 
   function quickPurchaseConfirmation(flow) {
-    if (!flow || Date.now() - Number(flow.startedAt || 0) > 60_000) return null;
+    if (!flow || Date.now() - Number(flow.startedAt || 0) > QUICK_PURCHASE_FLOW_TIMEOUT_MS) return null;
     const selector = flow.kind === 'bazaar' ? '[data-testid="buy-confirmation"]' : '[class*="confirmWrapper___"]';
     return Array.from(document.querySelectorAll(selector)).find((wrapper) => elementVisible(wrapper) && quickPurchaseConfirmationMatches(wrapper, flow)) || null;
   }
@@ -1688,7 +1742,7 @@
 
   function highlightedQuickPurchaseElements(kind) {
     const selector = kind === 'bazaar'
-      ? '[data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit]'
+      ? '[data-tdd-bazaar-targeted], [data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit]'
       : '[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]';
     return Array.from(document.querySelectorAll(selector));
   }
@@ -1741,10 +1795,11 @@
 
   function desiredFlowStageControl(desired, native, spec, activeFlow) {
     if (!native) return;
-    const waitingForNativeTransition = activeFlow?.lastStage === spec.stage
-      && Date.now() - Number(activeFlow.lastActionAt || 0) < 1_500;
+    const transitionElapsed = Date.now() - Number(activeFlow.lastActionAt || 0);
+    const waitingForNativeTransition = activeFlow?.lastStage === spec.stage && transitionElapsed < 1_500;
+    if (waitingForNativeTransition) scheduleQuickPurchaseControlSync(1_500 - transitionElapsed + 20);
     desired.set(activeFlow.controlKey, waitingForNativeTransition
-      ? { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey, label: 'Wait', disabled: true }
+      ? { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey, label: 'Wait', disabled: true, passive: true }
       : { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey });
   }
 
@@ -1776,6 +1831,12 @@
 
   function desiredBazaarFlowWaitControl(desired, activeFlow, listing) {
     if (!activeFlow?.lastNative) return;
+    const elapsed = Date.now() - Number(activeFlow.lastActionAt || activeFlow.startedAt || 0);
+    if (elapsed >= QUICK_PURCHASE_TRANSITION_TIMEOUT_MS) {
+      state.quickPurchaseFlow = null;
+      return;
+    }
+    scheduleQuickPurchaseControlSync(QUICK_PURCHASE_TRANSITION_TIMEOUT_MS - elapsed + 20);
     desired.set(activeFlow.controlKey, {
       stage: 'waiting',
       listing: listing || activeFlow,
@@ -1784,6 +1845,7 @@
       controlKey: activeFlow.controlKey,
       label: 'Wait',
       disabled: true,
+      passive: true,
     });
   }
 
@@ -1791,7 +1853,7 @@
     const desired = new Map();
     if (!state.settings.highlightedQuickBuyEnabled) return desired;
     const flow = state.quickPurchaseFlow;
-    if (flow && Date.now() - Number(flow.startedAt || 0) > 60_000) state.quickPurchaseFlow = null;
+    if (flow && Date.now() - Number(flow.startedAt || 0) > QUICK_PURCHASE_FLOW_TIMEOUT_MS) state.quickPurchaseFlow = null;
     const activeFlow = state.quickPurchaseFlow;
     const confirmation = quickPurchaseConfirmation(activeFlow);
     if (confirmation) {
@@ -1840,8 +1902,7 @@
     }
 
     bazaarListingCards().forEach((element) => {
-      const opportunity = bazaarPurchaseOpportunity(element);
-      if (!opportunity.oneDollar && !opportunity.shopProfit) return;
+      if (!highlightedQuickPurchaseListing('bazaar', element)) return;
       const listing = quickPurchaseListing('bazaar', element);
       const buyCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"]');
       const activateCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="activate-buy-button"]');
@@ -1960,6 +2021,8 @@
       if (button.dataset.tddQuickBuyStage !== spec.stage) button.dataset.tddQuickBuyStage = spec.stage;
       if (button.textContent !== spec.label) button.textContent = spec.label;
       if (button.disabled !== (spec.disabled === true)) button.disabled = spec.disabled === true;
+      if (spec.passive === true) button.dataset.tddQuickBuyPassive = 'true';
+      else button.removeAttribute('data-tdd-quick-buy-passive');
       if (button.getAttribute('aria-label') !== ariaLabel) button.setAttribute('aria-label', ariaLabel);
       button.dataset.tddQuickBuySeenAt = String(now);
       positionQuickPurchaseButton(button, spec);
@@ -1992,6 +2055,7 @@
     event.stopImmediatePropagation();
     const spec = state.quickPurchaseControlSpecs.get(button);
     if (!event.isTrusted || !state.settings.highlightedQuickBuyEnabled || !focusedTornPage()) return;
+    if (spec?.passive) return;
     if (!spec?.native?.isConnected || spec.native.disabled || spec.native.getAttribute('aria-disabled') === 'true') return;
     const listing = spec.listing;
     if (spec.stage === 'confirm') {
