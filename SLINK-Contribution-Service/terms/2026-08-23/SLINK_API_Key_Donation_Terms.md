@@ -23,6 +23,17 @@ before database storage, and decrypts it only inside the Contribution Worker
 when performing an authorized request. SLINK product modules do not receive the
 plaintext key.
 
+## Your API key is private
+
+Donated API keys are securely encrypted and cannot be viewed through SLINK's
+database, extension, or administration tools, including by SLINK's owner.
+
+Keys are used only for approved Public Only Torn API requests. They are never
+displayed, shared with other SLINK tools, or stored in a readable form.
+
+If SLINK's encryption system is ever reset, existing donated keys become
+permanently unusable and must be donated again.
+
 ## Stored records
 
 SLINK stores the encrypted key material, encryption version, Torn user ID,

@@ -10,7 +10,7 @@ const originalFetch = globalThis.fetch;
 const ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64url');
 const SERVICE_TOKEN = 'test-contribution-service-token';
 const TERMS_SHA256 =
-    'd5e9592ef86159037574bf51df86edb4896bb86e57e22f85a9288d0cecaed5e5';
+    '235789f3d858ce3cea62527fadbf249d13ecb6d7c00d0d83f25eb53026819739';
 const DISCLOSURE_SHA256 =
     '62003b1c06ca2f9843e34bf72e44fe102f3856289a4f421fe9d8284c2c67b35a';
 
