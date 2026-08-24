@@ -23,7 +23,7 @@
     contributionWorker: Object.freeze({
       label: 'SLINK Contribution Service',
       optional: false,
-      origins: Object.freeze(['https://slinkcontribution.richard-johnson554.workers.dev/*'])
+      origins: Object.freeze(['https://slinkcontributionworker.richard-johnson554.workers.dev/*'])
     })
   });
 

@@ -2,7 +2,7 @@
   'use strict';
 
   const SLINK = global.SLINK_EXTENSION;
-  const BASE_URL = 'https://slinkcontribution.richard-johnson554.workers.dev';
+  const BASE_URL = 'https://slinkcontributionworker.richard-johnson554.workers.dev';
   const TOKEN_KEY = 'contribution.managementToken';
 
   async function request(path, options = {}) {

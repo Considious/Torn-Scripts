@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
-  "name": "slinkcontribution",
+  "name": "slinkcontributionworker",
   "main": "worker.js",
   "compatibility_date": "2026-08-23",
   "keep_vars": true,
@@ -8,7 +8,7 @@
     {
       "binding": "PERMISSIONS_DB",
       "database_name": "slink-permissions",
-      "database_id": "REPLACE_WITH_EXISTING_SLINK_PERMISSIONS_DATABASE_ID"
+      "database_id": "2debd2fe-69b6-42e3-acc9-2a567d170928"
     }
   ],
   "secrets": {

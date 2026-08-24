@@ -2,7 +2,7 @@
 
 Chrome-first Manifest V3 client for Shared Live Intelligence NetworK systems.
 
-Version 0.4.0 adds the multi-feature interface foundation and encrypted,
+Version 0.4.1 adds the multi-feature interface foundation and encrypted,
 extension-wide Public Only API key donations:
 
 - Torn-only content injection

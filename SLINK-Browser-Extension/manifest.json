@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SLINK",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Shared Live Intelligence NetworK with SLINK Leveling for Torn.",
   "permissions": [
     "alarms",
@@ -12,7 +12,7 @@
     "https://api.torn.com/*",
     "https://ffscouter.com/*",
     "https://slinkyleveling.richard-johnson554.workers.dev/*",
-    "https://slinkcontribution.richard-johnson554.workers.dev/*"
+    "https://slinkcontributionworker.richard-johnson554.workers.dev/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"

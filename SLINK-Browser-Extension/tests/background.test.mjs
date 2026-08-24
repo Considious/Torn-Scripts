@@ -44,12 +44,12 @@ const chrome = {
         'https://api.torn.com/*',
         'https://ffscouter.com/*',
         'https://slinkyleveling.richard-johnson554.workers.dev/*',
-        'https://slinkcontribution.richard-johnson554.workers.dev/*'
+        'https://slinkcontributionworker.richard-johnson554.workers.dev/*'
       ].includes(origin));
     }
   },
   runtime: {
-    getManifest() { return { version: '0.4.0' }; },
+    getManifest() { return { version: '0.4.1' }; },
     onInstalled,
     onMessage,
     onStartup
@@ -148,7 +148,7 @@ context = vm.createContext({
           rejected: []
         };
       }
-    } else if (url.hostname === 'slinkcontribution.richard-johnson554.workers.dev') {
+    } else if (url.hostname === 'slinkcontributionworker.richard-johnson554.workers.dev') {
       if (url.pathname === '/api/health') body = { ok:true, version:'test-contribution', database:'connected' };
       if (url.pathname === '/api/terms') body = {
         ok:true, version:'2026-08-23', document_url:'https://example.test/donation-terms', document_sha256:'terms-hash',

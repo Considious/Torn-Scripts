@@ -39,7 +39,7 @@ assert(
   manifest.host_permissions.includes('https://api.torn.com/*') &&
   manifest.host_permissions.includes('https://ffscouter.com/*') &&
   manifest.host_permissions.includes('https://slinkyleveling.richard-johnson554.workers.dev/*') &&
-  manifest.host_permissions.includes('https://slinkcontribution.richard-johnson554.workers.dev/*'),
+  manifest.host_permissions.includes('https://slinkcontributionworker.richard-johnson554.workers.dev/*'),
   'Required host access must include Torn, Torn API, FFScouter, and both SLINK Workers.'
 );
 assert(

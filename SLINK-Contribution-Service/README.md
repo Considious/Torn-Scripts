@@ -14,7 +14,7 @@ public result. The first supported job is `torn.user.basic`.
 1. Run
    [`SLINK-Permissions/migrations/0002-donated-api-keys.sql`](../SLINK-Permissions/migrations/0002-donated-api-keys.sql)
    in the existing `slink-permissions` D1 SQL console.
-2. Create a Worker named `slinkcontribution` and paste `worker.js` into it.
+2. Create a Worker named `slinkcontributionworker` and paste `worker.js` into it.
 3. Bind the existing `slink-permissions` database as `PERMISSIONS_DB`.
 4. Add these encrypted Worker secrets in **Settings > Variables and Secrets**:
    - `API_KEY_ENCRYPTION_KEY`: 32 cryptographically random bytes encoded as
