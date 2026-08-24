@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn ADHD Dashboard
 // @namespace    Considious [3853023]
-// @version      1.4.47
+// @version      1.4.48
 // @description  Privacy-conscious Torn reminders with shared API limiting, city-shop stock, and market watches.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/torn-adhd-dashboard.user.js
@@ -352,8 +352,7 @@
     audioContext: null,
     drag: null,
     renderPending: false,
-    settingsInteractionUntil: 0,
-    settingsInteractionTimer: null,
+    settingsUiActionActive: false,
     domObserver: null,
     domRefreshTimer: null,
     bazaarOneDollarTimer: null,
@@ -6721,7 +6720,7 @@
           <button data-action="clear-local-cache" class="subtle" ${state.syncing ? 'disabled' : ''}>Clear local cache + refresh</button>
         </div>
         <div class="api-controls">
-          <strong>Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
+          <strong data-live-api-usage>Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute</strong>
           <label><input type="checkbox" data-field="slow-api-mode" ${state.settings.slowApiMode ? 'checked' : ''}> Slow API mode (30/min ceiling; low-priority checks yield first)</label>
           <label>Pause Torn API
             <select data-field="api-pause-duration">
@@ -6944,24 +6943,41 @@
       : `<span class="alert-chip ${escapeHtml(alert.tone || '')}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${contents}</span>`;
   }
 
-  function deferBackgroundRenderWhileSettingsScroll() {
+  function markSettingsUiAction() {
     if (!state.settings.settingsOpen) return;
-    state.settingsInteractionUntil = Date.now() + 700;
-    if (state.settingsInteractionTimer) window.clearTimeout(state.settingsInteractionTimer);
-    state.settingsInteractionTimer = window.setTimeout(() => {
-      state.settingsInteractionTimer = null;
-      if (shadow.activeElement?.closest?.('input, select, textarea')) return;
-      if (state.renderPending && Date.now() >= state.settingsInteractionUntil) render({ force: true });
-    }, 725);
+    state.settingsUiActionActive = true;
+    queueMicrotask(() => { state.settingsUiActionActive = false; });
+  }
+
+  function patchSettingsLiveUi() {
+    const allAlerts = publishedAlerts();
+    const alerts = allAlerts.filter(alertVisible);
+    const snoozedCount = allAlerts.filter((alert) => alert.active && state.settings.enabled[alert.id] !== false && !alertVisible(alert)).length;
+    const count = shadow.querySelector('[data-live-alert-count]');
+    if (count) {
+      count.textContent = String(alerts.length);
+      count.style.background = alerts.length ? '#ffca55' : '#71d69b';
+    }
+    const chips = shadow.querySelector('[data-live-alert-chips]');
+    if (chips) chips.innerHTML = alerts.map(headerAlertChip).join('');
+    const usage = shadow.querySelector('[data-live-api-usage]');
+    if (usage) usage.textContent = `Shared Torn API: ${rollingTornApiUsage().length} / ${state.settings.slowApiMode ? API_SLOW_LIMIT : API_HARD_LIMIT} calls in the last minute`;
+    const source = shadow.querySelector('[data-live-source-summary]');
+    if (source) source.textContent = `${sourceSummary()}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}`;
   }
 
   function render({ force = false } = {}) {
+    if (!force && state.settings.settingsOpen && shadow.querySelector('.settings') && !state.settingsUiActionActive) {
+      state.renderPending = false;
+      patchSettingsLiveUi();
+      return;
+    }
     const activeEditor = shadow.activeElement?.closest?.('input, select, textarea');
-    const settingsScrollActive = state.settings.settingsOpen && Date.now() < Number(state.settingsInteractionUntil || 0);
-    if (!force && (activeEditor || settingsScrollActive)) {
+    if (!force && activeEditor) {
       state.renderPending = true;
       return;
     }
+    state.settingsUiActionActive = false;
     state.renderPending = false;
     const previousBody = shadow.querySelector('.body');
     const previousPawnList = shadow.querySelector('.pawn-candidate-list');
@@ -7282,8 +7298,8 @@
       </style>
       <section class="panel ${collapsed ? 'collapsed' : ''} ${panelUserSized && !collapsed ? 'user-sized' : ''} ${state.settings.flashAlarm && Date.now() < state.flashUntil ? 'alarm-flash' : ''} ${state.settings.landingFlashAlarm && Date.now() < state.landingFlashUntil ? 'landing-flash' : ''} ${state.settings.turtleFlashAlarm && Date.now() < state.turtleFlashUntil ? 'turtle-flash' : ''}" style="${panelStyle}" aria-label="Torn Daily Dashboard">
         <header class="header" data-drag-handle>
-          <div class="title">Daily Dashboard <span class="count">${alerts.length}</span></div>
-          <nav class="header-alerts" aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
+          <div class="title">Daily Dashboard <span class="count" data-live-alert-count>${alerts.length}</span></div>
+          <nav class="header-alerts" data-live-alert-chips aria-label="Active reminder shortcuts">${alerts.map(headerAlertChip).join('')}</nav>
           <button class="view-button ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-awards" title="${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open medals and honors'}">${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? 'Alerts' : 'Awards'}</button>
           <button class="view-button dollar-button ${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-dollar-bazaars" title="${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open Weaver $1 Bazaars'}">${state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? 'Alerts' : '$1'}</button>
           <button class="view-button networth-button ${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'active' : ''}" data-action="toggle-networth" title="${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'Return to alerts' : 'Open net worth tracking'}">${state.settings.activeView === 'networth' && !state.settings.settingsOpen ? 'Alerts' : 'NW'}</button>
@@ -7295,7 +7311,7 @@
           <div class="body">
             ${state.settings.settingsOpen ? settingsMarkup() : ''}
             ${state.settings.activeView === 'awards' && !state.settings.settingsOpen ? awardsMarkup() : state.settings.activeView === 'dollarBazaars' && !state.settings.settingsOpen ? dollarBazaarsMarkup() : state.settings.activeView === 'networth' && !state.settings.settingsOpen ? networthMarkup() : `
-              <div class="status"><span>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
+              <div class="status"><span data-live-source-summary>${escapeHtml(sourceSummary())}${snoozedCount ? ` · ${snoozedCount} snoozed` : ''}</span><button data-action="refresh">Refresh</button></div>
               <div class="toolbar">
                 <button data-action="snooze-all" data-duration="3600000">Snooze all 1h</button>
                 <button data-action="snooze-all" data-duration="${TORN_DAY_MS}">Snooze all 1d</button>
@@ -7345,7 +7361,6 @@
       }
     };
     restoreScroll();
-    window.requestAnimationFrame(restoreScroll);
   }
 
   function setSnooze(id, duration) {
@@ -7366,6 +7381,7 @@
     }
     const button = event.target.closest('[data-action]');
     if (!button) return;
+    markSettingsUiAction();
     const action = button.dataset.action;
     if (!soundsMuted() && (state.settings.soundAlarm || state.settings.landingSoundAlarm || state.settings.turtleSoundAlarm)) ensureAudioContext();
     if (action === 'toggle-mute') {
@@ -7708,6 +7724,7 @@
   });
 
   shadow.addEventListener('change', (event) => {
+    markSettingsUiAction();
     const cityStockToggle = event.target.closest('[data-city-stock-alert]');
     if (cityStockToggle) {
       const itemId = Math.max(0, Math.trunc(Number(cityStockToggle.dataset.cityStockAlert) || 0));
@@ -7967,10 +7984,6 @@
       render({ force: true });
     }, 0);
   });
-
-  shadow.addEventListener('wheel', deferBackgroundRenderWhileSettingsScroll, { passive: true });
-  shadow.addEventListener('scroll', deferBackgroundRenderWhileSettingsScroll, true);
-  shadow.addEventListener('touchmove', deferBackgroundRenderWhileSettingsScroll, { passive: true });
 
   shadow.addEventListener('toggle', (event) => {
     const section = event.target.closest?.('[data-settings-section]');
