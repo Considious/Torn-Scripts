@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.1.0
+// @version      1.2.0
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -25,10 +25,11 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
-    const SCRIPT_VERSION = '1.1.0';
+    const SCRIPT_VERSION = '1.2.0';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;
+    const NO_WAR_REFRESH_MS = 8 * 60 * 60 * 1000;
     const NETWORK_REFRESH_MS = 60 * 1000;
     const FF_REFRESH_MS = 6 * 60 * 60 * 1000;
     const PERSONAL_ATTACK_REFRESH_MS = 5000;
@@ -44,6 +45,8 @@
     const SLINK_TERMS_SHA256 = '72a933d69ec99cabeb92b426208e9d0c47e90acaf960818e0b4da38f3f2f5b0a';
     const SLINK_TERMS_URL = 'https://github.com/Considious/Torn-Scripts/blob/main/Slinkies-Leveling-Targets/terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md';
     const SLINK_ATTACK_REFRESH_MS = 30 * 1000;
+    const OUTSIDE_REFRESH_MS = 60 * 1000;
+    const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
 
     const defaults = {
         apiKey: '',
@@ -52,6 +55,8 @@
         idleCutoff: 5,
         minFF: '',
         maxFF: '',
+        outsideMinFF: 1,
+        outsideMaxFF: 3,
         showUnknownFF: true,
         hideAbroad: false,
         hideJail: false,
@@ -81,6 +86,10 @@
     let members = [];
     let ffById = {};
     let battleStatsById = {};
+    let outsideTargets = [];
+    let lastOutsideCheck = 0;
+    let outsideError = '';
+    let outsideBusy = false;
     let lastWarCheck = 0;
     let lastNetworkCheck = 0;
     let lastFFCheck = 0;
@@ -1092,6 +1101,78 @@
         }
 
         return output;
+    }
+
+    function normalizeOutsideTarget(row) {
+        const id = String(row?.player_id ?? row?.id ?? row?.user_id ?? '');
+        if (!/^\d+$/.test(id)) return null;
+        const lastActionTimestamp = Number(row?.last_action ?? row?.lastAction ?? 0) || 0;
+        const hospitalUntil = Number(row?.hospital_until ?? row?.status_until ?? 0) || 0;
+        const minutes = lastActionTimestamp
+            ? Math.max(0, Math.floor((Date.now() / 1000 - lastActionTimestamp) / 60))
+            : null;
+        return normalizeMember({
+            id,
+            name: String(row?.name || `Player ${id}`),
+            level: Number(row?.level) || 0,
+            activity: minutes === null ? 'Unknown' : minutes < 5 ? 'Online' : minutes < 15 ? 'Idle' : 'Offline',
+            lastActionTimestamp,
+            lastActionRelative: minutes === null ? '' : `${minutes}m ago`,
+            statusState: hospitalUntil > Date.now() / 1000 ? 'Hospital' : 'Unknown',
+            statusUntil: hospitalUntil,
+            fairFight: extractFF(row) ?? undefined,
+            battleStatsEstimate: extractBattleStats(row) ?? undefined
+        });
+    }
+
+    async function refreshOutsideTargets(force = false) {
+        if (outsideBusy || !runtimeShouldRun() || settings.activeView !== 'outside') return;
+        if (!hasSlinkScope('slink.war')) {
+            outsideError = 'SLINK War access is required before polling outside targets.';
+            render();
+            return;
+        }
+        if (!settings.ffApiKey) {
+            outsideError = 'Save the FFScouter API key in Settings & alerts first.';
+            render();
+            return;
+        }
+        if (!force && Date.now() - lastOutsideCheck < OUTSIDE_REFRESH_MS) return;
+        const minFF = Math.max(1, Math.min(3, Number(settings.outsideMinFF) || 1));
+        const maxFF = Math.max(1, Math.min(3, Number(settings.outsideMaxFF) || 3));
+        if (minFF > maxFF) {
+            outsideError = 'Minimum Fair Fight cannot be higher than maximum Fair Fight.';
+            render();
+            return;
+        }
+        outsideBusy = true;
+        lastOutsideCheck = Date.now();
+        outsideError = '';
+        renderSlinkViews();
+        try {
+            const query = new URLSearchParams({
+                key: settings.ffApiKey,
+                minlevel: '1',
+                maxlevel: '100',
+                inactiveonly: '0',
+                factionless: '0',
+                minff: String(minFF),
+                maxff: String(maxFF),
+                limit: '50'
+            });
+            const response = await gmRequest(`${FFSCOUTER_TARGETS_URL}?${query}`);
+            if (response?.error) throw new Error(String(response.error?.message || response.error));
+            outsideTargets = (Array.isArray(response?.targets) ? response.targets : [])
+                .map(normalizeOutsideTarget)
+                .filter(Boolean)
+                .sort((a, b) => (fairFightFor(a) ?? 99) - (fairFightFor(b) ?? 99))
+                .slice(0, 50);
+        } catch (error) {
+            if (!error?.runtimePaused) outsideError = error.message;
+        } finally {
+            outsideBusy = false;
+            renderSlinkViews();
+        }
     }
 
     function extractFF(row) {
@@ -2417,7 +2498,7 @@
 
     function renderSlinkViews() {
         if (!panel) return;
-        const allowedViews = ['targets', 'retals', 'claims', ...(canViewSlinkLogs() ? ['logs'] : [])];
+        const allowedViews = ['targets', 'outside', 'retals', 'claims', ...(canViewSlinkLogs() ? ['logs'] : [])];
         const active = allowedViews.includes(settings.activeView)
             ? settings.activeView
             : 'targets';
@@ -2472,6 +2553,38 @@
         }
         for (const view of panel.querySelectorAll('.rw-view')) {
             view.hidden = !view.classList.contains(`rw-${active}-view`);
+        }
+
+        const outsideList = panel.querySelector('.rw-outside-list');
+        if (outsideList) {
+            outsideList.replaceChildren();
+            const message = outsideError || (outsideBusy ? 'Polling FFScouter for outside targets…' : '');
+            if (message) {
+                const note = document.createElement('div');
+                note.className = outsideError ? 'rw-slink-warning' : 'rw-empty';
+                note.textContent = message;
+                outsideList.appendChild(note);
+            }
+            if (!outsideTargets.length && !message) {
+                const empty = document.createElement('div');
+                empty.className = 'rw-empty';
+                empty.textContent = 'Choose a Fair Fight range and poll FFScouter for up to 50 outside targets.';
+                outsideList.appendChild(empty);
+            }
+            for (const member of outsideTargets) {
+                const card = document.createElement('article');
+                const ff = fairFightFor(member);
+                const bs = battleStatsFor(member);
+                card.className = 'rw-slink-card';
+                card.innerHTML = `
+                    <div class="rw-slink-card-title"><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/profiles.php?XID=${member.id}">${escapeHtml(member.name)} [${member.id}]</a><strong>Lv ${member.level || '?'}</strong></div>
+                    <div class="rw-slink-card-meta">${escapeHtml(member.activity)} • ${escapeHtml(member.statusState)} • FF ${Number.isFinite(ff) ? ff.toFixed(2) : '?'} • BS ${formatShortNumber(bs)}${member.lastActionRelative ? ` • ${escapeHtml(member.lastActionRelative)}` : ''}</div>
+                    <div class="rw-actions"><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}">Attack</a><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/profiles.php?XID=${member.id}">Profile</a><button class="rw-copy" type="button">Copy</button><button class="rw-chat-send" data-target-id="${member.id}" disabled type="button">Send</button></div>
+                `;
+                card.querySelector('.rw-copy').addEventListener('click', event => copyMember(member, event.currentTarget));
+                card.querySelector('.rw-chat-send').addEventListener('click', event => sendMemberToFactionChat(member, event.currentTarget));
+                outsideList.appendChild(card);
+            }
         }
 
         const retalList = panel.querySelector('.rw-retal-list');
@@ -2777,6 +2890,7 @@
             <div class="rw-body">
                 <nav class="rw-module-tabs" aria-label="SLINK War sections">
                     <button class="rw-module-tab" type="button" role="tab" data-view="targets">Targets</button>
+                    <button class="rw-module-tab" type="button" role="tab" data-view="outside">Outside</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="retals">Retals</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="claims">Claims</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="logs">Logs</button>
@@ -2917,6 +3031,11 @@
                     <div class="rw-view-heading">Active retaliation windows</div>
                     <div class="rw-retal-list rw-slink-list"></div>
                 </div>
+                <div class="rw-view rw-outside-view" hidden>
+                    <div class="rw-view-heading">Outside FFScouter targets</div>
+                    <div class="rw-outside-controls"><label>Min FF <input class="rw-outside-min" type="number" min="1" max="3" step="0.1"></label><label>Max FF <input class="rw-outside-max" type="number" min="1" max="3" step="0.1"></label><button class="rw-outside-refresh" type="button">Poll 50</button></div>
+                    <div class="rw-outside-list rw-slink-list"></div>
+                </div>
                 <div class="rw-view rw-claims-view" hidden>
                     <div class="rw-view-heading">Med-out partner claims</div>
                     <div class="rw-claim-list rw-slink-list"></div>
@@ -2948,6 +3067,8 @@
         const apiKey = panel.querySelector('.rw-apikey');
         const ffKey = panel.querySelector('.rw-ffkey');
         const slinkTerms = panel.querySelector('.rw-slink-terms');
+        const outsideMin = panel.querySelector('.rw-outside-min');
+        const outsideMax = panel.querySelector('.rw-outside-max');
 
         mode.value = settings.mode;
         cutoff.value = settings.idleCutoff;
@@ -2970,6 +3091,8 @@
             settings.slinkTermsVersion === SLINK_TERMS_VERSION &&
             settings.slinkTermsSha256 === SLINK_TERMS_SHA256
         );
+        outsideMin.value = settings.outsideMinFF;
+        outsideMax.value = settings.outsideMaxFF;
 
         mode.addEventListener('change', async () => {
             if (!isSlinkOfficer()) return render();
@@ -3074,11 +3197,24 @@
             if (slinkTerms.checked) slinkCycle(true);
         });
 
+        outsideMin.addEventListener('change', () => {
+            settings.outsideMinFF = Math.max(1, Math.min(3, Number(outsideMin.value) || 1));
+            outsideMin.value = settings.outsideMinFF;
+            saveSettings();
+        });
+        outsideMax.addEventListener('change', () => {
+            settings.outsideMaxFF = Math.max(1, Math.min(3, Number(outsideMax.value) || 3));
+            outsideMax.value = settings.outsideMaxFF;
+            saveSettings();
+        });
+        panel.querySelector('.rw-outside-refresh').addEventListener('click', () => refreshOutsideTargets(true));
+
         for (const tab of panel.querySelectorAll('.rw-module-tab')) {
             tab.addEventListener('click', () => {
                 settings.activeView = tab.dataset.view;
                 saveSettings();
                 render();
+                if (settings.activeView === 'outside') refreshOutsideTargets(false);
             });
         }
 
@@ -3262,7 +3398,12 @@
                 switchOpponent(visibleOpponent, 'Visible Ranked War');
             }
 
-            if (!opponent || now - lastWarCheck > WAR_REFRESH_MS) {
+            const opponentCheckDue = forceNetwork || (
+                opponent
+                    ? now - lastWarCheck > WAR_REFRESH_MS
+                    : !lastWarCheck || now - lastWarCheck > NO_WAR_REFRESH_MS
+            );
+            if (opponentCheckDue) {
                 const savedOpponent = readSavedOpponent();
 
                 if (!opponent && savedOpponent) {
@@ -3282,11 +3423,27 @@
                     lastWarCheck = now;
                 } catch (error) {
                     if (error?.runtimePaused) return;
+                    lastWarCheck = now;
+                    if (String(error.message || '').includes('No active ranked war')) {
+                        opponent = null;
+                        members = [];
+                        localStorage.removeItem(PREFIX + 'opponent');
+                        statusText = 'No active ranked war • next API check in 8 hours';
+                        render();
+                        if (settings.activeView === 'outside') refreshOutsideTargets(false);
+                        return;
+                    }
                     if (!opponent) throw error;
                     console.warn('[RW Target Panel] Opponent refresh failed; using current opponent:', error);
                     statusText = 'Using current ranked-war opponent';
-                    lastWarCheck = now;
                 }
+            }
+
+            if (!opponent) {
+                statusText = 'No active ranked war • next API check in 8 hours';
+                render();
+                if (settings.activeView === 'outside') refreshOutsideTargets(false);
+                return;
             }
 
             const localCache = useNewestLocalCache(opponent.id);
@@ -3554,7 +3711,7 @@
         .rw-module-tabs {
             flex: 0 0 auto;
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 2px;
             padding: 3px;
             background: var(--rw-theme-surface-raised);
@@ -3752,6 +3909,18 @@
             border-radius: 4px;
             background: #202020;
         }
+        .rw-outside-controls {
+            display:grid;
+            grid-template-columns:1fr 1fr auto;
+            gap:5px;
+            align-items:end;
+            padding:6px;
+            border-bottom:1px solid var(--rw-theme-border-soft);
+            background:var(--rw-theme-surface);
+        }
+        .rw-outside-controls label { display:grid; gap:2px; color:var(--rw-theme-muted); }
+        .rw-outside-controls input { width:100%; min-width:0; padding:3px; border:1px solid var(--rw-theme-border); border-radius:3px; background:var(--rw-theme-surface-raised); color:var(--rw-theme-text); }
+        .rw-outside-controls button { padding:4px 6px; }
         .rw-alert-settings {
             display: grid;
             gap: 5px;
@@ -4132,6 +4301,7 @@
 
             // This pass checks the focused Ranked War DOM for a new opponent
             // without spending a Torn API call.
+            if (settings.activeView === 'outside') refreshOutsideTargets(false);
             refreshData(false);
         }, REFRESH_MS);
 
