@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.0.0
+// @version      1.1.0
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -25,6 +25,7 @@
     const TornLib = globalThis.ConsidiousTornLib;
     if (!TornLib) throw new Error('Considious Torn Library failed to load.');
 
+    const SCRIPT_VERSION = '1.1.0';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;
@@ -55,6 +56,9 @@
         hideAbroad: false,
         hideJail: false,
         chainAlertEnabled: true,
+        alertSoundEnabled: true,
+        alertPanelFlashEnabled: true,
+        alertPageFlashEnabled: false,
         turtleTimerEnabled: true,
         turtleReminderMinutes: 5,
         corner: 'top-right',
@@ -76,6 +80,7 @@
     let opponent = null;
     let members = [];
     let ffById = {};
+    let battleStatsById = {};
     let lastWarCheck = 0;
     let lastNetworkCheck = 0;
     let lastFFCheck = 0;
@@ -89,6 +94,7 @@
     let personalStats = {
         totalAttacks: 0,
         warAttacks: 0,
+        mugs: 0,
         updatedAt: 0,
         error: ''
     };
@@ -131,6 +137,8 @@
     let slinkLastAttackAt = 0;
     let slinkLastAttackEnded = 0;
     let slinkCycleRunning = false;
+    let slinkLogsWarning = '';
+    let pageAlertOverlay = null;
     const slinkSeenRetals = new Set();
     const CHAT_COPY_AUTHORIZATION_MS = 30 * 1000;
 
@@ -173,6 +181,14 @@
             granted === scope || granted === '*' ||
             (String(granted).endsWith('.*') && scope.startsWith(String(granted).slice(0, -1)))
         ));
+    }
+
+    function isSlinkOfficer() {
+        return hasSlinkScope('slink.war.officer') || hasSlinkScope('admin.*');
+    }
+
+    function canViewSlinkLogs() {
+        return isSlinkOfficer();
     }
 
     function slinkWarId() {
@@ -233,24 +249,73 @@
                 terms_version: SLINK_TERMS_VERSION,
                 terms_sha256: SLINK_TERMS_SHA256,
                 client_name: 'SLINK War Panel userscript',
-                client_version: '1.0.0'
+                client_version: SCRIPT_VERSION
             }
         });
         const session = {
             token: String(response.session_token || ''),
             expiresAt: Date.parse(response.expires_at) || 0,
             userId: Number(response.user_id) || 0,
+            userName: String(response.user_name || response.name || ''),
             factionId: Number(response.faction_id) || 0,
             scopes: Array.isArray(response.scopes) ? response.scopes : []
         };
-        if (!session.token || !session.scopes.includes('slink.war')) throw new Error('Your SLINK account does not have slink.war permission.');
+        if (!session.token || !session.scopes.some(scope => scope === 'slink.war' || scope === 'admin.*' || scope === '*')) {
+            throw new Error('Your SLINK account does not have slink.war permission.');
+        }
         ownFactionId = String(session.factionId || ownFactionId);
+        ownUserId = String(session.userId || ownUserId);
         saveSlinkSession(session);
         return session;
     }
 
     function slinkMode() {
-        return settings.mode === 'termed' ? 'termed' : 'war';
+        return String(slinkSnapshot?.config?.mode || slinkSnapshot?.mode || (settings.mode === 'termed' ? 'termed' : 'war')) === 'termed'
+            ? 'termed'
+            : 'war';
+    }
+
+    function effectiveIdleCutoff() {
+        const shared = Number(slinkSnapshot?.config?.idleMinutes);
+        return Number.isFinite(shared) ? shared : Math.max(0, Number(settings.idleCutoff) || 0);
+    }
+
+    async function saveSharedWarConfig() {
+        if (!isSlinkOfficer()) {
+            throw new Error('slink.war.officer permission is required to change faction-wide War settings.');
+        }
+        const warId = slinkWarId();
+        if (!warId || !opponent?.id) throw new Error('An active ranked war is required before changing War settings.');
+        const result = await slinkRequest(`/api/wars/${encodeURIComponent(warId)}/config`, {
+            method: 'POST',
+            data: {
+                opponent_faction_id: Number(opponent.id),
+                mode: settings.mode === 'termed' ? 'termed' : 'war',
+                idleMinutes: Math.max(0, Math.min(60, Number(settings.idleCutoff) || 0))
+            }
+        });
+        slinkSnapshot = {
+            ...(slinkSnapshot || {}),
+            config: result?.config || slinkSnapshot?.config || null,
+            mode: result?.config?.mode || slinkSnapshot?.mode || slinkMode()
+        };
+        return result;
+    }
+
+    async function updateSlinkClaim(member, operation = 'claim') {
+        const warId = slinkWarId();
+        if (!warId || !opponent?.id) throw new Error('An active ranked war is required to manage med-out claims.');
+        await slinkRequest(`/api/wars/${encodeURIComponent(warId)}/claims`, {
+            method: 'POST',
+            data: {
+                opponent_faction_id: Number(opponent.id),
+                operation: operation === 'release' ? 'release' : 'claim',
+                targetId: Number(member?.id),
+                targetName: String(member?.name || ''),
+                minutes: 30
+            }
+        });
+        await slinkCycle(true);
     }
 
     function slinkLogRows(payload) {
@@ -276,6 +341,7 @@
     }
 
     function playSlinkRetalPing() {
+        if (!settings.alertSoundEnabled) return;
         try {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             if (!AudioContextClass) return;
@@ -317,6 +383,24 @@
         }
     }
 
+    function setWarPageAlert(active) {
+        if (!settings.alertPageFlashEnabled) active = false;
+        if (active && !pageAlertOverlay) {
+            pageAlertOverlay = document.createElement('div');
+            pageAlertOverlay.id = 'rw-war-page-alert';
+            document.documentElement.appendChild(pageAlertOverlay);
+        } else if (!active && pageAlertOverlay) {
+            pageAlertOverlay.remove();
+            pageAlertOverlay = null;
+        }
+    }
+
+    function updateWarVisualAlert(active) {
+        if (!runtimeShouldRun()) active = false;
+        panel?.classList.toggle('rw-war-alerting', Boolean(active && settings.alertPanelFlashEnabled));
+        setWarPageAlert(Boolean(active));
+    }
+
     async function slinkCycle(force = false) {
         if (slinkCycleRunning || !runtimeShouldRun() || !opponent?.id) return;
         if (
@@ -326,7 +410,7 @@
         ) return;
         slinkCycleRunning = true;
         try {
-            const session = await ensureSlinkSession(force);
+            await ensureSlinkSession(force);
             const warId = slinkWarId();
             if (!warId) throw new Error('SLINK War is waiting for your faction and opponent IDs.');
             const base = `/api/wars/${encodeURIComponent(warId)}`;
@@ -372,26 +456,43 @@
             const query = new URLSearchParams({
                 opponent_faction_id: String(opponent.id),
                 mode: slinkMode(),
-                idle_minutes: String(settings.idleCutoff)
+                idle_minutes: String(effectiveIdleCutoff())
             });
             const includeStoredLogs = force || slinkStoredLogsWarId !== warId || Date.now() - slinkLastStoredLogsAt >= 10 * 60 * 1000;
             const snapshot = await slinkRequest(`${base}/snapshot?${query}`);
-            const logPayload = includeStoredLogs
-                ? await slinkRequest(`${base}/logs?limit=200&include_stored=1`)
-                : { pending: snapshot?.pendingLogs || [] };
             slinkSnapshot = snapshot;
-            if (includeStoredLogs) {
-                slinkStoredLogs = Array.isArray(logPayload?.stored) ? logPayload.stored : [];
-                slinkStoredLogsWarId = warId;
-                slinkLastStoredLogsAt = Date.now();
+            slinkLogsWarning = '';
+
+            if (canViewSlinkLogs()) {
+                let logPayload = { pending: snapshot?.pendingLogs || [] };
+                try {
+                    if (includeStoredLogs) {
+                        logPayload = await slinkRequest(`${base}/logs?limit=200&include_stored=1`);
+                        slinkStoredLogs = Array.isArray(logPayload?.stored) ? logPayload.stored : [];
+                        slinkStoredLogsWarId = warId;
+                        slinkLastStoredLogsAt = Date.now();
+                    }
+                    slinkLogs = slinkLogRows({ stored: slinkStoredLogs, pending: logPayload?.pending || [] });
+                    if (logPayload?.storedAvailable === false) {
+                        slinkLogsWarning = String(logPayload.storageWarning || 'Historical logs are temporarily unavailable; live War data is still active.');
+                    }
+                } catch (error) {
+                    slinkLogsWarning = `Logs unavailable: ${error.message}`;
+                    console.warn('[SLINK War Panel] Officer log refresh failed without interrupting targets:', error);
+                }
+            } else {
+                slinkLogs = [];
+                slinkStoredLogs = [];
+                slinkStoredLogsWarId = '';
+                slinkLastStoredLogsAt = 0;
             }
-            slinkLogs = slinkLogRows({ stored: slinkStoredLogs, pending: logPayload?.pending || [] });
             if (Array.isArray(snapshot?.members) && snapshot.members.length) {
                 members = normalizeMembers({ members: snapshot.members });
                 lastDataTimestamp = Number(snapshot.observedAt) || Date.now();
                 statusText = `SLINK shared war data • ${members.length} targets`;
             }
             announceSlinkRetals(snapshot?.retals);
+            updateWarVisualAlert(Boolean(snapshot?.retals?.length));
             render();
         } catch (error) {
             if (!error?.runtimePaused) {
@@ -469,6 +570,12 @@
             statusState: status.state ?? raw.status_state ?? raw.state ?? 'Unknown',
             statusDescription: status.description ?? raw.status_description ?? '',
             statusUntil: Number(status.until ?? raw.status_until ?? 0),
+            fairFight: Number.isFinite(Number(raw.fairFight ?? raw.fair_fight))
+                ? Number(raw.fairFight ?? raw.fair_fight)
+                : null,
+            battleStatsEstimate: Number.isFinite(Number(raw.battleStatsEstimate ?? raw.battle_stats_estimate ?? raw.bs_estimate))
+                ? Number(raw.battleStatsEstimate ?? raw.battle_stats_estimate ?? raw.bs_estimate)
+                : null,
             raw
         };
     }
@@ -793,6 +900,7 @@
 
         members = [];
         ffById = {};
+        battleStatsById = {};
         lastDataTimestamp = 0;
         lastNetworkCheck = 0;
         lastFFCheck = 0;
@@ -804,6 +912,7 @@
         slinkLastStoredLogsAt = 0;
         slinkLastAttackAt = 0;
         slinkLastAttackEnded = 0;
+        personalStats = { totalAttacks: 0, warAttacks: 0, mugs: 0, updatedAt: 0, error: '' };
         slinkSeenRetals.clear();
 
         statusText = `${source}: loading ${opponent.name}…`;
@@ -852,6 +961,7 @@
             return {
                 members: parsed.members,
                 ffById: parsed.ffById || {},
+                battleStatsById: parsed.battleStatsById || {},
                 timestamp: parsed.timestamp,
                 source: 'Saved panel cache'
             };
@@ -861,14 +971,15 @@
         }
     }
 
-    function savePanelCache(factionId, cachedMembers, cachedFF = ffById) {
+    function savePanelCache(factionId, cachedMembers, cachedFF = ffById, cachedBattleStats = battleStatsById) {
         try {
             localStorage.setItem(
                 `${PREFIX}faction-cache:${factionId}`,
                 JSON.stringify({
                     timestamp: Date.now(),
                     members: cachedMembers,
-                    ffById: cachedFF
+                    ffById: cachedFF,
+                    battleStatsById: cachedBattleStats
                 })
             );
         } catch (error) {
@@ -973,6 +1084,7 @@
                     const id = String(row.player_id ?? row.id ?? row.user_id ?? '');
                     if (!id) continue;
                     output[id] = extractFF(row);
+                    battleStatsById[id] = extractBattleStats(row);
                 }
             } catch (error) {
                 console.warn('[RW Target Panel] FFScouter request failed:', error);
@@ -1000,6 +1112,42 @@
         return null;
     }
 
+    function extractBattleStats(row) {
+        const candidates = [
+            row.bs_estimate,
+            row.battle_stats_estimate,
+            row.battleStatsEstimate,
+            row.total_stats,
+            row?.estimate?.battle_stats
+        ];
+        for (const candidate of candidates) {
+            const value = Number(candidate);
+            if (Number.isFinite(value) && value >= 0) return value;
+        }
+        return null;
+    }
+
+    function fairFightFor(member) {
+        const raw = ffById[member?.id] ?? member?.fairFight;
+        if (raw === null || raw === undefined || raw === '') return null;
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    function battleStatsFor(member) {
+        const raw = battleStatsById[member?.id] ?? member?.battleStatsEstimate;
+        if (raw === null || raw === undefined || raw === '') return null;
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    function formatShortNumber(value) {
+        if (value === null || value === undefined || value === '') return '?';
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '?';
+        return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(number);
+    }
+
     function minutesSince(timestamp) {
         if (!timestamp) return Infinity;
         return Math.max(0, (Date.now() / 1000 - timestamp) / 60);
@@ -1010,15 +1158,15 @@
         if (member.activity === 'Offline') return true;
 
         if (member.activity === 'Idle') {
-            if (Number(settings.idleCutoff) <= 0) return true;
-            return minutesSince(member.lastActionTimestamp) >= Number(settings.idleCutoff);
+            if (effectiveIdleCutoff() <= 0) return true;
+            return minutesSince(member.lastActionTimestamp) >= effectiveIdleCutoff();
         }
 
         return false;
     }
 
     function matchesFF(member) {
-        const ff = ffById[member.id];
+        const ff = fairFightFor(member);
         const min = settings.minFF === '' ? null : Number(settings.minFF);
         const max = settings.maxFF === '' ? null : Number(settings.maxFF);
 
@@ -1067,7 +1215,7 @@
     function getVisibleMembers() {
         if (!hasSlinkScope('slink.war')) return [];
         return members
-            .filter(member => settings.mode !== 'termed' || isTermedEligible(member))
+            .filter(member => slinkMode() !== 'termed' || isTermedEligible(member))
             .filter(member => !settings.hideAbroad || !isAbroad(member))
             .filter(member => !settings.hideJail || !isJailed(member))
             .filter(matchesFF)
@@ -1092,8 +1240,8 @@
                     (order[a.activity] ?? 4) - (order[b.activity] ?? 4);
                 if (activityDifference) return activityDifference;
 
-                const aff = ffById[a.id];
-                const bff = ffById[b.id];
+                const aff = fairFightFor(a);
+                const bff = fairFightFor(b);
                 if (Number.isFinite(aff) && Number.isFinite(bff)) return aff - bff;
 
                 return a.name.localeCompare(b.name);
@@ -1101,7 +1249,7 @@
     }
 
     function shouldHospitalize(member) {
-        return settings.mode === 'non-termed' && member.activity === 'Online';
+        return slinkMode() === 'war' && member.activity === 'Online';
     }
 
     function formatHospital(member) {
@@ -1138,7 +1286,7 @@
         const profile = `https://www.torn.com/profiles.php?XID=${member.id}`;
         const attack = `https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}`;
         const linkedName = `<a href="${profile}">${escapeHtml(member.name)} [${member.id}]</a>`;
-        const details = [TornLib.attackLink(attack)];
+        const details = [TornLib.attackLink(attack), `Status: ${escapeHtml(member.statusState || 'Okay')} / ${escapeHtml(member.activity)}`];
 
         const hospital = formatHospital(member);
         if (hospital) {
@@ -1148,7 +1296,10 @@
             );
         }
 
-        const ff = ffById[member.id];
+        const bs = battleStatsFor(member);
+        if (Number.isFinite(bs)) details.push(`Estimated BS: ${formatShortNumber(bs)}`);
+
+        const ff = fairFightFor(member);
         if (Number.isFinite(ff)) details.push(`FF: ${ff.toFixed(2)}`);
 
         details.push(`Activity: ${member.activity}${member.lastActionRelative ? ` (${escapeHtml(member.lastActionRelative)})` : ''}`);
@@ -1677,6 +1828,43 @@
 
     async function refreshPersonalAttackStats(force = false) {
         await refreshChainApi(force);
+        if (!runtimeShouldRun() || !settings.apiKey || !opponent?.id || !ownUserId) return;
+        const now = Date.now();
+        if (!force && now - lastPersonalAttackCheck < 60 * 1000) return;
+        lastPersonalAttackCheck = now;
+
+        const warId = slinkWarId();
+        const storageKey = PREFIX + 'personal-attack-results';
+        const saved = TornLib.readJsonStorage(storageKey, { warId, ids: [], mugs: 0 });
+        const state = saved?.warId === warId
+            ? saved
+            : { warId, ids: [], mugs: 0 };
+        const seen = new Set(Array.isArray(state.ids) ? state.ids : []);
+        const nowSeconds = Math.floor(now / 1000);
+        const startedAt = Number(opponent.start) || nowSeconds - 600;
+        const from = Math.max(startedAt > 10_000_000_000 ? Math.floor(startedAt / 1000) : startedAt, nowSeconds - 600);
+
+        try {
+            const payload = await gmRequest(
+                `https://api.torn.com/v2/user/attacks?from=${Math.max(0, Math.floor(from))}&to=${nowSeconds}&limit=100&sort=desc` +
+                `&key=${encodeURIComponent(settings.apiKey)}&comment=SLINKWarPanel`
+            );
+            const attacks = Array.isArray(payload?.attacks) ? payload.attacks : [];
+            for (const attack of attacks) {
+                const id = String(attack?.id ?? attack?.attack_id ?? '');
+                const attackerId = String(attack?.attacker?.id ?? attack?.attacker_id ?? ownUserId);
+                if (!id || attackerId !== String(ownUserId) || seen.has(id)) continue;
+                seen.add(id);
+                if (String(attack?.result ?? attack?.outcome ?? '').toLowerCase() === 'mugged') {
+                    state.mugs = (Number(state.mugs) || 0) + 1;
+                }
+            }
+            state.ids = [...seen].slice(-1000);
+            personalStats.mugs = Number(state.mugs) || 0;
+            TornLib.writeJsonStorage(storageKey, state);
+        } catch (error) {
+            if (!error?.runtimePaused) console.warn('[SLINK War Panel] Personal mug count unavailable:', error);
+        }
     }
 
     async function refreshChainReportStats(force = false) {
@@ -1864,6 +2052,7 @@
     }
 
     function unlockChainAlertAudio() {
+        if (!settings.alertSoundEnabled) return;
         if (!settings.chainAlertEnabled) return;
 
         try {
@@ -1882,7 +2071,7 @@
     }
 
     function playChainAlertTone(startDelay = 0) {
-        if (!chainAlertAudioContext || chainAlertAudioContext.state !== 'running') return;
+        if (!settings.alertSoundEnabled || !chainAlertAudioContext || chainAlertAudioContext.state !== 'running') return;
 
         const startAt = chainAlertAudioContext.currentTime + startDelay;
         const oscillator = chainAlertAudioContext.createOscillator();
@@ -1924,6 +2113,7 @@
 
 
     function unlockTurtleAudio() {
+        if (!settings.alertSoundEnabled) return;
         try {
             if (!turtleAudioContext) {
                 const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -1940,7 +2130,7 @@
     }
 
     function playTurtleSirenBurst() {
-        if (!turtleAudioContext || turtleAudioContext.state !== 'running') return;
+        if (!settings.alertSoundEnabled || !turtleAudioContext || turtleAudioContext.state !== 'running') return;
 
         const startAt = turtleAudioContext.currentTime;
         const oscillator = turtleAudioContext.createOscillator();
@@ -2003,7 +2193,7 @@
         const messageNode = panel.querySelector('.rw-turtle-message');
         if (!box || !messageNode) return;
 
-        const realWarMode = settings.mode === 'non-termed';
+        const realWarMode = slinkMode() === 'war';
         const now = Math.floor(Date.now() / 1000);
         const remaining = turtleHospitalUntil > now
             ? turtleHospitalUntil - now
@@ -2052,7 +2242,7 @@
     }
 
     function evaluateTurtleTimer() {
-        const realWarMode = settings.mode === 'non-termed';
+        const realWarMode = slinkMode() === 'war';
         const now = Math.floor(Date.now() / 1000);
         const remaining = turtleHospitalUntil - now;
         const shouldAlarm =
@@ -2073,7 +2263,7 @@
     }
 
     async function refreshTurtleStatus(force = false) {
-        const realWarMode = settings.mode === 'non-termed';
+        const realWarMode = slinkMode() === 'war';
 
         if (!runtimeShouldRun()) {
             stopTurtleAlarm();
@@ -2153,6 +2343,8 @@
 
         summary.querySelector('.rw-all-attacks').textContent =
             personalStats.totalAttacks.toLocaleString();
+        summary.querySelector('.rw-mugs').textContent =
+            personalStats.mugs.toLocaleString();
 
         summary.querySelector('.rw-chain-value').textContent = chainText;
         const chainSource = summary.querySelector('.rw-chain-source');
@@ -2177,6 +2369,7 @@
         updateChainAlert(isDanger);
 
         renderTurtleStatus();
+        updateWarVisualAlert(Boolean(slinkSnapshot?.retals?.length || isDanger || turtleAlarmInterval));
 
         const updateNode = summary.querySelector('.rw-stats-age');
         if (personalStats.error) {
@@ -2202,15 +2395,80 @@
         };
     }
 
+    function activeSlinkClaims() {
+        const now = Date.now();
+        return (Array.isArray(slinkSnapshot?.claims) ? slinkSnapshot.claims : [])
+            .filter(claim => Number(claim?.expiresAt) > now);
+    }
+
+    function claimForMember(member) {
+        return activeSlinkClaims().find(claim => String(claim.targetId) === String(member?.id)) || null;
+    }
+
+    function claimIsMine(claim) {
+        return Boolean(claim && String(claim.claimedById) === String(slinkSession?.userId));
+    }
+
+    function formatClaimRemaining(expiresAt) {
+        const seconds = Math.max(0, Math.floor((Number(expiresAt) - Date.now()) / 1000));
+        const minutes = Math.floor(seconds / 60);
+        return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+    }
+
     function renderSlinkViews() {
         if (!panel) return;
-        const active = ['targets', 'retals', 'logs'].includes(settings.activeView)
+        const allowedViews = ['targets', 'retals', 'claims', ...(canViewSlinkLogs() ? ['logs'] : [])];
+        const active = allowedViews.includes(settings.activeView)
             ? settings.activeView
             : 'targets';
+        if (active !== settings.activeView) {
+            settings.activeView = active;
+            saveSettings();
+        }
         for (const button of panel.querySelectorAll('.rw-module-tab')) {
+            if (button.dataset.view === 'logs') button.hidden = !canViewSlinkLogs();
             const selected = button.dataset.view === active;
             button.classList.toggle('is-active', selected);
             button.setAttribute('aria-selected', String(selected));
+        }
+
+        const claimList = panel.querySelector('.rw-claim-list');
+        if (claimList) {
+            claimList.replaceChildren();
+            const claims = activeSlinkClaims();
+            if (!claims.length) {
+                const empty = document.createElement('div');
+                empty.className = 'rw-empty';
+                empty.textContent = 'No med-out targets are currently claimed.';
+                claimList.appendChild(empty);
+            }
+            for (const claim of claims) {
+                const card = document.createElement('article');
+                card.className = 'rw-slink-card rw-claim-card';
+                const releasable = claimIsMine(claim) || isSlinkOfficer();
+                card.innerHTML = `
+                    <div class="rw-slink-card-title">
+                        <a target="_blank" rel="noopener noreferrer"
+                           href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(claim.targetId)}">
+                            ${escapeHtml(claim.targetName || `Player ${claim.targetId}`)} [${escapeHtml(claim.targetId)}]
+                        </a>
+                        <strong>${formatClaimRemaining(claim.expiresAt)}</strong>
+                    </div>
+                    <div class="rw-slink-card-meta">Claimed by ${escapeHtml(claim.claimedByName || claim.claimedById)}</div>
+                    ${releasable ? '<button class="rw-claim-release" type="button">Release claim</button>' : ''}
+                `;
+                card.querySelector('.rw-claim-release')?.addEventListener('click', async event => {
+                    const button = event.currentTarget;
+                    button.disabled = true;
+                    try {
+                        await updateSlinkClaim({ id: claim.targetId, name: claim.targetName }, 'release');
+                    } catch (error) {
+                        statusText = `SLINK claims: ${error.message}`;
+                        render();
+                    }
+                });
+                claimList.appendChild(card);
+            }
         }
         for (const view of panel.querySelectorAll('.rw-view')) {
             view.hidden = !view.classList.contains(`rw-${active}-view`);
@@ -2249,6 +2507,12 @@
         const logList = panel.querySelector('.rw-log-list');
         if (logList) {
             logList.replaceChildren();
+            if (slinkLogsWarning) {
+                const warning = document.createElement('div');
+                warning.className = 'rw-slink-warning';
+                warning.textContent = slinkLogsWarning;
+                logList.appendChild(warning);
+            }
             if (!slinkLogs.length) {
                 const empty = document.createElement('div');
                 empty.className = 'rw-empty';
@@ -2318,6 +2582,23 @@
                 : 'Accept the terms and save a Torn API key to verify slink.war access.';
         }
 
+        const modeControl = panel.querySelector('.rw-mode');
+        const cutoffControl = panel.querySelector('.rw-cutoff');
+        const sharedNote = panel.querySelector('.rw-shared-note');
+        if (modeControl) {
+            modeControl.value = slinkMode() === 'termed' ? 'termed' : 'non-termed';
+            modeControl.disabled = !isSlinkOfficer();
+        }
+        if (cutoffControl) {
+            cutoffControl.value = effectiveIdleCutoff();
+            cutoffControl.disabled = !isSlinkOfficer();
+        }
+        if (sharedNote) {
+            sharedNote.textContent = isSlinkOfficer()
+                ? 'War mode and idle filtering apply to everyone in your faction.'
+                : `Faction-wide mode: ${slinkMode() === 'termed' ? 'Termed war' : 'Real war'}. A slink.war.officer may change it.`;
+        }
+
         const twseWarning = panel.querySelector('.rw-twse-warning');
         if (twseWarning) {
             const stale = Boolean(
@@ -2359,7 +2640,11 @@
             const card = document.createElement('div');
             card.className = `rw-member ${member.activity.toLowerCase()}`;
 
-            const ff = ffById[member.id];
+            const ff = fairFightFor(member);
+            const battleStats = battleStatsFor(member);
+            const claim = claimForMember(member);
+            const mine = claimIsMine(claim);
+            const claimLocked = Boolean(claim && !mine && !isSlinkOfficer());
             const hospital = formatHospital(member);
             const lastAction = member.lastActionRelative ||
                 (member.lastActionTimestamp ? `${Math.floor(minutesSince(member.lastActionTimestamp))}m ago` : 'Unknown');
@@ -2382,11 +2667,13 @@
                     <span>${statusEmoji(member)}${member.activity}</span>
                     <span>${escapeHtml(lastAction)}</span>
                     <span>${escapeHtml(member.statusState)}</span>
+                    <span>BS ${formatShortNumber(battleStats)}</span>
                     ${hospital ? `<span>${hospital}</span>` : ''}
                     ${shouldHospitalize(member) ? '<span class="rw-hospitalize">HOSP</span>' : ''}
                     <span class="rw-actions">
                         ${TornLib.attackLink(`https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}`, { target: '_blank', rel: 'noopener noreferrer' })}
                         <a target="_blank" href="https://www.torn.com/profiles.php?XID=${member.id}">Profile</a>
+                        <button class="rw-claim" type="button" ${claimLocked ? 'disabled' : ''}>${claim ? (mine ? 'Release' : `Claimed: ${escapeHtml(claim.claimedByName || claim.claimedById)}`) : 'Claim'}</button>
                     </span>
                 </div>
             `;
@@ -2397,6 +2684,16 @@
             card.querySelector('.rw-chat-send').addEventListener('click', event =>
                 sendMemberToFactionChat(member, event.currentTarget)
             );
+            card.querySelector('.rw-claim').addEventListener('click', async event => {
+                const button = event.currentTarget;
+                button.disabled = true;
+                try {
+                    await updateSlinkClaim(member, claim ? 'release' : 'claim');
+                } catch (error) {
+                    statusText = `SLINK claims: ${error.message}`;
+                    render();
+                }
+            });
             list.appendChild(card);
         }
 
@@ -2447,7 +2744,7 @@
             </button>
             <header class="rw-header">
                 <div class="rw-header-main">
-                    <div class="rw-title">SLINK WAR <span class="rw-version">v1.0.0</span> <span class="rw-count">0/0</span></div>
+                    <div class="rw-title">SLINK WAR <span class="rw-version">v${SCRIPT_VERSION}</span> <span class="rw-count">0/0</span></div>
                     <div class="rw-header-subline">
                         <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
                         <span class="rw-compact-attacks" title="Your current ranked-war attack count">0 attacks</span>
@@ -2481,6 +2778,7 @@
                 <nav class="rw-module-tabs" aria-label="SLINK War sections">
                     <button class="rw-module-tab" type="button" role="tab" data-view="targets">Targets</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="retals">Retals</button>
+                    <button class="rw-module-tab" type="button" role="tab" data-view="claims">Claims</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="logs">Logs</button>
                 </nav>
                 <div class="rw-view rw-targets-view">
@@ -2496,6 +2794,7 @@
                     <label class="rw-cutoff-label">Idle cutoff
                         <span><input class="rw-cutoff" type="number" min="0" step="1"> min</span>
                     </label>
+                    <div class="rw-note rw-shared-note">War mode and idle filtering are shared faction-wide. A slink.war.officer may change them.</div>
 
                     <div class="rw-row">
                         <label>Min FF<input class="rw-minff" type="number" min="0" step="0.01" placeholder="Any"></label>
@@ -2534,6 +2833,12 @@
                             Enable chain warning at 90s
                         </label>
 
+                        <div class="rw-alert-settings">
+                            <label class="rw-check"><input class="rw-alert-sound" type="checkbox"> Alert sound</label>
+                            <label class="rw-check"><input class="rw-alert-panel" type="checkbox"> Flash War panel</label>
+                            <label class="rw-check"><input class="rw-alert-page" type="checkbox"> Flash Torn page border</label>
+                        </div>
+
                         <div class="rw-turtle-settings">
                             <label class="rw-check"
                                    title="In Real War mode, check your hospital status once per minute and warn before release">
@@ -2570,6 +2875,10 @@
                     <div class="rw-war-stat rw-wide-stat">
                         <strong class="rw-all-attacks">0</strong>
                         <span>Attacks</span>
+                    </div>
+                    <div class="rw-war-stat">
+                        <strong class="rw-mugs">0</strong>
+                        <span>Mugs</span>
                     </div>
                     <div class="rw-tier-goals">T2 100 • T3 140 • T4 170</div>
                     <div class="rw-chain-row">
@@ -2608,6 +2917,10 @@
                     <div class="rw-view-heading">Active retaliation windows</div>
                     <div class="rw-retal-list rw-slink-list"></div>
                 </div>
+                <div class="rw-view rw-claims-view" hidden>
+                    <div class="rw-view-heading">Med-out partner claims</div>
+                    <div class="rw-claim-list rw-slink-list"></div>
+                </div>
                 <div class="rw-view rw-logs-view" hidden>
                     <div class="rw-view-heading">War event counters</div>
                     <div class="rw-log-list rw-slink-list"></div>
@@ -2626,6 +2939,9 @@
         const hideAbroad = panel.querySelector('.rw-hide-abroad');
         const hideJail = panel.querySelector('.rw-hide-jail');
         const chainAlert = panel.querySelector('.rw-chain-alert');
+        const alertSound = panel.querySelector('.rw-alert-sound');
+        const alertPanel = panel.querySelector('.rw-alert-panel');
+        const alertPage = panel.querySelector('.rw-alert-page');
         const turtleEnabled = panel.querySelector('.rw-turtle-enabled');
         const turtleMinutes = panel.querySelector('.rw-turtle-minutes');
         const corner = panel.querySelector('.rw-corner');
@@ -2641,6 +2957,9 @@
         hideAbroad.checked = settings.hideAbroad;
         hideJail.checked = settings.hideJail;
         chainAlert.checked = settings.chainAlertEnabled;
+        alertSound.checked = settings.alertSoundEnabled;
+        alertPanel.checked = settings.alertPanelFlashEnabled;
+        alertPage.checked = settings.alertPageFlashEnabled;
         turtleEnabled.checked = settings.turtleTimerEnabled;
         turtleMinutes.value = settings.turtleReminderMinutes;
         corner.value = settings.corner;
@@ -2652,11 +2971,31 @@
             settings.slinkTermsSha256 === SLINK_TERMS_SHA256
         );
 
-        mode.addEventListener('change', () => {
-            updateSetting('mode', mode.value);
-            refreshTurtleStatus(true);
+        mode.addEventListener('change', async () => {
+            if (!isSlinkOfficer()) return render();
+            settings.mode = mode.value;
+            saveSettings();
+            try {
+                await saveSharedWarConfig();
+                await slinkCycle(true);
+                refreshTurtleStatus(true);
+            } catch (error) {
+                statusText = `SLINK War settings: ${error.message}`;
+                render();
+            }
         });
-        cutoff.addEventListener('change', () => updateSetting('idleCutoff', Math.max(0, Number(cutoff.value) || 0)));
+        cutoff.addEventListener('change', async () => {
+            if (!isSlinkOfficer()) return render();
+            settings.idleCutoff = Math.max(0, Math.min(60, Number(cutoff.value) || 0));
+            saveSettings();
+            try {
+                await saveSharedWarConfig();
+                await slinkCycle(true);
+            } catch (error) {
+                statusText = `SLINK War settings: ${error.message}`;
+                render();
+            }
+        });
         minFF.addEventListener('input', () => updateSetting('minFF', minFF.value));
         maxFF.addEventListener('input', () => updateSetting('maxFF', maxFF.value));
         unknown.addEventListener('change', () =>
@@ -2674,6 +3013,9 @@
             if (settings.chainAlertEnabled) unlockChainAlertAudio();
             render();
         });
+        alertSound.addEventListener('change', () => updateSetting('alertSoundEnabled', alertSound.checked));
+        alertPanel.addEventListener('change', () => updateSetting('alertPanelFlashEnabled', alertPanel.checked));
+        alertPage.addEventListener('change', () => updateSetting('alertPageFlashEnabled', alertPage.checked));
         turtleEnabled.addEventListener('change', () => {
             settings.turtleTimerEnabled = turtleEnabled.checked;
             saveSettings();
@@ -2956,6 +3298,9 @@
                 if (localCache.ffById) {
                     ffById = { ...ffById, ...localCache.ffById };
                 }
+                if (localCache.battleStatsById) {
+                    battleStatsById = { ...battleStatsById, ...localCache.battleStatsById };
+                }
 
                 const ageSeconds = Math.max(
                     0,
@@ -3012,7 +3357,7 @@
 
                 if (Object.keys(freshFF).length) {
                     ffById = { ...ffById, ...freshFF };
-                    savePanelCache(opponent.id, members, ffById);
+                    savePanelCache(opponent.id, members, ffById, battleStatsById);
                 }
             }
 
@@ -3209,7 +3554,7 @@
         .rw-module-tabs {
             flex: 0 0 auto;
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 2px;
             padding: 3px;
             background: var(--rw-theme-surface-raised);
@@ -3226,6 +3571,7 @@
             font-weight: 700;
         }
         .rw-module-tab:hover { color: var(--rw-theme-text); }
+        .rw-module-tab[hidden] { display: none; }
         .rw-module-tab.is-active {
             color: var(--rw-theme-text);
             border-color: var(--rw-theme-border);
@@ -3405,6 +3751,14 @@
             border: 1px solid #555;
             border-radius: 4px;
             background: #202020;
+        }
+        .rw-alert-settings {
+            display: grid;
+            gap: 5px;
+            padding: 6px;
+            border: 1px solid var(--rw-theme-border-soft);
+            border-radius: 4px;
+            background: var(--rw-theme-surface-raised);
         }
         .rw-turtle-settings {
             display: grid;
@@ -3594,6 +3948,25 @@
         .rw-slink-card-title a { color: var(--rw-theme-accent); text-decoration: none; }
         .rw-slink-card-meta,
         .rw-slink-card-time { color: var(--rw-theme-muted); }
+        .rw-slink-warning {
+            margin-bottom: 5px;
+            padding: 6px;
+            border: 1px solid var(--rw-theme-warning);
+            border-radius: 4px;
+            color: var(--rw-theme-warning);
+            background: color-mix(in srgb, var(--rw-theme-warning) 9%, transparent);
+        }
+        .rw-claim-card { border-left: 3px solid var(--rw-theme-accent); }
+        .rw-claim,
+        .rw-claim-release {
+            border: 1px solid var(--rw-theme-border);
+            border-radius: 3px;
+            padding: 1px 4px;
+            background: var(--rw-theme-surface-raised);
+            color: var(--rw-theme-text);
+            cursor: pointer;
+        }
+        .rw-claim:disabled { cursor: not-allowed; opacity: .55; }
         .rw-slink-action {
             justify-self: end;
             color: var(--rw-theme-accent);
@@ -3641,6 +4014,27 @@
 
         .rw-member-secondary > span {
             flex: 0 0 auto;
+        }
+
+        #rw-target-panel.rw-war-alerting {
+            animation: rw-war-panel-alert 700ms ease-in-out infinite alternate;
+        }
+        @keyframes rw-war-panel-alert {
+            from { box-shadow: 0 0 4px rgba(255, 45, 45, .4); }
+            to { box-shadow: 0 0 24px rgba(255, 45, 45, 1), inset 0 0 0 2px rgba(255, 60, 60, .9); }
+        }
+        #rw-war-page-alert {
+            position: fixed;
+            inset: 0;
+            z-index: 2147483647;
+            pointer-events: none;
+            border: 12px solid rgba(255, 0, 0, .9);
+            box-shadow: inset 0 0 45px rgba(255, 0, 0, .7);
+            animation: rw-war-page-alert 700ms ease-in-out infinite alternate;
+        }
+        @keyframes rw-war-page-alert {
+            from { opacity: .25; }
+            to { opacity: 1; }
         }
 
         .rw-ff {
@@ -3699,6 +4093,7 @@
         if (localCache) {
             members = localCache.members;
             ffById = localCache.ffById || {};
+            battleStatsById = localCache.battleStatsById || {};
             lastDataTimestamp = localCache.timestamp;
             statusText = `${localCache.source} • loaded immediately`;
         }
@@ -3729,6 +4124,7 @@
             if (cached && cached.timestamp > lastDataTimestamp) {
                 members = cached.members;
                 ffById = { ...ffById, ...(cached.ffById || {}) };
+                battleStatsById = { ...battleStatsById, ...(cached.battleStatsById || {}) };
                 lastDataTimestamp = cached.timestamp;
                 statusText = `${cached.source} • updated`;
                 render();
@@ -3741,7 +4137,7 @@
 
         personalAttackTimer = setInterval(() => {
             if (!runtimeShouldRun()) return;
-            refreshChainApi(false).then(() => renderWarSummary());
+            refreshPersonalAttackStats(false).then(() => renderWarSummary());
         }, PERSONAL_ATTACK_REFRESH_MS);
 
         chainTimer = setInterval(() => {
