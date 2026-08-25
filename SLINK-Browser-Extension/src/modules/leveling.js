@@ -81,7 +81,7 @@
     id: 'leveling',
     title: 'SLINK Leveling',
     defaultShowInTorn: true,
-    requiredScopes: [],
+    requiredScopes: ['slink.level'],
     matches: url => url.hostname === 'www.torn.com',
 
     async start(context) {

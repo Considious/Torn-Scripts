@@ -18,7 +18,11 @@
         '--slink-muted': '#9eb0c2',
         '--slink-accent': '#69b5f4',
         '--slink-ready': '#8fe0a5',
-        '--slink-error': '#ffaaaa'
+        '--slink-warning': '#ffd27a',
+        '--slink-error': '#ffaaaa',
+        '--slink-danger-bg': '#482828',
+        '--slink-link': '#8fc9ff',
+        '--slink-shadow': 'rgba(0, 0, 0, .42)'
       })
     })
   });

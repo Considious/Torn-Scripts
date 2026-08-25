@@ -19,7 +19,8 @@
     const visibilityChanged = Object.keys(changes).some(key =>
       key.startsWith(SLINK.core.storage.fullKey('ui.modules.')) && key.endsWith('.showInTorn')
     );
-    if (changes[permissionsKey] || visibilityChanged) global.location.reload();
+    const warSettingsChanged = Boolean(changes[SLINK.core.storage.fullKey('war.settings.v1')]);
+    if (changes[permissionsKey] || visibilityChanged || warSettingsChanged) global.location.reload();
   });
 
   try {
@@ -29,6 +30,17 @@
       url:new URL(global.location.href),
       permissions,
       ui,
+      modulePresentation: async module => {
+        if (module.id !== 'war') {
+          return await SLINK.core.storage.get(`ui.modules.${module.id}.showInTorn`, module.defaultShowInTorn)
+            ? 'full'
+            : 'hidden';
+        }
+        const settings = await SLINK.core.storage.get('war.settings.v1', {});
+        if (settings.displayMode === 'extension') return 'headless-extension';
+        if (settings.displayMode === 'hybrid') return 'headless';
+        return 'full';
+      },
       moduleVisible: module => SLINK.core.storage.get(`ui.modules.${module.id}.showInTorn`, module.defaultShowInTorn)
     });
   } catch (error) {

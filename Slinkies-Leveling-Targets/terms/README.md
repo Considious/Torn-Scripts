@@ -6,12 +6,15 @@ is retained when that version originated as a Word document.
 
 | Version | Effective date | Files |
 | --- | --- | --- |
-| `2026-08-23` | August 23, 2026 | [Markdown](2026-08-23/SLINK_API_Data_Terms_of_Service.md) |
+| `2026-08-24` | August 24, 2026 | [Markdown](2026-08-23/SLINK_API_Data_Terms_of_Service.md) |
 | `2026-08-14` | August 14, 2026 | [Markdown](2026-08-14/SLINK_API_Data_Terms_of_Service.md) · [Original Word document](2026-08-14/SLINK_API_Data_Terms_of_Service.docx) |
 
-Version `2026-08-23` fingerprint:
+The August 24 revision intentionally keeps the already-published August 23
+document path so installed clients and existing “view terms” links remain valid.
 
-- Markdown SHA-256: `1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600`
+Version `2026-08-24` fingerprint:
+
+- Markdown SHA-256: `72a933d69ec99cabeb92b426208e9d0c47e90acaf960818e0b4da38f3f2f5b0a`
 
 Version `2026-08-14` fingerprints:
 

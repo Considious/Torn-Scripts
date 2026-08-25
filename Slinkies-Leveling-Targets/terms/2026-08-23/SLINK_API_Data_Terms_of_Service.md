@@ -5,7 +5,7 @@ Scripts - Shared Services - Data Infrastructure
 
 **Operator:** Considious [3853023]  
 **Faction:** [())))))] ("Slinky's") [46978]  
-**Last Updated:** August 23, 2026
+**Last Updated:** August 24, 2026
 
 ## Plain-language summary
 
@@ -98,10 +98,16 @@ an automatic faction grant or by an active direct grant assigned to a Torn user.
 Direct grants may be permanent or time-limited and may originate from a
 purchase, promotion, or manual operator assignment.
 
-Current Slinky's [46978] members receive `slink.level` automatically and free
-of charge. A user outside Slinky's may receive `slink.level` through an active
-direct grant. Leaving Slinky's removes the automatic faction entitlement but
-does not cancel a separate active direct grant.
+Current Slinky's [46978] members receive `slink.level` and `slink.war`
+automatically and free of charge. A user outside Slinky's may receive either
+product scope through an active direct grant. Leaving Slinky's removes the
+automatic faction entitlement but does not cancel a separate active direct
+grant.
+
+`slink.war.faction` is not a purchased or manually assigned product. It is a
+short-lived session capability added only when Torn confirms that the user's
+current faction position can read faction attack reports. It does not grant
+`admin.*` or access to unrelated SLINK products.
 
 Other faction-specific services may remain exclusive to current Slinky's
 members. Each product determines and enforces its own required scope.
@@ -123,11 +129,11 @@ not need to independently request the same information.
 
 | Disclosure | War Panel |
 | --- | --- |
-| Data Storage | Temporary and/or persistent, depending on the information collected. |
-| Data Sharing | Authorized Slinky's members / shared faction service. |
+| Data Storage | Live target snapshots are temporary; the limited aggregate event counters described below may be persistent. |
+| Data Sharing | Users with an active `slink.war` entitlement / shared War service. |
 | Purpose | Ranked-war coordination, target selection, and competitive faction intelligence. |
 | Key Storage | Ordinary user keys are not remotely stored; API-derived information may be shared. |
-| Access | Limited Access where required; Full Access is not required. |
+| Access | Active `slink.war` entitlement; Minimal or Limited API access depending on the contributed request. Full Access is not required. |
 
 ## 7. Retaliation Panel
 
@@ -135,18 +141,17 @@ The Retaliation Panel uses authorized Faction API information to process
 faction attack reports in live order and distribute relevant retaliation
 opportunities to authorized Slinky's members.
 
-Attack information may also contribute to persistent faction statistics and
-analysis, including successful attacks, losses, defends, escapes, online
-attacks, retaliation opportunities, and other combat statistics derived from
-faction attack reports.
+Live retaliation windows and attack-ID deduplication are temporary. Losses,
+escapes, and successful attacks against an online current-war opponent may be
+retained as time-bucketed counters rather than full per-attack history.
 
 | Disclosure | Retaliation Panel |
 | --- | --- |
-| Data Storage | Persistent where required for faction statistics, event history, or analysis. |
-| Data Sharing | Authorized Slinky's members and the service operator. |
+| Data Storage | Live retals and deduplication are temporary; disclosed aggregate counters may be persistent. |
+| Data Sharing | Users with an active `slink.war` entitlement and the service operator. |
 | Purpose | Retaliation coordination and non-malicious statistical analysis of faction combat activity. |
 | Key Storage | Ordinary user keys are not remotely stored; derived faction data may be stored/shared. |
-| Access | Faction API selections available to the user's faction position; Limited Access where required. |
+| Access | Active `slink.war` entitlement; contributing faction attack checks additionally requires the temporary `slink.war.faction` capability. |
 
 ## 8. Leveling Target Service
 

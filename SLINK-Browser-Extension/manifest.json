@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SLINK",
-  "version": "0.5.0",
-  "description": "Shared Live Intelligence NetworK with SLINK Leveling for Torn.",
+  "version": "0.6.0",
+  "description": "Shared Live Intelligence NetworK with SLINK Leveling and War tools for Torn.",
   "permissions": [
     "alarms",
     "storage"
@@ -12,7 +12,8 @@
     "https://api.torn.com/*",
     "https://ffscouter.com/*",
     "https://slinkyleveling.richard-johnson554.workers.dev/*",
-    "https://slinkcontributionworker.richard-johnson554.workers.dev/*"
+    "https://slinkcontributionworker.richard-johnson554.workers.dev/*",
+    "https://slinkwarworker.richard-johnson554.workers.dev/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -39,8 +40,10 @@
         "src/core/themes.js",
         "src/core/messaging.js",
         "src/core/modules.js",
+        "src/core/war.js",
         "src/content/ui-shell.js",
         "src/modules/leveling.js",
+        "src/modules/war.js",
         "src/modules/contribution.js",
         "src/content/content-script.js"
       ]

@@ -18,6 +18,7 @@
 
     <nav class="dashboard-tabs" aria-label="SLINK features">
       <button class="dashboard-tab active" data-tab="leveling" type="button">SLINK Leveling</button>
+      <button class="dashboard-tab" data-tab="war" type="button">SLINK War</button>
       <button class="dashboard-tab" data-tab="contribution" type="button">API Donation</button>
       <button class="dashboard-tab" data-tab="diagnostics" type="button">Diagnostics</button>
     </nav>
@@ -84,6 +85,42 @@
         <div id="targets" class="targets"></div>
       </section>
 
+      <section class="card overview" data-page="war" hidden>
+        <div class="section-heading"><h2>SLINK War</h2><span id="war-role" class="muted">Setup required</span></div>
+        <div class="stats war-stats">
+          <div><b id="war-target-count">0</b><span>Targets</span></div>
+          <div><b id="war-retal-count">0</b><span>Retals</span></div>
+          <div><b id="war-log-count">0</b><span>Log groups</span></div>
+          <div><b id="war-status-source">No</b><span>Status collector</span></div>
+          <div><b id="war-attack-source">No</b><span>Attack collector</span></div>
+        </div>
+        <p id="war-status" class="status-line">Loading War state...</p>
+        <p id="war-error" class="error" hidden></p>
+        <div class="row-actions"><button id="war-refresh" type="button">Refresh War data</button><button id="war-reset-position" class="secondary" type="button">Reset Torn panel position</button></div>
+      </section>
+
+      <section class="card settings-card" data-page="war" hidden>
+        <div class="section-heading"><h2>War setup</h2><span id="war-session-state" class="muted">Not authenticated</span></div>
+        <div class="terms">
+          <div class="section-heading"><strong>SLINK War data terms</strong><button id="war-toggle-terms" class="small secondary" type="button">View terms</button></div>
+          <div id="war-terms-full" hidden><p id="war-terms-summary"></p><a id="war-terms-link" href="#" target="_blank" rel="noopener noreferrer">Read the complete terms</a><label class="agreement"><input id="war-accept-terms" type="checkbox"><span id="war-agreement-label">I agree to the current terms.</span></label></div>
+          <p id="war-terms-accepted" class="muted"></p>
+        </div>
+        <form id="war-settings-form" class="settings-grid">
+          <label class="wide">Torn API key<input id="war-torn-key" type="password" autocomplete="off" placeholder="Required"></label>
+          <label>Display mode<select id="war-display-mode"><option value="extension">Extension only</option><option value="torn">Fully in Torn</option><option value="hybrid">Hybrid retal alerts</option></select></label>
+          <label>War mode<select id="war-mode"><option value="war">Real war</option><option value="termed">Termed war</option></select></label>
+          <label>Recent idle filter<input id="war-idle-minutes" type="number" min="0" max="60"></label>
+          <div class="form-actions wide"><button type="submit">Save and authenticate</button><button id="war-clear-session" class="secondary" type="button">Clear War session</button></div>
+        </form>
+      </section>
+
+      <section class="card targets-card" data-page="war" hidden>
+        <div class="section-heading"><h2 id="war-view-title">War targets</h2><span id="war-opponent" class="muted">No active opponent</span></div>
+        <div class="war-view-tabs" role="tablist"><button class="war-view-tab active" data-war-view="targets" type="button">Targets</button><button class="war-view-tab" data-war-view="retals" type="button">Retals</button><button class="war-view-tab" data-war-view="logs" type="button">Logs</button></div>
+        <div id="war-results" class="targets war-results"></div>
+      </section>
+
       <section class="card donation-card" data-page="contribution" hidden>
         <div class="section-heading"><h2>Donate a Public Only API key</h2><span id="donation-state" class="muted">Checking...</span></div>
         <p id="donation-summary" class="donation-summary">Loading the current donation terms...</p>
@@ -115,6 +152,7 @@
     <script src="../core/permissions.js"></script>
     <script src="../core/themes.js"></script>
     <script src="../core/messaging.js"></script>
+    <script src="../core/war.js"></script>
     <script src="dashboard.js"></script>
   </body>
 </html>

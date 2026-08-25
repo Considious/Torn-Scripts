@@ -2,7 +2,22 @@
 
 Chrome-first Manifest V3 client for Shared Live Intelligence NetworK systems.
 
-Version 0.5.0 adds demand-aware API contribution to the multi-feature
+Version 0.6.0 adds the first shared **SLINK War** module. The dashboard places
+Leveling on the left and War on the right, with Targets, Retals, and Logs using
+the same lower workspace. The Torn interface can run fully in Torn, extension
+only, or in hybrid mode where it stays out of the way until a retal alert needs
+attention. New elements use semantic module classes and central theme tokens
+so future themes do not require rebuilding feature markup.
+
+The War module uses `slink.war` for product access. It elects one active public
+status collector, prioritizing clients without faction API access, and one
+faction-capable attack collector. Live snapshots, retals, deduplication, and
+collector leases remain in a per-war Durable Object. D1 receives only
+ten-minute aggregate counters for losses, escapes, and observed-online war
+hits. `slink.war.faction` is detected during authentication and is never a
+purchased or manually assigned permission.
+
+Version 0.5.0 added demand-aware API contribution to the multi-feature
 interface foundation. Leveling can now run in **Contribute API only** mode:
 it supplies assigned checks without showing targets or counting as an active
 Leveling user. A normal Leveling session also stops creating demand after 20
@@ -90,7 +105,7 @@ SLINK uses two separate permission layers:
 1. **Browser capabilities** control which browser APIs and remote origins the installed extension may access. Torn, Torn API, FFScouter, and the SLINK Worker are core dependencies and are granted together at installation. There are no separate in-app permission buttons.
 2. **SLINK scopes** are supplied by the authenticated SLINK Worker and control which modules and server operations the Torn user may use.
 
-Before authentication, the extension has no SLINK server scopes; local diagnostics remain available because they are installation checks, not protected SLINK data. Torn authentication establishes identity, while the standalone `slink-permissions` D1 database supplies product access. Current Slinky's members receive `slink.level` automatically and users outside the faction may receive the same scope through an active purchased or manual grant. Considious also receives `admin.*`. The Worker signs those scopes into the session and remains authoritative for every protected route.
+Before authentication, the extension has no SLINK server scopes; local diagnostics remain available because they are installation checks, not protected SLINK data. Torn authentication establishes identity, while the standalone `slink-permissions` D1 database supplies product access. Current Slinky's members receive `slink.level` and `slink.war` automatically; users outside the faction may receive either product scope through an active purchased or manual grant. A successful faction-attack capability probe adds the temporary `slink.war.faction` scope for that War session. Considious also receives `admin.*`. Each Worker signs its product scopes into its own session, and the extension combines them only for module visibility.
 
 `admin.*` exposes the zero routine API-contribution override in both the Torn panel and full dashboard. The Worker rejects a zero-capacity claim from any session without that scope. Authentication still performs one Torn key validation, and Leveling may refresh the administrator's own battle stats locally; the override applies to routine shared-service contribution checks.
 
@@ -122,4 +137,4 @@ SLINK_EXTENSION.modules.register({
 
 ## Planned next milestone
 
-Verify Leveling against live Torn use, harden upgrade and recovery behavior, then package a reviewable Chrome Web Store build. Admin remains a separate private module sharing the same core.
+Verify Leveling and War against live Torn use, then add the next feature module to the same shared shell. Admin remains a separate private module sharing the same core.

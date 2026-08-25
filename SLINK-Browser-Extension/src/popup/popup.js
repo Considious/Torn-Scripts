@@ -7,6 +7,7 @@
     version: document.getElementById('version'),
     worker: document.getElementById('worker'),
     leveling: document.getElementById('leveling'),
+    war: document.getElementById('war'),
     roles: document.getElementById('roles'),
     scopes: document.getElementById('scopes'),
     lastDiagnostic: document.getElementById('last-diagnostic'),
@@ -56,6 +57,19 @@
         `Leveling pending checks: ${report.leveling.pendingChecks}`
       );
     }
+    if (report.war) {
+      lines.push(
+        '',
+        `War configured: ${report.war.configured ? 'YES' : 'NO'}`,
+        `War authenticated: ${report.war.authenticated ? 'YES' : 'NO'}`,
+        `War faction API: ${report.war.factionCapable ? 'YES' : 'NO'}`,
+        `War opponent: ${report.war.activeWar?.opponentName || 'Not detected'}`,
+        `War status: ${report.war.status || 'Waiting'}`,
+        `War Worker: ${report.war.worker?.connected ? 'CONNECTED' : 'NOT CONNECTED'}`,
+        `War database: ${report.war.worker?.database || 'not checked'}`,
+        `War coordinator: ${report.war.worker?.coordinator || 'not checked'}`
+      );
+    }
     lines.push('', 'Browser access:');
     for (const capability of Object.values(capabilities)) {
       lines.push(`- ${capability.label}: ${capability.granted ? 'granted' : (capability.optional ? 'optional / not granted' : 'MISSING')}`);
@@ -91,6 +105,9 @@
       elements.leveling.textContent = status.leveling.session.authenticated
         ? `${status.leveling.runtime.targets.length} targets`
         : (status.leveling.configured ? 'Authentication required' : 'Setup required');
+      elements.war.textContent = status.war.session.authenticated
+        ? (status.war.activeWar?.opponentName || 'Ready / open a war page')
+        : (status.war.configured ? 'Authentication required' : 'Setup required');
       elements.roles.textContent = status.permissions.roles.join(', ') || 'None';
       elements.scopes.textContent = status.permissions.scopes.join(', ') || 'None';
       elements.lastDiagnostic.textContent = status.lastDiagnostic?.at

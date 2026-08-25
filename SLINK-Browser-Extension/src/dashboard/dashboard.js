@@ -8,6 +8,10 @@
   let levelingInTorn = true;
   let contribution = null;
   let contributionTerms = null;
+  let war = null;
+  let warTermsExpanded = false;
+  let warView = 'targets';
+  let activeDashboardTab = 'leveling';
 
   function setBusy(button, busy) {
     button.disabled = busy;
@@ -22,6 +26,16 @@
   function clearError() {
     byId('leveling-error').hidden = true;
     byId('leveling-error').textContent = '';
+  }
+
+  function showWarError(error) {
+    byId('war-error').textContent = SLINK.core.format.errorMessage(error);
+    byId('war-error').hidden = false;
+  }
+
+  function clearWarError() {
+    byId('war-error').hidden = true;
+    byId('war-error').textContent = '';
   }
 
   function targetCard(target) {
@@ -116,6 +130,93 @@
     byId('donation-revoke').hidden = !active;
   }
 
+  function warMemberCard(member) {
+    const article = document.createElement('article');
+    article.className = `target war-result ${member.activity === 'Online' ? 'online' : ''}`;
+    const profile = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(member.id)}`;
+    const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(member.id)}`;
+    article.innerHTML = '<div class="target-head"><a></a><span class="level"></span></div><div class="target-meta"></div><div class="target-meta secondary-meta"></div><div class="target-actions"><a class="button" target="_blank" rel="noopener noreferrer">Attack</a><a class="button secondary" target="_blank" rel="noopener noreferrer">Profile</a></div>';
+    const links = article.querySelectorAll('a');
+    links[0].href = profile; links[0].textContent = `${member.name} [${member.id}]`;
+    links[1].href = attack; links[2].href = profile;
+    article.querySelector('.level').textContent = `Lv ${member.level || '?'}`;
+    const remaining = SLINK.core.war.statusSeconds(member);
+    for (const text of [member.activity, member.statusState || 'Okay', SLINK.core.war.isHospitalized(member) ? `Hospital ${SLINK.core.format.formatHumanDuration(remaining)}` : '', member.lastActionRelative].filter(Boolean)) {
+      const pill = document.createElement('span'); pill.className = `pill ${text.startsWith('Hospital') ? 'hospital' : ''}`; pill.textContent = text; article.querySelector('.target-meta').append(pill);
+    }
+    article.querySelector('.secondary-meta').textContent = member.statusDescription || member.position || '';
+    return article;
+  }
+
+  function warRetalCard(retal) {
+    const article = document.createElement('article');
+    article.className = 'target war-result retal';
+    const profile = `https://www.torn.com/profiles.php?XID=${encodeURIComponent(retal.attackerId)}`;
+    const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(retal.attackerId)}`;
+    article.innerHTML = '<div class="target-head"><a></a><span class="level"></span></div><div class="target-meta"></div><div class="target-actions"><a class="button" target="_blank" rel="noopener noreferrer">Retaliate</a><a class="button secondary" target="_blank" rel="noopener noreferrer">Profile</a></div>';
+    const links = article.querySelectorAll('a');
+    links[0].href = profile; links[0].textContent = `${retal.attackerName || `Player ${retal.attackerId}`} [${retal.attackerId}]`;
+    links[1].href = attack; links[2].href = profile;
+    article.querySelector('.level').textContent = SLINK.core.format.formatHumanDuration(Number(retal.expiresAt) - Math.floor(Date.now() / 1000));
+    article.querySelector('.target-meta').textContent = `${retal.againstWarOpponent ? 'War opponent' : 'Retal'} / Hit ${retal.defenderName || retal.defenderId}`;
+    return article;
+  }
+
+  function warLogCard(row) {
+    const article = document.createElement('article');
+    article.className = 'target war-result';
+    article.innerHTML = '<div class="target-head"><strong></strong><span class="level"></span></div><div class="target-meta"></div>';
+    article.querySelector('strong').textContent = `${row.attacker_name || row.attacker_id} → ${row.defender_name || row.defender_id}`;
+    article.querySelector('.level').textContent = String(Number(row.event_count) || 0);
+    article.querySelector('.target-meta').textContent = `${String(row.outcome || '').replace('_', ' ')} / ${new Date(Number(row.last_seen_at) || 0).toLocaleDateString()} ${new Date(Number(row.last_seen_at) || 0).toLocaleTimeString()}`;
+    return article;
+  }
+
+  function renderWarResults() {
+    const results = byId('war-results');
+    const snapshot = war?.runtime?.snapshot || {};
+    const definitions = warView === 'targets'
+      ? SLINK.core.war.sortMembers(snapshot.members || []).map(warMemberCard)
+      : warView === 'retals'
+        ? (snapshot.retals || []).map(warRetalCard)
+        : (war?.runtime?.logs || []).map(warLogCard);
+    if (!definitions.length) {
+      const empty = document.createElement('div'); empty.className = 'war-empty'; empty.textContent = warView === 'targets' ? 'No eligible targets in the latest snapshot.' : warView === 'retals' ? 'No active retaliation alerts.' : 'No aggregate log entries yet.';
+      definitions.push(empty);
+    }
+    results.replaceChildren(...definitions);
+    byId('war-view-title').textContent = warView === 'targets' ? 'War targets' : warView === 'retals' ? 'Retaliation alerts' : 'War counters';
+    for (const button of document.querySelectorAll('.war-view-tab')) button.classList.toggle('active', button.dataset.warView === warView);
+  }
+
+  function renderWar() {
+    const runtime = war.runtime || {};
+    const snapshot = runtime.snapshot || {};
+    byId('war-target-count').textContent = snapshot.members?.length || 0;
+    byId('war-retal-count').textContent = snapshot.retals?.length || 0;
+    byId('war-log-count').textContent = runtime.logs?.length || 0;
+    byId('war-status-source').textContent = runtime.collectStatus ? 'This device' : 'Shared';
+    byId('war-attack-source').textContent = runtime.collectAttacks ? 'This device' : (war.session.factionCapable ? 'Standby' : 'Shared');
+    byId('war-role').textContent = war.session.factionCapable ? 'Faction API' : (war.session.authenticated ? 'Public API' : 'Setup required');
+    byId('war-status').textContent = runtime.status || 'Ready';
+    byId('war-session-state').textContent = war.session.authenticated ? `Authenticated as ${war.session.userId}` : 'Not authenticated';
+    byId('war-opponent').textContent = war.activeWar?.opponentName || 'No active opponent';
+    const settings = war.settings;
+    byId('war-torn-key').placeholder = settings.hasTornKey ? 'Saved - leave blank to keep' : 'Required';
+    byId('war-display-mode').value = settings.displayMode;
+    byId('war-mode').value = settings.warMode;
+    byId('war-idle-minutes').value = settings.idleMinutes;
+    byId('war-terms-summary').textContent = war.terms.summary;
+    byId('war-terms-link').href = war.terms.documentUrl || '#';
+    byId('war-agreement-label').textContent = `I agree to terms ${war.terms.version}.`;
+    byId('war-accept-terms').checked = war.terms.accepted;
+    byId('war-terms-accepted').textContent = war.terms.accepted ? `Terms ${war.terms.version} accepted` : 'Acceptance required';
+    byId('war-terms-full').hidden = !warTermsExpanded && war.terms.accepted;
+    byId('war-toggle-terms').textContent = byId('war-terms-full').hidden ? 'View terms' : 'Hide terms';
+    if (runtime.lastError) showWarError(runtime.lastError);
+    renderWarResults();
+  }
+
   function formatDiagnostic(report) {
     if (!report) return 'Run a diagnostic to create a report.';
     const lines = [
@@ -141,6 +242,9 @@
       `Leveling authenticated: ${report.leveling?.authenticated ? 'YES' : 'NO'}`,
       `Leveling targets: ${report.leveling?.targets ?? 0}`,
       `Leveling pending checks: ${report.leveling?.pendingChecks ?? 0}`,
+      `War configured: ${report.war?.configured ? 'YES' : 'NO'}`,
+      `War authenticated: ${report.war?.authenticated ? 'YES' : 'NO'}`,
+      `War faction API: ${report.war?.factionCapable ? 'YES' : 'NO'}`,
       '',
       'Browser access:',
       ...Object.values(report.capabilities || {}).map(capability => `- ${capability.label}: ${capability.granted ? 'granted' : 'MISSING'}`)
@@ -155,6 +259,7 @@
       SLINK.core.messaging.send('contribution.terms').catch(() => null)
     ]);
     leveling = status.leveling;
+    war = status.war;
     contribution = status.contribution;
     contributionTerms = donationTerms;
     levelingInTorn = await SLINK.core.storage.get('ui.modules.leveling.showInTorn', true);
@@ -162,6 +267,7 @@
     byId('connection').textContent = status.worker.connected ? 'Worker connected' : 'Worker offline';
     byId('connection').className = status.worker.connected ? 'badge ready' : 'badge error';
     renderLeveling();
+    renderWar();
     renderContribution();
     byId('diagnostic').textContent = formatDiagnostic(status.lastDiagnostic);
   }
@@ -185,6 +291,7 @@
     if (levelingInTorn) await SLINK.core.storage.set('ui.pagePanelHidden', false);
   });
   byId('reset-position').addEventListener('click', () => SLINK.core.storage.remove('ui.main.position'));
+  byId('war-reset-position').addEventListener('click', () => SLINK.core.storage.remove('ui.main.position'));
   byId('settings-form').addEventListener('submit', async event => {
     event.preventDefault();
     clearError();
@@ -214,6 +321,31 @@
     leveling = await SLINK.core.messaging.send('leveling.settings.save', { clearTornKey: true });
     renderLeveling();
   });
+  byId('war-refresh').addEventListener('click', async event => {
+    setBusy(event.currentTarget, true); clearWarError();
+    try { war = await SLINK.core.messaging.send('war.cycle.prepare'); renderWar(); }
+    catch (error) { showWarError(error); }
+    finally { setBusy(event.currentTarget, false); }
+  });
+  byId('war-toggle-terms').addEventListener('click', () => { warTermsExpanded = !warTermsExpanded; renderWar(); });
+  byId('war-settings-form').addEventListener('submit', async event => {
+    event.preventDefault(); clearWarError();
+    const submit = event.currentTarget.querySelector('button[type="submit"]'); setBusy(submit, true);
+    try {
+      war = await SLINK.core.messaging.send('war.settings.save', {
+        tornKey:byId('war-torn-key').value,
+        displayMode:byId('war-display-mode').value,
+        warMode:byId('war-mode').value,
+        idleMinutes:byId('war-idle-minutes').value,
+        acceptTerms:byId('war-accept-terms').checked && !war.terms.accepted
+      });
+      byId('war-torn-key').value = '';
+      renderWar();
+    } catch (error) { showWarError(error); }
+    finally { setBusy(submit, false); }
+  });
+  byId('war-clear-session').addEventListener('click', async () => { war = await SLINK.core.messaging.send('war.session.clear'); renderWar(); });
+  for (const button of document.querySelectorAll('.war-view-tab')) button.addEventListener('click', () => { warView = button.dataset.warView; renderWarResults(); });
   byId('run-diagnostic').addEventListener('click', async event => {
     setBusy(event.currentTarget, true);
     try { byId('diagnostic').textContent = formatDiagnostic(await SLINK.core.messaging.send('diagnostics.run')); }
@@ -225,6 +357,7 @@
     button.addEventListener('click', () => {
       for (const item of document.querySelectorAll('.dashboard-tab')) item.classList.toggle('active', item === button);
       for (const page of document.querySelectorAll('[data-page]')) page.hidden = page.dataset.page !== button.dataset.tab;
+      activeDashboardTab = button.dataset.tab;
     });
   }
 
@@ -257,4 +390,9 @@
   });
 
   await refresh();
+  setInterval(async () => {
+    if (activeDashboardTab !== 'war' || !war?.configured) return;
+    try { war = await SLINK.core.messaging.send('war.cycle.prepare'); clearWarError(); renderWar(); }
+    catch (error) { showWarError(error); }
+  }, 10_000);
 })();

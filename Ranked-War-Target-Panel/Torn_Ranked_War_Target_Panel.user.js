@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Considious Torn Ranked War Target Panel
+// @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      0.9.30
-// @description  Right-side ranked-war target panel using TWSE shared data with a Torn API fallback.
+// @version      1.0.0
+// @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -10,9 +10,11 @@
 // @connect      api.torn.com
 // @connect      twse.dev
 // @connect      ffscouter.com
+// @connect      slinkwarworker.richard-johnson554.workers.dev
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_notification
 // @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.4
 // @run-at       document-end
 // ==/UserScript==
@@ -36,6 +38,11 @@
     const TURTLE_STATUS_REFRESH_MS = 60 * 1000;
     const TWSE_STALE_MS = 5 * 60 * 1000;
     const TWSE_CACHE_PREFIX = 'xentac-torn_war_stuff_enhanced-status-';
+    const SLINK_WAR_WORKER = 'https://slinkwarworker.richard-johnson554.workers.dev';
+    const SLINK_TERMS_VERSION = '2026-08-24';
+    const SLINK_TERMS_SHA256 = '72a933d69ec99cabeb92b426208e9d0c47e90acaf960818e0b4da38f3f2f5b0a';
+    const SLINK_TERMS_URL = 'https://github.com/Considious/Torn-Scripts/blob/main/Slinkies-Leveling-Targets/terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md';
+    const SLINK_ATTACK_REFRESH_MS = 30 * 1000;
 
     const defaults = {
         apiKey: '',
@@ -57,7 +64,11 @@
         panelPosition: null,
         panelSize: { width: 240, height: null },
         panelTop: 90,
-        panelBottom: 20
+        panelBottom: 20,
+        activeView: 'targets',
+        slinkTermsAccepted: false,
+        slinkTermsVersion: '',
+        slinkTermsSha256: ''
     };
 
     let settings = loadSettings();
@@ -111,6 +122,16 @@
     let turtleStatusError = '';
     let pendingChatSend = null;
     let pendingChatSendTimer = null;
+    let slinkSession = readSlinkSession();
+    let slinkSnapshot = null;
+    let slinkLogs = [];
+    let slinkStoredLogs = [];
+    let slinkStoredLogsWarId = '';
+    let slinkLastStoredLogsAt = 0;
+    let slinkLastAttackAt = 0;
+    let slinkLastAttackEnded = 0;
+    let slinkCycleRunning = false;
+    const slinkSeenRetals = new Set();
     const CHAT_COPY_AUTHORIZATION_MS = 30 * 1000;
 
     function readSavedOpponent() {
@@ -136,6 +157,251 @@
 
     function saveSettings() {
         TornLib.writeJsonStorage(PREFIX + 'settings', settings);
+    }
+
+    function readSlinkSession() {
+        return TornLib.readJsonStorage(PREFIX + 'slink-session', null);
+    }
+
+    function saveSlinkSession(value) {
+        slinkSession = value;
+        TornLib.writeJsonStorage(PREFIX + 'slink-session', value);
+    }
+
+    function hasSlinkScope(scope) {
+        return Boolean(Number(slinkSession?.expiresAt) > Date.now() && slinkSession?.scopes?.some(granted =>
+            granted === scope || granted === '*' ||
+            (String(granted).endsWith('.*') && scope.startsWith(String(granted).slice(0, -1)))
+        ));
+    }
+
+    function slinkWarId() {
+        if (!opponent?.id || !ownFactionId) return '';
+        let start = Number(opponent.start) || Number(opponent.slinkStartedAt);
+        if (!start) {
+            start = Math.floor(Date.now() / 1000);
+            opponent.slinkStartedAt = start;
+            saveOpponent(opponent);
+        }
+        if (start > 10_000_000_000) start = Math.floor(start / 1000);
+        return `rw_${ownFactionId}_${opponent.id}_${Math.floor(start)}`;
+    }
+
+    async function slinkRequest(path, options = {}, retried = false) {
+        if (options.auth !== false) await ensureSlinkSession(false);
+        const headers = { Accept: 'application/json', ...(options.headers || {}) };
+        if (options.auth !== false) headers.Authorization = `Bearer ${slinkSession.token}`;
+        if (options.data !== undefined) headers['Content-Type'] = 'application/json';
+        try {
+            return await TornLib.requestJson(`${SLINK_WAR_WORKER}${path}`, {
+                method: options.method || 'GET',
+                headers,
+                data: options.data === undefined ? undefined : JSON.stringify(options.data),
+                timeout: 15000,
+                tornScript: 'SLINK War Panel'
+            });
+        } catch (error) {
+            if (error.status === 401 && options.auth !== false && !retried) {
+                saveSlinkSession(null);
+                await ensureSlinkSession(true);
+                return slinkRequest(path, options, true);
+            }
+            throw error;
+        }
+    }
+
+    async function ensureSlinkSession(force = false) {
+        if (
+            !settings.slinkTermsAccepted ||
+            settings.slinkTermsVersion !== SLINK_TERMS_VERSION ||
+            settings.slinkTermsSha256 !== SLINK_TERMS_SHA256
+        ) {
+            throw new Error('Accept the current SLINK API & Data Terms in War settings.');
+        }
+        if (!settings.apiKey) throw new Error('Enter your Torn API key in War settings.');
+        if (!force && slinkSession?.token && Number(slinkSession.expiresAt) > Date.now() + 60000) {
+            ownFactionId = String(slinkSession.factionId || ownFactionId);
+            return slinkSession;
+        }
+        saveSlinkSession(null);
+        const response = await slinkRequest('/api/auth', {
+            method: 'POST',
+            auth: false,
+            data: {
+                api_key: settings.apiKey,
+                terms_accepted: true,
+                terms_version: SLINK_TERMS_VERSION,
+                terms_sha256: SLINK_TERMS_SHA256,
+                client_name: 'SLINK War Panel userscript',
+                client_version: '1.0.0'
+            }
+        });
+        const session = {
+            token: String(response.session_token || ''),
+            expiresAt: Date.parse(response.expires_at) || 0,
+            userId: Number(response.user_id) || 0,
+            factionId: Number(response.faction_id) || 0,
+            scopes: Array.isArray(response.scopes) ? response.scopes : []
+        };
+        if (!session.token || !session.scopes.includes('slink.war')) throw new Error('Your SLINK account does not have slink.war permission.');
+        ownFactionId = String(session.factionId || ownFactionId);
+        saveSlinkSession(session);
+        return session;
+    }
+
+    function slinkMode() {
+        return settings.mode === 'termed' ? 'termed' : 'war';
+    }
+
+    function slinkLogRows(payload) {
+        const rows = [...(payload?.pending || []), ...(payload?.stored || [])];
+        const combined = new Map();
+        for (const row of rows) {
+            const key = `${row.attacker_id}:${row.defender_id}:${row.outcome}`;
+            const current = combined.get(key) || { ...row, event_count: 0 };
+            current.event_count += Number(row.event_count) || 0;
+            current.first_seen_at = Math.min(
+                Number(current.first_seen_at) || Number.POSITIVE_INFINITY,
+                Number(row.first_seen_at) || Number.POSITIVE_INFINITY
+            );
+            current.last_seen_at = Math.max(
+                Number(current.last_seen_at) || 0,
+                Number(row.last_seen_at) || 0
+            );
+            combined.set(key, current);
+        }
+        return [...combined.values()].sort(
+            (a, b) => Number(b.last_seen_at) - Number(a.last_seen_at)
+        );
+    }
+
+    function playSlinkRetalPing() {
+        try {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+            const context = new AudioContextClass();
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.frequency.value = 720;
+            gain.gain.setValueAtTime(0.12, context.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.35);
+            oscillator.connect(gain);
+            gain.connect(context.destination);
+            oscillator.start();
+            oscillator.stop(context.currentTime + 0.35);
+            oscillator.addEventListener('ended', () => context.close());
+        } catch {
+            // Audio is a convenience; browser/PDA notification restrictions must not stop polling.
+        }
+    }
+
+    function announceSlinkRetals(retals) {
+        for (const retal of Array.isArray(retals) ? retals : []) {
+            const id = String(retal.attackId || '');
+            if (!id || slinkSeenRetals.has(id)) continue;
+            slinkSeenRetals.add(id);
+            const seconds = Math.max(0, Number(retal.expiresAt) - Math.floor(Date.now() / 1000));
+            const text = `${retal.attackerName || `Player ${retal.attackerId}`} has ${Math.ceil(seconds / 60)}m remaining.`;
+            playSlinkRetalPing();
+            if (typeof GM_notification === 'function') {
+                GM_notification({
+                    title: 'SLINK Retaliation',
+                    text,
+                    timeout: 10000,
+                    onclick: () => window.open(
+                        `https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${encodeURIComponent(retal.attackerId)}`,
+                        '_blank'
+                    )
+                });
+            }
+        }
+    }
+
+    async function slinkCycle(force = false) {
+        if (slinkCycleRunning || !runtimeShouldRun() || !opponent?.id) return;
+        if (
+            !settings.slinkTermsAccepted ||
+            settings.slinkTermsVersion !== SLINK_TERMS_VERSION ||
+            settings.slinkTermsSha256 !== SLINK_TERMS_SHA256
+        ) return;
+        slinkCycleRunning = true;
+        try {
+            const session = await ensureSlinkSession(force);
+            const warId = slinkWarId();
+            if (!warId) throw new Error('SLINK War is waiting for your faction and opponent IDs.');
+            const base = `/api/wars/${encodeURIComponent(warId)}`;
+            const heartbeat = await slinkRequest(`${base}/heartbeat`, {
+                method: 'POST',
+                data: { opponent_faction_id: Number(opponent.id) }
+            });
+
+            if (heartbeat.collectStatus) {
+                const officialMembers = await fetchOfficialFactionMembers(opponent.id);
+                await slinkRequest(`${base}/status`, {
+                    method: 'POST',
+                    data: {
+                        opponent_faction_id: Number(opponent.id),
+                        observedAt: Date.now(),
+                        members: officialMembers
+                    }
+                });
+            }
+
+            if (
+                heartbeat.collectAttacks &&
+                hasSlinkScope('slink.war.faction') &&
+                (force || Date.now() - slinkLastAttackAt >= SLINK_ATTACK_REFRESH_MS)
+            ) {
+                const now = Math.floor(Date.now() / 1000);
+                const from = Math.max(now - 600, slinkLastAttackEnded ? slinkLastAttackEnded - 60 : 0);
+                const payload = await gmRequest(
+                    `https://api.torn.com/v2/faction/attacks?from=${from}&to=${now}&limit=100&sort=desc&key=${encodeURIComponent(settings.apiKey)}`
+                );
+                const attacks = Array.isArray(payload?.attacks) ? payload.attacks : [];
+                await slinkRequest(`${base}/attacks`, {
+                    method: 'POST',
+                    data: { opponent_faction_id: Number(opponent.id), attacks }
+                });
+                slinkLastAttackAt = Date.now();
+                slinkLastAttackEnded = attacks.reduce(
+                    (latest, attack) => Math.max(latest, Number(attack?.ended ?? attack?.ended_at ?? 0) || 0),
+                    slinkLastAttackEnded
+                );
+            }
+
+            const query = new URLSearchParams({
+                opponent_faction_id: String(opponent.id),
+                mode: slinkMode(),
+                idle_minutes: String(settings.idleCutoff)
+            });
+            const includeStoredLogs = force || slinkStoredLogsWarId !== warId || Date.now() - slinkLastStoredLogsAt >= 10 * 60 * 1000;
+            const snapshot = await slinkRequest(`${base}/snapshot?${query}`);
+            const logPayload = includeStoredLogs
+                ? await slinkRequest(`${base}/logs?limit=200&include_stored=1`)
+                : { pending: snapshot?.pendingLogs || [] };
+            slinkSnapshot = snapshot;
+            if (includeStoredLogs) {
+                slinkStoredLogs = Array.isArray(logPayload?.stored) ? logPayload.stored : [];
+                slinkStoredLogsWarId = warId;
+                slinkLastStoredLogsAt = Date.now();
+            }
+            slinkLogs = slinkLogRows({ stored: slinkStoredLogs, pending: logPayload?.pending || [] });
+            if (Array.isArray(snapshot?.members) && snapshot.members.length) {
+                members = normalizeMembers({ members: snapshot.members });
+                lastDataTimestamp = Number(snapshot.observedAt) || Date.now();
+                statusText = `SLINK shared war data • ${members.length} targets`;
+            }
+            announceSlinkRetals(snapshot?.retals);
+            render();
+        } catch (error) {
+            if (!error?.runtimePaused) {
+                statusText = `SLINK War: ${error.message}`;
+                console.warn('[SLINK War Panel] Shared cycle failed:', error);
+                render();
+            }
+        } finally {
+            slinkCycleRunning = false;
+        }
     }
 
     function gmRequest(url, options = {}) {
@@ -531,6 +797,14 @@
         lastNetworkCheck = 0;
         lastFFCheck = 0;
         pendingChatSend = null;
+        slinkSnapshot = null;
+        slinkLogs = [];
+        slinkStoredLogs = [];
+        slinkStoredLogsWarId = '';
+        slinkLastStoredLogsAt = 0;
+        slinkLastAttackAt = 0;
+        slinkLastAttackEnded = 0;
+        slinkSeenRetals.clear();
 
         statusText = `${source}: loading ${opponent.name}…`;
         render();
@@ -658,17 +932,15 @@
         }
     }
 
-    async function fetchOfficialFactionMembers_UNUSED(factionId) {
+    async function fetchOfficialFactionMembers(factionId) {
         if (!settings.apiKey || settings.apiKey.length !== 16) {
             throw new Error('TWSE has no cached data and a Torn API key is required for fallback.');
         }
 
         const url =
-            `https://api.torn.com/v2/faction?` +
-            `id=${encodeURIComponent(factionId)}` +
-            `&selections=members,timestamp` +
-            `&key=${encodeURIComponent(settings.apiKey)}` +
-            `&comment=RankedWarTargetPanel`;
+            `https://api.torn.com/v2/faction/${encodeURIComponent(factionId)}/members?` +
+            `key=${encodeURIComponent(settings.apiKey)}` +
+            `&comment=SLINKWarPanel`;
 
         const payload = await gmRequest(url);
 
@@ -676,7 +948,10 @@
             throw new Error(payload.error.error || 'Torn faction API error');
         }
 
-        return normalizeMembers(payload);
+        const source = payload?.members ?? payload?.faction?.members ?? [];
+        const values = Array.isArray(source) ? source : Object.entries(source).map(([id, member]) => ({ id, ...member }));
+        if (!values.length) throw new Error('Torn returned no opposing faction members.');
+        return values;
     }
 
     async function fetchFFData(targetMembers) {
@@ -790,6 +1065,7 @@
     }
 
     function getVisibleMembers() {
+        if (!hasSlinkScope('slink.war')) return [];
         return members
             .filter(member => settings.mode !== 'termed' || isTermedEligible(member))
             .filter(member => !settings.hideAbroad || !isAbroad(member))
@@ -1916,6 +2192,89 @@
         }
     }
 
+    function formatSlinkDateTime(timestamp) {
+        const value = Number(timestamp);
+        if (!Number.isFinite(value) || value <= 0) return { date: '—', time: '—' };
+        const date = new Date(value < 10_000_000_000 ? value * 1000 : value);
+        return {
+            date: date.toLocaleDateString(),
+            time: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        };
+    }
+
+    function renderSlinkViews() {
+        if (!panel) return;
+        const active = ['targets', 'retals', 'logs'].includes(settings.activeView)
+            ? settings.activeView
+            : 'targets';
+        for (const button of panel.querySelectorAll('.rw-module-tab')) {
+            const selected = button.dataset.view === active;
+            button.classList.toggle('is-active', selected);
+            button.setAttribute('aria-selected', String(selected));
+        }
+        for (const view of panel.querySelectorAll('.rw-view')) {
+            view.hidden = !view.classList.contains(`rw-${active}-view`);
+        }
+
+        const retalList = panel.querySelector('.rw-retal-list');
+        if (retalList) {
+            retalList.replaceChildren();
+            const retals = Array.isArray(slinkSnapshot?.retals) ? slinkSnapshot.retals : [];
+            if (!retals.length) {
+                const empty = document.createElement('div');
+                empty.className = 'rw-empty';
+                empty.textContent = 'No active retaliation windows.';
+                retalList.appendChild(empty);
+            }
+            for (const retal of retals) {
+                const seconds = Math.max(0, Number(retal.expiresAt) - Math.floor(Date.now() / 1000));
+                const card = document.createElement('article');
+                card.className = 'rw-slink-card rw-retal-card';
+                card.innerHTML = `
+                    <div class="rw-slink-card-title">
+                        <a target="_blank" rel="noopener noreferrer"
+                           href="https://www.torn.com/profiles.php?XID=${encodeURIComponent(retal.attackerId)}">
+                            ${escapeHtml(retal.attackerName || `Player ${retal.attackerId}`)}
+                        </a>
+                        <strong>${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}</strong>
+                    </div>
+                    <div class="rw-slink-card-meta">Attacked ${escapeHtml(retal.defenderName || `member ${retal.defenderId}`)}</div>
+                    <a class="rw-slink-action" target="_blank" rel="noopener noreferrer"
+                       href="https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${encodeURIComponent(retal.attackerId)}">Attack</a>
+                `;
+                retalList.appendChild(card);
+            }
+        }
+
+        const logList = panel.querySelector('.rw-log-list');
+        if (logList) {
+            logList.replaceChildren();
+            if (!slinkLogs.length) {
+                const empty = document.createElement('div');
+                empty.className = 'rw-empty';
+                empty.textContent = 'No loss, escape, or online-hit counters have been recorded for this war.';
+                logList.appendChild(empty);
+            }
+            for (const row of slinkLogs) {
+                const stamp = formatSlinkDateTime(row.last_seen_at);
+                const label = row.outcome === 'online_hit'
+                    ? 'online hits'
+                    : `${String(row.outcome || 'event').replace('_', ' ')}s`;
+                const card = document.createElement('article');
+                card.className = `rw-slink-card rw-log-card rw-log-${escapeHtml(row.outcome || 'event')}`;
+                card.innerHTML = `
+                    <div class="rw-slink-card-title">
+                        <span>${escapeHtml(row.attacker_name || `Player ${row.attacker_id}`)}</span>
+                        <strong>${Number(row.event_count) || 0} ${escapeHtml(label)}</strong>
+                    </div>
+                    <div class="rw-slink-card-meta">Against ${escapeHtml(row.defender_name || `Player ${row.defender_id}`)}</div>
+                    <div class="rw-slink-card-time"><span>${escapeHtml(stamp.date)}</span><span>${escapeHtml(stamp.time)}</span></div>
+                `;
+                logList.appendChild(card);
+            }
+        }
+    }
+
     function render() {
         if (!panel) createPanel();
 
@@ -1950,6 +2309,14 @@
             heading.removeAttribute('title');
         }
         status.textContent = statusText;
+        const access = panel.querySelector('.rw-slink-access');
+        if (access) {
+            const factionAccess = hasSlinkScope('slink.war.faction');
+            access.classList.toggle('is-ready', hasSlinkScope('slink.war'));
+            access.textContent = hasSlinkScope('slink.war')
+                ? `SLINK War connected${factionAccess ? ' • faction attack checks enabled' : ' • public status contribution'}`
+                : 'Accept the terms and save a Torn API key to verify slink.war access.';
+        }
 
         const twseWarning = panel.querySelector('.rw-twse-warning');
         if (twseWarning) {
@@ -1972,23 +2339,23 @@
         }
 
         renderWarSummary();
+        renderSlinkViews();
 
         const visible = getVisibleMembers();
-        count.textContent = `${visible.length}/${members.length}`;
+        count.textContent = hasSlinkScope('slink.war') ? `${visible.length}/${members.length}` : 'locked';
 
         list.replaceChildren();
 
         if (!visible.length) {
             const empty = document.createElement('div');
             empty.className = 'rw-empty';
-            empty.textContent = members.length
+            empty.textContent = !hasSlinkScope('slink.war')
+                ? 'SLINK War access is required. Open Settings & alerts to connect.'
+                : members.length
                 ? 'No members match the current filters.'
                 : 'No shared faction data loaded yet.';
             list.appendChild(empty);
-            return;
-        }
-
-        for (const member of visible) {
+        } else for (const member of visible) {
             const card = document.createElement('div');
             card.className = `rw-member ${member.activity.toLowerCase()}`;
 
@@ -2080,7 +2447,7 @@
             </button>
             <header class="rw-header">
                 <div class="rw-header-main">
-                    <div class="rw-title">WAR TARGETS <span class="rw-version">v0.9.29</span> <span class="rw-count">0/0</span></div>
+                    <div class="rw-title">SLINK WAR <span class="rw-version">v1.0.0</span> <span class="rw-count">0/0</span></div>
                     <div class="rw-header-subline">
                         <a class="rw-opponent" target="_blank" rel="noopener noreferrer">Current Ranked-War Opponent</a>
                         <span class="rw-compact-attacks" title="Your current ranked-war attack count">0 attacks</span>
@@ -2111,6 +2478,12 @@
             </header>
 
             <div class="rw-body">
+                <nav class="rw-module-tabs" aria-label="SLINK War sections">
+                    <button class="rw-module-tab" type="button" role="tab" data-view="targets">Targets</button>
+                    <button class="rw-module-tab" type="button" role="tab" data-view="retals">Retals</button>
+                    <button class="rw-module-tab" type="button" role="tab" data-view="logs">Logs</button>
+                </nav>
+                <div class="rw-view rw-targets-view">
                 <div class="rw-dashboard-section">
                   <div class="rw-controls">
                     <label>Mode
@@ -2176,9 +2549,15 @@
 
                         <label>Torn API key<input class="rw-apikey" type="password" maxlength="16"></label>
                         <label>FFScouter key<input class="rw-ffkey" type="password"></label>
+                        <label class="rw-check rw-slink-terms-row">
+                            <input class="rw-slink-terms" type="checkbox">
+                            I accept the current SLINK API &amp; Data Terms
+                        </label>
+                        <a class="rw-terms-link" target="_blank" rel="noopener noreferrer" href="${SLINK_TERMS_URL}">Read the terms</a>
+                        <div class="rw-slink-access">Accept the terms and save a Torn API key to verify slink.war access.</div>
                         <div class="rw-note">
-                            The panel reads the active ranked-war opponent through Torn's API and member
-                            data through twse.dev. It does not open or scrape unseen faction pages.
+                            Your API key stays in this userscript. SLINK sends it only during authentication,
+                            then shares sanitized war status and deduplicated events through the War Worker.
                         </div>
                     </details>
                 </div>
@@ -2224,6 +2603,15 @@
                   </div>
                 </div>
                 <div class="rw-list"></div>
+                </div>
+                <div class="rw-view rw-retals-view" hidden>
+                    <div class="rw-view-heading">Active retaliation windows</div>
+                    <div class="rw-retal-list rw-slink-list"></div>
+                </div>
+                <div class="rw-view rw-logs-view" hidden>
+                    <div class="rw-view-heading">War event counters</div>
+                    <div class="rw-log-list rw-slink-list"></div>
+                </div>
             </div>
             <div class="rw-resize-handle" role="separator" aria-label="Resize War Panel" title="Drag to resize"></div>
         `;
@@ -2243,6 +2631,7 @@
         const corner = panel.querySelector('.rw-corner');
         const apiKey = panel.querySelector('.rw-apikey');
         const ffKey = panel.querySelector('.rw-ffkey');
+        const slinkTerms = panel.querySelector('.rw-slink-terms');
 
         mode.value = settings.mode;
         cutoff.value = settings.idleCutoff;
@@ -2257,6 +2646,11 @@
         corner.value = settings.corner;
         apiKey.value = settings.apiKey;
         ffKey.value = settings.ffApiKey;
+        slinkTerms.checked = Boolean(
+            settings.slinkTermsAccepted &&
+            settings.slinkTermsVersion === SLINK_TERMS_VERSION &&
+            settings.slinkTermsSha256 === SLINK_TERMS_SHA256
+        );
 
         mode.addEventListener('change', () => {
             updateSetting('mode', mode.value);
@@ -2314,11 +2708,37 @@
             applyPanelPosition();
         });
 
+        apiKey.addEventListener('change', () => {
+            settings.apiKey = apiKey.value.trim();
+            saveSlinkSession(null);
+            saveSettings();
+            refreshData(true);
+            slinkCycle(true);
+        });
+
         ffKey.addEventListener('change', () => {
             settings.ffApiKey = ffKey.value.trim();
             saveSettings();
             refreshData(true);
         });
+
+        slinkTerms.addEventListener('change', () => {
+            settings.slinkTermsAccepted = slinkTerms.checked;
+            settings.slinkTermsVersion = slinkTerms.checked ? SLINK_TERMS_VERSION : '';
+            settings.slinkTermsSha256 = slinkTerms.checked ? SLINK_TERMS_SHA256 : '';
+            saveSlinkSession(null);
+            saveSettings();
+            render();
+            if (slinkTerms.checked) slinkCycle(true);
+        });
+
+        for (const tab of panel.querySelectorAll('.rw-module-tab')) {
+            tab.addEventListener('click', () => {
+                settings.activeView = tab.dataset.view;
+                saveSettings();
+                render();
+            });
+        }
 
         panel.querySelector('.rw-target-toggle').addEventListener('click', () => {
             settings.targetsCollapsed = !settings.targetsCollapsed;
@@ -2482,6 +2902,17 @@
     async function refreshData(forceNetwork = false) {
         if (!runtimeShouldRun()) return;
         try {
+            if (
+                !settings.apiKey ||
+                !settings.slinkTermsAccepted ||
+                settings.slinkTermsVersion !== SLINK_TERMS_VERSION ||
+                settings.slinkTermsSha256 !== SLINK_TERMS_SHA256
+            ) {
+                statusText = 'Open Settings & alerts to connect SLINK War.';
+                render();
+                return;
+            }
+            await ensureSlinkSession(false);
             const now = Date.now();
             const visibleOpponent = scanVisibleRankedWarOpponent();
 
@@ -2586,6 +3017,7 @@
             }
 
             render();
+            await slinkCycle(forceNetwork);
         } catch (error) {
             if (error?.runtimePaused) return;
             if (members.length) {
@@ -2594,11 +3026,24 @@
                 statusText = error.message;
             }
             render();
+            slinkCycle(forceNetwork);
         }
     }
 
     GM_addStyle(`
         #rw-target-panel {
+            --rw-theme-bg: rgba(30, 30, 30, .98);
+            --rw-theme-surface: #282828;
+            --rw-theme-surface-raised: #202020;
+            --rw-theme-border: #555;
+            --rw-theme-border-soft: #444;
+            --rw-theme-text: #ddd;
+            --rw-theme-muted: #999;
+            --rw-theme-accent: #8ab4f8;
+            --rw-theme-success: #77d68b;
+            --rw-theme-warning: #ffd166;
+            --rw-theme-danger: #ff7373;
+            --rw-theme-shadow: rgba(0, 0, 0, .45);
             position: fixed;
             right: 10px;
             top: 90px;
@@ -2610,11 +3055,11 @@
             z-index: 999999;
             display: flex;
             flex-direction: column;
-            background: rgba(30, 30, 30, .98);
-            color: #ddd;
-            border: 1px solid #555;
+            background: var(--rw-theme-bg);
+            color: var(--rw-theme-text);
+            border: 1px solid var(--rw-theme-border);
             border-radius: 8px;
-            box-shadow: 0 8px 28px rgba(0,0,0,.45);
+            box-shadow: 0 8px 28px var(--rw-theme-shadow);
             font: 10px/1.12 Arial, sans-serif;
             overflow: hidden;
         }
@@ -2760,6 +3205,46 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
+        }
+        .rw-module-tabs {
+            flex: 0 0 auto;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 2px;
+            padding: 3px;
+            background: var(--rw-theme-surface-raised);
+            border-bottom: 1px solid var(--rw-theme-border-soft);
+        }
+        .rw-module-tab {
+            appearance: none;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            padding: 4px 3px;
+            background: transparent;
+            color: var(--rw-theme-muted);
+            cursor: pointer;
+            font-weight: 700;
+        }
+        .rw-module-tab:hover { color: var(--rw-theme-text); }
+        .rw-module-tab.is-active {
+            color: var(--rw-theme-text);
+            border-color: var(--rw-theme-border);
+            background: var(--rw-theme-surface);
+        }
+        .rw-view {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .rw-view[hidden] { display: none !important; }
+        .rw-view-heading {
+            flex: 0 0 auto;
+            padding: 7px 8px;
+            color: var(--rw-theme-text);
+            background: var(--rw-theme-surface);
+            border-bottom: 1px solid var(--rw-theme-border-soft);
+            font-weight: 700;
         }
         .rw-dashboard-section { flex: 0 0 auto; min-height: 0; }
         #rw-target-panel.collapsed .rw-dashboard-section { display: none; }
@@ -2978,7 +3463,24 @@
                 background: #5a4300;
             }
         }
-        .rw-note { color: #999; font-size: 11px; }
+        .rw-note { color: var(--rw-theme-muted); font-size: 11px; }
+        .rw-slink-terms-row {
+            align-items: flex-start !important;
+            color: var(--rw-theme-text);
+        }
+        .rw-terms-link { color: var(--rw-theme-accent); text-decoration: none; }
+        .rw-slink-access {
+            padding: 5px 6px;
+            border: 1px solid var(--rw-theme-warning);
+            border-radius: 4px;
+            color: var(--rw-theme-warning);
+            background: color-mix(in srgb, var(--rw-theme-warning) 9%, transparent);
+        }
+        .rw-slink-access.is-ready {
+            border-color: var(--rw-theme-success);
+            color: var(--rw-theme-success);
+            background: color-mix(in srgb, var(--rw-theme-success) 9%, transparent);
+        }
 
         .rw-war-summary {
             display: grid;
@@ -3072,6 +3574,32 @@
         }
 
         .rw-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 2px; }
+        .rw-slink-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px; }
+        .rw-slink-card {
+            position: relative;
+            display: grid;
+            gap: 4px;
+            padding: 6px;
+            margin-bottom: 4px;
+            border: 1px solid var(--rw-theme-border-soft);
+            border-radius: 5px;
+            background: var(--rw-theme-surface);
+        }
+        .rw-retal-card { border-left: 3px solid var(--rw-theme-danger); }
+        .rw-log-loss { border-left: 3px solid var(--rw-theme-danger); }
+        .rw-log-escape { border-left: 3px solid var(--rw-theme-warning); }
+        .rw-log-online_hit { border-left: 3px solid var(--rw-theme-accent); }
+        .rw-slink-card-title,
+        .rw-slink-card-time { display: flex; justify-content: space-between; gap: 8px; }
+        .rw-slink-card-title a { color: var(--rw-theme-accent); text-decoration: none; }
+        .rw-slink-card-meta,
+        .rw-slink-card-time { color: var(--rw-theme-muted); }
+        .rw-slink-action {
+            justify-self: end;
+            color: var(--rw-theme-accent);
+            text-decoration: none;
+            font-weight: 700;
+        }
         .rw-member {
             padding: 2px 3px;
             margin-bottom: 1px;

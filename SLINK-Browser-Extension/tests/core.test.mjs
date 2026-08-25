@@ -67,6 +67,7 @@ for (const file of [
   'src/core/format.js',
   'src/core/storage.js',
   'src/core/permissions.js',
+  'src/core/war.js',
   'src/core/themes.js',
   'src/core/messaging.js',
   'src/core/modules.js',
@@ -76,7 +77,7 @@ for (const file of [
 ]) load(context, file);
 
 const SLINK = context.SLINK_EXTENSION;
-assert(SLINK.VERSION === '0.5.0', 'Unexpected runtime version.');
+assert(SLINK.VERSION === '0.6.0', 'Unexpected runtime version.');
 assert(SLINK.core.format.escapeHtml('<a>') === '&lt;a&gt;', 'HTML escaping failed.');
 assert(SLINK.core.format.shortNumber(1_250_000) === '1.25M', 'Short-number formatting failed.');
 
@@ -87,6 +88,18 @@ assert(SLINK.core.themes.get().tokens['--slink-bg'], 'Theme token registry is mi
 assert(permissions.hasScope({ scopes: ['slink.level'] }, 'slink.level'), 'Exact scope matching failed.');
 assert(permissions.hasScope({ scopes: ['admin.*'] }, 'admin.users'), 'Wildcard scope matching failed.');
 assert(!permissions.hasScope({ roles: ['admin'], scopes: ['slink.level'] }, 'admin.users'), 'Roles must not bypass signed scope checks.');
+const combinedPermissions = permissions.combineSnapshots(
+  { userId:3853023, roles:['admin'], scopes:['admin.*','slink.level'], expiresAt:Date.now() + 100_000 },
+  { userId:3853023, roles:['admin'], scopes:['admin.*','slink.war'], expiresAt:Date.now() + 200_000 }
+);
+assert(combinedPermissions.scopes.join(',') === 'admin.*,slink.level,slink.war', 'Product scopes were not combined without duplication.');
+assert(!permissions.combineSnapshots({ userId:1, scopes:['expired.product'], expiresAt:Date.now() - 1 }).scopes.length, 'Expired product scopes remained visible.');
+assert(SLINK.core.war.makeWarId(46978, 46999, 1_777_000_000) === 'rw_46978_46999_1777000000', 'Second-based War identity was changed.');
+assert(SLINK.core.war.makeWarId(46978, 46999, 1_777_000_000_000) === 'rw_46978_46999_1777000000', 'Millisecond-based War identity was not normalized.');
+assert(SLINK.core.war.sortMembers([
+  { id:2, name:'Hospital', activity:'Offline', statusState:'Hospital', statusUntil:Math.floor(Date.now() / 1000) + 60 },
+  { id:1, name:'Ready', activity:'Online', statusState:'Okay' }
+])[0].id === 1, 'Available War targets were not sorted before hospitalized targets.');
 
 await SLINK.core.storage.set('test.value', { working: true });
 assert((await SLINK.core.storage.get('test.value')).working, 'Extension storage adapter failed.');

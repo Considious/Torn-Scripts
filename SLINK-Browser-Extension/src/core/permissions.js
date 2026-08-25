@@ -24,6 +24,11 @@
       label: 'SLINK Contribution Service',
       optional: false,
       origins: Object.freeze(['https://slinkcontributionworker.richard-johnson554.workers.dev/*'])
+    }),
+    warWorker: Object.freeze({
+      label: 'SLINK War Service',
+      optional: false,
+      origins: Object.freeze(['https://slinkwarworker.richard-johnson554.workers.dev/*'])
     })
   });
 
@@ -74,6 +79,24 @@
     return true;
   }
 
+  function combineSnapshots(...snapshots) {
+    const now = Date.now();
+    const normalized = snapshots.flat().filter(Boolean).map(normalizeSnapshot)
+      .filter(snapshot => !snapshot.expiresAt || snapshot.expiresAt > now);
+    const currentUser = normalized.find(snapshot => snapshot.userId)?.userId || null;
+    const compatible = currentUser === null
+      ? normalized
+      : normalized.filter(snapshot => snapshot.userId === null || snapshot.userId === currentUser);
+    return normalizeSnapshot({
+      userId: currentUser,
+      roles: compatible.flatMap(snapshot => snapshot.roles),
+      scopes: compatible.flatMap(snapshot => snapshot.scopes),
+      source: 'combined-product-sessions',
+      issuedAt: Math.max(0, ...compatible.map(snapshot => snapshot.issuedAt)),
+      expiresAt: Math.max(0, ...compatible.map(snapshot => snapshot.expiresAt))
+    });
+  }
+
   function getCapability(name) {
     const capability = BROWSER_CAPABILITIES[String(name || '')];
     if (!capability) throw new Error(`Unknown browser capability: ${name}`);
@@ -82,6 +105,7 @@
 
   SLINK.define('core', 'permissions', Object.freeze({
     BROWSER_CAPABILITIES,
+    combineSnapshots,
     getCapability,
     hasAllScopes,
     hasScope,

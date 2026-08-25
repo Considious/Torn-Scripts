@@ -9,13 +9,13 @@ deployment credentials or member API keys.
 Every deployable source change updates `WORKER_VERSION` near the top of
 `worker.js`. The root route, health route, and every response header expose that
 version. The current release is identified as
-`0.15.0-contributor-only-demand`. It adds restricted contributor-only sessions
+`0.15.1-war-terms`. It retains restricted contributor-only sessions
 and a 20-minute active-user demand window. Contributor and donated-key clients
 receive work only while a non-admin Leveling user is actively interacting;
 otherwise they back off for 20 minutes without creating collector writes.
 
 The previous `0.14.0-donated-virtual-collectors` release kept the read-optimized client
-scheduler and adds demand-driven donated-key collection for active non-admin
+scheduler and added demand-driven donated-key collection for active non-admin
 users.
 
 ## Cloudflare configuration
@@ -46,8 +46,8 @@ Keep all secrets in Cloudflare and out of this repository.
 ## Required versioned consent
 
 The full SLINK API & Data Terms are published in versioned folders under
-[`../terms`](../terms/README.md). The current August 23, 2026 release is consent
-version `2026-08-23` and includes the paid-product access model.
+[`../terms`](../terms/README.md). The current August 24, 2026 release is consent
+version `2026-08-24` and includes the paid-product and SLINK War access model.
 
 Authentication fails closed unless the request explicitly accepts the current
 version. The Worker performs this check before contacting Torn. After Torn

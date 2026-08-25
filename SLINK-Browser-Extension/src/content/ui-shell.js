@@ -8,7 +8,7 @@
   const STYLES = `
     :host { all: initial; ${SLINK.core.themes.cssVariables('slink-dark')} }
     * { box-sizing:border-box; }
-    .window { position:fixed; z-index:999999; width:min(350px,calc(100vw - 16px)); overflow:hidden; border:1px solid var(--slink-border); border-radius:10px; background:rgba(18,25,34,.98); color:var(--slink-text); box-shadow:0 10px 28px rgba(0,0,0,.42); font:12px/1.4 Arial,sans-serif; }
+    .window { position:fixed; z-index:999999; width:min(350px,calc(100vw - 16px)); overflow:hidden; border:1px solid var(--slink-border); border-radius:10px; background:var(--slink-bg); color:var(--slink-text); box-shadow:0 10px 28px var(--slink-shadow); font:12px/1.4 Arial,sans-serif; }
     .window[hidden], .module-view[hidden] { display:none; }
     .main { right:12px; top:88px; }
     .popup { left:12px; top:88px; }
@@ -21,9 +21,9 @@
     button { min-height:30px; border:1px solid var(--slink-border-soft); border-radius:6px; background:var(--slink-bg-control); color:var(--slink-text); cursor:pointer; }
     button:hover { filter:brightness(1.15); }
     .icon-button { width:30px; padding:0; }
-    .tabs { display:flex; gap:4px; overflow:auto; padding:6px 7px; border-bottom:1px solid var(--slink-border-soft); }
+    .tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; overflow:auto; padding:6px 7px; border-bottom:1px solid var(--slink-border-soft); }
     .tab { flex:1 0 auto; min-height:27px; padding:3px 7px; color:var(--slink-muted); }
-    .tab[aria-selected="true"] { border-color:var(--slink-border); background:#244563; color:var(--slink-text); }
+    .tab[aria-selected="true"] { border-color:var(--slink-border); background:var(--slink-accent); color:var(--slink-text); }
     .module-head { display:flex; align-items:center; gap:7px; padding:6px 9px 0; }
     .module-head strong { flex:1; }
     .status { padding:7px 10px; border-bottom:1px solid var(--slink-border-soft); color:var(--slink-accent); }
@@ -36,6 +36,9 @@
     .actions { display:flex; gap:6px; padding:0 10px 10px; }
     .actions:empty { display:none; }
     .actions button { flex:1; padding:4px 8px; }
+    .slink-alert { width:min(330px,calc(100vw - 16px)); }
+    .slink-alert .content { max-height:min(300px,calc(100dvh - 170px)); }
+    .slink-alert-body { display:grid; gap:7px; }
     @media(max-width:420px) { .window{width:min(300px,calc(100vw - 8px))}.main{right:4px;top:4px}.popup{left:4px;top:4px}.row{grid-template-columns:90px minmax(0,1fr)}.content{max-height:calc(100dvh - 190px)} }
   `;
 
@@ -58,6 +61,7 @@
     main.head.after(tabs);
     shadow.append(main.element);
     const views = new Map();
+    const alerts = new Map();
     let hidden = false;
     let activeId = '';
     let hideHandler = null;
@@ -123,6 +127,48 @@
       for (const view of views.values()) {
         if (view.popup) view.popup.element.hidden = hidden;
       }
+      for (const alert of alerts.values()) alert.element.hidden = hidden;
+    }
+
+    function dismissAlert(id) {
+      const key = String(id || '');
+      const alert = alerts.get(key);
+      if (!alert) return;
+      alert.element.remove();
+      alerts.delete(key);
+    }
+
+    function showAlert(definition = {}) {
+      const id = String(definition.id || '').trim();
+      if (!id) throw new Error('A SLINK alert ID is required.');
+      dismissAlert(id);
+      const alert = createWindow(`alert-${id}`, definition.title || 'SLINK alert', definition.subtitle || '');
+      alert.element.classList.add('popup', 'slink-alert');
+      const content = document.createElement('div');
+      content.className = 'content slink-alert-body';
+      content.innerHTML = String(definition.contentHtml || '');
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      for (const action of definition.actions || []) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = String(action.label || 'Action');
+        if (action.href) {
+          button.addEventListener('click', () => global.open(String(action.href), '_blank', 'noopener'));
+        } else if (typeof action.onClick === 'function') {
+          button.addEventListener('click', event => void action.onClick(event));
+        }
+        actions.append(button);
+      }
+      alert.element.append(content, actions);
+      alert.element.querySelector('.hide').addEventListener('click', () => {
+        if (typeof definition.onDismiss === 'function') void definition.onDismiss();
+        dismissAlert(id);
+      });
+      alerts.set(id, alert);
+      shadow.append(alert.element);
+      refreshShell();
+      return Object.freeze({ dismiss:() => dismissAlert(id), element:alert.element });
     }
 
     async function setPopped(view, popped) {
@@ -188,6 +234,8 @@
             actions.append(button);
           }
         },
+        showAlert,
+        dismissAlert,
         remove() { view.popup?.element.remove(); view.tab.remove(); element.remove(); moduleStyle.remove(); views.delete(module.id); refreshShell(); },
         ui: null
       };
@@ -202,6 +250,8 @@
     return Object.freeze({
       host,
       createModuleView,
+      dismissAlert,
+      showAlert,
       setHidden(value) { hidden = Boolean(value); refreshShell(); },
       onHide(handler) { hideHandler = handler; },
       resetPosition() { void SLINK.core.storage.remove('ui.main.position'); },

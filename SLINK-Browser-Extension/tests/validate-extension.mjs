@@ -34,13 +34,14 @@ assert(!JSON.stringify(manifest).includes('<all_urls>'), 'The extension must not
 assert(manifest.permissions.includes('storage'), 'Storage permission is required.');
 assert(manifest.permissions.includes('alarms'), 'Alarms permission is required.');
 assert(
-  manifest.host_permissions.length === 5 &&
+  manifest.host_permissions.length === 6 &&
   manifest.host_permissions.includes('https://www.torn.com/*') &&
   manifest.host_permissions.includes('https://api.torn.com/*') &&
   manifest.host_permissions.includes('https://ffscouter.com/*') &&
   manifest.host_permissions.includes('https://slinkyleveling.richard-johnson554.workers.dev/*') &&
-  manifest.host_permissions.includes('https://slinkcontributionworker.richard-johnson554.workers.dev/*'),
-  'Required host access must include Torn, Torn API, FFScouter, and both SLINK Workers.'
+  manifest.host_permissions.includes('https://slinkcontributionworker.richard-johnson554.workers.dev/*') &&
+  manifest.host_permissions.includes('https://slinkwarworker.richard-johnson554.workers.dev/*'),
+  'Required host access must include Torn, Torn API, FFScouter, and all SLINK Workers.'
 );
 assert(
   !Object.prototype.hasOwnProperty.call(manifest, 'optional_host_permissions'),

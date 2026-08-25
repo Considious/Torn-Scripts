@@ -1,28 +1,28 @@
 /**
  * SLINK Leveling API Worker
  *
- * Release: 0.15.0-contributor-only-demand
+ * Release: 0.15.1-war-terms
  *
  * Update WORKER_VERSION for every Worker code change that may be deployed.
  * It is returned by the root and health routes and included in every response
  * as X-Slinky-Worker-Version, making the active source easy to identify.
  */
 
-const WORKER_VERSION = '0.15.0-contributor-only-demand';
+const WORKER_VERSION = '0.15.1-war-terms';
 
 const MASTER_CSV_URL =
     'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
     'Slinkies-Leveling-Targets/Master-Leveling-Targets.csv';
 const FFSCOUTER_TARGETS_URL = 'https://ffscouter.com/api/v1/get-targets';
 
-const TERMS_VERSION = '2026-08-23';
-const TERMS_EFFECTIVE_AT = '2026-08-23';
+const TERMS_VERSION = '2026-08-24';
+const TERMS_EFFECTIVE_AT = '2026-08-24';
 const TERMS_URL =
     'https://github.com/Considious/Torn-Scripts/blob/main/' +
     'Slinkies-Leveling-Targets/terms/2026-08-23/' +
     'SLINK_API_Data_Terms_of_Service.md';
 const TERMS_DOCUMENT_SHA256 =
-    '1622b70571ed092e431410c6f3dc1eee82dd86c986be2a0b496952b5fe598600';
+    '72a933d69ec99cabeb92b426208e9d0c47e90acaf960818e0b4da38f3f2f5b0a';
 const LEVELING_SERVICE_ID = 'slink-leveling-service';
 const CONTRIBUTION_LEVELING_SERVICE_ID = 'slink.level';
 const LEVELING_DISCLOSURE_VERSION = '2026-08-23';

@@ -8,7 +8,8 @@
     tornApi: 'https://api.torn.com',
     ffscouter: 'https://ffscouter.com',
     slinkWorker: 'https://slinkyleveling.richard-johnson554.workers.dev',
-    contributionWorker: 'https://slinkcontributionworker.richard-johnson554.workers.dev'
+    contributionWorker: 'https://slinkcontributionworker.richard-johnson554.workers.dev',
+    warWorker: 'https://slinkwarworker.richard-johnson554.workers.dev'
   });
 
   async function hasCapability(name) {

@@ -13,6 +13,9 @@ let observationRequests = 0;
 let claimScheduleBucket = 300;
 let tornStatusState = 'Okay';
 let contributionActive = false;
+let warStatusSubmissions = 0;
+let warAttackSubmissions = 0;
+let warStoredLogReads = 0;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -44,12 +47,13 @@ const chrome = {
         'https://api.torn.com/*',
         'https://ffscouter.com/*',
         'https://slinkyleveling.richard-johnson554.workers.dev/*',
-        'https://slinkcontributionworker.richard-johnson554.workers.dev/*'
+        'https://slinkcontributionworker.richard-johnson554.workers.dev/*',
+        'https://slinkwarworker.richard-johnson554.workers.dev/*'
       ].includes(origin));
     }
   },
   runtime: {
-    getManifest() { return { version: '0.5.0' }; },
+    getManifest() { return { version: '0.6.0' }; },
     onInstalled,
     onMessage,
     onStartup
@@ -163,8 +167,40 @@ context = vm.createContext({
       } else if (url.pathname === '/api/donations') {
         body = { ok:true, donation:{ user_id:3853023, access_type:'Public Only', status:contributionActive ? 'active' : 'revoked', active:contributionActive } };
       }
+    } else if (url.hostname === 'slinkwarworker.richard-johnson554.workers.dev') {
+      if (url.pathname === '/api/health') body = { ok:true, version:'test-war', database:'connected', coordinator:'configured', session_secret:'configured' };
+      if (url.pathname === '/api/terms') body = { ok:true, terms:{ version:'2026-08-24', sha256:'72a933d69ec99cabeb92b426208e9d0c47e90acaf960818e0b4da38f3f2f5b0a', url:'https://example.test/terms', summary:'War disclosure.' } };
+      if (url.pathname === '/api/auth') body = { ok:true, session_token:'signed-war-session', expires_at:new Date(Date.now() + 3_600_000).toISOString(), user_id:3853023, faction_id:46978, roles:['admin'], scopes:['admin.*','slink.war','slink.war.faction'] };
+      if (url.pathname.endsWith('/heartbeat')) body = { ok:true, collectStatus:true, collectAttacks:true, statusCollectorAvailable:true, attackCollectorAvailable:true };
+      if (url.pathname.endsWith('/status')) {
+        warStatusSubmissions++;
+        body = { ok:true, accepted:1, observedAt:Date.now() };
+      }
+      if (url.pathname.endsWith('/attacks')) {
+        warAttackSubmissions++;
+        body = { ok:true, accepted:1, retals:1, aggregates:0 };
+      }
+      if (url.pathname.endsWith('/snapshot')) body = {
+        ok:true,
+        observedAt:Date.now(),
+        members:[{ id:9001, name:'War Target', level:55, activity:'Offline', statusState:'Okay' }],
+        retals:[{ attackId:'retal-1', attackerId:9001, attackerName:'War Target', defenderId:3853023, defenderName:'Considious', expiresAt:Math.floor(Date.now() / 1000) + 240 }],
+        collectors:{ status:true, attacks:true }
+      };
+      if (url.pathname.endsWith('/logs')) body = {
+        ok:true,
+        pending:[{ attacker_id:3853023, attacker_name:'Considious', defender_id:9001, defender_name:'War Target', outcome:'loss', event_count:1, first_seen_at:Date.now(), last_seen_at:Date.now() }],
+        stored:[]
+      };
+      if (url.pathname.endsWith('/logs') && url.searchParams.get('include_stored') !== '0') warStoredLogReads++;
     } else if (url.hostname === 'api.torn.com') {
-      if (url.pathname.endsWith('/battlestats')) body = {
+      if (url.pathname === '/v2/faction/46999/members') body = {
+        members:[{ id:9001, name:'War Target', level:55, last_action:{ status:'Offline', timestamp:Math.floor(Date.now() / 1000) - 300 }, status:{ state:'Okay', description:'Okay', until:0 } }]
+      };
+      else if (url.pathname === '/v2/faction/attacks') body = {
+        attacks:[{ id:'attack-1', ended:Math.floor(Date.now() / 1000), attacker:{ id:9001, name:'War Target', faction:{ id:46999 } }, defender:{ id:3853023, name:'Considious', faction:{ id:46978 } }, result:'Hospitalized' }]
+      };
+      else if (url.pathname.endsWith('/battlestats')) body = {
         battlestats: { strength: 100, defense: 100, speed: 100, dexterity: 100, total: 400 }
       };
       else if (url.pathname.endsWith('/snapshot')) body = 'id,name\n123,Target\n';
@@ -231,6 +267,7 @@ assert(status.data.capabilities.tornApi.granted === true, 'Capability status did
 assert(status.data.capabilities.ffscouter.granted === true, 'Required FFScouter capability was not granted.');
 assert(status.data.capabilities.slinkWorker.granted === true, 'Required Worker capability was not granted.');
 assert(status.data.capabilities.contributionWorker.granted === true, 'Required contribution capability was not granted.');
+assert(status.data.capabilities.warWorker.granted === true, 'Required War capability was not granted.');
 assert(status.data.worker.connected === true, 'System status did not report a real Worker connection.');
 assert(status.data.leveling.terms.accepted === false, 'Fresh Leveling terms should require acceptance.');
 
@@ -292,6 +329,36 @@ assert(zeroContribution.data.settings.apiContributionLimit === 0, 'Admin zero-co
 const zeroPrepared = await send('leveling.cycle.prepare');
 assert(zeroPrepared.ok && zeroPrepared.data.checks.length === 0, 'Admin zero-contribution mode still scheduled Torn checks.');
 
+const warSaved = await send('war.settings.save', {
+  tornKey:'war-test-key',
+  displayMode:'hybrid',
+  warMode:'war',
+  idleMinutes:5,
+  acceptTerms:true
+});
+assert(warSaved.ok && warSaved.data.session.authenticated, 'War settings did not authenticate.');
+assert(warSaved.data.session.factionCapable, 'Faction attack capability was not persisted.');
+assert(warSaved.data.permissions.scopes.includes('slink.war'), 'War product scope was not persisted.');
+assert(!JSON.stringify(warSaved.data).includes('war-test-key'), 'Public War state leaked the Torn API key.');
+
+const detectedWar = await send('war.active.detect', {
+  opponentFactionId:46999,
+  opponentName:'Test Opponent',
+  startedAt:1_777_000_000
+});
+assert(detectedWar.ok && detectedWar.data.activeWar.warId === 'rw_46978_46999_1777000000', 'Active War identity was not stable.');
+const warCycle = await send('war.cycle.prepare');
+assert(warCycle.ok && warCycle.data.runtime.snapshot.members.length === 1, 'War cycle did not load the shared target snapshot.');
+assert(warCycle.data.runtime.snapshot.retals.length === 1, 'War cycle did not load active retals.');
+assert(warCycle.data.runtime.logs[0].event_count === 1, 'War cycle did not load aggregate logs.');
+assert(warStatusSubmissions === 1, 'Elected public status collector did not submit once.');
+assert(warAttackSubmissions === 1, 'Elected faction collector did not submit attacks once.');
+const secondWarCycle = await send('war.cycle.prepare');
+assert(secondWarCycle.ok, 'Second War refresh failed.');
+assert(warStoredLogReads === 1, 'War panels reread persisted D1 logs before the ten-minute cache expired.');
+assert(values.get('slink.permissions.snapshot')?.scopes.includes('slink.level'), 'War authentication discarded the Leveling scope.');
+assert(values.get('slink.permissions.snapshot')?.scopes.includes('slink.war'), 'Combined permissions omitted the War scope.');
+
 const leader = await send('leveling.leader.claim', {}, { id: 'test', tab: { id: 7 } });
 assert(leader.ok && leader.data.leader, 'Torn tab did not acquire the local Leveling leader lease.');
 
@@ -301,10 +368,11 @@ assert(values.get('slink.diagnostics.lastRun')?.source === 'manual', 'Manual dia
 assert(diagnostic.data.worker.database === 'connected', 'Diagnostic did not include deep Worker health.');
 assert(diagnostic.data.pageInjection.tabId === 7, 'Diagnostic did not include Torn injection state.');
 assert(diagnostic.data.leveling.configured === true, 'Diagnostic did not include Leveling configuration state.');
+assert(diagnostic.data.war.authenticated === true, 'Diagnostic did not include War authentication state.');
 
 values.delete('slink.worker.lastStatus');
 onAlarm.fire({ name: 'slink.worker.connection' });
 await new Promise(resolve => setTimeout(resolve, 0));
 assert(values.get('slink.worker.lastStatus')?.connected === true, 'Alarm connection status was not persisted.');
 
-console.log('Background startup, required capabilities, Leveling auth/collection, routes, alarms, and diagnostics passed.');
+console.log('Background startup, required capabilities, Leveling and War auth/collection, routes, alarms, and diagnostics passed.');

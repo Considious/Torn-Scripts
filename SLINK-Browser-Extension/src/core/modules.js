@@ -49,15 +49,18 @@
         continue;
       }
 
-      if (typeof context.moduleVisible === 'function' && !await context.moduleVisible(module)) {
+      const presentation = typeof context.modulePresentation === 'function'
+        ? await context.modulePresentation(module)
+        : (typeof context.moduleVisible === 'function' && !await context.moduleVisible(module) ? 'hidden' : 'full');
+      if (presentation === 'hidden') {
         skipped.push({ id: module.id, reason: 'hidden-by-user' });
         continue;
       }
 
-      const moduleUi = context.ui?.createModuleView
+      const moduleUi = presentation === 'full' && context.ui?.createModuleView
         ? await context.ui.createModuleView(module)
         : context.ui;
-      const instance = await module.start({ ...context, module, ui: moduleUi });
+      const instance = await module.start({ ...context, module, ui: moduleUi, presentation });
       running.set(module.id, { module, instance, moduleUi });
       started.push(module.id);
     }

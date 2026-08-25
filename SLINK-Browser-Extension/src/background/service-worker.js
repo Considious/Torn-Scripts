@@ -5,15 +5,19 @@ importScripts(
   '../core/permissions.js',
   '../core/messaging.js',
   '../core/http.js',
+  '../core/war.js',
   '../core/worker-client.js',
   '../core/torn-api-limiter.js',
   'leveling-service.js',
+  'war-service.js',
   'contribution-service.js'
 );
 
 const SLINK = globalThis.SLINK_EXTENSION;
 const CONNECTION_ALARM = 'slink.worker.connection';
 const CONNECTION_ALARM_MINUTES = 15;
+const WAR_CYCLE_ALARM = 'slink.war.cycle';
+const WAR_CYCLE_ALARM_MINUTES = 0.5;
 
 function bootstrapPermissions() {
   return {
@@ -27,14 +31,58 @@ function bootstrapPermissions() {
 }
 
 async function getPermissionSnapshot() {
-  const stored = await SLINK.core.storage.get('permissions.snapshot', null);
-  return SLINK.core.permissions.normalizeSnapshot(stored || bootstrapPermissions());
+  const [leveling, war, stored] = await Promise.all([
+    SLINK.core.storage.get('permissions.leveling', null),
+    SLINK.core.storage.get('permissions.war', null),
+    SLINK.core.storage.get('permissions.snapshot', null)
+  ]);
+  if (!leveling && !war) return SLINK.core.permissions.normalizeSnapshot(stored || bootstrapPermissions());
+  const combined = SLINK.core.permissions.combineSnapshots(leveling, war, bootstrapPermissions());
+  await SLINK.core.storage.set('permissions.snapshot', combined);
+  return combined;
 }
 
 async function ensureDefaultState() {
-  if (!await SLINK.core.storage.get('permissions.snapshot', null)) {
-    await SLINK.core.storage.set('permissions.snapshot', bootstrapPermissions());
-  }
+  const [storedCombined, storedLeveling, storedWar, levelingSession, warSession] = await Promise.all([
+    SLINK.core.storage.get('permissions.snapshot', null),
+    SLINK.core.storage.get('permissions.leveling', null),
+    SLINK.core.storage.get('permissions.war', null),
+    SLINK.core.storage.get('leveling.session.v1', null),
+    SLINK.core.storage.get('war.session.v1', null)
+  ]);
+  const legacy = SLINK.core.permissions.normalizeSnapshot(storedCombined || bootstrapPermissions());
+  const leveling = storedLeveling || (
+    levelingSession?.token && Number(levelingSession.expiresAt) > Date.now()
+      ? {
+          userId:levelingSession.userId,
+          roles:levelingSession.roles,
+          scopes:levelingSession.scopes,
+          source:'migrated-leveling-session',
+          issuedAt:Date.now(),
+          expiresAt:levelingSession.expiresAt
+        }
+      : legacy.scopes.some(scope => SLINK.core.permissions.scopeMatches(scope, 'slink.level'))
+        ? { ...legacy, source:'migrated-leveling-snapshot' }
+        : null
+  );
+  const war = storedWar || (
+    warSession?.token && Number(warSession.expiresAt) > Date.now()
+      ? {
+          userId:warSession.userId,
+          roles:warSession.roles,
+          scopes:warSession.scopes,
+          source:'migrated-war-session',
+          issuedAt:Date.now(),
+          expiresAt:warSession.expiresAt
+        }
+      : null
+  );
+  if (leveling && !storedLeveling) await SLINK.core.storage.set('permissions.leveling', leveling);
+  if (war && !storedWar) await SLINK.core.storage.set('permissions.war', war);
+  await SLINK.core.storage.set(
+    'permissions.snapshot',
+    SLINK.core.permissions.combineSnapshots(leveling, war, bootstrapPermissions())
+  );
   if (await SLINK.core.storage.get('ui.pagePanelHidden', undefined) === undefined) {
     await SLINK.core.storage.set('ui.pagePanelHidden', false);
   }
@@ -45,6 +93,12 @@ async function ensureConnectionAlarm() {
     await chrome.alarms.create(CONNECTION_ALARM, {
       delayInMinutes: CONNECTION_ALARM_MINUTES,
       periodInMinutes: CONNECTION_ALARM_MINUTES
+    });
+  }
+  if (!await chrome.alarms.get(WAR_CYCLE_ALARM)) {
+    await chrome.alarms.create(WAR_CYCLE_ALARM, {
+      delayInMinutes: WAR_CYCLE_ALARM_MINUTES,
+      periodInMinutes: WAR_CYCLE_ALARM_MINUTES
     });
   }
 }
@@ -71,21 +125,23 @@ async function capabilityStatus() {
 }
 
 async function recordDiagnostic(source) {
-  const [worker, contributionWorker, capabilities, tornApiUsage, alarm, pageInjection, leveling] = await Promise.all([
+  const [worker, contributionWorker, warWorker, capabilities, tornApiUsage, alarm, pageInjection, leveling, war] = await Promise.all([
     SLINK.core.workerClient.probe({ deep: true }),
     SLINK.services.contribution.health(),
+    SLINK.services.war.health(),
     capabilityStatus(),
     SLINK.core.tornApiLimiter.getUsage(),
     chrome.alarms.get(CONNECTION_ALARM),
     SLINK.core.storage.get('diagnostics.pageInjection', null),
-    SLINK.services.leveling.publicStatus()
+    SLINK.services.leveling.publicStatus(),
+    SLINK.services.war.publicStatus()
   ]);
   await SLINK.core.storage.set('worker.lastStatus', worker);
 
   const result = {
     at: Date.now(),
     source: String(source || 'manual'),
-    overall: worker.connected && Boolean(alarm) ? 'ready' : 'attention',
+    overall: worker.connected && Boolean(alarm) && (!war.configured || warWorker.connected) ? 'ready' : 'attention',
     extensionVersion: chrome.runtime.getManifest().version,
     coreVersion: SLINK.VERSION,
     background: { ok: true },
@@ -103,6 +159,14 @@ async function recordDiagnostic(source) {
       targets: leveling.runtime.targets.length,
       pendingChecks: leveling.runtime.pendingChecks,
       collector: leveling.runtime.collector
+    },
+    war: {
+      configured: war.configured,
+      authenticated: war.session.authenticated,
+      activeWar: war.activeWar,
+      factionCapable: war.session.factionCapable,
+      status: war.runtime.status,
+      worker: warWorker
     },
     capabilities,
     tornApiUsage
@@ -136,6 +200,7 @@ const routes = {
       tornApiUsage,
       worker,
       leveling: await SLINK.services.leveling.publicStatus(),
+      war: await SLINK.services.war.publicStatus(),
       contribution: await SLINK.services.contribution.status().catch(() => ({ configured:false, donation:null }))
     };
   },
@@ -177,6 +242,7 @@ const routes = {
   },
 
   ...SLINK.services.leveling.routes,
+  ...SLINK.services.war.routes,
   ...SLINK.services.contributionRoutes
 };
 
@@ -196,6 +262,11 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === CONNECTION_ALARM) void connectionStatus();
+  if (alarm.name === WAR_CYCLE_ALARM) {
+    void SLINK.services.war.publicStatus()
+      .then(status => status.configured && status.activeWar ? SLINK.services.war.prepareCycle() : null)
+      .catch(error => console.error('[SLINK] War cycle:', error));
+  }
 });
 
 void ensureDefaultState().catch(error => console.error('[SLINK] Default state:', error));

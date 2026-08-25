@@ -26,7 +26,7 @@ describe('SLINK Leveling Service thin client', () => {
 
     it('uses the protected Worker API for shared decisions and state', () => {
         assert.match(client, /@name\s+SLINK Leveling Service/);
-        assert.match(client, /@version\s+0\.14\.0/);
+        assert.match(client, /@version\s+0\.14\.1/);
         assert.match(client, /Shared Live Intelligence NetworK/);
         assert.match(
             client,
@@ -68,7 +68,7 @@ describe('SLINK Leveling Service thin client', () => {
 
 
     it('requires the current versioned terms before authentication', () => {
-        assert.match(client, /TERMS_VERSION\s*=\s*'2026-08-23'/);
+        assert.match(client, /TERMS_VERSION\s*=\s*'2026-08-24'/);
         assert.match(client, /LEVELING_DISCLOSURE_VERSION\s*=\s*'2026-08-23'/);
         assert.match(client, /acceptedConsentVersion:/);
         assert.match(client, /function hasAcceptedCurrentTerms\(/);
