@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.2.0
+// @version      1.2.1
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -2994,7 +2994,6 @@
                         <strong class="rw-mugs">0</strong>
                         <span>Mugs</span>
                     </div>
-                    <div class="rw-tier-goals">T2 100 • T3 140 • T4 170</div>
                     <div class="rw-chain-row">
                         <span>Chain: <strong class="rw-chain-value">No active chain</strong>
                             <small class="rw-chain-source">Waiting</small>
@@ -4040,14 +4039,6 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-        }
-
-        .rw-tier-goals {
-            grid-column: 1 / -1;
-            color: #999;
-            font-size: 9px;
-            white-space: nowrap;
-            padding-left: 1px;
         }
 
         .rw-chain-row {
