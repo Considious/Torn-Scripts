@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.2.1
+// @version      1.3.0
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -10,22 +10,166 @@
 // @connect      api.torn.com
 // @connect      twse.dev
 // @connect      ffscouter.com
+// @connect      raw.githubusercontent.com
 // @connect      slinkwarworker.richard-johnson554.workers.dev
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @grant        GM_notification
-// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.4
+// @require      https://raw.githubusercontent.com/Considious/Torn-Scripts/main/shared/Considious_Torn_Lib.js?v=1.3.6
 // @run-at       document-end
 // ==/UserScript==
 
-(function () {
+(async function () {
     'use strict';
 
-    const TornLib = globalThis.ConsidiousTornLib;
-    if (!TornLib) throw new Error('Considious Torn Library failed to load.');
+    const PDA_CORE_LIB_URL =
+        'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
+        'shared/Considious_Torn_Lib.js?v=1.3.6';
+    const PDA_CORE_LOAD_PROMISE_KEY = '__slinkWarPdaCoreLoad_v1_3_6';
 
-    const SCRIPT_VERSION = '1.2.0';
+    function isPdaRuntime() {
+        return Boolean(
+            typeof globalThis.PDA_httpGet === 'function' ||
+            typeof globalThis.PDA_evaluateJavascript === 'function' ||
+            typeof globalThis.flutter_inappwebview?.callHandler === 'function'
+        );
+    }
+
+    async function waitForInitialRuntime(timeoutMs = 5_000) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            if (globalThis.ConsidiousTornLib) return 'core';
+            if (isPdaRuntime()) return 'pda';
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        return 'missing';
+    }
+
+    async function waitForPdaCoreHandlers(timeoutMs = 5_000) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            if (
+                typeof globalThis.PDA_httpGet === 'function' &&
+                typeof globalThis.PDA_evaluateJavascript === 'function'
+            ) {
+                return {
+                    httpGet: globalThis.PDA_httpGet,
+                    evaluateJavascript: globalThis.PDA_evaluateJavascript
+                };
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        throw new Error('Torn PDA core-loading handlers did not become available.');
+    }
+
+    async function waitForTornLib(timeoutMs = 5_000) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            if (globalThis.ConsidiousTornLib) return globalThis.ConsidiousTornLib;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        throw new Error('Considious Torn Library did not become available.');
+    }
+
+    function pdaResponseText(response) {
+        if (typeof response === 'string') return response;
+        if (typeof response?.responseText === 'string') return response.responseText;
+        if (typeof response?.data === 'string') return response.data;
+        return '';
+    }
+
+    async function loadTornLibThroughPda() {
+        if (globalThis.ConsidiousTornLib) return globalThis.ConsidiousTornLib;
+
+        if (!globalThis[PDA_CORE_LOAD_PROMISE_KEY]) {
+            globalThis[PDA_CORE_LOAD_PROMISE_KEY] = (async () => {
+                const handlers = await waitForPdaCoreHandlers();
+                const response = await handlers.httpGet(PDA_CORE_LIB_URL, {
+                    Accept: 'text/plain'
+                });
+                const status = Number(response?.status) || 0;
+                if (status && (status < 200 || status >= 300)) {
+                    throw new Error(`Core Lib download returned HTTP ${status}.`);
+                }
+
+                const source = pdaResponseText(response);
+                if (!source || !source.includes('ConsidiousTornLib')) {
+                    throw new Error('Core Lib download was empty or invalid.');
+                }
+
+                await handlers.evaluateJavascript(
+                    `${source}\n//# sourceURL=SLINK-War-PDA-Core-Lib.js`
+                );
+                return waitForTornLib();
+            })();
+        }
+
+        try {
+            return await globalThis[PDA_CORE_LOAD_PROMISE_KEY];
+        } catch (error) {
+            delete globalThis[PDA_CORE_LOAD_PROMISE_KEY];
+            throw error;
+        }
+    }
+
+    async function resolveTornLib() {
+        const runtime = await waitForInitialRuntime();
+        if (runtime === 'core') {
+            return {
+                library: globalThis.ConsidiousTornLib,
+                pda: isPdaRuntime(),
+                loadMode: isPdaRuntime()
+                    ? 'pda-preloaded'
+                    : (globalThis.ConsidiousTornLib.LOAD_MODE || 'unknown')
+            };
+        }
+        if (runtime === 'pda') {
+            return {
+                library: await loadTornLibThroughPda(),
+                pda: true,
+                loadMode: 'pda-remote'
+            };
+        }
+        throw new Error('Core Lib was not supplied by @require and Torn PDA was not detected.');
+    }
+
+    let coreRuntime;
+    try {
+        coreRuntime = await resolveTornLib();
+    } catch (error) {
+        console.error('[SLINK War Panel] Core Lib failed to load:', error);
+        alert(
+            'SLINK War Panel could not start.\n\n' +
+            'Considious Torn Core did not load.\n\n' +
+            (isPdaRuntime()
+                ? 'Torn PDA could not download Core Lib automatically. Check your connection and reload Torn.'
+                : 'Check that your userscript manager allowed the @require dependency.')
+        );
+        return;
+    }
+
+    const TornLib = coreRuntime.library;
+    const PDA_RUNTIME = coreRuntime.pda;
+    const CORE_LOAD_MODE = coreRuntime.loadMode;
+    const PDA_API_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
+    const PDA_API_KEY = String('###PDA-APIKEY###').trim();
+    const PDA_API_KEY_AVAILABLE = Boolean(
+        PDA_RUNTIME && PDA_API_KEY && PDA_API_KEY !== PDA_API_KEY_TOKEN
+    );
+
+    const addStyle = typeof globalThis.GM_addStyle === 'function'
+        ? globalThis.GM_addStyle.bind(globalThis)
+        : css => {
+            const style = document.createElement('style');
+            style.textContent = css;
+            (document.head || document.documentElement).appendChild(style);
+        };
+    const registerMenuCommand = typeof globalThis.GM_registerMenuCommand === 'function'
+        ? globalThis.GM_registerMenuCommand.bind(globalThis)
+        : () => undefined;
+
+    const SCRIPT_VERSION = '1.3.0';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;
@@ -51,6 +195,8 @@
     const defaults = {
         apiKey: '',
         ffApiKey: '',
+        usePdaTornKey: null,
+        usePdaFfKey: false,
         mode: 'termed',
         idleCutoff: 5,
         minFF: '',
@@ -81,6 +227,23 @@
     };
 
     let settings = loadSettings();
+    if (PDA_API_KEY_AVAILABLE && settings.usePdaTornKey === null) {
+        settings.usePdaTornKey = !String(settings.apiKey || '').trim();
+        saveSettings();
+    }
+
+    function tornApiKey() {
+        return PDA_API_KEY_AVAILABLE && settings.usePdaTornKey
+            ? PDA_API_KEY
+            : String(settings.apiKey || '').trim();
+    }
+
+    function ffScouterApiKey() {
+        return PDA_API_KEY_AVAILABLE && settings.usePdaFfKey
+            ? PDA_API_KEY
+            : String(settings.ffApiKey || '').trim();
+    }
+
     let apiLease = null;
     let opponent = null;
     let members = [];
@@ -243,7 +406,8 @@
         ) {
             throw new Error('Accept the current SLINK API & Data Terms in War settings.');
         }
-        if (!settings.apiKey) throw new Error('Enter your Torn API key in War settings.');
+        const apiKey = tornApiKey();
+        if (!apiKey) throw new Error('Enter your Torn API key in War settings.');
         if (!force && slinkSession?.token && Number(slinkSession.expiresAt) > Date.now() + 60000) {
             ownFactionId = String(slinkSession.factionId || ownFactionId);
             return slinkSession;
@@ -253,7 +417,7 @@
             method: 'POST',
             auth: false,
             data: {
-                api_key: settings.apiKey,
+                api_key: apiKey,
                 terms_accepted: true,
                 terms_version: SLINK_TERMS_VERSION,
                 terms_sha256: SLINK_TERMS_SHA256,
@@ -448,7 +612,7 @@
                 const now = Math.floor(Date.now() / 1000);
                 const from = Math.max(now - 600, slinkLastAttackEnded ? slinkLastAttackEnded - 60 : 0);
                 const payload = await gmRequest(
-                    `https://api.torn.com/v2/faction/attacks?from=${from}&to=${now}&limit=100&sort=desc&key=${encodeURIComponent(settings.apiKey)}`
+                    `https://api.torn.com/v2/faction/attacks?from=${from}&to=${now}&limit=100&sort=desc&key=${encodeURIComponent(tornApiKey())}`
                 );
                 const attacks = Array.isArray(payload?.attacks) ? payload.attacks : [];
                 await slinkRequest(`${base}/attacks`, {
@@ -647,12 +811,13 @@
     }
 
     async function getCurrentOpponent() {
-        if (!settings.apiKey || settings.apiKey.length !== 16) {
+        const apiKey = tornApiKey();
+        if (!apiKey || apiKey.length !== 16) {
             throw new Error('Enter a 16-character Torn API key in panel settings.');
         }
 
         const url =
-            `https://api.torn.com/faction/?selections=rankedwars&key=${encodeURIComponent(settings.apiKey)}` +
+            `https://api.torn.com/faction/?selections=rankedwars&key=${encodeURIComponent(apiKey)}` +
             `&comment=RankedWarTargetPanel`;
 
         const data = await gmRequest(url);
@@ -689,11 +854,11 @@
         try {
             const [basic, factionInfo] = await Promise.all([
                 gmRequest(
-                    `https://api.torn.com/v2/user/basic?key=${encodeURIComponent(settings.apiKey)}` +
+                    `https://api.torn.com/v2/user/basic?key=${encodeURIComponent(apiKey)}` +
                     `&comment=RankedWarTargetPanel`
                 ),
                 gmRequest(
-                    `https://api.torn.com/v2/user/faction?key=${encodeURIComponent(settings.apiKey)}` +
+                    `https://api.torn.com/v2/user/faction?key=${encodeURIComponent(apiKey)}` +
                     `&comment=RankedWarTargetPanel`
                 )
             ]);
@@ -712,7 +877,7 @@
             if (error?.runtimePaused) throw error;
             try {
                 const profile = await gmRequest(
-                    `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(settings.apiKey)}` +
+                    `https://api.torn.com/user/?selections=profile&key=${encodeURIComponent(apiKey)}` +
                     `&comment=RankedWarTargetPanel`
                 );
 
@@ -1053,13 +1218,14 @@
     }
 
     async function fetchOfficialFactionMembers(factionId) {
-        if (!settings.apiKey || settings.apiKey.length !== 16) {
+        const apiKey = tornApiKey();
+        if (!apiKey || apiKey.length !== 16) {
             throw new Error('TWSE has no cached data and a Torn API key is required for fallback.');
         }
 
         const url =
             `https://api.torn.com/v2/faction/${encodeURIComponent(factionId)}/members?` +
-            `key=${encodeURIComponent(settings.apiKey)}` +
+            `key=${encodeURIComponent(apiKey)}` +
             `&comment=SLINKWarPanel`;
 
         const payload = await gmRequest(url);
@@ -1075,7 +1241,8 @@
     }
 
     async function fetchFFData(targetMembers) {
-        if (!settings.ffApiKey || targetMembers.length === 0) return {};
+        const ffApiKey = ffScouterApiKey();
+        if (!ffApiKey || targetMembers.length === 0) return {};
 
         const ids = targetMembers.map(member => member.id);
         const output = {};
@@ -1083,7 +1250,7 @@
         for (let index = 0; index < ids.length; index += 100) {
             const batch = ids.slice(index, index + 100);
             const url =
-                `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(settings.ffApiKey)}` +
+                `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(ffApiKey)}` +
                 `&targets=${batch.join(',')}`;
 
             try {
@@ -1132,7 +1299,8 @@
             render();
             return;
         }
-        if (!settings.ffApiKey) {
+        const ffApiKey = ffScouterApiKey();
+        if (!ffApiKey) {
             outsideError = 'Save the FFScouter API key in Settings & alerts first.';
             render();
             return;
@@ -1151,7 +1319,7 @@
         renderSlinkViews();
         try {
             const query = new URLSearchParams({
-                key: settings.ffApiKey,
+                key: ffApiKey,
                 minlevel: '1',
                 maxlevel: '100',
                 inactiveonly: '0',
@@ -1909,7 +2077,8 @@
 
     async function refreshPersonalAttackStats(force = false) {
         await refreshChainApi(force);
-        if (!runtimeShouldRun() || !settings.apiKey || !opponent?.id || !ownUserId) return;
+        const apiKey = tornApiKey();
+        if (!runtimeShouldRun() || !apiKey || !opponent?.id || !ownUserId) return;
         const now = Date.now();
         if (!force && now - lastPersonalAttackCheck < 60 * 1000) return;
         lastPersonalAttackCheck = now;
@@ -1928,7 +2097,7 @@
         try {
             const payload = await gmRequest(
                 `https://api.torn.com/v2/user/attacks?from=${Math.max(0, Math.floor(from))}&to=${nowSeconds}&limit=100&sort=desc` +
-                `&key=${encodeURIComponent(settings.apiKey)}&comment=SLINKWarPanel`
+                `&key=${encodeURIComponent(apiKey)}&comment=SLINKWarPanel`
             );
             const attacks = Array.isArray(payload?.attacks) ? payload.attacks : [];
             for (const attack of attacks) {
@@ -1949,7 +2118,8 @@
     }
 
     async function refreshChainReportStats(force = false) {
-        if (!runtimeShouldRun() || !settings.apiKey || !chainState.id || !ownUserId) return;
+        const apiKey = tornApiKey();
+        if (!runtimeShouldRun() || !apiKey || !chainState.id || !ownUserId) return;
 
         const now = Date.now();
         if (!force && now - lastChainReportCheck < CHAIN_REPORT_REFRESH_MS) return;
@@ -1957,7 +2127,7 @@
 
         const url =
             `https://api.torn.com/v2/faction/${encodeURIComponent(chainState.id)}/chainreport` +
-            `?key=${encodeURIComponent(settings.apiKey)}` +
+            `?key=${encodeURIComponent(apiKey)}` +
             `&comment=RankedWarTargetPanel`;
 
         try {
@@ -2017,7 +2187,8 @@
     }
 
     async function refreshChainApi(force = false) {
-        if (!runtimeShouldRun() || !settings.apiKey) return;
+        const apiKey = tornApiKey();
+        if (!runtimeShouldRun() || !apiKey) return;
 
         const now = Date.now();
         if (!force && now - lastChainApiCheck < CHAIN_API_REFRESH_MS) return;
@@ -2025,7 +2196,7 @@
 
         const url =
             `https://api.torn.com/v2/faction/chain` +
-            `?key=${encodeURIComponent(settings.apiKey)}` +
+            `?key=${encodeURIComponent(apiKey)}` +
             `&comment=RankedWarTargetPanel`;
 
         try {
@@ -2352,7 +2523,8 @@
             return;
         }
 
-        if (!realWarMode || !settings.turtleTimerEnabled || !settings.apiKey) {
+        const apiKey = tornApiKey();
+        if (!realWarMode || !settings.turtleTimerEnabled || !apiKey) {
             turtleStatusError = '';
             turtleHospitalUntil = 0;
             stopTurtleAlarm();
@@ -2370,7 +2542,7 @@
 
         try {
             const basic = await gmRequest(
-                `https://api.torn.com/v2/user/basic?key=${encodeURIComponent(settings.apiKey)}` +
+                `https://api.torn.com/v2/user/basic?key=${encodeURIComponent(apiKey)}` +
                 `&comment=SLINKTurtleTimer`
             );
             if (!runtimeShouldRun()) return;
@@ -2967,7 +3139,19 @@
                         </div>
 
                         <label>Torn API key<input class="rw-apikey" type="password" maxlength="16"></label>
+                        ${PDA_API_KEY_AVAILABLE ? `
+                            <label class="rw-check rw-pda-key-row">
+                                <input class="rw-use-pda-torn-key" type="checkbox">
+                                Use Torn PDA's API key
+                            </label>
+                        ` : ''}
                         <label>FFScouter key<input class="rw-ffkey" type="password"></label>
+                        ${PDA_API_KEY_AVAILABLE ? `
+                            <label class="rw-check rw-pda-key-row">
+                                <input class="rw-use-pda-ff-key" type="checkbox">
+                                Use Torn PDA's API key for FFScouter too
+                            </label>
+                        ` : ''}
                         <label class="rw-check rw-slink-terms-row">
                             <input class="rw-slink-terms" type="checkbox">
                             I accept the current SLINK API &amp; Data Terms
@@ -3065,6 +3249,8 @@
         const corner = panel.querySelector('.rw-corner');
         const apiKey = panel.querySelector('.rw-apikey');
         const ffKey = panel.querySelector('.rw-ffkey');
+        const usePdaTornKey = panel.querySelector('.rw-use-pda-torn-key');
+        const usePdaFfKey = panel.querySelector('.rw-use-pda-ff-key');
         const slinkTerms = panel.querySelector('.rw-slink-terms');
         const outsideMin = panel.querySelector('.rw-outside-min');
         const outsideMax = panel.querySelector('.rw-outside-max');
@@ -3085,6 +3271,16 @@
         corner.value = settings.corner;
         apiKey.value = settings.apiKey;
         ffKey.value = settings.ffApiKey;
+        if (usePdaTornKey) {
+            usePdaTornKey.checked = Boolean(settings.usePdaTornKey);
+            apiKey.disabled = usePdaTornKey.checked;
+            apiKey.placeholder = usePdaTornKey.checked ? 'Using Torn PDA API key' : '';
+        }
+        if (usePdaFfKey) {
+            usePdaFfKey.checked = Boolean(settings.usePdaFfKey);
+            ffKey.disabled = usePdaFfKey.checked;
+            ffKey.placeholder = usePdaFfKey.checked ? 'Using Torn PDA API key' : '';
+        }
         slinkTerms.checked = Boolean(
             settings.slinkTermsAccepted &&
             settings.slinkTermsVersion === SLINK_TERMS_VERSION &&
@@ -3180,8 +3376,26 @@
             slinkCycle(true);
         });
 
+        usePdaTornKey?.addEventListener('change', () => {
+            settings.usePdaTornKey = usePdaTornKey.checked;
+            apiKey.disabled = usePdaTornKey.checked;
+            apiKey.placeholder = usePdaTornKey.checked ? 'Using Torn PDA API key' : '';
+            saveSlinkSession(null);
+            saveSettings();
+            refreshData(true);
+            slinkCycle(true);
+        });
+
         ffKey.addEventListener('change', () => {
             settings.ffApiKey = ffKey.value.trim();
+            saveSettings();
+            refreshData(true);
+        });
+
+        usePdaFfKey?.addEventListener('change', () => {
+            settings.usePdaFfKey = usePdaFfKey.checked;
+            ffKey.disabled = usePdaFfKey.checked;
+            ffKey.placeholder = usePdaFfKey.checked ? 'Using Torn PDA API key' : '';
             saveSettings();
             refreshData(true);
         });
@@ -3380,7 +3594,7 @@
         if (!runtimeShouldRun()) return;
         try {
             if (
-                !settings.apiKey ||
+                !tornApiKey() ||
                 !settings.slinkTermsAccepted ||
                 settings.slinkTermsVersion !== SLINK_TERMS_VERSION ||
                 settings.slinkTermsSha256 !== SLINK_TERMS_SHA256
@@ -3503,7 +3717,7 @@
             if (!runtimeShouldRun()) return;
 
             if (
-                settings.ffApiKey &&
+                ffScouterApiKey() &&
                 members.length &&
                 (forceNetwork || !Object.keys(ffById).length || now - lastFFCheck >= FF_REFRESH_MS)
             ) {
@@ -3531,7 +3745,7 @@
         }
     }
 
-    GM_addStyle(`
+    addStyle(`
         #rw-target-panel {
             --rw-theme-bg: rgba(30, 30, 30, .98);
             --rw-theme-surface: #282828;
@@ -4219,7 +4433,7 @@
 
     `);
 
-    GM_registerMenuCommand('Ranked War Panel: Toggle bubble mode', () => {
+    registerMenuCommand('Ranked War Panel: Toggle bubble mode', () => {
         settings.bubbleMode = !settings.bubbleMode;
         saveSettings();
         render();
@@ -4227,7 +4441,7 @@
         syncRuntimeState({ refresh: !settings.bubbleMode });
     });
 
-    GM_registerMenuCommand('Ranked War Panel: Move to next corner', () => {
+    registerMenuCommand('Ranked War Panel: Move to next corner', () => {
         const corners = ['top-right', 'top-left', 'bottom-left', 'bottom-right'];
         const currentIndex = Math.max(0, corners.indexOf(settings.corner));
         settings.corner = corners[(currentIndex + 1) % corners.length];
@@ -4237,8 +4451,8 @@
         render();
     });
 
-    GM_registerMenuCommand('Ranked War Panel: Refresh', () => hardRefresh());
-    GM_registerMenuCommand('Ranked War Panel: Clear saved settings', () => {
+    registerMenuCommand('Ranked War Panel: Refresh', () => hardRefresh());
+    registerMenuCommand('Ranked War Panel: Clear saved settings', () => {
         localStorage.removeItem(PREFIX + 'settings');
         location.reload();
     });
