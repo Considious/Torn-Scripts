@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.3.0
+// @version      1.4.0
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -169,7 +169,7 @@
         ? globalThis.GM_registerMenuCommand.bind(globalThis)
         : () => undefined;
 
-    const SCRIPT_VERSION = '1.3.0';
+    const SCRIPT_VERSION = '1.4.0';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;
@@ -221,6 +221,8 @@
         panelTop: 90,
         panelBottom: 20,
         activeView: 'targets',
+        armoryMode: 'ranked-all',
+        armoryWhitelist: [],
         slinkTermsAccepted: false,
         slinkTermsVersion: '',
         slinkTermsSha256: ''
@@ -311,6 +313,11 @@
     let slinkCycleRunning = false;
     let slinkLogsWarning = '';
     let pageAlertOverlay = null;
+    let armoryBusy = false;
+    let armoryMembers = [];
+    let armoryMemberLevels = new Map();
+    let armoryStatus = 'Ready. Retrieval only runs after you press Retrieve Next.';
+    let armoryStatusState = 'normal';
     const slinkSeenRetals = new Set();
     const CHAT_COPY_AUTHORIZATION_MS = 30 * 1000;
 
@@ -548,7 +555,7 @@
                     text,
                     timeout: 10000,
                     onclick: () => window.open(
-                        `https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${encodeURIComponent(retal.attackerId)}`,
+                        `https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(retal.attackerId)}`,
                         '_blank'
                     )
                 });
@@ -1533,7 +1540,7 @@
 
     function buildCopyText(member) {
         const profile = `https://www.torn.com/profiles.php?XID=${member.id}`;
-        const attack = `https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}`;
+        const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${member.id}`;
         const linkedName = `<a href="${profile}">${escapeHtml(member.name)} [${member.id}]</a>`;
         const details = [TornLib.attackLink(attack), `Status: ${escapeHtml(member.statusState || 'Okay')} / ${escapeHtml(member.activity)}`];
 
@@ -2648,6 +2655,187 @@
         };
     }
 
+    function armoryPageIsFocused() {
+        return document.visibilityState === 'visible' && document.hasFocus();
+    }
+
+    function activeArmoryTab() {
+        return [
+            document.querySelector('[id="tab=armoury&sub=weapons"]'),
+            document.querySelector('[id="tab=armoury&sub=armour"]')
+        ].filter(Boolean).find(tab => {
+            const style = getComputedStyle(tab);
+            return tab.getAttribute('aria-hidden') !== 'true' && style.display !== 'none';
+        }) || null;
+    }
+
+    function armoryTabKind(tab) {
+        if (tab?.id.includes('sub=weapons')) return 'weapons';
+        if (tab?.id.includes('sub=armour')) return 'armour';
+        return null;
+    }
+
+    function armoryWhitelist() {
+        return new Set((Array.isArray(settings.armoryWhitelist) ? settings.armoryWhitelist : []).map(String));
+    }
+
+    function armoryBorrower(row) {
+        const link = row.querySelector('.loaned a[href*="XID="]');
+        const match = link?.getAttribute('href')?.match(/[?&]XID=(\d+)/i);
+        return match ? { id: match[1], name: link.textContent.trim() || match[1] } : null;
+    }
+
+    function armoryEligibility(row, tabKind) {
+        const borrower = armoryBorrower(row);
+        if (!borrower || armoryWhitelist().has(borrower.id)) return null;
+        if (!row.querySelector('.item-action [data-role="retrieve"].active')) return null;
+        const image = row.querySelector('.img-wrap img.torn-item');
+        if (!image || !['glow-yellow', 'glow-orange', 'glow-red'].some(name => image.classList.contains(name))) return null;
+        const proficience = Boolean(row.querySelector('.bonus-attachment-experience'));
+        if (settings.armoryMode === 'ranked-no-prof' && proficience) return null;
+        if (settings.armoryMode === 'proficience-15-plus') {
+            if (tabKind !== 'weapons' || !proficience || Number(armoryMemberLevels.get(borrower.id)) < 15) return null;
+        }
+        return borrower;
+    }
+
+    function setArmoryStatus(message, state = 'normal') {
+        armoryStatus = message;
+        armoryStatusState = state;
+        renderArmoryView();
+    }
+
+    function parseOwnFactionMembers(payload) {
+        const source = payload?.members ?? payload?.faction?.members ?? [];
+        const rows = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, member]) => ({ id, ...(member || {}) }));
+        return rows.map(row => {
+            const id = String(row?.id ?? row?.user_id ?? row?.player_id ?? '');
+            if (!id) return null;
+            const position = row?.position;
+            return {
+                id,
+                name: String(row?.name || id),
+                level: Number(row?.level) || 0,
+                rank: String(position?.name ?? row?.position_name ?? position ?? row?.rank ?? 'Member').trim() || 'Member'
+            };
+        }).filter(Boolean).sort((a, b) => a.rank.localeCompare(b.rank) || a.name.localeCompare(b.name));
+    }
+
+    function applyArmoryMembers(value) {
+        armoryMembers = Array.isArray(value) ? value : [];
+        armoryMemberLevels = new Map(armoryMembers.map(member => [String(member.id), Number(member.level)]));
+    }
+
+    async function ensureArmoryMembers() {
+        const cache = TornLib.readJsonStorage(PREFIX + 'armory-member-cache', null);
+        if (cache?.savedAt && Date.now() - Number(cache.savedAt) < 12 * 60 * 60 * 1000 && Array.isArray(cache.members) && cache.members.length) {
+            applyArmoryMembers(cache.members);
+            return true;
+        }
+        if (!armoryPageIsFocused()) {
+            setArmoryStatus('Focus this Torn tab before loading faction members.', 'error');
+            return false;
+        }
+        const apiKey = tornApiKey();
+        if (!apiKey) {
+            setArmoryStatus('Save a Torn API key in the War settings first.', 'error');
+            return false;
+        }
+        try {
+            const payload = await gmRequest(`https://api.torn.com/v2/faction/members?key=${encodeURIComponent(apiKey)}&comment=SLINKArmoryRecaller`);
+            if (payload?.error) throw new Error(payload.error.error || 'Torn faction API error');
+            const parsed = parseOwnFactionMembers(payload);
+            if (!parsed.length) throw new Error('Torn returned no faction members. A faction-capable API key may be required.');
+            applyArmoryMembers(parsed);
+            TornLib.writeJsonStorage(PREFIX + 'armory-member-cache', { savedAt: Date.now(), members: parsed });
+            return true;
+        } catch (error) {
+            setArmoryStatus(error?.message || 'Could not load faction members.', 'error');
+            return false;
+        }
+    }
+
+    function renderArmoryView() {
+        if (!panel) return;
+        const status = panel.querySelector('.rw-armory-status');
+        if (status) {
+            status.textContent = armoryStatus;
+            status.dataset.state = armoryStatusState;
+        }
+        const list = panel.querySelector('.rw-armory-member-list');
+        if (!list) return;
+        const query = (panel.querySelector('.rw-armory-search')?.value || '').trim().toLowerCase();
+        const selected = armoryWhitelist();
+        list.replaceChildren();
+        for (const member of armoryMembers.filter(item => `${item.name} ${item.rank} ${item.id}`.toLowerCase().includes(query))) {
+            const label = document.createElement('label');
+            label.className = 'rw-armory-member';
+            label.innerHTML = `<input type="checkbox" data-armory-member="${escapeHtml(member.id)}" ${selected.has(member.id) ? 'checked' : ''}><span><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.rank)} · level ${member.level || '?'} · ID ${escapeHtml(member.id)}</small></span>`;
+            label.querySelector('input').addEventListener('change', event => {
+                const next = armoryWhitelist();
+                if (event.currentTarget.checked) next.add(member.id); else next.delete(member.id);
+                settings.armoryWhitelist = [...next];
+                saveSettings();
+            });
+            list.appendChild(label);
+        }
+        if (!list.children.length) list.textContent = armoryMembers.length ? 'No matching faction members.' : 'Load faction members to manage the skip list.';
+        const count = panel.querySelector('.rw-armory-whitelist-count');
+        if (count) count.textContent = String(selected.size);
+    }
+
+    async function retrieveNextArmoryItem() {
+        if (armoryBusy) return;
+        armoryBusy = true;
+        try {
+            if (!isSlinkOfficer()) throw new Error('slink.war.officer permission is required.');
+            if (!armoryPageIsFocused()) throw new Error('Focus this Torn tab before retrieving an item.');
+            const tab = activeArmoryTab();
+            const kind = armoryTabKind(tab);
+            if (!tab || !kind) throw new Error('Open the Weapons or Armor tab in Faction Armoury first.');
+            if (settings.armoryMode === 'proficience-15-plus' && !await ensureArmoryMembers()) return;
+            if (!armoryPageIsFocused()) throw new Error('The Torn tab lost focus. Nothing was retrieved.');
+            for (const row of tab.querySelectorAll('ul.item-list > li')) {
+                const borrower = armoryEligibility(row, kind);
+                if (!borrower) continue;
+                const item = row.querySelector('.name')?.textContent.trim() || 'item';
+                row.querySelector('.item-action [data-role="retrieve"].active').click();
+                for (let attempt = 0; attempt < 20; attempt += 1) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    if (!armoryPageIsFocused()) throw new Error('The Torn tab lost focus before confirmation.');
+                    const confirm = row.querySelector('.retrieve-cont .retrieve-yes');
+                    if (confirm && confirm.getClientRects().length) {
+                        confirm.click();
+                        setArmoryStatus(`Retrieved one ${item} from ${borrower.name}.`, 'success');
+                        return;
+                    }
+                }
+                throw new Error('Torn did not display the retrieval confirmation.');
+            }
+            setArmoryStatus('No eligible ranked items remain on this page.', 'success');
+        } catch (error) {
+            setArmoryStatus(error?.message || 'Retrieval failed.', 'error');
+        } finally {
+            armoryBusy = false;
+        }
+    }
+
+    function nextArmoryPage() {
+        if (!armoryPageIsFocused()) return setArmoryStatus('Focus this Torn tab before changing pages.', 'error');
+        const tab = activeArmoryTab();
+        if (!tab) return setArmoryStatus('Open the Weapons or Armor tab in Faction Armoury first.', 'error');
+        const selectors = ['.gallery-wrapper.pagination a[href] > i.pagination-right', '.pagination a[href] > i.pagination-right', '.pagination a.next:not(.disabled)', '.pagination .next:not(.disabled) a', 'a[aria-label="Next"]', 'a[title="Next"]', '[data-page="next"]'];
+        let next = null;
+        for (const selector of selectors) {
+            const found = tab.querySelector(selector) || document.querySelector(`#faction-armoury ${selector}`);
+            const control = found?.matches('a,button') ? found : found?.closest('a,button');
+            if (control && !control.classList.contains('disabled') && !control.classList.contains('disable')) { next = control; break; }
+        }
+        if (!next) return setArmoryStatus('No enabled Next Page control was found.', 'success');
+        next.click();
+        setArmoryStatus('Moved to the next armory page.', 'success');
+    }
+
     function activeSlinkClaims() {
         const now = Date.now();
         return (Array.isArray(slinkSnapshot?.claims) ? slinkSnapshot.claims : [])
@@ -2670,7 +2858,7 @@
 
     function renderSlinkViews() {
         if (!panel) return;
-        const allowedViews = ['targets', 'outside', 'retals', 'claims', ...(canViewSlinkLogs() ? ['logs'] : [])];
+        const allowedViews = ['targets', 'outside', 'retals', 'claims', ...(isSlinkOfficer() ? ['armory'] : []), ...(canViewSlinkLogs() ? ['logs'] : [])];
         const active = allowedViews.includes(settings.activeView)
             ? settings.activeView
             : 'targets';
@@ -2680,6 +2868,7 @@
         }
         for (const button of panel.querySelectorAll('.rw-module-tab')) {
             if (button.dataset.view === 'logs') button.hidden = !canViewSlinkLogs();
+            if (button.dataset.view === 'armory') button.hidden = !isSlinkOfficer();
             const selected = button.dataset.view === active;
             button.classList.toggle('is-active', selected);
             button.setAttribute('aria-selected', String(selected));
@@ -2726,6 +2915,7 @@
         for (const view of panel.querySelectorAll('.rw-view')) {
             view.hidden = !view.classList.contains(`rw-${active}-view`);
         }
+        if (active === 'armory') renderArmoryView();
 
         const outsideList = panel.querySelector('.rw-outside-list');
         if (outsideList) {
@@ -2751,7 +2941,7 @@
                 card.innerHTML = `
                     <div class="rw-slink-card-title"><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/profiles.php?XID=${member.id}">${escapeHtml(member.name)} [${member.id}]</a><strong>Lv ${member.level || '?'}</strong></div>
                     <div class="rw-slink-card-meta">${escapeHtml(member.activity)} • ${escapeHtml(member.statusState)} • FF ${Number.isFinite(ff) ? ff.toFixed(2) : '?'} • BS ${formatShortNumber(bs)}${member.lastActionRelative ? ` • ${escapeHtml(member.lastActionRelative)}` : ''}</div>
-                    <div class="rw-actions"><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}">Attack</a><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/profiles.php?XID=${member.id}">Profile</a><button class="rw-copy" type="button">Copy</button><button class="rw-chat-send" data-target-id="${member.id}" disabled type="button">Send</button></div>
+                    <div class="rw-actions"><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/page.php?sid=attack&user2ID=${member.id}">Attack</a><a target="_blank" rel="noopener noreferrer" href="https://www.torn.com/profiles.php?XID=${member.id}">Profile</a><button class="rw-copy" type="button">Copy</button><button class="rw-chat-send" data-target-id="${member.id}" disabled type="button">Send</button></div>
                 `;
                 card.querySelector('.rw-copy').addEventListener('click', event => copyMember(member, event.currentTarget));
                 card.querySelector('.rw-chat-send').addEventListener('click', event => sendMemberToFactionChat(member, event.currentTarget));
@@ -2783,7 +2973,7 @@
                     </div>
                     <div class="rw-slink-card-meta">Attacked ${escapeHtml(retal.defenderName || `member ${retal.defenderId}`)}</div>
                     <a class="rw-slink-action" target="_blank" rel="noopener noreferrer"
-                       href="https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${encodeURIComponent(retal.attackerId)}">Attack</a>
+                       href="https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(retal.attackerId)}">Attack</a>
                 `;
                 retalList.appendChild(card);
             }
@@ -2956,7 +3146,7 @@
                     ${hospital ? `<span>${hospital}</span>` : ''}
                     ${shouldHospitalize(member) ? '<span class="rw-hospitalize">HOSP</span>' : ''}
                     <span class="rw-actions">
-                        ${TornLib.attackLink(`https://www.torn.com/loader2.php?sid=getInAttack&user2ID=${member.id}`, { target: '_blank', rel: 'noopener noreferrer' })}
+                        ${TornLib.attackLink(`https://www.torn.com/page.php?sid=attack&user2ID=${member.id}`, { target: '_blank', rel: 'noopener noreferrer' })}
                         <a target="_blank" href="https://www.torn.com/profiles.php?XID=${member.id}">Profile</a>
                         <button class="rw-claim" type="button" ${claimLocked ? 'disabled' : ''}>${claim ? (mine ? 'Release' : `Claimed: ${escapeHtml(claim.claimedByName || claim.claimedById)}`) : 'Claim'}</button>
                     </span>
@@ -3065,6 +3255,7 @@
                     <button class="rw-module-tab" type="button" role="tab" data-view="outside">Outside</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="retals">Retals</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="claims">Claims</button>
+                    <button class="rw-module-tab" type="button" role="tab" data-view="armory">Armory</button>
                     <button class="rw-module-tab" type="button" role="tab" data-view="logs">Logs</button>
                 </nav>
                 <div class="rw-view rw-targets-view">
@@ -3223,6 +3414,21 @@
                     <div class="rw-view-heading">Med-out partner claims</div>
                     <div class="rw-claim-list rw-slink-list"></div>
                 </div>
+                <div class="rw-view rw-armory-view" hidden>
+                    <div class="rw-view-heading">Officer Armory Recaller</div>
+                    <div class="rw-note">This tool only scans while this Torn tab is focused and retrieves exactly one item after each click. It never runs automatically.</div>
+                    <a class="rw-armory-open" href="https://www.torn.com/factions.php?step=your#/tab=armoury">Open Faction Armoury</a>
+                    <label>Recall mode
+                        <select class="rw-armory-mode">
+                            <option value="ranked-all">All ranked items</option>
+                            <option value="ranked-no-prof">Ranked except Proficience</option>
+                            <option value="proficience-15-plus">Proficience from level 15+</option>
+                        </select>
+                    </label>
+                    <div class="rw-armory-actions"><button class="rw-armory-retrieve" type="button">Retrieve Next</button><button class="rw-armory-next" type="button">Next Page</button><button class="rw-armory-load" type="button">Load faction whitelist</button></div>
+                    <div class="rw-armory-status" data-state="normal">Ready.</div>
+                    <details class="rw-armory-whitelist"><summary>Never retrieve from (<span class="rw-armory-whitelist-count">0</span>)</summary><input class="rw-armory-search" type="search" placeholder="Search members"><div class="rw-armory-member-list"></div></details>
+                </div>
                 <div class="rw-view rw-logs-view" hidden>
                     <div class="rw-view-heading">War event counters</div>
                     <div class="rw-log-list rw-slink-list"></div>
@@ -3249,6 +3455,9 @@
         const corner = panel.querySelector('.rw-corner');
         const apiKey = panel.querySelector('.rw-apikey');
         const ffKey = panel.querySelector('.rw-ffkey');
+        const armoryCache = TornLib.readJsonStorage(PREFIX + 'armory-member-cache', null);
+        if (Array.isArray(armoryCache?.members)) applyArmoryMembers(armoryCache.members);
+        panel.querySelector('.rw-armory-mode').value = settings.armoryMode || 'ranked-all';
         const usePdaTornKey = panel.querySelector('.rw-use-pda-torn-key');
         const usePdaFfKey = panel.querySelector('.rw-use-pda-ff-key');
         const slinkTerms = panel.querySelector('.rw-slink-terms');
@@ -3421,6 +3630,21 @@
             saveSettings();
         });
         panel.querySelector('.rw-outside-refresh').addEventListener('click', () => refreshOutsideTargets(true));
+        panel.querySelector('.rw-armory-mode').addEventListener('change', event => {
+            settings.armoryMode = event.currentTarget.value;
+            saveSettings();
+        });
+        panel.querySelector('.rw-armory-retrieve').addEventListener('click', () => retrieveNextArmoryItem());
+        panel.querySelector('.rw-armory-next').addEventListener('click', nextArmoryPage);
+        panel.querySelector('.rw-armory-load').addEventListener('click', async event => {
+            event.currentTarget.disabled = true;
+            try {
+                if (await ensureArmoryMembers()) setArmoryStatus(`Loaded ${armoryMembers.length} faction members.`, 'success');
+            } finally {
+                if (event.currentTarget.isConnected) event.currentTarget.disabled = false;
+            }
+        });
+        panel.querySelector('.rw-armory-search').addEventListener('input', renderArmoryView);
 
         for (const tab of panel.querySelectorAll('.rw-module-tab')) {
             tab.addEventListener('click', () => {
@@ -3924,7 +4148,7 @@
         .rw-module-tabs {
             flex: 0 0 auto;
             display: grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(42px, 1fr));
             gap: 2px;
             padding: 3px;
             background: var(--rw-theme-surface-raised);
@@ -3962,6 +4186,37 @@
             border-bottom: 1px solid var(--rw-theme-border-soft);
             font-weight: 700;
         }
+        .rw-armory-view { gap: 6px; padding-bottom: 7px; overflow: auto; }
+        .rw-armory-view > :not(.rw-view-heading) { margin-left: 7px; margin-right: 7px; }
+        .rw-armory-view > label { display: grid; gap: 3px; color: var(--rw-theme-muted); }
+        .rw-armory-view select,
+        .rw-armory-search {
+            width: 100%;
+            min-width: 0;
+            padding: 5px;
+            border: 1px solid var(--rw-theme-border-soft);
+            border-radius: 4px;
+            background: var(--rw-theme-surface-raised);
+            color: var(--rw-theme-text);
+        }
+        .rw-armory-open { color: var(--rw-theme-accent); }
+        .rw-armory-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+        .rw-armory-actions button {
+            border: 1px solid var(--rw-theme-border);
+            border-radius: 4px;
+            padding: 5px 7px;
+            background: var(--rw-theme-surface);
+            color: var(--rw-theme-text);
+            cursor: pointer;
+        }
+        .rw-armory-status { padding: 6px; border-radius: 4px; background: var(--rw-theme-surface-raised); color: var(--rw-theme-muted); }
+        .rw-armory-status[data-state="success"] { color: var(--rw-theme-success); }
+        .rw-armory-status[data-state="error"] { color: var(--rw-theme-danger); }
+        .rw-armory-whitelist { border: 1px solid var(--rw-theme-border-soft); border-radius: 5px; padding: 6px; }
+        .rw-armory-whitelist summary { cursor: pointer; font-weight: 700; }
+        .rw-armory-member-list { display: grid; gap: 3px; max-height: 210px; margin-top: 5px; overflow: auto; }
+        .rw-armory-member { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; padding: 5px; background: var(--rw-theme-surface); }
+        .rw-armory-member small { display: block; color: var(--rw-theme-muted); }
         .rw-dashboard-section { flex: 0 0 auto; min-height: 0; }
         #rw-target-panel.collapsed .rw-dashboard-section { display: none; }
 
