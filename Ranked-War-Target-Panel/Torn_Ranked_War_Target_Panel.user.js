@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.4.2
+// @version      1.4.3
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -262,7 +262,7 @@
         ? globalThis.GM_registerMenuCommand.bind(globalThis)
         : () => undefined;
 
-    const SCRIPT_VERSION = '1.4.2';
+    const SCRIPT_VERSION = '1.4.3';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;
@@ -310,6 +310,7 @@
         bubbleMode: false,
         collapsed: false,
         panelPosition: null,
+        bubblePosition: null,
         panelSize: { width: 240, height: null },
         panelTop: 90,
         panelBottom: 20,
@@ -3110,11 +3111,12 @@
     function render() {
         if (!panel) createPanel();
 
-        applyPanelSize();
-        applyPanelPosition();
+        panel.classList.toggle('rw-pda', PDA_RUNTIME);
         panel.classList.toggle('collapsed', settings.collapsed);
         panel.classList.toggle('targets-collapsed', settings.targetsCollapsed);
         panel.classList.toggle('bubble-mode', settings.bubbleMode);
+        applyPanelSize();
+        applyPanelPosition();
 
         const detailsToggle = panel.querySelector('.rw-collapse');
         if (detailsToggle) {
@@ -3272,11 +3274,13 @@
     function applyPanelPosition() {
         if (!panel) return;
 
-        const free = settings.panelPosition;
+        const free = settings.bubbleMode
+            ? settings.bubblePosition
+            : settings.panelPosition;
         const hasFreePosition = Number.isFinite(free?.left) && Number.isFinite(free?.top);
         panel.classList.toggle('rw-free-position', hasFreePosition);
-        panel.classList.toggle('rw-resize-left', !hasFreePosition && settings.corner.endsWith('right'));
-        panel.classList.toggle('rw-resize-top', !hasFreePosition && settings.corner.startsWith('bottom'));
+        panel.classList.toggle('rw-resize-left', !settings.bubbleMode && !hasFreePosition && settings.corner.endsWith('right'));
+        panel.classList.toggle('rw-resize-top', !settings.bubbleMode && !hasFreePosition && settings.corner.startsWith('bottom'));
 
         if (panel.classList.contains('rw-dragging') || panel.classList.contains('rw-resizing')) return;
         if (hasFreePosition) {
@@ -3297,6 +3301,86 @@
             panel.style.bottom = 'auto';
             panel.style.top = `${settings.panelTop}px`;
         }
+    }
+
+    function minimizeToBubble() {
+        if (settings.bubbleMode) return;
+
+        if (!settings.bubblePosition && panel) {
+            const rect = panel.getBoundingClientRect();
+            const bubbleSize = 42;
+            settings.bubblePosition = {
+                left: Math.round(Math.max(4, Math.min(
+                    window.innerWidth - bubbleSize - 4,
+                    rect.right - bubbleSize
+                ))),
+                top: Math.round(Math.max(4, Math.min(
+                    window.innerHeight - bubbleSize - 4,
+                    rect.top
+                )))
+            };
+        }
+
+        settings.bubbleMode = true;
+        saveSettings();
+        render();
+        apiLease?.refresh();
+        syncRuntimeState();
+    }
+
+    function restoreFromBubble() {
+        if (!settings.bubbleMode) return;
+        settings.bubbleMode = false;
+        saveSettings();
+        render();
+        apiLease?.refresh();
+        syncRuntimeState({ refresh: true });
+    }
+
+    function installBubbleMovement(element) {
+        let gesture = null;
+        let suppressPointerClick = false;
+
+        element.addEventListener('pointerdown', event => {
+            if (!settings.bubbleMode || !event.target.closest('.rw-bubble')) return;
+            gesture = {
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+                moved: false
+            };
+        });
+
+        element.addEventListener('pointermove', event => {
+            if (!gesture || event.pointerId !== gesture.pointerId) return;
+            if (Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) >= 5) {
+                gesture.moved = true;
+            }
+        });
+
+        element.addEventListener('pointerup', event => {
+            if (!gesture || event.pointerId !== gesture.pointerId) return;
+            const moved = gesture.moved;
+            gesture = null;
+            suppressPointerClick = moved;
+            if (!moved) restoreFromBubble();
+        });
+
+        element.addEventListener('pointercancel', () => {
+            gesture = null;
+            suppressPointerClick = false;
+        });
+
+        element.querySelector('.rw-bubble')?.addEventListener('click', event => {
+            if (suppressPointerClick) {
+                suppressPointerClick = false;
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            // Pointer taps are handled above so a drag can never reopen the panel.
+            if (event.detail === 0) restoreFromBubble();
+        });
     }
 
     function createPanel() {
@@ -3756,21 +3840,7 @@
 
         panel.querySelector('.rw-refresh').addEventListener('click', () => hardRefresh());
 
-        panel.querySelector('.rw-bubble-toggle').addEventListener('click', () => {
-            settings.bubbleMode = true;
-            saveSettings();
-            apiLease?.refresh();
-            syncRuntimeState();
-            render();
-        });
-
-        panel.querySelector('.rw-bubble').addEventListener('click', () => {
-            settings.bubbleMode = false;
-            saveSettings();
-            render();
-            apiLease?.refresh();
-            syncRuntimeState({ refresh: true });
-        });
+        panel.querySelector('.rw-bubble-toggle').addEventListener('click', minimizeToBubble);
 
         panel.querySelector('.rw-collapse').addEventListener('click', () => {
             settings.collapsed = !settings.collapsed;
@@ -3779,16 +3849,21 @@
         });
 
         panelDragController = TornLib.makePanelDraggable(panel, {
-            handle: panel.querySelector('.rw-header'),
+            handle: panel,
             storageKey: PREFIX + 'free-position',
+            ignoreSelector: 'button:not(.rw-bubble), input, textarea, select, a, .rw-body, .rw-resize-handle, [data-no-drag]',
             draggingClass: 'rw-dragging',
-            getValue: () => settings.panelPosition,
+            getValue: () => settings.bubbleMode
+                ? settings.bubblePosition
+                : settings.panelPosition,
             setValue: (_key, position) => {
-                settings.panelPosition = position;
+                if (settings.bubbleMode) settings.bubblePosition = position;
+                else settings.panelPosition = position;
                 saveSettings();
                 applyPanelPosition();
             }
         });
+        installBubbleMovement(panel);
         panelResizeController = makePanelResizable(panel, panel.querySelector('.rw-resize-handle'));
 
         document.addEventListener('pointerdown', () => {
@@ -4110,6 +4185,8 @@
             background: #202020;
             border-bottom: 1px solid #4a4a4a;
             cursor: move;
+            touch-action: none;
+            user-select: none;
         }
 
         .rw-title { font-weight: 700; color: #eee; letter-spacing: .4px; }
@@ -4361,6 +4438,8 @@
             line-height: 1;
             cursor: pointer;
             box-shadow: 0 5px 18px rgba(0,0,0,.45);
+            touch-action: none;
+            user-select: none;
         }
 
         #rw-target-panel.bubble-mode {
@@ -4396,6 +4475,11 @@
             opacity: .7;
             background:
                 linear-gradient(135deg, transparent 0 48%, #aaa 49% 56%, transparent 57% 67%, #777 68% 75%, transparent 76%);
+        }
+
+        #rw-target-panel.rw-pda .rw-resize-handle {
+            width: 24px;
+            height: 24px;
         }
 
         #rw-target-panel.rw-resize-left .rw-resize-handle {
@@ -4782,11 +4866,8 @@
     `);
 
     registerMenuCommand('Ranked War Panel: Toggle bubble mode', () => {
-        settings.bubbleMode = !settings.bubbleMode;
-        saveSettings();
-        render();
-        apiLease?.refresh();
-        syncRuntimeState({ refresh: !settings.bubbleMode });
+        if (settings.bubbleMode) restoreFromBubble();
+        else minimizeToBubble();
     });
 
     registerMenuCommand('Ranked War Panel: Move to next corner', () => {
