@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.4.1
+// @version      1.4.2
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -26,7 +26,11 @@
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
         'shared/Considious_Torn_Lib.js?v=1.3.6';
-    const PDA_CORE_LOAD_PROMISE_KEY = '__slinkWarPdaCoreLoad_v1_3_6';
+    const PDA_CORE_LOAD_PROMISE_KEY = '__considiousPdaCoreLoad_v1_3_6';
+    const LEGACY_PDA_CORE_LOAD_PROMISE_KEYS = [
+        '__slinkLevelingPdaCoreLoad_v1_3_6',
+        '__slinkWarPdaCoreLoad_v1_3_6'
+    ];
 
     function isPdaRuntime() {
         return Boolean(
@@ -97,6 +101,42 @@
         throw new Error('Considious Torn Library did not become available.');
     }
 
+    async function joinExistingPdaCoreLoad(discoveryMs = 1_000, settleMs = 10_000) {
+        const discoveryDeadline = Date.now() + discoveryMs;
+
+        while (Date.now() < discoveryDeadline) {
+            if (globalThis.ConsidiousTornLib) return globalThis.ConsidiousTornLib;
+
+            const siblingPromise = [
+                globalThis[PDA_CORE_LOAD_PROMISE_KEY],
+                ...LEGACY_PDA_CORE_LOAD_PROMISE_KEYS.map(key => globalThis[key])
+            ].find(candidate => candidate && typeof candidate.then === 'function');
+
+            if (siblingPromise) {
+                try {
+                    await Promise.race([
+                        siblingPromise,
+                        new Promise((_, reject) => setTimeout(
+                            () => reject(new Error('Existing PDA Core Lib load timed out.')),
+                            settleMs
+                        ))
+                    ]);
+                } catch (error) {
+                    console.warn('[SLINK War Panel] Existing PDA Core Lib load did not finish:', error);
+                    if (globalThis[PDA_CORE_LOAD_PROMISE_KEY] === siblingPromise) {
+                        delete globalThis[PDA_CORE_LOAD_PROMISE_KEY];
+                    }
+                }
+
+                return globalThis.ConsidiousTornLib || null;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+
+        return globalThis.ConsidiousTornLib || null;
+    }
+
     function normalizePdaResponse(response) {
         if (typeof response !== 'string') return response;
 
@@ -122,6 +162,12 @@
 
     async function loadTornLibThroughPda() {
         if (globalThis.ConsidiousTornLib) return globalThis.ConsidiousTornLib;
+
+        // Leveling and War may start together in Torn PDA. Join either the new
+        // shared loader or the older Leveling loader before starting another
+        // native HTTP request for the same Core Lib.
+        const siblingLibrary = await joinExistingPdaCoreLoad();
+        if (siblingLibrary) return siblingLibrary;
 
         if (!globalThis[PDA_CORE_LOAD_PROMISE_KEY]) {
             globalThis[PDA_CORE_LOAD_PROMISE_KEY] = (async () => {
@@ -216,7 +262,7 @@
         ? globalThis.GM_registerMenuCommand.bind(globalThis)
         : () => undefined;
 
-    const SCRIPT_VERSION = '1.4.1';
+    const SCRIPT_VERSION = '1.4.2';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;

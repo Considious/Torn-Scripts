@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.14.1
+// @version      0.14.2
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,12 +23,12 @@
 (async function () {
     'use strict';
 
-    // Release: 0.14.1-war-terms
+    // Release: 0.14.2-shared-pda-core-loader
 
     const PDA_CORE_LIB_URL =
         'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/' +
         'shared/Considious_Torn_Lib.js?v=1.3.6';
-    const PDA_CORE_LOAD_PROMISE_KEY = '__slinkLevelingPdaCoreLoad_v1_3_6';
+    const PDA_CORE_LOAD_PROMISE_KEY = '__considiousPdaCoreLoad_v1_3_6';
 
 
     function isPdaRuntime() {
@@ -199,7 +199,7 @@
         PDA_API_KEY &&
         PDA_API_KEY !== PDA_API_KEY_TOKEN
     );
-    const SCRIPT_VERSION = '0.14.1';
+    const SCRIPT_VERSION = '0.14.2';
     const SCRIPT_NAME = 'SLINK Leveling Service';
     const WORKER_URL = 'https://slinkyleveling.richard-johnson554.workers.dev';
     const TERMS_VERSION = '2026-08-24';
