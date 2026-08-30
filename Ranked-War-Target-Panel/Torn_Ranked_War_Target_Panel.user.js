@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK War Panel
 // @namespace    Considious [3853023]
-// @version      1.4.0
+// @version      1.4.1
 // @description  Shared SLINK war targets, retaliation alerts, and aggregate war logging.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/Ranked-War-Target-Panel/Torn_Ranked_War_Target_Panel.user.js
@@ -46,21 +46,46 @@
         return 'missing';
     }
 
-    async function waitForPdaCoreHandlers(timeoutMs = 5_000) {
+    function pdaBridge() {
+        const bridge = globalThis.flutter_inappwebview;
+        return typeof bridge?.callHandler === 'function' ? bridge : null;
+    }
+
+    async function callPdaHandler(handlerName, args, timeoutMs = 15_000) {
         const startedAt = Date.now();
+        let lastError = null;
+
+        // Torn PDA has shipped both direct PDA_* functions and the underlying
+        // flutter_inappwebview bridge. The bridge can appear shortly before its
+        // native handlers are registered, so retry either route during startup.
         while (Date.now() - startedAt < timeoutMs) {
-            if (
-                typeof globalThis.PDA_httpGet === 'function' &&
-                typeof globalThis.PDA_evaluateJavascript === 'function'
-            ) {
-                return {
-                    httpGet: globalThis.PDA_httpGet,
-                    evaluateJavascript: globalThis.PDA_evaluateJavascript
-                };
+            const directHandler = globalThis[handlerName];
+            const bridge = pdaBridge();
+
+            if (typeof directHandler === 'function') {
+                try {
+                    return await directHandler(...args);
+                } catch (error) {
+                    lastError = error;
+                }
             }
-            await new Promise(resolve => setTimeout(resolve, 100));
+
+            if (bridge) {
+                try {
+                    return await bridge.callHandler(handlerName, ...args);
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 250));
         }
-        throw new Error('Torn PDA core-loading handlers did not become available.');
+
+        const detail = String(lastError?.message || lastError || '').trim();
+        throw new Error(
+            `Torn PDA handler ${handlerName} did not become ready` +
+            (detail ? `: ${detail}` : '.')
+        );
     }
 
     async function waitForTornLib(timeoutMs = 5_000) {
@@ -72,10 +97,26 @@
         throw new Error('Considious Torn Library did not become available.');
     }
 
+    function normalizePdaResponse(response) {
+        if (typeof response !== 'string') return response;
+
+        const trimmed = response.trim();
+        if (!trimmed.startsWith('{')) return response;
+
+        try {
+            const parsed = JSON.parse(trimmed);
+            return parsed && typeof parsed === 'object' ? parsed : response;
+        } catch {
+            return response;
+        }
+    }
+
     function pdaResponseText(response) {
-        if (typeof response === 'string') return response;
-        if (typeof response?.responseText === 'string') return response.responseText;
-        if (typeof response?.data === 'string') return response.data;
+        const normalized = normalizePdaResponse(response);
+        if (typeof normalized === 'string') return normalized;
+        if (typeof normalized?.responseText === 'string') return normalized.responseText;
+        if (typeof normalized?.body === 'string') return normalized.body;
+        if (typeof normalized?.data === 'string') return normalized.data;
         return '';
     }
 
@@ -84,11 +125,12 @@
 
         if (!globalThis[PDA_CORE_LOAD_PROMISE_KEY]) {
             globalThis[PDA_CORE_LOAD_PROMISE_KEY] = (async () => {
-                const handlers = await waitForPdaCoreHandlers();
-                const response = await handlers.httpGet(PDA_CORE_LIB_URL, {
-                    Accept: 'text/plain'
-                });
-                const status = Number(response?.status) || 0;
+                const rawResponse = await callPdaHandler('PDA_httpGet', [
+                    PDA_CORE_LIB_URL,
+                    { Accept: 'text/plain' }
+                ]);
+                const response = normalizePdaResponse(rawResponse);
+                const status = Number(response?.status ?? response?.statusCode) || 0;
                 if (status && (status < 200 || status >= 300)) {
                     throw new Error(`Core Lib download returned HTTP ${status}.`);
                 }
@@ -98,9 +140,9 @@
                     throw new Error('Core Lib download was empty or invalid.');
                 }
 
-                await handlers.evaluateJavascript(
+                await callPdaHandler('PDA_evaluateJavascript', [
                     `${source}\n//# sourceURL=SLINK-War-PDA-Core-Lib.js`
-                );
+                ]);
                 return waitForTornLib();
             })();
         }
@@ -139,12 +181,17 @@
         coreRuntime = await resolveTornLib();
     } catch (error) {
         console.error('[SLINK War Panel] Core Lib failed to load:', error);
+        const failureDetail = String(error?.message || error || 'Unknown Core Lib error')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 280);
         alert(
             'SLINK War Panel could not start.\n\n' +
             'Considious Torn Core did not load.\n\n' +
             (isPdaRuntime()
-                ? 'Torn PDA could not download Core Lib automatically. Check your connection and reload Torn.'
-                : 'Check that your userscript manager allowed the @require dependency.')
+                ? 'Torn PDA could not download Core Lib automatically. Check your connection and reload Torn manually.'
+                : 'Check that your userscript manager allowed the @require dependency.') +
+            `\n\nDetails: ${failureDetail}`
         );
         return;
     }
@@ -169,7 +216,7 @@
         ? globalThis.GM_registerMenuCommand.bind(globalThis)
         : () => undefined;
 
-    const SCRIPT_VERSION = '1.4.0';
+    const SCRIPT_VERSION = '1.4.1';
     const PREFIX = 'rw-target-panel:';
     const REFRESH_MS = 10000;
     const WAR_REFRESH_MS = 12 * 60 * 60 * 1000;
