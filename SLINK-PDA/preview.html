@@ -11,6 +11,25 @@
 <body>
   <header></header>
   <main><p class="note">Local Torn-like fixture. Tap the SLINK bubble to open the PDA dashboard.</p><section class="torn-card"><h2>Torn content remains underneath</h2><p>The overlay does not navigate or refresh this page. Minimize it to immediately return here.</p></section><section class="torn-card"><h2>Faction</h2><p>Placeholder content for scroll and overlay testing.</p></section></main>
+  <script>
+    if (new URLSearchParams(location.search).get('fixture') === 'merits') {
+      const awards = Array.from({length:55}, (_, index) => ({
+        id:index + 1,
+        name:`${index % 2 ? 'Honor' : 'Medal'} milestone ${index + 1}`,
+        description:`Complete ${((index + 1) * 50).toLocaleString()} qualifying actions`,
+        type:{id:(index % 7) + 1,title:['Attacking','Crimes','Commitment','Rank','Level','Networth','General'][index % 7]}
+      }));
+      localStorage.setItem('slink-pda-dashboard:ui:v1', JSON.stringify({page:'efficiency',efficiencyTab:'merits'}));
+      localStorage.setItem('slink-pda-dashboard:data:v1', JSON.stringify({
+        sessions:{permission:{token:'preview',expiresAt:Date.now()+86400000,userId:1,userName:'Preview',scopes:['slink.adhd.alerts','admin.*']}},
+        caches:{
+          alerts:{at:Date.now(),cityBought:100,stockCatalog:{stocks:[]},body:{bars:{energy:{current:150,maximum:150},nerve:{current:10,maximum:50}},cooldowns:{drug:900,medical:900,booster:900},refills:{energy:{available:false},nerve:{available:false}},missions:{givers:[]},stocks:[],battlestats:{}}},
+          merits:{at:Date.now(),data:{player:{medals:[],honors:[]},personalStats:{},catalog:{medals:awards.filter((_,index)=>index%2===0),honors:awards.filter((_,index)=>index%2===1)}}}
+        },
+        settings:{merits:{refreshMinutes:15,filter:'all',page:1,pageSize:20,pinned:[]}}
+      }));
+    }
+  </script>
   <script src="SLINK_PDA_Dashboard.user.js"></script>
 </body>
 </html>

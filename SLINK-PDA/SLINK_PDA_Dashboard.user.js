@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.2.0
+// @version      0.2.1
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -12,6 +12,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @grant        GM_notification
 // @connect      api.torn.com
 // @connect      ffscouter.com
 // @connect      slinkyleveling.richard-johnson554.workers.dev
@@ -23,7 +24,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.2.0-modules';
+  const BUILD = '0.2.1-modules';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -33,7 +34,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.2.0';
+  const CLIENT_VERSION = '0.2.1';
   const URLS = Object.freeze({
     permission:'https://slinkcontributionworker.richard-johnson554.workers.dev',
     leveling:'https://slinkyleveling.richard-johnson554.workers.dev',
@@ -48,7 +49,8 @@
     set:typeof GM_setValue === 'function' ? GM_setValue : global.GM_setValue,
     remove:typeof GM_deleteValue === 'function' ? GM_deleteValue : global.GM_deleteValue,
     menu:typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : global.GM_registerMenuCommand,
-    request:typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : global.GM_xmlhttpRequest
+    request:typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : global.GM_xmlhttpRequest,
+    notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notification
   });
 
   if (global.SLINK_PDA_DASHBOARD?.build === BUILD) {
@@ -120,7 +122,9 @@
     const value = saved && typeof saved === 'object' ? saved : {};
     return {
       apiKey:String(value.apiKey || ''),
-      usePdaKey:value.usePdaKey !== false,
+      ffKey:String(value.ffKey || ''),
+      usePdaApiKey:value.usePdaApiKey ?? value.usePdaKey ?? true,
+      usePdaFfKey:value.usePdaFfKey ?? false,
       accepted:value.accepted && typeof value.accepted === 'object' ? value.accepted : {},
       terms:value.terms && typeof value.terms === 'object' ? value.terms : {},
       sessions:value.sessions && typeof value.sessions === 'object' ? value.sessions : {},
@@ -129,7 +133,7 @@
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
         war:{ mode:'war', idleMinutes:5, ...(value.settings?.war || {}) },
         alerts:{ snoozedUntil:{}, ...(value.settings?.alerts || {}) },
-        merits:{ refreshMinutes:15, filter:'all', pinned:[], ...(value.settings?.merits || {}) }
+        merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
       }
     };
   }
@@ -139,8 +143,13 @@
   }
 
   function currentApiKey() {
-    if (PDA_API_KEY_AVAILABLE && dataState.usePdaKey) return PDA_API_KEY;
+    if (PDA_API_KEY_AVAILABLE && dataState.usePdaApiKey) return PDA_API_KEY;
     return String(dataState.apiKey || '').trim();
+  }
+
+  function currentFfKey() {
+    if (PDA_API_KEY_AVAILABLE && dataState.usePdaFfKey) return PDA_API_KEY;
+    return String(dataState.ffKey || '').trim();
   }
 
   const state = readState();
@@ -152,11 +161,11 @@
   let schedulerTimer = null;
   const moduleState = {
     access:{ busy:false, error:'' },
-    leveling:{ busy:false, error:'', data:null },
-    war:{ busy:false, error:'', data:null },
-    stats:{ busy:false, error:'', data:null },
-    alerts:{ busy:false, error:'', data:null },
-    merits:{ busy:false, error:'', data:null }
+    leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
+    war:{ busy:false, error:'', data:dataState.caches.war || null },
+    stats:{ busy:false, error:'', data:dataState.caches.stats || null },
+    alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
+    merits:{ busy:false, error:'', data:dataState.caches.merits || null }
   };
 
   function serializeNetwork(task) {
@@ -169,6 +178,31 @@
     return String(error?.message || error || 'Unknown error').replace(/^Error:\s*/i, '').trim();
   }
 
+  function pdaHttpHandler(method) {
+    if (method === 'GET') return typeof PDA_httpGet === 'function' ? PDA_httpGet : global.PDA_httpGet;
+    if (method === 'POST') return typeof PDA_httpPost === 'function' ? PDA_httpPost : global.PDA_httpPost;
+    return null;
+  }
+
+  async function pdaHttpRequest(method, url, headers, body) {
+    const handlerName = `PDA_http${method[0]}${method.slice(1).toLowerCase()}`;
+    const direct = pdaHttpHandler(method);
+    const response = typeof direct === 'function'
+      ? await direct(url, headers, ...(body === undefined ? [] : [body]))
+      : await global.flutter_inappwebview.callHandler(handlerName, url, headers, ...(body === undefined ? [] : [body]));
+    const status = Number(response?.status ?? response?.statusCode) || 0;
+    const responseText = typeof response === 'string' ? response : String(response?.responseText ?? response?.body ?? response?.data ?? '');
+    let parsed = null;
+    try { parsed = JSON.parse(responseText || 'null'); } catch {}
+    if (status && (status < 200 || status >= 300)) {
+      const error = new Error(parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
+      error.status = status;
+      error.body = parsed;
+      throw error;
+    }
+    return parsed ?? {};
+  }
+
   function requestJson(url, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
     const headers = { Accept:'application/json', ...(options.headers || {}) };
@@ -176,6 +210,10 @@
       ? undefined
       : typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
     if (body !== undefined && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const pdaDirect = pdaHttpHandler(method);
+    if (typeof pdaDirect === 'function' || typeof global.flutter_inappwebview?.callHandler === 'function') {
+      return pdaHttpRequest(method, url, headers, body);
+    }
     if (typeof GM_API.request === 'function') {
       return new Promise((resolve, reject) => {
         GM_API.request({
@@ -284,9 +322,22 @@
     return left === '*' || left === right || (left.endsWith('.*') && right.startsWith(left.slice(0, -1)));
   }
 
+  function hasGrantedScope(required) {
+    return (dataState.sessions.permission?.scopes || []).some(scope => scopeMatches(scope, required));
+  }
+
   function hasScope(required) {
     const session = dataState.sessions.permission;
-    return Boolean(session?.token && Number(session.expiresAt) > Date.now() && (session.scopes || []).some(scope => scopeMatches(scope, required)));
+    return Boolean(session?.token && Number(session.expiresAt) > Date.now() && hasGrantedScope(required));
+  }
+
+  function hasAdminScope() {
+    const session = dataState.sessions.permission;
+    return Boolean(session?.token && Number(session.expiresAt) > Date.now() && (session.scopes || []).some(scope => String(scope) === 'admin.*' || String(scope) === '*'));
+  }
+
+  function hasThemeScope(required) {
+    return hasAdminScope() || hasScope(required);
   }
 
   function validSession(name) {
@@ -528,14 +579,16 @@
       <article class="card wide"><div class="card-head"><div><h2>API &amp; feature access</h2><span class="muted">The key and sessions stay in this userscript's local storage.</span></div><span class="badge ${permission ? 'ready' : 'warn'}">${permission ? 'Connected' : 'Setup'}</span></div>
         ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : ''}
         <div class="access-form">
-          <label class="wide">Torn API key<input type="password" autocomplete="off" data-field="api-key" value="${escapeHtml(dataState.apiKey)}" placeholder="Paste a limited-access Torn API key"></label>
-          ${PDA_API_KEY_AVAILABLE ? `<label class="check-row wide"><input type="checkbox" data-field="use-pda-key" ${dataState.usePdaKey ? 'checked' : ''}>Use the API key injected by Torn PDA instead of the saved key.</label>` : ''}
+          <label>Torn API key<input type="password" autocomplete="off" data-field="api-key" value="${escapeHtml(dataState.apiKey)}" placeholder="Limited-access Torn key"></label>
+          <label>FFScouter API key<input type="password" autocomplete="off" data-field="ff-key" value="${escapeHtml(dataState.ffKey)}" placeholder="Usually different from the Torn key"></label>
+          ${PDA_API_KEY_AVAILABLE ? `<label class="check-row"><input type="checkbox" data-field="use-pda-api-key" ${dataState.usePdaApiKey ? 'checked' : ''}>Use Torn PDA's injected key for Torn API requests.</label><label class="check-row"><input type="checkbox" data-field="use-pda-ff-key" ${dataState.usePdaFfKey ? 'checked' : ''}>Use Torn PDA's injected key as the FFScouter fallback.</label>` : '<span class="muted wide">Torn PDA key injection was not detected. Saved Torn and FFScouter keys will be used independently.</span>'}
+          <span class="muted wide">The FFScouter key is sent only to FFScouter when refining target estimates.</span>
           <label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK permission, Leveling, and War terms/disclosures shown below.</label>
           <div class="access-actions wide"><button type="button" data-action="save-access">Save &amp; authenticate</button><button type="button" data-action="load-terms">Load current terms</button><button class="danger" type="button" data-action="clear-access">Clear key &amp; sessions</button></div>
         </div>
         <div class="terms-list">${termLinks}</div>
       </article>
-      <article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></article>
+      <article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><details class="scope-details"><summary>${permission?.scopes?.length ? `${permission.scopes.length} granted permissions` : 'No permissions loaded'}</summary><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></details></article>
       <article class="card"><div class="card-head"><div><h2>Shared API limiter</h2><span class="muted">Shared with compatible Considious scripts in this Torn page.</span></div></div><div class="stats"><div class="stat"><strong>${usage.count}</strong><span>Last minute</span></div><div class="stat"><strong>${usage.remaining}</strong><span>Remaining</span></div><div class="stat"><strong>${usage.limit}</strong><span>Limit</span></div><div class="stat"><strong>1</strong><span>Queue</span></div></div></article>
     </div>`;
     applyPermissionGates();
@@ -552,10 +605,14 @@
 
   async function saveAccess() {
     const keyInput = moduleRoot('access')?.querySelector('[data-field="api-key"]');
-    const pdaInput = moduleRoot('access')?.querySelector('[data-field="use-pda-key"]');
+    const ffInput = moduleRoot('access')?.querySelector('[data-field="ff-key"]');
+    const pdaApiInput = moduleRoot('access')?.querySelector('[data-field="use-pda-api-key"]');
+    const pdaFfInput = moduleRoot('access')?.querySelector('[data-field="use-pda-ff-key"]');
     const acceptance = moduleRoot('access')?.querySelector('[data-field="accept-terms"]');
     dataState.apiKey = String(keyInput?.value || '').trim();
-    dataState.usePdaKey = pdaInput ? pdaInput.checked : true;
+    dataState.ffKey = String(ffInput?.value || '').trim();
+    dataState.usePdaApiKey = pdaApiInput ? pdaApiInput.checked : false;
+    dataState.usePdaFfKey = pdaFfInput ? pdaFfInput.checked : false;
     clearSessions();
     moduleState.access.error = '';
     try {
@@ -583,7 +640,7 @@
     for (const [selector, scope] of gates) {
       const control = shadow?.querySelector?.(selector);
       if (!control) continue;
-      const allowed = hasScope(scope);
+      const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : hasScope(scope);
       control.classList.toggle('permission-lock', !allowed);
       control.title = allowed ? '' : `Requires ${scope}`;
     }
@@ -591,6 +648,44 @@
 
   function levelingRows(payload) {
     return Array.isArray(payload?.targets) ? payload.targets : Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+  }
+
+  async function refineWithFfScouter(rows) {
+    const values = Array.isArray(rows) ? rows : [];
+    const key = currentFfKey();
+    if (!key || !values.length) return values;
+    const now = Date.now();
+    const cache = dataState.caches.ffScouter && typeof dataState.caches.ffScouter === 'object' ? dataState.caches.ffScouter : {};
+    const ids = [...new Set(values.map(row => Math.trunc(Number(row?.id ?? row?.target_id ?? row?.user_id) || 0)).filter(id => id > 0))];
+    const missing = ids.filter(id => !cache[id] || now - Number(cache[id].checkedAt || 0) >= 5 * 60_000);
+    for (let index = 0; index < missing.length; index += 100) {
+      const targets = missing.slice(index, index + 100);
+      const url = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(key)}&targets=${encodeURIComponent(targets.join(','))}`;
+      const response = await requestJson(url);
+      const returnedRows = Array.isArray(response) ? response : Array.isArray(response?.data) ? response.data : Array.isArray(response?.results) ? response.results : [];
+      const returned = new Set();
+      for (const row of returnedRows) {
+        const id = Math.trunc(Number(row?.player_id ?? row?.id ?? row?.user_id) || 0);
+        if (!id) continue;
+        returned.add(id);
+        cache[id] = { fairFight:finite(row?.fair_fight ?? row?.fairFight ?? row?.ff), battleStats:finite(row?.bs_estimate ?? row?.battle_stats_estimate ?? row?.total_stats), source:String(row?.source || 'FFScouter'), checkedAt:now };
+      }
+      for (const id of targets) if (!returned.has(id)) cache[id] = { fairFight:null, battleStats:null, source:'FFScouter', checkedAt:now };
+    }
+    dataState.caches.ffScouter = cache;
+    writeDataState();
+    return values.map(row => {
+      const id = Math.trunc(Number(row?.id ?? row?.target_id ?? row?.user_id) || 0);
+      const refined = cache[id] || {};
+      return {
+        ...row,
+        fair_fight:finite(refined.fairFight) ?? row?.fair_fight,
+        fairFight:finite(refined.fairFight) ?? row?.fairFight,
+        bs_estimate:finite(refined.battleStats) ?? row?.bs_estimate,
+        battleStatsEstimate:finite(refined.battleStats) ?? row?.battleStatsEstimate,
+        fairFightSource:finite(refined.fairFight) === null ? row?.fairFightSource : refined.source
+      };
+    });
   }
 
   function renderLeveling() {
@@ -631,6 +726,8 @@
       const settings = dataState.settings.leveling;
       const query = new URLSearchParams({ limit:'20', poll_seconds:'300', min_ff:String(Math.min(settings.minFF, settings.maxFF)), max_ff:String(Math.max(settings.minFF, settings.maxFF)) });
       const payload = await productRequest('leveling', `/api/recommendations?${query}`);
+      if (Array.isArray(payload?.targets)) payload.targets = await refineWithFfScouter(payload.targets);
+      else if (Array.isArray(payload?.recommendations)) payload.recommendations = await refineWithFfScouter(payload.recommendations);
       current.data = dataState.caches.leveling = { at:Date.now(), payload };
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
@@ -705,6 +802,8 @@
         const activeWar = { opponentId:found.opponentId, opponentName:found.opponentName, start:found.start, phase:found.start * 1000 <= Date.now() ? 'active' : 'assigned', warId:makeWarId(session.factionId, found.opponentId, found.start) };
         const query = new URLSearchParams({ opponent_faction_id:String(found.opponentId), mode:String(dataState.settings.war.mode || 'war'), idle_minutes:String(dataState.settings.war.idleMinutes || 5) });
         const snapshot = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/snapshot?${query}`);
+        if (Array.isArray(snapshot?.members)) snapshot.members = await refineWithFfScouter(snapshot.members);
+        else if (Array.isArray(snapshot?.targets)) snapshot.targets = await refineWithFfScouter(snapshot.targets);
         current.data = dataState.caches.war = { at:Date.now(), activeWar, snapshot };
       }
       writeDataState();
@@ -843,16 +942,53 @@
     return rows;
   }
 
+  function updateAlertIndicator(count) {
+    const total = Math.max(0, Number(count) || 0);
+    const badge = shadow?.querySelector?.('.launcher-alert-count');
+    if (!badge) return;
+    badge.hidden = total === 0;
+    badge.textContent = total > 99 ? '99+' : String(total);
+    launcher.classList.toggle('has-alerts', total > 0);
+    launcher.setAttribute('aria-label', total > 0 ? `Open SLINK dashboard, ${total} active alert${total === 1 ? '' : 's'}` : 'Open SLINK dashboard');
+  }
+
+  function showSystemAlert(alert) {
+    const title = `SLINK Efficiency: ${alert.title}`;
+    const text = String(alert.detail || 'Open Torn PDA to review this alert.');
+    try {
+      if (typeof GM_API.notify === 'function') {
+        GM_API.notify({ title, text, tag:`slink-efficiency-${alert.id}`, timeout:12_000 });
+        return;
+      }
+    } catch {}
+    try {
+      if (typeof global.Notification === 'function' && global.Notification.permission === 'granted') new global.Notification(title, { body:text, tag:`slink-efficiency-${alert.id}` });
+    } catch {}
+  }
+
+  function reconcileAlertNotifications(snapshot) {
+    const active = alertRows(snapshot);
+    const currentIds = active.map(alert => alert.id);
+    const prior = dataState.caches.alertNotificationIds;
+    if (Array.isArray(prior)) {
+      const priorIds = new Set(prior.map(String));
+      active.filter(alert => !priorIds.has(alert.id)).forEach(showSystemAlert);
+    }
+    dataState.caches.alertNotificationIds = currentIds;
+    updateAlertIndicator(active.length);
+  }
+
   function renderAlerts() {
     const root = moduleRoot('alerts');
     if (!root) return;
-    if (!hasScope('slink.adhd.alerts')) { root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+    if (!hasScope('slink.adhd.alerts')) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
     const current = moduleState.alerts;
-    if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Torn API timers…'); return; }
-    if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+    if (current.busy && !current.data) { updateAlertIndicator(0); root.innerHTML = moduleMessage('Loading Torn API timers…'); return; }
+    if (current.error && !current.data) { updateAlertIndicator(0); root.innerHTML = moduleMessage(current.error, 'error'); return; }
     const alerts = alertRows(current.data);
+    updateAlertIndicator(alerts.length);
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
-      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · refreshes only while this panel is open</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
       <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
     </article></div>`;
   }
@@ -860,7 +996,8 @@
   async function refreshAlerts(force = false) {
     const current = moduleState.alerts;
     const cached = dataState.caches.alerts;
-    if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.data = cached; renderAlerts(); return; }
+    if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.lastAttemptAt = Number(cached.at) || Date.now(); current.data = cached; renderAlerts(); return; }
+    current.lastAttemptAt = Date.now();
     current.busy = true; current.error = ''; renderAlerts();
     try {
       await ensurePermissionSession(false);
@@ -880,6 +1017,7 @@
         dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
       }
       current.data = dataState.caches.alerts = { at:Date.now(), body, stockCatalog, cityBought:currentBought === null || resetBought === null ? null : Math.max(0, currentBought - resetBought) };
+      reconcileAlertNotifications(current.data);
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
     finally { current.busy = false; renderAlerts(); }
@@ -907,14 +1045,12 @@
       ...(Array.isArray(data.catalog?.honors) ? data.catalog.honors : []).map(row => ({ ...row, kind:'honor' }))
     ].filter(row => Number(row?.id) > 0 && row?.name)
       .filter(row => row.kind === 'medal' ? !completedMedals.has(Number(row.id)) : !completedHonors.has(Number(row.id)));
-    const firstByFamily = new Map();
-    for (const award of catalog.sort((a, b) => awardTarget(a) - awardTarget(b))) {
-      const family = awardFamily(award);
-      if (!firstByFamily.has(family)) firstByFamily.set(family, award);
-    }
     const pinned = new Set(dataState.settings.merits.pinned || []);
-    return [...firstByFamily.values()].map(award => ({ ...award, key:`${award.kind}:${award.id}`, pinned:pinned.has(`${award.kind}:${award.id}`) }))
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || awardTarget(a) - awardTarget(b)).slice(0, 30);
+    return catalog.map(award => ({ ...award, key:`${award.kind}:${award.id}`, pinned:pinned.has(`${award.kind}:${award.id}`) }))
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned)
+        || String(a?.type?.title || '').localeCompare(String(b?.type?.title || ''))
+        || awardTarget(a) - awardTarget(b)
+        || String(a.name).localeCompare(String(b.name)));
   }
 
   function renderMerits() {
@@ -924,10 +1060,18 @@
     const current = moduleState.merits;
     if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading award catalog and progress…'); return; }
     if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
-    const goals = meritGoals(current.data?.data);
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Merit farm</h2><span class="muted">Only the next locked tier in each matching award family is shown.</span></div><span class="badge ready">${(dataState.settings.merits.pinned || []).length} / 3 pinned</span></div>
-      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · ${number(goals.length)} next goals</span><label>Refresh <select data-field="merit-refresh"><option value="15" ${Number(dataState.settings.merits.refreshMinutes) === 15 ? 'selected' : ''}>15m</option><option value="30" ${Number(dataState.settings.merits.refreshMinutes) === 30 ? 'selected' : ''}>30m</option><option value="60" ${Number(dataState.settings.merits.refreshMinutes) === 60 ? 'selected' : ''}>1h</option></select></label></div>${current.error ? moduleMessage(current.error, 'error') : ''}
-      <div class="merit-list">${goals.length ? goals.map(award => `<article class="merit"><div><strong>${escapeHtml(award.name)}</strong><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span></div><div class="target-actions"><span class="badge">${escapeHtml(award.kind)}</span><button type="button" data-action="pin-merit" data-merit-key="${escapeHtml(award.key)}">${award.pinned ? 'Unpin' : 'Pin'}</button></div></article>`).join('') : moduleMessage('No incomplete awards were found in the returned catalog.')}</div>
+    const allGoals = meritGoals(current.data?.data);
+    const filter = /^(?:all|medal|honor)$/.test(String(dataState.settings.merits.filter)) ? String(dataState.settings.merits.filter) : 'all';
+    const goals = filter === 'all' ? allGoals : allGoals.filter(award => award.kind === filter);
+    const pageSize = Math.max(10, Math.min(50, Number(dataState.settings.merits.pageSize) || 20));
+    const totalPages = Math.max(1, Math.ceil(goals.length / pageSize));
+    const page = Math.max(1, Math.min(totalPages, Number(dataState.settings.merits.page) || 1));
+    dataState.settings.merits.page = page;
+    const visibleGoals = goals.slice((page - 1) * pageSize, page * pageSize);
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Merit farm</h2><span class="muted">Every incomplete medal and honor returned by Torn, with pages instead of a hidden cutoff.</span></div><span class="badge ready">${(dataState.settings.merits.pinned || []).length} / 3 pinned</span></div>
+      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · ${number(goals.length)} incomplete · page ${page} / ${totalPages}</span><label>Show <select data-field="merit-filter"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="medal" ${filter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${filter === 'honor' ? 'selected' : ''}>Honors</option></select></label><label>Refresh <select data-field="merit-refresh"><option value="15" ${Number(dataState.settings.merits.refreshMinutes) === 15 ? 'selected' : ''}>15m</option><option value="30" ${Number(dataState.settings.merits.refreshMinutes) === 30 ? 'selected' : ''}>30m</option><option value="60" ${Number(dataState.settings.merits.refreshMinutes) === 60 ? 'selected' : ''}>1h</option></select></label></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+      <div class="merit-list">${visibleGoals.length ? visibleGoals.map(award => `<article class="merit merit-row"><div class="award-emblem ${escapeHtml(award.kind)}" aria-hidden="true">${award.kind === 'medal' ? '★' : 'H'}</div><div class="merit-copy"><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award?.type?.title || (award.kind === 'medal' ? 'Medal' : 'Honor'))}</small><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span></div><button type="button" data-action="pin-merit" data-merit-key="${escapeHtml(award.key)}">${award.pinned ? 'Unpin' : 'Pin'}</button></article>`).join('') : moduleMessage('No incomplete awards match this filter.')}</div>
+      <nav class="pagination" aria-label="Merit pages"><button type="button" data-action="merit-page" data-merit-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${page} of ${totalPages}</span><button type="button" data-action="merit-page" data-merit-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button></nav>
     </article></div>`;
   }
 
@@ -972,6 +1116,8 @@
   function startScheduler() {
     if (schedulerTimer) return;
     schedulerTimer = global.setInterval(() => {
+      const canRefreshAlerts = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
+      if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -997,8 +1143,10 @@
     button:active{filter:brightness(1.25);transform:translateY(1px)}
     .launcher[hidden]{display:none}.launcher{position:fixed;right:max(12px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));z-index:2147483647;display:grid;width:58px;height:58px;min-height:58px;padding:0;place-items:center;border:1px solid var(--s-border);border-radius:50%;background:linear-gradient(145deg,var(--s-accent),var(--s-bg));box-shadow:0 8px 25px var(--s-shadow),-3px 0 13px color-mix(in srgb,var(--s-alt) 45%,transparent),3px 0 13px color-mix(in srgb,var(--s-accent) 55%,transparent);cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none}
     .launcher[data-dragging="true"]{cursor:grabbing;transform:scale(1.06)}
+    .launcher.has-alerts{border-color:var(--s-error);box-shadow:0 8px 25px var(--s-shadow),0 0 18px color-mix(in srgb,var(--s-error) 80%,transparent);animation:slink-alert-pulse 1.35s ease-in-out infinite alternate}@keyframes slink-alert-pulse{to{filter:brightness(1.28)}}
     .coil{position:relative;width:31px;height:27px;pointer-events:none}.coil i{position:absolute;left:3px;width:25px;height:10px;border:2px solid #edf4f7;border-radius:50%;filter:drop-shadow(0 0 3px var(--s-alt))}.coil i:nth-child(1){top:0}.coil i:nth-child(2){top:6px}.coil i:nth-child(3){top:12px}.coil i:nth-child(4){top:18px}
     .launcher-label{position:absolute;right:52px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-panel);color:var(--s-text);font:bold 10px/1 Arial,sans-serif;white-space:nowrap;pointer-events:none;opacity:0;transform:translateX(5px);transition:.16s}.launcher:focus-visible .launcher-label,.launcher:hover .launcher-label{opacity:1;transform:none}
+    .launcher-alert-count{position:absolute;top:-5px;right:-5px;display:grid;min-width:23px;height:23px;padding:0 5px;place-items:center;border:2px solid var(--s-bg);border-radius:999px;background:var(--s-error);color:#170404;font:bold 10px/1 Arial,sans-serif;pointer-events:none}.launcher-alert-count[hidden]{display:none}
     .overlay[hidden]{display:none}.overlay{position:fixed;inset:0;z-index:2147483646;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);overflow:hidden;background:var(--s-page);color:var(--s-text);font:13px/1.42 Arial,sans-serif;overscroll-behavior:contain}
     .topbar{display:flex;align-items:center;gap:10px;min-height:64px;padding:max(9px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 9px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--s-border);background:color-mix(in srgb,var(--s-bg) 94%,transparent);box-shadow:0 7px 22px var(--s-shadow);touch-action:pan-x}
     .brand-mark{display:grid;width:39px;height:39px;flex:0 0 auto;place-items:center;border-radius:10px;background:linear-gradient(145deg,var(--s-accent),var(--s-bg));box-shadow:inset 0 0 0 1px var(--s-border),0 0 13px color-mix(in srgb,var(--s-alt) 30%,transparent);font-weight:900}
@@ -1024,10 +1172,10 @@
     .module-message{padding:11px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.module-message.error{border-color:var(--s-error);color:var(--s-error)}.module-message.locked{border-color:var(--s-warning);color:var(--s-warning)}
     .module-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:10px}.module-toolbar>span{min-width:0;flex:1;color:var(--s-muted)}.module-toolbar button{padding:6px 12px}
     .access-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.access-form label{display:grid;gap:4px;color:var(--s-muted)}.access-form .wide{grid-column:1/-1}.access-form input,.access-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.access-form input[type="checkbox"]{width:20px;min-height:20px;margin:1px 0}.check-row{display:flex!important;grid-template-columns:none!important;align-items:flex-start;gap:8px!important;color:var(--s-text)!important}.access-actions{display:flex;flex-wrap:wrap;gap:7px}.access-actions button{padding:7px 12px}.danger{border-color:var(--s-error);color:var(--s-error)}
-    .terms-list,.scope-list{display:flex;flex-wrap:wrap;gap:6px}.terms-list a,.scope-list span,.action-link{display:inline-flex;align-items:center;min-height:32px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);color:var(--s-alt);text-decoration:none}.scope-list span{color:var(--s-text)}
+    .terms-list,.scope-list{display:flex;flex-wrap:wrap;gap:6px}.terms-list a,.scope-list span,.action-link{display:inline-flex;align-items:center;min-height:32px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);color:var(--s-alt);text-decoration:none}.scope-list span{color:var(--s-text)}.scope-details summary{min-height:40px;padding:9px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);cursor:pointer}.scope-details[open] summary{margin-bottom:8px}
     .target-actions{display:flex;flex-wrap:wrap;gap:6px}.target-actions a,.alert a{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:5px 10px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-control);color:var(--s-text);text-decoration:none}.target-actions button,.alert button{padding:5px 10px}
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}
-    .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span{display:block}.merit span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
+    .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}}
@@ -1035,7 +1183,7 @@
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:7px max(8px,env(safe-area-inset-right)) max(7px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -7px 20px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:5px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:1px;font-size:18px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:10px max(9px,env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) max(9px,env(safe-area-inset-left))}.page-head{align-items:center}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:44px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:11px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:11px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(orientation:landscape) and (max-height:520px){.topbar{min-height:50px}.brand-mark{width:32px;height:32px}.scroll{padding-top:8px}.primary-nav{position:absolute;top:50px;right:0;bottom:0;left:auto;width:94px;flex-direction:column;justify-content:flex-start;padding:8px max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) 8px;border-top:0;border-bottom:0;border-left:1px solid var(--s-border);box-shadow:-7px 0 20px var(--s-shadow)}.primary-nav button{width:100%;min-width:0;min-height:54px;flex:0 0 auto}.scroll{padding-right:104px;padding-bottom:max(10px,env(safe-area-inset-bottom))}}
@@ -1047,7 +1195,7 @@
   launcher.className = 'launcher';
   launcher.setAttribute('aria-label', 'Open SLINK dashboard');
   launcher.title = 'Tap to open SLINK. Drag to move.';
-  launcher.innerHTML = '<span class="coil" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="launcher-label">Open SLINK</span>';
+  launcher.innerHTML = '<span class="coil" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="launcher-alert-count" hidden>0</span><span class="launcher-label">Open SLINK</span>';
 
   const overlay = document.createElement('section');
   overlay.className = 'overlay';
@@ -1140,7 +1288,7 @@
   function setTheme(theme, persist = true) {
     if (!['slink-dark', 'slinky-pursuit', 'slinky-underglow'].includes(theme)) theme = 'slink-dark';
     const required = { 'slinky-pursuit':'slink.theme.pursuit', 'slinky-underglow':'slink.theme.underglow' }[theme];
-    if (required && !hasScope(required)) theme = 'slink-dark';
+    if (required && !hasThemeScope(required)) theme = 'slink-dark';
     state.theme = theme;
     host.dataset.theme = theme;
     shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
@@ -1241,6 +1389,9 @@
     if (action === 'save-access') void saveAccess();
     if (action === 'clear-access') {
       dataState.apiKey = '';
+      dataState.ffKey = '';
+      dataState.usePdaApiKey = PDA_API_KEY_AVAILABLE;
+      dataState.usePdaFfKey = false;
       dataState.accepted = {};
       clearSessions();
       writeDataState();
@@ -1267,6 +1418,12 @@
       writeDataState();
       renderMerits();
     }
+    if (action === 'merit-page') {
+      dataState.settings.merits.page = Math.max(1, Number(event.target.closest('[data-merit-page]')?.dataset.meritPage) || 1);
+      writeDataState();
+      renderMerits();
+      shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' });
+    }
     const page = event.target.closest('[data-page]')?.dataset.page;
     if (page) selectPage(page);
     const combatTab = event.target.closest('[data-combat-tab]')?.dataset.combatTab;
@@ -1276,7 +1433,7 @@
     const theme = event.target.closest('[data-theme-choice]')?.dataset.themeChoice;
     if (theme) {
       const required = { 'slinky-pursuit':'slink.theme.pursuit', 'slinky-underglow':'slink.theme.underglow' }[theme];
-      if (required && !hasScope(required)) {
+      if (required && !hasThemeScope(required)) {
         moduleState.access.error = `This theme requires ${required}.`;
         renderAccess();
       } else setTheme(theme);
@@ -1286,6 +1443,12 @@
   overlay.addEventListener('change', event => {
     if (event.target.matches('[data-field="merit-refresh"]')) {
       dataState.settings.merits.refreshMinutes = Math.max(5, Number(event.target.value) || 15);
+      writeDataState();
+      renderMerits();
+    }
+    if (event.target.matches('[data-field="merit-filter"]')) {
+      dataState.settings.merits.filter = String(event.target.value || 'all');
+      dataState.settings.merits.page = 1;
       writeDataState();
       renderMerits();
     }
@@ -1330,7 +1493,12 @@
   selectSubpage('efficiency', state.efficiencyTab, false);
   clampLauncher(false);
   renderAllModules();
+  if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
+    reconcileAlertNotifications(moduleState.alerts.data);
+    writeDataState();
+  }
   startScheduler();
+  if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
 
   global.SLINK_PDA_DASHBOARD = Object.freeze({
     build:BUILD,
