@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.2.1
+// @version      0.2.2
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -24,7 +24,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.2.1-modules';
+  const BUILD = '0.2.2-merit-city-fixes';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -34,7 +34,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.2.1';
+  const CLIENT_VERSION = '0.2.2';
   const URLS = Object.freeze({
     permission:'https://slinkcontributionworker.richard-johnson554.workers.dev',
     leveling:'https://slinkyleveling.richard-johnson554.workers.dev',
@@ -132,7 +132,7 @@
       settings:{
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
         war:{ mode:'war', idleMinutes:5, ...(value.settings?.war || {}) },
-        alerts:{ snoozedUntil:{}, ...(value.settings?.alerts || {}) },
+        alerts:{ snoozedUntil:{}, cityDoneDay:null, ...(value.settings?.alerts || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
       }
     };
@@ -895,7 +895,26 @@
   }
 
   function personalStat(response, statName) {
-    return personalStatMap(response)[statName] ?? null;
+    const target = String(statName || '').toLowerCase();
+    const direct = personalStatMap(response)[target];
+    if (direct !== undefined) return direct;
+    const visited = new Set();
+    function search(value, depth = 0) {
+      if (!value || typeof value !== 'object' || depth > 8 || visited.has(value)) return null;
+      visited.add(value);
+      if (String(value?.name || '').toLowerCase() === target && finite(value?.value) !== null) return finite(value.value);
+      for (const [key, child] of Object.entries(value)) {
+        if (String(key).toLowerCase() === target && finite(child) !== null) return finite(child);
+        const found = search(child, depth + 1);
+        if (found !== null) return found;
+      }
+      return null;
+    }
+    return search(response);
+  }
+
+  function utcDay(timestamp = Date.now()) {
+    return Math.floor(Number(timestamp) / 86_400_000);
   }
 
   function cooldownSeconds(body, name, fetchedAt) {
@@ -918,6 +937,7 @@
     const booster = cooldownSeconds(body, 'booster', fetchedAt);
     const missions = acceptedMissions(body?.missions);
     const cityBought = finite(snapshot?.cityBought);
+    const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
     add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('boosterCooldown', booster === 0, 'Booster cooldown is clear', 'You can use a booster now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
@@ -926,7 +946,7 @@
     add('energyRefill', refillAvailable(body?.refills, 'energy'), 'Energy refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('nerveRefill', refillAvailable(body?.refills, 'nerve'), 'Nerve refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('missions', missions.length > 0, missions.length >= 3 ? 'Mission cap reached' : `${missions.length} unfinished mission${missions.length === 1 ? '' : 's'}`, missions.length >= 3 ? 'Complete one before another arrives so you do not miss mission credits.' : missions.map(row => row?.title).filter(Boolean).slice(0, 2).join(' / '), [['Missions','https://www.torn.com/page.php?sid=missions']]);
-    add('cityItems', cityBought !== null && cityBought < 100, 'Buy 100 city items', `${number(cityBought)} / 100 bought since daily reset. Once the shared cap reaches 100, every city-item reminder stops.`, [['City','https://www.torn.com/city.php']]);
+    add('cityItems', !cityHidden && cityBought !== null && cityBought < 100, 'Buy 100 city items', `${number(cityBought)} / 100 bought since daily reset. Once the shared cap reaches 100, every city-item reminder stops.`, [['City','https://www.torn.com/city.php']]);
     const stocks = Array.isArray(body?.stocks) ? body.stocks : [];
     const catalogRows = Array.isArray(snapshot?.stockCatalog?.stocks) ? snapshot.stockCatalog.stocks : Array.isArray(snapshot?.stockCatalog) ? snapshot.stockCatalog : [];
     const stockCatalog = new Map(catalogRows.map(stock => [Number(stock?.id), stock]));
@@ -986,10 +1006,17 @@
     if (current.busy && !current.data) { updateAlertIndicator(0); root.innerHTML = moduleMessage('Loading Torn API timers…'); return; }
     if (current.error && !current.data) { updateAlertIndicator(0); root.innerHTML = moduleMessage(current.error, 'error'); return; }
     const alerts = alertRows(current.data);
+    const cityBought = finite(current.data?.cityBought);
+    const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
+    const cityStatus = cityHidden
+      ? 'City reminder hidden until the next daily reset'
+      : cityBought === null ? 'City purchase total unavailable'
+        : cityBought >= 100 ? 'City cap complete · 100 / 100 bought today'
+          : `${number(cityBought)} / 100 city items bought today`;
     updateAlertIndicator(alerts.length);
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
-      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
-      <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
+      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+      <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
     </article></div>`;
   }
 
@@ -1003,20 +1030,25 @@
       await ensurePermissionSession(false);
       if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
       const selections = 'bars,cooldowns,travel,education,organizedcrime,refills,missions,casino,profile,races,enlistedcars,stocks,battlestats';
-      const reset = Math.floor(Date.now() / 86_400_000) * 86_400_000;
-      const [body, cityCurrent, atReset] = await Promise.all([
+      const day = utcDay();
+      const reset = day * 86_400_000;
+      const [body, cityCurrent] = await Promise.all([
         tornJson(`/v2/user?selections=${selections}`, 'SLINK PDA efficiency alerts'),
-        tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total'),
-        tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000)}`, 'SLINK PDA city item baseline')
+        tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total')
       ]);
       const currentBought = personalStat(cityCurrent, 'cityitemsbought');
-      const resetBought = personalStat(atReset, 'cityitemsbought');
+      let resetBought = cached?.cityDay === day ? finite(cached.cityAtReset) : null;
+      if (resetBought === null) {
+        const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000)}`, 'SLINK PDA city item baseline');
+        resetBought = personalStat(atReset, 'cityitemsbought');
+      }
+      if (currentBought === null || resetBought === null) throw new Error('Torn returned no usable city-item purchase total.');
       let stockCatalog = dataState.caches.stockCatalog?.data || null;
       if (!dataState.caches.stockCatalog?.at || Date.now() - dataState.caches.stockCatalog.at >= 7 * 86_400_000) {
         stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
         dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
       }
-      current.data = dataState.caches.alerts = { at:Date.now(), body, stockCatalog, cityBought:currentBought === null || resetBought === null ? null : Math.max(0, currentBought - resetBought) };
+      current.data = dataState.caches.alerts = { at:Date.now(), body, stockCatalog, cityDay:day, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
       reconcileAlertNotifications(current.data);
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
@@ -1027,13 +1059,36 @@
     return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  function awardFamily(award) {
-    return `${award.kind}|${award?.type?.id ?? award?.type?.title ?? ''}|${cleanAwardText(award?.description).toLowerCase().replace(/\$?\d[\d,]*(?:\.\d+)?/g, '#')}`;
+  function numericRequirementText(award) {
+    const units = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19 };
+    const tens = { twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90 };
+    const word = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)';
+    return cleanAwardText(award?.description || award?.name).replace(new RegExp(`\\b${word}(?:[ -]+${word})*\\b`, 'gi'), phrase => {
+      let value = 0;
+      for (const token of phrase.toLowerCase().split(/[ -]+/)) {
+        if (Object.hasOwn(units, token)) value += units[token];
+        else if (Object.hasOwn(tens, token)) value += tens[token];
+        else if (token === 'hundred') value = Math.max(1, value) * 100;
+      }
+      return String(value);
+    });
   }
 
-  function awardTarget(award) {
-    const match = cleanAwardText(award?.description).match(/\$?\s*(\d[\d,]*(?:\.\d+)?)/);
-    return match ? Number(match[1].replace(/[$,\s]/g, '')) : Number.POSITIVE_INFINITY;
+  function awardTargets(award) {
+    const matches = numericRequirementText(award).match(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi) || [];
+    const multipliers = { k:1e3, thousand:1e3, m:1e6, mil:1e6, million:1e6, b:1e9, bn:1e9, billion:1e9, t:1e12, trillion:1e12 };
+    return matches.map(match => {
+      const clean = match.toLowerCase().replace(/[$,\s]/g, '').replace(/(?:st|nd|rd|th)$/i, '');
+      const unit = clean.match(/(thousand|million|billion|trillion|mil|bn|[kmbt])$/i)?.[1]?.toLowerCase() || '';
+      return Number(unit ? clean.slice(0, -unit.length) : clean) * (multipliers[unit] || 1);
+    }).filter(Number.isFinite);
+  }
+
+  function awardFamily(award) {
+    const text = numericRequirementText(award).toLowerCase().replace(/\b(year|month|week|day|hour|minute|second)s?\b/g, '$1');
+    if (/\breach (?:the )?rank of\b/.test(text)) return `${award.kind}|${award?.type?.id ?? award?.type?.title ?? ''}|player-rank`;
+    if (!awardTargets(award).length) return '';
+    return `${award.kind}|${award?.type?.id ?? award?.type?.title ?? ''}|${text.replace(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi, '#').replace(/\s+/g, ' ').trim()}`;
   }
 
   function meritGoals(data) {
@@ -1046,11 +1101,32 @@
     ].filter(row => Number(row?.id) > 0 && row?.name)
       .filter(row => row.kind === 'medal' ? !completedMedals.has(Number(row.id)) : !completedHonors.has(Number(row.id)));
     const pinned = new Set(dataState.settings.merits.pinned || []);
-    return catalog.map(award => ({ ...award, key:`${award.kind}:${award.id}`, pinned:pinned.has(`${award.kind}:${award.id}`) }))
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned)
-        || String(a?.type?.title || '').localeCompare(String(b?.type?.title || ''))
-        || awardTarget(a) - awardTarget(b)
-        || String(a.name).localeCompare(String(b.name)));
+    const families = new Map();
+    for (const award of catalog.map(row => ({ ...row, key:`${row.kind}:${row.id}` }))) {
+      const familyKey = awardFamily(award) || `unique:${award.key}`;
+      if (!families.has(familyKey)) families.set(familyKey, []);
+      families.get(familyKey).push(award);
+    }
+    const goals = [];
+    for (const family of families.values()) {
+      family.sort((a, b) => {
+        const left = awardTargets(a), right = awardTargets(b);
+        for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+          if ((left[index] || 0) !== (right[index] || 0)) return (left[index] || 0) - (right[index] || 0);
+        }
+        return Number(a.id) - Number(b.id);
+      });
+      const pinnedKey = family.find(award => pinned.has(award.key))?.key || '';
+      goals.push({
+        ...family[0],
+        pinned:Boolean(pinnedKey),
+        pinKey:pinnedKey || family[0].key,
+        laterMilestones:family.slice(1).map(award => ({ name:String(award.name), targets:awardTargets(award) }))
+      });
+    }
+    return goals.sort((a, b) => Number(b.pinned) - Number(a.pinned)
+      || String(a?.type?.title || '').localeCompare(String(b?.type?.title || ''))
+      || String(a.name).localeCompare(String(b.name)));
   }
 
   function renderMerits() {
@@ -1068,9 +1144,9 @@
     const page = Math.max(1, Math.min(totalPages, Number(dataState.settings.merits.page) || 1));
     dataState.settings.merits.page = page;
     const visibleGoals = goals.slice((page - 1) * pageSize, page * pageSize);
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Merit farm</h2><span class="muted">Every incomplete medal and honor returned by Torn, with pages instead of a hidden cutoff.</span></div><span class="badge ready">${(dataState.settings.merits.pinned || []).length} / 3 pinned</span></div>
-      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · ${number(goals.length)} incomplete · page ${page} / ${totalPages}</span><label>Show <select data-field="merit-filter"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="medal" ${filter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${filter === 'honor' ? 'selected' : ''}>Honors</option></select></label><label>Refresh <select data-field="merit-refresh"><option value="15" ${Number(dataState.settings.merits.refreshMinutes) === 15 ? 'selected' : ''}>15m</option><option value="30" ${Number(dataState.settings.merits.refreshMinutes) === 30 ? 'selected' : ''}>30m</option><option value="60" ${Number(dataState.settings.merits.refreshMinutes) === 60 ? 'selected' : ''}>1h</option></select></label></div>${current.error ? moduleMessage(current.error, 'error') : ''}
-      <div class="merit-list">${visibleGoals.length ? visibleGoals.map(award => `<article class="merit merit-row"><div class="award-emblem ${escapeHtml(award.kind)}" aria-hidden="true">${award.kind === 'medal' ? '★' : 'H'}</div><div class="merit-copy"><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award?.type?.title || (award.kind === 'medal' ? 'Medal' : 'Honor'))}</small><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span></div><button type="button" data-action="pin-merit" data-merit-key="${escapeHtml(award.key)}">${award.pinned ? 'Unpin' : 'Pin'}</button></article>`).join('') : moduleMessage('No incomplete awards match this filter.')}</div>
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Merit farm</h2><span class="muted">Only the next incomplete award in each milestone family is shown; later tiers stay summarized on its tile.</span></div><span class="badge ready">${(dataState.settings.merits.pinned || []).length} / 3 pinned</span></div>
+      <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · ${number(goals.length)} next milestones · page ${page} / ${totalPages}</span><label>Show <select data-field="merit-filter"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="medal" ${filter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${filter === 'honor' ? 'selected' : ''}>Honors</option></select></label><label>Refresh <select data-field="merit-refresh"><option value="15" ${Number(dataState.settings.merits.refreshMinutes) === 15 ? 'selected' : ''}>15m</option><option value="30" ${Number(dataState.settings.merits.refreshMinutes) === 30 ? 'selected' : ''}>30m</option><option value="60" ${Number(dataState.settings.merits.refreshMinutes) === 60 ? 'selected' : ''}>1h</option></select></label></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+      <div class="merit-list">${visibleGoals.length ? visibleGoals.map(award => { const later = award.laterMilestones || []; const shown = later.slice(0, 8); return `<article class="merit merit-row"><div class="award-emblem ${escapeHtml(award.kind)}" aria-hidden="true">${award.kind === 'medal' ? '★' : 'H'}</div><div class="merit-copy"><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award?.type?.title || (award.kind === 'medal' ? 'Medal' : 'Honor'))}</small><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span>${later.length ? `<span class="merit-later">Later: ${escapeHtml(shown.map(row => row.targets.length ? row.targets.map(value => number(value)).join(' / ') : row.name).join(' · '))}${later.length > shown.length ? ` · +${later.length - shown.length} more` : ''}</span>` : ''}</div><button type="button" data-action="pin-merit" data-merit-key="${escapeHtml(award.pinKey)}">${award.pinned ? 'Unpin' : 'Pin'}</button></article>`; }).join('') : moduleMessage('No incomplete awards match this filter.')}</div>
       <nav class="pagination" aria-label="Merit pages"><button type="button" data-action="merit-page" data-merit-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${page} of ${totalPages}</span><button type="button" data-action="merit-page" data-merit-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button></nav>
     </article></div>`;
   }
@@ -1175,7 +1251,7 @@
     .terms-list,.scope-list{display:flex;flex-wrap:wrap;gap:6px}.terms-list a,.scope-list span,.action-link{display:inline-flex;align-items:center;min-height:32px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);color:var(--s-alt);text-decoration:none}.scope-list span{color:var(--s-text)}.scope-details summary{min-height:40px;padding:9px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);cursor:pointer}.scope-details[open] summary{margin-bottom:8px}
     .target-actions{display:flex;flex-wrap:wrap;gap:6px}.target-actions a,.alert a{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:5px 10px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-control);color:var(--s-text);text-decoration:none}.target-actions button,.alert button{padding:5px 10px}
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}
-    .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
+    .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}}
@@ -1408,6 +1484,12 @@
         writeDataState();
         renderAlerts();
       }
+    }
+    if (action === 'hide-city-until-reset') {
+      dataState.settings.alerts.cityDoneDay = utcDay();
+      reconcileAlertNotifications(moduleState.alerts.data);
+      writeDataState();
+      renderAlerts();
     }
     if (action === 'pin-merit') {
       const key = String(event.target.closest('[data-merit-key]')?.dataset.meritKey || '');

@@ -26,9 +26,11 @@ or resizing. Reset Layout is available under Access.
 - **Combat / Stats:** private direct-Torn-API daily player statistics.
 - **Efficiency / Alerts:** direct-Torn-API reminders, including the shared
   100-city-item daily cap, local 5-minute/1-hour snoozes, launcher count, and
-  notifications for newly active alerts.
-- **Efficiency / Merits:** every incomplete medal and honor returned by Torn,
-  filterable and paginated in groups of 20, with up to three local pins.
+  notifications for newly active alerts. The city reminder can also be hidden
+  until the next Torn daily reset.
+- **Efficiency / Merits:** one next incomplete medal or honor per milestone
+  family, with later thresholds summarized on that tile, filters, pagination,
+  and up to three local pins.
 
 ## Safety and usage boundaries
 
