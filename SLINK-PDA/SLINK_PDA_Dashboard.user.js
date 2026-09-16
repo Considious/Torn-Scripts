@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.2.2
+// @version      0.3.0
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -15,6 +15,7 @@
 // @grant        GM_notification
 // @connect      api.torn.com
 // @connect      ffscouter.com
+// @connect      weav3r.dev
 // @connect      slinkyleveling.richard-johnson554.workers.dev
 // @connect      slinkcontributionworker.richard-johnson554.workers.dev
 // @connect      slinkwarworker.richard-johnson554.workers.dev
@@ -24,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.2.2-merit-city-fixes';
+  const BUILD = '0.3.0-extension-parity';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -34,13 +35,23 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.2.2';
+  const CLIENT_VERSION = '0.3.0';
   const URLS = Object.freeze({
     permission:'https://slinkcontributionworker.richard-johnson554.workers.dev',
     leveling:'https://slinkyleveling.richard-johnson554.workers.dev',
     war:'https://slinkwarworker.richard-johnson554.workers.dev',
-    torn:'https://api.torn.com'
+    torn:'https://api.torn.com',
+    weaver:'https://weav3r.dev'
   });
+  const MARKET_PRIORITIES = Object.freeze({ high:0, normal:1, low:2 });
+  const TORN_PRIORITY_LIMITS = Object.freeze({ high:60, normal:50, low:40 });
+  const WEAVER_REFRESH_MS = Object.freeze({ high:35_000, normal:70_000, low:140_000 });
+  const MARKET_TIERS = Object.freeze([5, 10, 15, 20, 25, 30, 35, 40]);
+  const ITEM_MARKET_FALLBACK_MS = 30_000;
+  const POINTS_MARKET_REFRESH_MS = 30_000;
+  const WEAVER_RATE_LIMIT = 80;
+  const WEAVER_RATE_WINDOW_MS = 60_000;
+  const WEAVER_MIN_REQUEST_SPACING_MS = Math.ceil(WEAVER_RATE_WINDOW_MS / WEAVER_RATE_LIMIT);
   const PDA_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const PDA_API_KEY_AVAILABLE = Boolean(PDA_API_KEY && PDA_API_KEY !== PDA_KEY_TOKEN);
@@ -133,6 +144,7 @@
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
         war:{ mode:'war', idleMinutes:5, ...(value.settings?.war || {}) },
         alerts:{ snoozedUntil:{}, cityDoneDay:null, ...(value.settings?.alerts || {}) },
+        market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
       }
     };
@@ -159,12 +171,19 @@
   let swipe = null;
   let networkQueue = Promise.resolve();
   let schedulerTimer = null;
+  let marketObserver = null;
+  let marketFormatTimer = null;
+  let marketWakeTimer = null;
+  let marketQuickBuyLayer = null;
+  let marketPositionFrame = null;
+  const marketQuickBuys = new Map();
   const moduleState = {
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
     war:{ busy:false, error:'', data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
+    market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0 },
     merits:{ busy:false, error:'', data:dataState.caches.merits || null }
   };
 
@@ -279,22 +298,31 @@
     return task();
   }
 
-  async function reserveTornApi(endpoint = 'unknown') {
+  async function reserveTornApi(endpoint = 'unknown', options = {}) {
+    const limit = Math.max(1, Math.min(API_LIMIT, Number(options.limit) || API_LIMIT));
+    const wait = options.wait !== false;
+    const priority = ['high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
     return serializeNetwork(async () => {
       while (true) {
         const reservation = await withApiLock(() => {
           const now = Date.now();
           const ledger = readApiLedger(now);
-          if (ledger.cooldownUntil > now || ledger.events.length >= API_LIMIT) return { waitUntil:Math.max(ledger.cooldownUntil, Number(ledger.events[0]?.at || now) + API_WINDOW_MS + 25) };
+          if (ledger.cooldownUntil > now || ledger.events.length >= limit) return { waitUntil:Math.max(ledger.cooldownUntil, Number(ledger.events[0]?.at || now) + API_WINDOW_MS + 25) };
           ledger.events.push({
             at:now,
             id:`slink-pda:${global.crypto?.randomUUID?.() || `${now}:${Math.random().toString(36).slice(2)}`}`,
-            script:'SLINK PDA Dashboard', priority:'normal', method:'GET', endpoint:String(endpoint).slice(0, 180), tabId:'pda-dashboard'
+            script:'SLINK PDA Dashboard', priority, method:'GET', endpoint:String(endpoint).slice(0, 180), tabId:'pda-dashboard'
           });
           writeApiLedger(ledger);
           return { reservedAt:now };
         });
         if (reservation.reservedAt) return reservation;
+        if (!wait) {
+          const error = new Error('Waiting for shared Torn API capacity.');
+          error.code = 'SLINK_TORN_API_LIMIT';
+          error.retryAfterMs = Math.max(250, reservation.waitUntil - Date.now());
+          throw error;
+        }
         await new Promise(resolve => global.setTimeout(resolve, Math.max(50, Math.min(5_000, reservation.waitUntil - Date.now()))));
       }
     });
@@ -338,6 +366,366 @@
 
   function hasThemeScope(required) {
     return hasAdminScope() || hasScope(required);
+  }
+
+  const THEME_TOKEN_MAP = Object.freeze({
+    '--slink-bg':'--s-bg', '--slink-panel-bg':'--s-panel', '--slink-surface':'--s-panel', '--slink-card':'--s-card',
+    '--slink-bg-control':'--s-control', '--slink-control':'--s-control', '--slink-border':'--s-border', '--slink-border-soft':'--s-soft',
+    '--slink-text':'--s-text', '--slink-muted':'--s-muted', '--slink-accent':'--s-accent', '--slink-accent-alt':'--s-alt',
+    '--slink-ready':'--s-ready', '--slink-warning':'--s-warning', '--slink-error':'--s-error', '--slink-shadow':'--s-shadow', '--slink-page-bg':'--s-page'
+  });
+
+  function bundledThemes() {
+    return [
+      { id:'slink-dark', label:'Dark', description:'The standard free SLINK interface.', scope:null, swatch:['#162331','#2f74ad','#8fc9ff'], tokens:{} },
+      { id:'slinky-pursuit', label:'Pursuit', description:'Chrome coils with red and blue pursuit lighting.', scope:'slink.theme.pursuit', swatch:['#05080d','#ee2525','#167ee7'], tokens:{} },
+      { id:'slinky-underglow', label:'Underglow', description:'Glossy black with purple and green tuner-style underglow.', scope:'slink.theme.underglow', swatch:['#030405','#a53dff','#7bff45'], tokens:{} }
+    ];
+  }
+
+  function themeCatalog() {
+    const themes = dataState.caches.themeCatalog?.catalog?.themes;
+    return Array.isArray(themes) && themes.length ? themes : bundledThemes();
+  }
+
+  function validateThemeCatalog(value) {
+    if (!value || Number(value.schemaVersion) !== 1 || !Array.isArray(value.themes) || !value.themes.length || value.themes.length > 32) throw new Error('Unsupported SLINK theme catalog.');
+    const seen = new Set();
+    const themes = value.themes.map(entry => {
+      const id = String(entry?.id || ''); const label = String(entry?.label || ''); const description = String(entry?.description || ''); const scope = entry?.scope == null ? null : String(entry.scope);
+      if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(id) || seen.has(id) || !label || label.length > 80 || description.length > 180) throw new Error('Theme catalog contains invalid display metadata.');
+      if (scope !== null && !/^slink\.theme\.[a-z0-9][a-z0-9-]{0,63}$/.test(scope)) throw new Error(`Theme ${id} has an invalid permission scope.`);
+      if (!entry.tokens || typeof entry.tokens !== 'object' || Array.isArray(entry.tokens)) throw new Error(`Theme ${id} has invalid tokens.`);
+      const tokens = {};
+      for (const [name, raw] of Object.entries(entry.tokens)) {
+        if (!Object.hasOwn(THEME_TOKEN_MAP, name)) continue;
+        const token = String(raw || '').trim();
+        if (!token || token.length > 320 || !/^[a-zA-Z0-9#(),.%+\-\s]+$/.test(token) || /url\s*\(|expression\s*\(/i.test(token)) throw new Error(`Theme ${id} contains a disallowed token.`);
+        tokens[name] = token;
+      }
+      const swatch = Array.isArray(entry.swatch) ? entry.swatch.slice(0, 3).map(String) : [];
+      if (swatch.length !== 3 || !swatch.every(color => /^#[0-9a-fA-F]{6}$/.test(color))) throw new Error(`Theme ${id} has invalid swatches.`);
+      seen.add(id); return { id, label, description, scope, swatch, tokens };
+    });
+    if (!themes.some(theme => theme.id === 'slink-dark' && !theme.scope)) throw new Error('Theme catalog is missing the free fallback.');
+    return { schemaVersion:1, revision:String(value.revision || ''), updatedAt:String(value.updatedAt || ''), themes };
+  }
+
+  async function loadThemeCatalog(force = false) {
+    const cached = dataState.caches.themeCatalog;
+    if (!force && cached?.catalog && Date.now() - Number(cached.fetchedAt) < 12 * 60 * 60_000) { renderThemeChoices(); return cached.catalog; }
+    try {
+      const response = await requestJson(`${URLS.war}/api/themes`);
+      const catalog = validateThemeCatalog(response?.catalog);
+      dataState.caches.themeCatalog = { catalog, fetchedAt:Date.now(), source:String(response?.source || 'worker') }; writeDataState(); renderThemeChoices(); setTheme(state.theme, false); return catalog;
+    } catch (error) {
+      if (!cached?.catalog) moduleState.access.error = `Theme catalog: ${errorMessage(error)}`;
+      renderThemeChoices(); return cached?.catalog || null;
+    }
+  }
+
+  function renderThemeChoices() {
+    const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
+    row.innerHTML = themeCatalog().map(theme => {
+      const unlocked = !theme.scope || hasThemeScope(theme.scope);
+      const colors = Array.isArray(theme.swatch) && theme.swatch.length === 3 ? theme.swatch : ['#111827','#3b82f6','#dbeafe'];
+      return `<button type="button" data-theme-choice="${escapeHtml(theme.id)}" title="${escapeHtml(unlocked ? theme.description : `Requires ${theme.scope}`)}" class="${unlocked ? '' : 'permission-lock'}"><i class="theme-swatch" style="--c1:${escapeHtml(colors[0])};--c2:${escapeHtml(colors[1])};--c3:${escapeHtml(colors[2])}"></i>${escapeHtml(theme.label)}${unlocked ? '' : ' 🔒'}</button>`;
+    }).join('');
+    row.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === state.theme)));
+  }
+
+  function marketWatchLimit() {
+    const session = validSession('permission');
+    if (!session) return 0;
+    const scopes = Array.isArray(session.scopes) ? session.scopes.map(String) : [];
+    if (scopes.some(scope => scope === '*' || scope === 'admin.*' || scope === 'slink.adhd.*' || scope === 'slink.adhd.marketwatch.*')) return MARKET_TIERS.at(-1);
+    return scopes.reduce((maximum, scope) => {
+      const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
+      return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
+    }, 0);
+  }
+
+  function normalizeMarketPriority(value) {
+    return Object.hasOwn(MARKET_PRIORITIES, value) ? String(value) : 'normal';
+  }
+
+  function normalizeMarketWatch(input = {}, index = 0) {
+    const marketType = input.marketType === 'points' ? 'points' : 'item';
+    return {
+      uid:String(input.uid || `watch-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`).slice(0, 100),
+      marketType,
+      itemId:marketType === 'item' ? Math.max(0, Math.trunc(Number(input.itemId) || 0)) : 0,
+      label:marketType === 'points' ? 'Points' : String(input.label || '').trim().slice(0, 120),
+      maxPrice:Math.max(0, Math.trunc(Number(input.maxPrice) || 0)),
+      priority:normalizeMarketPriority(input.priority),
+      marketEnabled:marketType === 'points' ? true : input.marketEnabled !== false,
+      bazaarEnabled:marketType === 'item' && input.bazaarEnabled !== false,
+      enabled:input.enabled !== false
+    };
+  }
+
+  function marketSettings() {
+    const input = dataState.settings.market && typeof dataState.settings.market === 'object' ? dataState.settings.market : {};
+    dataState.settings.market = {
+      enabled:input.enabled !== false,
+      quickBuyEnabled:input.quickBuyEnabled !== false,
+      lastPriority:normalizeMarketPriority(input.lastPriority),
+      watches:(Array.isArray(input.watches) ? input.watches : []).map(normalizeMarketWatch),
+      dismissals:input.dismissals && typeof input.dismissals === 'object' ? input.dismissals : {}
+    };
+    return dataState.settings.market;
+  }
+
+  function marketRuntime() {
+    const stored = dataState.caches.market && typeof dataState.caches.market === 'object' ? dataState.caches.market : {};
+    return {
+      catalog:stored.catalog && typeof stored.catalog === 'object' ? stored.catalog : { fetchedAt:0, items:[] },
+      results:stored.results && typeof stored.results === 'object' ? stored.results : {},
+      weaver:stored.weaver && typeof stored.weaver === 'object' ? stored.weaver : { events:[], cooldownUntil:0 },
+      fetchedAt:Number(stored.fetchedAt) || 0,
+      lastError:String(stored.lastError || '')
+    };
+  }
+
+  function catalogItems(body = {}) {
+    const rows = Array.isArray(body.items) ? body.items : Object.values(body.items || {});
+    return rows.filter(item => Number(item?.id) > 0 && item?.name && item?.is_tradable !== false && item?.is_masked !== true).map(item => {
+      const shops = Array.isArray(item?.value?.shops) ? item.value.shops : [];
+      const sell = shops.map(shop => ({ price:Number(shop?.sell_price) || 0, shop:String(shop?.shop || ''), country:String(shop?.country || '') }))
+        .filter(row => row.price > 0).sort((left, right) => right.price - left.price)[0]
+        || { price:Number(item?.value?.sell_price) || 0, shop:String(item?.value?.vendor?.name || ''), country:String(item?.value?.vendor?.country || '') };
+      return { id:Math.trunc(Number(item.id)), name:String(item.name), type:String(item.type || 'Other'), image:String(item.image || ''), marketPrice:Math.max(0, Math.trunc(Number(item?.value?.market_price) || 0)), shopSellPrice:Math.max(0, Math.trunc(sell.price || 0)), shopSellName:sell.shop, shopSellCountry:sell.country };
+    }).sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  function marketListings(body = {}) {
+    const source = body?.itemmarket || body?.data?.itemmarket || body;
+    return (Array.isArray(source?.listings) ? source.listings : []).map(row => ({ price:Math.max(0, Math.trunc(Number(row?.price) || 0)), quantity:Math.max(0, Math.trunc(Number(row?.amount ?? row?.quantity) || 0)) })).filter(row => row.price > 0).sort((a, b) => a.price - b.price);
+  }
+
+  function pointsListings(body = {}) {
+    const source = body?.pointsmarket || body?.data?.pointsmarket || body;
+    const rows = Array.isArray(source?.listings) ? source.listings : Array.isArray(source) ? source : Object.values(source?.listings || source || {});
+    return rows.map(row => ({ price:Math.max(0, Math.trunc(Number(row?.cost ?? row?.price ?? row?.price_per_point ?? row?.pricePerPoint) || 0)), quantity:Math.max(0, Math.trunc(Number(row?.quantity ?? row?.amount ?? row?.points) || 0)) })).filter(row => row.price > 0).sort((a, b) => a.price - b.price);
+  }
+
+  function externalTimestampMs(value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric > 10_000_000_000 ? numeric : numeric * 1000;
+    const parsed = Date.parse(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function bazaarUrl(sellerId, itemId, price, updatedAt = 0) {
+    const url = new URL('https://www.torn.com/bazaar.php');
+    url.searchParams.set('userId', String(Math.trunc(Number(sellerId))));
+    url.searchParams.set('itemId', String(Math.trunc(Number(itemId))));
+    url.searchParams.set('price', String(Math.trunc(Number(price))));
+    url.searchParams.set('slinkHighlight', '1');
+    if (updatedAt > 0) url.searchParams.set('v', String(Math.trunc(updatedAt / 1000)));
+    url.hash = '/';
+    return url.toString();
+  }
+
+  function weaverListings(body = {}, itemId = 0) {
+    const candidates = [body?.listings, body?.bazaarListings, body?.bazaar_listings, body?.marketplace?.listings, body?.item?.listings, body?.data?.listings, body?.data?.bazaarListings, body?.data?.bazaar_listings, body];
+    const rows = candidates.find(Array.isArray) || [];
+    return rows.map(row => {
+      const nested = row?.listing && typeof row.listing === 'object' ? row.listing : row?.bazaar && typeof row.bazaar === 'object' ? row.bazaar : row?.offer && typeof row.offer === 'object' ? row.offer : null;
+      const source = nested ? { ...row, ...nested } : row;
+      const seller = source?.seller || source?.player || source?.user || source?.owner || {};
+      const sellerId = Math.trunc(Number(source?.sellerId ?? source?.seller_id ?? source?.playerId ?? source?.player_id ?? source?.userId ?? source?.user_id ?? seller?.id ?? seller?.playerId ?? seller?.userId));
+      const price = Math.trunc(Number(source?.price ?? source?.cost ?? source?.priceEach ?? source?.price_each ?? source?.price_per_item ?? source?.pricePerUnit));
+      if (!(sellerId > 0) || !(price > 0)) return null;
+      const quantity = Math.max(0, Math.trunc(Number(source?.quantity ?? source?.amount ?? source?.stock ?? source?.available ?? source?.item_count) || 0));
+      const sellerName = String(source?.sellerName ?? source?.seller_name ?? source?.playerName ?? source?.player_name ?? source?.userName ?? source?.user_name ?? seller?.name ?? `Player ${sellerId}`).trim() || `Player ${sellerId}`;
+      const updatedAt = externalTimestampMs(source?.lastUpdatedAt ?? source?.last_updated_at ?? source?.updatedAt ?? source?.updated_at ?? source?.lastChecked ?? source?.timestamp);
+      return { sellerId, sellerName, price, quantity, updatedAt, href:bazaarUrl(sellerId, itemId, price, updatedAt) };
+    }).filter(Boolean).sort((a, b) => a.price - b.price);
+  }
+
+  function itemMarketUrl(itemId, price = 0) {
+    return `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${encodeURIComponent(Math.trunc(Number(itemId)))}${price > 0 ? `&slinkPrice=${encodeURIComponent(Math.trunc(Number(price)))}` : ''}`;
+  }
+
+  function marketMoney(value) {
+    return `$${Math.max(0, Math.trunc(Number(value) || 0)).toLocaleString('en-US')}`;
+  }
+
+  function marketPriorityFor(watch, previous = {}) {
+    const listings = watch.marketType === 'points' ? previous?.points?.listings : previous?.market?.listings || previous?.bazaar?.listings;
+    const cheapest = Number(Array.isArray(listings) ? listings[0]?.price : 0) || 0;
+    return cheapest > 0 && watch.maxPrice > 0 && cheapest <= watch.maxPrice ? 'high' : normalizeMarketPriority(watch.priority);
+  }
+
+  function dealDismissKey(deal) {
+    return `${String(deal.id || '')}|${Math.max(0, Number(deal.price) || 0)}|${Math.max(0, Number(deal.quantity) || 0)}`;
+  }
+
+  function marketOpportunities(runtime = marketRuntime()) {
+    const settings = marketSettings();
+    const limit = marketWatchLimit();
+    const catalog = new Map((runtime.catalog?.items || []).map(item => [Number(item.id), item]));
+    const now = Date.now();
+    settings.dismissals = Object.fromEntries(Object.entries(settings.dismissals || {}).filter(([, until]) => Number(until) > now));
+    return settings.watches.slice(0, limit).flatMap(watch => {
+      if (!watch.enabled || !(watch.maxPrice > 0)) return [];
+      const result = runtime.results?.[watch.uid] || {};
+      if (watch.marketType === 'points') {
+        const listing = result.points?.listings?.[0];
+        if (!listing || listing.price > watch.maxPrice) return [];
+        const href = 'https://www.torn.com/pmarket.php';
+        return [{ id:`points:${watch.uid}`, watchUid:watch.uid, source:'Points Market', itemName:'Points', itemId:0, price:listing.price, quantity:listing.quantity, href, detail:`${marketMoney(listing.price)} per point${listing.quantity ? ` × ${number(listing.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}`, shareText:`Points Market | ${marketMoney(listing.price)} per point | target ${marketMoney(watch.maxPrice)} | ${href}` }];
+      }
+      const item = catalog.get(watch.itemId) || {};
+      const name = watch.label || item.name || `Item ${watch.itemId}`;
+      const sellText = item.shopSellPrice > 0 ? `${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : '';
+      const rows = [];
+      const market = result.market?.listings?.[0];
+      if (watch.marketEnabled && market && market.price <= watch.maxPrice) {
+        const href = itemMarketUrl(watch.itemId, market.price);
+        rows.push({ id:`market:${watch.uid}`, watchUid:watch.uid, source:'Item Market', itemId:watch.itemId, itemName:name, price:market.price, quantity:market.quantity, shopSellPrice:item.shopSellPrice || 0, href, detail:`${marketMoney(market.price)}${market.quantity ? ` × ${number(market.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Item Market | ${name} | ${marketMoney(market.price)} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${href}` });
+      }
+      const best = new Map();
+      for (const listing of result.bazaar?.listings || []) if (!best.has(listing.sellerId) || listing.price < best.get(listing.sellerId).price) best.set(listing.sellerId, listing);
+      if (watch.bazaarEnabled) for (const listing of [...best.values()].filter(row => row.price <= watch.maxPrice).slice(0, 5)) rows.push({ id:`bazaar:${watch.uid}:${listing.sellerId}`, watchUid:watch.uid, source:'Bazaar', itemId:watch.itemId, itemName:name, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Bazaar | ${name} | ${marketMoney(listing.price)} | ${listing.sellerName} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${listing.href}` });
+      return rows;
+    }).map(row => ({ ...row, dismissKey:dealDismissKey(row) })).filter(row => !settings.dismissals[row.dismissKey]).sort((a, b) => a.price - b.price);
+  }
+
+  async function marketTornJson(url, endpoint, priority) {
+    const key = currentApiKey();
+    if (!key) throw new Error('Save a Torn API key under Access first.');
+    const normalized = normalizeMarketPriority(priority);
+    await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:normalized });
+    const body = await requestJson(url, { headers:{ Authorization:`ApiKey ${key}` } });
+    if (body?.error) throw new Error(body.error.message || body.error.error || 'Torn API request failed.');
+    return body;
+  }
+
+  async function marketEnsureCatalog(runtime, force = false) {
+    if (!force && runtime.catalog?.items?.length && Date.now() - Number(runtime.catalog.fetchedAt) < 86_400_000) return runtime.catalog;
+    const body = await marketTornJson(`${URLS.torn}/v2/torn/items?cat=All&sort=ASC`, '/v2/torn/items', 'high');
+    const items = catalogItems(body);
+    if (!items.length) throw new Error('Torn returned an empty item catalog.');
+    runtime.catalog = { fetchedAt:Date.now(), items };
+    return runtime.catalog;
+  }
+
+  function marketDue(source, force) {
+    return force || !Number(source?.nextCheckAt) || Number(source.nextCheckAt) <= Date.now();
+  }
+
+  async function marketWeaverJson(url, runtime) {
+    const now = Date.now();
+    const prior = runtime.weaver || {};
+    const events = (Array.isArray(prior.events) ? prior.events : []).map(Number).filter(at => at > now - WEAVER_RATE_WINDOW_MS && at <= now + 5_000).sort((a, b) => a - b);
+    const retryAt = Math.max(Number(prior.cooldownUntil) || 0, Number(events.at(-1) || 0) + WEAVER_MIN_REQUEST_SPACING_MS, events.length >= WEAVER_RATE_LIMIT ? Number(events[0]) + WEAVER_RATE_WINDOW_MS : 0);
+    runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0 };
+    if (retryAt > now) { const error = new Error('Weaver request budget is reserved for a later watch.'); error.retryAfterMs = retryAt - now; throw error; }
+    runtime.weaver.events.push(now);
+    try { return await requestJson(url); }
+    catch (error) {
+      if (Number(error?.status) === 429) runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
+      throw error;
+    }
+  }
+
+  function marketErrorSummary(watches, results) {
+    const capacity = [];
+    const other = [];
+    for (const watch of watches) for (const [source, message] of Object.entries(results[watch.uid]?.errors || {})) {
+      if (/shared Torn API capacity/i.test(message)) capacity.push(watch.label || 'Points');
+      else other.push(`${watch.label || 'Points'} ${source === 'bazaar' ? 'Weaver Bazaar' : source === 'points' ? 'Points Market' : 'Item Market'}: ${message}`);
+    }
+    if (capacity.length) other.unshift(`${capacity.length} Market Watch check${capacity.length === 1 ? '' : 's'} queued for shared Torn API capacity.`);
+    return other.join(' · ');
+  }
+
+  function scheduleMarketWake(runtime = marketRuntime()) {
+    if (marketWakeTimer) global.clearTimeout(marketWakeTimer);
+    marketWakeTimer = null;
+    if (!marketSettings().enabled || marketWatchLimit() <= 0) return;
+    const times = marketSettings().watches.slice(0, marketWatchLimit()).filter(watch => watch.enabled && watch.maxPrice > 0).flatMap(watch => {
+      const result = runtime.results?.[watch.uid] || {};
+      return watch.marketType === 'points'
+        ? [Number(result.points?.nextCheckAt) || Date.now()]
+        : [watch.marketEnabled ? Number(result.market?.nextCheckAt) || Date.now() : 0, watch.bazaarEnabled ? Number(result.bazaar?.nextCheckAt) || Date.now() : 0].filter(Boolean);
+    });
+    if (!times.length) return;
+    const delay = Math.max(1_000, Math.min(...times) - Date.now());
+    marketWakeTimer = global.setTimeout(() => { marketWakeTimer = null; void refreshMarket(false); }, delay);
+  }
+
+  async function refreshMarket(force = false) {
+    const current = moduleState.market;
+    if (current.busy) return;
+    current.busy = true; current.error = ''; current.lastAttemptAt = Date.now();
+    if (dashboardOpen) renderMarket();
+    const runtime = marketRuntime();
+    try {
+      await ensurePermissionSession(false);
+      const limit = marketWatchLimit();
+      if (!limit) throw new Error('Your account does not have a SLINK Market Watch tier.');
+      const settings = marketSettings();
+      await marketEnsureCatalog(runtime, false);
+      if (!settings.enabled) {
+        runtime.fetchedAt = runtime.fetchedAt || Date.now(); current.data = dataState.caches.market = runtime; writeDataState(); return;
+      }
+      const allowed = settings.watches.slice(0, limit);
+      const valid = new Set(allowed.map(watch => watch.uid));
+      runtime.results = Object.fromEntries(Object.entries(runtime.results).filter(([uid]) => valid.has(uid)));
+      const ordered = [...allowed].sort((a, b) => MARKET_PRIORITIES[marketPriorityFor(a, runtime.results[a.uid])] - MARKET_PRIORITIES[marketPriorityFor(b, runtime.results[b.uid])]);
+      let tornBlockedUntil = 0;
+      for (const watch of ordered) {
+        if (!watch.enabled || !(watch.maxPrice > 0)) continue;
+        const previous = runtime.results[watch.uid] || {};
+        const next = { ...previous, errors:{ ...(previous.errors || {}) } };
+        if (watch.marketType === 'points') {
+          if (marketDue(previous.points, force)) {
+            if (tornBlockedUntil > Date.now()) {
+              next.errors.points = 'Waiting for shared Torn API capacity.';
+              next.points = { ...(previous.points || {}), nextCheckAt:tornBlockedUntil };
+            } else try {
+              const body = await marketTornJson(`${URLS.torn}/v2/market?selections=pointsmarket&limit=100`, '/v2/market?selections=pointsmarket', 'high');
+              const now = Date.now(); next.points = { fetchedAt:now, nextCheckAt:now + POINTS_MARKET_REFRESH_MS, listings:pointsListings(body) }; delete next.errors.points;
+            } catch (error) {
+              const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.points = errorMessage(error); next.points = { ...(previous.points || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
+            }
+          }
+        } else if (watch.itemId > 0) {
+          if (watch.marketEnabled && marketDue(previous.market, force)) {
+            if (tornBlockedUntil > Date.now()) {
+              next.errors.market = 'Waiting for shared Torn API capacity.'; next.market = { ...(previous.market || {}), nextCheckAt:tornBlockedUntil };
+            } else try {
+              const priority = marketPriorityFor(watch, previous);
+              const body = await marketTornJson(`${URLS.torn}/v2/market/${encodeURIComponent(watch.itemId)}/itemmarket?limit=5`, `/v2/market/${watch.itemId}/itemmarket`, priority);
+              const source = body?.itemmarket || body?.data?.itemmarket || body;
+              const now = Date.now(); const cacheTimestamp = Math.max(0, Math.trunc(Number(source?.cache_timestamp) || 0)); const delay = Number(source?.cache_delay); const cacheDelayMs = Number.isFinite(delay) && delay >= 0 ? Math.ceil(delay * 1_000) : null;
+              const stale = cacheTimestamp > 0 && cacheTimestamp === Number(previous.market?.cacheTimestamp); const cacheRetryCount = stale ? Number(previous.market?.cacheRetryCount || 0) + 1 : 0;
+              const nextCheckAt = stale ? now + Math.min(5_000, 2_000 + Math.max(0, cacheRetryCount - 1) * 1_000) : cacheTimestamp > 0 && cacheDelayMs !== null ? Math.max(cacheTimestamp * 1_000 + cacheDelayMs + 1_000, now + 1_000) : now + ITEM_MARKET_FALLBACK_MS;
+              next.market = { fetchedAt:now, listings:marketListings(body), cacheTimestamp, cacheDelayMs, cacheRetryCount, nextCheckAt }; delete next.errors.market;
+            } catch (error) {
+              const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.market = errorMessage(error); next.market = { ...(previous.market || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
+            }
+          }
+          if (watch.bazaarEnabled) {
+            const priority = marketPriorityFor(watch, previous);
+            const dueAt = Number(previous.bazaar?.nextCheckAt) || Number(previous.bazaar?.fetchedAt || 0) + WEAVER_REFRESH_MS[priority];
+            if (force || dueAt <= Date.now()) try {
+              const url = `${URLS.weaver}/api/marketplace/${encodeURIComponent(watch.itemId)}?maxPrice=${encodeURIComponent(watch.maxPrice)}&limit=5`;
+              const body = await marketWeaverJson(url, runtime); const now = Date.now(); next.bazaar = { fetchedAt:now, nextCheckAt:now + WEAVER_REFRESH_MS[priority], sourceUrl:url, listings:weaverListings(body, watch.itemId) }; delete next.errors.bazaar;
+            } catch (error) { next.errors.bazaar = errorMessage(error); next.bazaar = { ...(previous.bazaar || {}), nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || 5_000) }; }
+          }
+        }
+        runtime.results[watch.uid] = next;
+      }
+      runtime.fetchedAt = Date.now(); runtime.lastError = marketErrorSummary(allowed, runtime.results);
+      current.data = dataState.caches.market = runtime;
+      reconcileMarketNotifications(runtime);
+      writeDataState();
+    } catch (error) { current.error = errorMessage(error); runtime.lastError = current.error; current.data = dataState.caches.market = runtime; writeDataState(); }
+    finally { current.busy = false; renderMarket(); scheduleMarketDomFormat(); scheduleMarketWake(current.data || runtime); }
   }
 
   function validSession(name) {
@@ -633,6 +1021,7 @@
       ['[data-combat-tab="leveling"]', 'slink.level'],
       ['[data-combat-tab="war"]', 'slink.war'],
       ['[data-efficiency-tab="alerts"]', 'slink.adhd.alerts'],
+      ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch.5'],
       ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
       ['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
       ['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
@@ -640,7 +1029,7 @@
     for (const [selector, scope] of gates) {
       const control = shadow?.querySelector?.(selector);
       if (!control) continue;
-      const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : hasScope(scope);
+      const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : scope === 'slink.adhd.marketwatch.5' ? marketWatchLimit() > 0 : hasScope(scope);
       control.classList.toggle('permission-lock', !allowed);
       control.title = allowed ? '' : `Requires ${scope}`;
     }
@@ -922,6 +1311,27 @@
     return value === null ? null : Math.max(0, Math.ceil(value - Math.max(0, Date.now() - fetchedAt) / 1000));
   }
 
+  function apiRows(value, nestedKey) {
+    if (Array.isArray(value)) return value;
+    if (Array.isArray(value?.[nestedKey])) return value[nestedKey];
+    if (value && typeof value === 'object') return Object.values(value);
+    return [];
+  }
+
+  function raceActive(races, profileStatus = {}, icons = []) {
+    const states = apiRows(races, 'races').flatMap(race => [race?.status, race?.state, race?.status?.state, race?.status?.description, race?.description]);
+    states.push(profileStatus?.state, profileStatus?.description, profileStatus?.details, typeof profileStatus === 'string' ? profileStatus : '');
+    states.push(...apiRows(icons, 'icons').flatMap(icon => [icon?.title, icon?.description, typeof icon === 'string' ? icon : '']));
+    return states.some(value => {
+      const text = String(value ?? '').trim();
+      return /^(?:open|in[_ -]?progress|waiting|scheduled|pending|racing)$/i.test(text)
+        || /\bwaiting\s+for\s+(?:a\s+)?race\b/i.test(text)
+        || /\b(?:currently\s+)?in\s+(?:a\s+)?race\b/i.test(text)
+        || /\b(?:currently\s+)?racing\b/i.test(text)
+        || /\brace\s+(?:in[_ -]?progress|waiting|scheduled|pending)\b/i.test(text);
+    });
+  }
+
   function alertRows(snapshot) {
     const body = snapshot?.body || {};
     const fetchedAt = Number(snapshot?.at) || Date.now();
@@ -938,6 +1348,12 @@
     const missions = acceptedMissions(body?.missions);
     const cityBought = finite(snapshot?.cityBought);
     const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
+    const profile = body?.profile || {};
+    const travel = body?.travel || {};
+    const travelSeconds = Number(travel?.arrival_at) * 1_000 > Date.now() ? Math.ceil((Number(travel.arrival_at) * 1_000 - Date.now()) / 1_000) : Math.max(0, Number(travel?.time_left) || 0);
+    const away = ['traveling', 'abroad'].includes(String(profile?.status?.state || '').toLowerCase()) || travelSeconds > 0;
+    const activeRace = raceActive(body?.races, profile?.status, body?.icons);
+    const racewayKnown = body?.enlistedcars !== undefined || body?.races !== undefined || body?.icons !== undefined;
     add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('boosterCooldown', booster === 0, 'Booster cooldown is clear', 'You can use a booster now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
@@ -947,6 +1363,11 @@
     add('nerveRefill', refillAvailable(body?.refills, 'nerve'), 'Nerve refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('missions', missions.length > 0, missions.length >= 3 ? 'Mission cap reached' : `${missions.length} unfinished mission${missions.length === 1 ? '' : 's'}`, missions.length >= 3 ? 'Complete one before another arrives so you do not miss mission credits.' : missions.map(row => row?.title).filter(Boolean).slice(0, 2).join(' / '), [['Missions','https://www.torn.com/page.php?sid=missions']]);
     add('cityItems', !cityHidden && cityBought !== null && cityBought < 100, 'Buy 100 city items', `${number(cityBought)} / 100 bought since daily reset. Once the shared cap reaches 100, every city-item reminder stops.`, [['City','https://www.torn.com/city.php']]);
+    add('raceOrFly', racewayKnown && !activeRace && !away, 'Start a race or take a flight', 'You are on the ground and not entered in an active race.', [['Raceway','https://www.torn.com/page.php?sid=racing'],['Travel','https://www.torn.com/travelagency.php']]);
+    add('landing', travelSeconds > 0 && travelSeconds <= 10 * 60, 'Landing soon', `${travel?.destination ? `Arriving in ${travel.destination} in ` : 'Landing in '}${duration(travelSeconds)}`, [['Travel','https://www.torn.com/index.php']]);
+    add('organizedCrime', Number(profile?.faction_id || 0) > 0 && (body?.organizedcrime ?? body?.organizedCrime) === null, 'Join an organized crime', 'No current organized crime was returned for your faction membership.', [['Faction crimes','https://www.torn.com/factions.php?step=your#/tab=crimes']]);
+    add('education', Boolean(body?.education) && body.education.current === null, 'Start an education course', 'No active education course was returned.', [['Education','https://www.torn.com/education.php']]);
+    add('casinoTokens', Number(body?.casino?.tokens) > 0, 'Spend casino tokens', `${number(body.casino.tokens)} token${Number(body.casino.tokens) === 1 ? '' : 's'} available.`, [['Casino','https://www.torn.com/casino.php']]);
     const stocks = Array.isArray(body?.stocks) ? body.stocks : [];
     const catalogRows = Array.isArray(snapshot?.stockCatalog?.stocks) ? snapshot.stockCatalog.stocks : Array.isArray(snapshot?.stockCatalog) ? snapshot.stockCatalog : [];
     const stockCatalog = new Map(catalogRows.map(stock => [Number(stock?.id), stock]));
@@ -963,7 +1384,9 @@
   }
 
   function updateAlertIndicator(count) {
-    const total = Math.max(0, Number(count) || 0);
+    const alertTotal = Math.max(0, Number(count) || 0);
+    const marketTotal = marketWatchLimit() > 0 ? marketOpportunities(moduleState.market.data || marketRuntime()).length : 0;
+    const total = alertTotal + marketTotal;
     const badge = shadow?.querySelector?.('.launcher-alert-count');
     if (!badge) return;
     badge.hidden = total === 0;
@@ -1029,7 +1452,7 @@
     try {
       await ensurePermissionSession(false);
       if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
-      const selections = 'bars,cooldowns,travel,education,organizedcrime,refills,missions,casino,profile,races,enlistedcars,stocks,battlestats';
+      const selections = 'bars,cooldowns,travel,education,organizedcrime,refills,missions,casino,profile,races,enlistedcars,icons,stocks,battlestats';
       const day = utcDay();
       const reset = day * 86_400_000;
       const [body, cityCurrent] = await Promise.all([
@@ -1037,9 +1460,9 @@
         tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total')
       ]);
       const currentBought = personalStat(cityCurrent, 'cityitemsbought');
-      let resetBought = cached?.cityDay === day ? finite(cached.cityAtReset) : null;
+      let resetBought = cached?.cityDay === day && Number(cached.cityBaselineVersion) === 2 ? finite(cached.cityAtReset) : null;
       if (resetBought === null) {
-        const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000)}`, 'SLINK PDA city item baseline');
+        const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000) - 1}`, 'SLINK PDA city item baseline');
         resetBought = personalStat(atReset, 'cityitemsbought');
       }
       if (currentBought === null || resetBought === null) throw new Error('Torn returned no usable city-item purchase total.');
@@ -1048,11 +1471,287 @@
         stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
         dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
       }
-      current.data = dataState.caches.alerts = { at:Date.now(), body, stockCatalog, cityDay:day, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
+      current.data = dataState.caches.alerts = { at:Date.now(), body, stockCatalog, cityDay:day, cityBaselineVersion:2, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
       reconcileAlertNotifications(current.data);
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
     finally { current.busy = false; renderAlerts(); }
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text).then(() => true, () => false);
+    const textarea = document.createElement('textarea');
+    textarea.value = text; textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+    document.body.append(textarea); textarea.select();
+    const copied = document.execCommand('copy'); textarea.remove();
+    return Promise.resolve(copied);
+  }
+
+  function factionContainer() {
+    const exact = [...document.querySelectorAll('[id^="faction-"]')].find(node => node.querySelector('textarea[placeholder="Type your message here..."],textarea[class*="textarea"]'));
+    if (exact) return exact;
+    return [...document.querySelectorAll('div,section')].find(node => {
+      const composer = node.querySelector('textarea[placeholder*="message" i],[contenteditable="true"]');
+      const title = node.querySelector('button span,header span');
+      return composer && String(title?.textContent || '').trim().toLowerCase() === 'faction';
+    }) || null;
+  }
+
+  function factionLauncher() {
+    return [...document.querySelectorAll('button,a,[role="button"]')].find(node => {
+      const label = [node.getAttribute?.('aria-label'), node.getAttribute?.('title'), node.textContent].filter(Boolean).join(' ').trim().toLowerCase();
+      return label === 'faction' || label.includes('faction chat') || label.includes('open faction');
+    }) || null;
+  }
+
+  function factionComposer(container) {
+    return container?.querySelector('textarea[placeholder="Type your message here..."],textarea[class*="textarea"],textarea,[contenteditable="true"]') || null;
+  }
+
+  async function waitFor(check, timeoutMs = 2_000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const value = check(); if (value) return value;
+      await new Promise(resolve => global.setTimeout(resolve, 75));
+    }
+    return null;
+  }
+
+  async function sendToFaction(text) {
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) return false;
+    let container = factionContainer(); let input = factionComposer(container);
+    if (!input) {
+      const launcher = factionLauncher(); if (!launcher) return false;
+      launcher.click();
+      const found = await waitFor(() => { const next = factionContainer(); const field = factionComposer(next); return field ? { next, field } : null; });
+      container = found?.next; input = found?.field;
+    }
+    if (!input || !document.hasFocus()) return false;
+    input.focus();
+    if (input.matches('textarea,input')) {
+      const prototype = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (setter) setter.call(input, text); else input.value = text;
+    } else input.textContent = text;
+    input.dispatchEvent(new Event('input', { bubbles:true, composed:true }));
+    input.dispatchEvent(new Event('change', { bubbles:true, composed:true }));
+    const send = await waitFor(() => [...(container?.querySelectorAll('button,[role="button"]') || [])].find(button => {
+      const label = [button.getAttribute('aria-label'), button.getAttribute('title'), button.textContent].filter(Boolean).join(' ').toLowerCase();
+      return !button.disabled && (button.type === 'submit' || label.trim() === 'send' || label.includes('send message'));
+    }), 1_500);
+    if (!send || !document.hasFocus()) return false;
+    send.click(); return true;
+  }
+
+  function reconcileMarketNotifications(runtime) {
+    const deals = marketOpportunities(runtime);
+    const currentIds = deals.map(deal => deal.dismissKey);
+    const prior = dataState.caches.marketNotificationIds;
+    if (Array.isArray(prior)) {
+      const seen = new Set(prior.map(String));
+      deals.filter(deal => !seen.has(deal.dismissKey)).forEach(deal => showSystemAlert({ id:`market-${deal.id}`, title:`${deal.itemName} at ${marketMoney(deal.price)}`, detail:`${deal.source}: ${deal.detail}` }));
+    }
+    dataState.caches.marketNotificationIds = currentIds;
+    updateAlertIndicator(alertRows(moduleState.alerts.data).length);
+  }
+
+  function marketItemLabel(item) {
+    return `${item.name} [${item.id}]${item.shopSellPrice > 0 ? ` · shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : ''}`;
+  }
+
+  function renderMarket() {
+    const root = moduleRoot('market');
+    if (!root) return;
+    const limit = marketWatchLimit();
+    if (!limit) { root.innerHTML = lockedModule('slink.adhd.marketwatch.5', 'SLINK Market Watch'); return; }
+    const current = moduleState.market;
+    const runtime = current.data || marketRuntime();
+    const settings = marketSettings();
+    const deals = marketOpportunities(runtime);
+    const usage = apiUsage();
+    const edit = settings.watches.find(watch => watch.uid === current.editingUid) || null;
+    const form = edit || { marketType:'item', itemId:0, label:'', maxPrice:0, priority:settings.lastPriority, marketEnabled:true, bazaarEnabled:true };
+    const catalog = Array.isArray(runtime.catalog?.items) ? runtime.catalog.items : [];
+    const selectedItem = catalog.find(item => item.id === Number(form.itemId));
+    const itemValue = selectedItem ? marketItemLabel(selectedItem) : form.label ? `${form.label}${form.itemId ? ` [${form.itemId}]` : ''}` : '';
+    const error = current.error || runtime.lastError;
+    root.innerHTML = `<div class="grid">
+      <article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2><span class="muted">API only: Torn Item/Points Market and Weaver marketplace JSON. Page DOM is used only for highlighting and the SLINK Buy control.</span></div><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
+        ${error ? moduleMessage(error, 'error') : ''}
+        <div class="market-form">
+          <label>Watch type<select data-field="market-type"><option value="item" ${form.marketType === 'item' ? 'selected' : ''}>Item</option><option value="points" ${form.marketType === 'points' ? 'selected' : ''}>Points Market</option></select></label>
+          <label class="market-item-field">Item<input type="text" data-field="market-item" list="slink-market-item-options" value="${escapeHtml(itemValue)}" placeholder="Type an item name" ${form.marketType === 'points' ? 'disabled' : ''}><small>${catalog.length ? `${number(catalog.length)} API catalog items loaded automatically.` : 'Loading Torn item names and shop sell prices automatically…'}</small></label>
+          <label>Maximum price<input type="number" inputmode="numeric" min="1" step="1" data-field="market-price" value="${form.maxPrice || ''}" placeholder="Target price"></label>
+          <label>Priority<select data-field="market-priority"><option value="high" ${form.priority === 'high' ? 'selected' : ''}>High</option><option value="normal" ${form.priority === 'normal' ? 'selected' : ''}>Normal</option><option value="low" ${form.priority === 'low' ? 'selected' : ''}>Low</option></select></label>
+          <fieldset class="market-sources" ${form.marketType === 'points' ? 'disabled' : ''}><legend>Sources</legend><label><input type="checkbox" data-field="market-source" ${form.marketEnabled ? 'checked' : ''}> Item Market</label><label><input type="checkbox" data-field="bazaar-source" ${form.bazaarEnabled ? 'checked' : ''}> Weaver Bazaar</label></fieldset>
+          <div class="market-form-actions"><button type="button" data-action="save-market-watch">${edit ? 'Update watch' : 'Save watch'}</button><button type="button" data-action="clear-market-form">Clear</button></div>
+        </div>
+        <datalist id="slink-market-item-options">${catalog.map(item => `<option value="${escapeHtml(marketItemLabel(item))}"></option>`).join('')}</datalist>
+        <div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label></div>
+      </article>
+      <article class="card full"><div class="card-head"><div><h2>Active deals</h2><span class="muted">Updated ${relativeTime(runtime.fetchedAt)} · Torn API ${usage.count}/${usage.limit} in the shared rolling minute</span></div><span class="badge ${deals.length ? 'ready' : ''}">${deals.length}</span></div>
+        <div class="market-bulk-actions"><button type="button" data-action="copy-market-list" ${deals.length ? '' : 'disabled'}>Copy item list</button><button type="button" data-action="send-market-list" ${deals.length ? '' : 'disabled'}>Send list to Faction</button></div>
+        <div class="market-deals">${deals.length ? deals.map(deal => `<article class="market-deal"><strong>${escapeHtml(deal.source)} · ${escapeHtml(deal.itemName)}</strong><span>${escapeHtml(deal.detail)}</span><div class="target-actions"><a href="${escapeHtml(deal.href)}">Open &amp; highlight</a><button type="button" data-action="copy-market-deal" data-market-deal="${escapeHtml(deal.id)}">Copy</button><button type="button" data-action="send-market-deal" data-market-deal="${escapeHtml(deal.id)}">Send to Faction</button><button type="button" data-action="dismiss-market-deal" data-market-dismiss="${escapeHtml(deal.dismissKey)}">Dismiss 5m</button></div></article>`).join('') : '<div class="module-message">No watched listing is currently at or below its target.</div>'}</div>
+      </article>
+      <article class="card full"><div class="card-head"><div><h2>Configured watches</h2><span class="muted">High follows Torn cache timestamp + API delay + 1 second; normal reserves 10 calls/min and low reserves 20 for other features.</span></div></div><div class="market-watch-grid">${settings.watches.length ? settings.watches.map(watch => { const item = catalog.find(row => row.id === watch.itemId); const sell = item?.shopSellPrice > 0 ? ` · shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : ''; return `<article class="market-watch"><strong>${escapeHtml(watch.label || 'Points Market')}${watch.itemId ? ` [${watch.itemId}]` : ''}</strong><span>Target ${marketMoney(watch.maxPrice)} · ${escapeHtml(watch.priority)} · ${watch.marketType === 'points' ? 'Points Market' : [watch.marketEnabled && 'Item Market', watch.bazaarEnabled && 'Weaver Bazaar'].filter(Boolean).join(' + ')}${escapeHtml(sell)}</span><div class="target-actions"><button type="button" data-action="edit-market-watch" data-market-watch="${escapeHtml(watch.uid)}">Edit</button><button class="danger" type="button" data-action="remove-market-watch" data-market-watch="${escapeHtml(watch.uid)}">Remove</button></div></article>`; }).join('') : '<div class="module-message">No watches saved yet.</div>'}</div></article>
+    </div>`;
+    updateAlertIndicator(alertRows(moduleState.alerts.data).length);
+  }
+
+  function readMarketForm() {
+    const root = moduleRoot('market');
+    const type = root?.querySelector('[data-field="market-type"]')?.value === 'points' ? 'points' : 'item';
+    const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+    const itemText = String(root?.querySelector('[data-field="market-item"]')?.value || '').trim();
+    const bracketId = Number(itemText.match(/\[(\d+)\]/)?.[1]) || 0;
+    const exact = catalog.find(item => item.id === bracketId) || catalog.find(item => item.name.toLowerCase() === itemText.toLowerCase());
+    return normalizeMarketWatch({
+      uid:moduleState.market.editingUid || undefined,
+      marketType:type,
+      itemId:type === 'points' ? 0 : exact?.id || bracketId,
+      label:type === 'points' ? 'Points' : exact?.name || itemText.replace(/\s*\[\d+\].*$/, '').trim(),
+      maxPrice:Number(root?.querySelector('[data-field="market-price"]')?.value) || 0,
+      priority:root?.querySelector('[data-field="market-priority"]')?.value,
+      marketEnabled:root?.querySelector('[data-field="market-source"]')?.checked,
+      bazaarEnabled:root?.querySelector('[data-field="bazaar-source"]')?.checked
+    });
+  }
+
+  function saveMarketWatch() {
+    const settings = marketSettings(); const limit = marketWatchLimit(); const watch = readMarketForm();
+    if (!(watch.maxPrice > 0)) { moduleState.market.error = 'Enter a maximum price greater than zero.'; renderMarket(); return; }
+    const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+    if (watch.marketType === 'item' && (!(watch.itemId > 0) || !catalog.some(item => Number(item.id) === watch.itemId))) { moduleState.market.error = 'Choose an item from the API-loaded name list.'; renderMarket(); return; }
+    if (watch.marketType === 'item' && !watch.marketEnabled && !watch.bazaarEnabled) { moduleState.market.error = 'Choose Item Market, Weaver Bazaar, or both.'; renderMarket(); return; }
+    const index = settings.watches.findIndex(row => row.uid === watch.uid);
+    if (index < 0 && settings.watches.length >= limit) { moduleState.market.error = `Your permission allows ${limit} watches.`; renderMarket(); return; }
+    if (index >= 0) settings.watches[index] = watch; else settings.watches.push(watch);
+    settings.lastPriority = watch.priority; moduleState.market.editingUid = ''; moduleState.market.error = '';
+    const runtime = marketRuntime(); delete runtime.results[watch.uid]; dataState.caches.market = runtime;
+    writeDataState(); renderMarket(); void refreshMarket(false);
+  }
+
+  function marketPurchasePage() {
+    const url = new URL(location.href); const joined = `${url.search}&${url.hash}`;
+    const itemId = Number(joined.match(/(?:itemID|itemId)=(\d+)/i)?.[1] || url.searchParams.get('itemId')) || 0;
+    const price = Number(joined.match(/slinkPrice=(\d+)/i)?.[1] || url.searchParams.get('price')) || 0;
+    const bazaar = url.pathname.toLowerCase().endsWith('/bazaar.php');
+    const market = String(url.searchParams.get('sid') || '').toLowerCase() === 'itemmarket' || /itemmarket/i.test(url.pathname) || /(?:^|\/)itemmarket(?:\/|$)/i.test(url.hash.replace(/^#\/?/, ''));
+    return bazaar || market ? { itemId, price, bazaar, market, linked:itemId > 0 && price > 0 && (market || url.searchParams.get('slinkHighlight') === '1') } : null;
+  }
+
+  function marketNodePrice(node) {
+    const text = String(node.querySelector('[data-testid="price"],[class*="price___"]')?.textContent || node.textContent || '');
+    const match = text.match(/\$\s*([\d,]+(?:\.\d+)?)/) || text.match(/^\s*([\d,]+(?:\.\d+)?)/);
+    return match ? Number(match[1].replaceAll(',', '')) : 0;
+  }
+
+  function marketNodeItemId(node) {
+    const declared = Number(node?.dataset?.itemId || node?.getAttribute?.('data-item-id')) || 0;
+    if (declared > 0) return Math.trunc(declared);
+    const image = node.querySelector('img[src*="/images/items/"],img[srcset*="/images/items/"]');
+    const imageId = Number(`${image?.getAttribute?.('src') || ''} ${image?.getAttribute?.('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i)?.[1]) || 0;
+    if (imageId > 0) return imageId;
+    const href = node.querySelector('a[href*="itemID=" i],a[href*="itemId=" i]')?.getAttribute('href') || '';
+    return Number(href.match(/(?:itemID|itemId)=(\d+)/i)?.[1]) || 0;
+  }
+
+  function marketPageItemId(page) {
+    if (page.itemId > 0) return page.itemId;
+    const main = document.querySelector('#mainContainer,#main-container,[data-testid="main-content"],main[role="main"],main');
+    const ids = [...new Set([...(main?.querySelectorAll('img[src*="/images/items/"],img[srcset*="/images/items/"]') || [])].map(image => Number(`${image.getAttribute('src') || ''} ${image.getAttribute('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i)?.[1]) || 0).filter(Boolean))];
+    return ids.length === 1 ? ids[0] : 0;
+  }
+
+  function marketPurchaseNodes(page) {
+    if (page.bazaar) {
+      const container = document.querySelector('[data-testid="bazaar-items"]'); if (!container) return [];
+      const direct = [...container.querySelectorAll('[data-testid="item"]')];
+      return direct.length ? direct : [...new Set([...container.querySelectorAll('img[src*="/images/items/"],img[srcset*="/images/items/"]')].map(image => image.closest('[class*="item___"],article,li')).filter(Boolean))];
+    }
+    const rows = [...document.querySelectorAll('ul[class*="sellerList___"] li[class*="rowWrapper___"],[data-testid="seller-row"],[data-testid="market-listing"]')].filter(node => node.querySelector('[class*="sellerRow___"],[class*="price___"],[data-testid="price"]'));
+    if (rows.length) return [...new Set(rows)];
+    return [...new Set([...document.querySelectorAll('button[class*="buyButton___"],button[aria-label^="Buy "]')].map(button => button.closest('li,article,[class*="rowWrapper___"]')).filter(Boolean))];
+  }
+
+  function marketNodeUnavailable(node) {
+    if (node.matches('[aria-disabled="true"],[data-disabled="true"],[class*="disabled" i],[class*="unavailable" i],[class*="soldOut" i]') || node.querySelector('[class*="isBlockedForBuying"],#isBlockedForBuyingTooltip')) return true;
+    if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(node.textContent || ''))) return true;
+    const controls = [...node.querySelectorAll('button,[role="button"]')].filter(button => !button.matches('[data-slink-market-buy]') && (/\b(?:buy|purchase)\b/i.test(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`) || button.matches('[class*="buyButton___"],[class*="controlPanelButton___"]')));
+    return controls.length > 0 && !controls.some(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+  }
+
+  function marketFillMaximum(node, price) {
+    const input = node.querySelector('input[data-testid="legacy-money-input"]:not([type="hidden"]),input.input-money:not([type="hidden"]),input[type="number"]');
+    if (!input || input.disabled || input.readOnly) return;
+    const stock = Number(String(input.dataset?.money || '').replace(/[^\d]/g, '')) || Number(String(node.textContent || '').match(/([\d,]+)\s+(?:available|in stock)/i)?.[1]?.replaceAll(',', '')) || Number(input.max) || 1;
+    const availableMoney = Number(String(document.querySelector('#user-money')?.dataset?.money || '').replace(/[^\d]/g, '')) || Number.POSITIVE_INFINITY;
+    const maximum = Math.max(1, Math.min(stock, Number.isFinite(availableMoney) && price > 0 ? Math.floor(availableMoney / price) : stock));
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(input, String(maximum)); else input.value = String(maximum);
+    input.dispatchEvent(new Event('input', { bubbles:true })); input.dispatchEvent(new Event('change', { bubbles:true }));
+  }
+
+  function ensureMarketQuickBuyLayer() {
+    if (marketQuickBuyLayer?.isConnected) return marketQuickBuyLayer;
+    marketQuickBuyLayer = document.createElement('div'); marketQuickBuyLayer.dataset.slinkMarketBuyLayer = 'true';
+    marketQuickBuyLayer.style.cssText = 'position:fixed;inset:0;z-index:2147483645;pointer-events:none'; document.body.appendChild(marketQuickBuyLayer); return marketQuickBuyLayer;
+  }
+
+  function positionMarketQuickBuy(button, native) {
+    if (!button?.isConnected || !native?.isConnected) return;
+    const rect = native.getBoundingClientRect(); const hidden = rect.width <= 0 || rect.height <= 0 || rect.right < 0 || rect.bottom < 0 || rect.left > innerWidth || rect.top > innerHeight;
+    button.style.display = hidden ? 'none' : 'flex'; if (hidden) return;
+    button.style.left = `${Math.round(rect.left * 10) / 10}px`; button.style.top = `${Math.round(rect.top * 10) / 10}px`; button.style.width = `${Math.round(rect.width * 10) / 10}px`; button.style.height = `${Math.round(rect.height * 10) / 10}px`;
+  }
+
+  function syncMarketQuickBuyPositions() {
+    if (marketPositionFrame) return;
+    marketPositionFrame = global.requestAnimationFrame(() => { marketPositionFrame = null; marketQuickBuys.forEach((spec, native) => positionMarketQuickBuy(spec.button, native)); });
+  }
+
+  function removeMarketQuickBuy(native) {
+    marketQuickBuys.get(native)?.button?.remove(); native?.removeAttribute?.('data-slink-market-buy-native'); marketQuickBuys.delete(native);
+    if (!marketQuickBuys.size) { marketQuickBuyLayer?.remove(); marketQuickBuyLayer = null; }
+  }
+
+  function clearMarketQuickBuys() {
+    [...marketQuickBuys.keys()].forEach(removeMarketQuickBuy); document.querySelectorAll('[data-slink-market-buy]').forEach(button => button.remove()); marketQuickBuyLayer?.remove(); marketQuickBuyLayer = null;
+  }
+
+  function installMarketQuickBuy(node, price) {
+    if (!marketSettings().quickBuyEnabled) return null;
+    const native = [...node.querySelectorAll('button,[role="button"]')].find(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true' && !button.matches('[data-slink-market-buy]') && (/\b(?:buy|purchase)\b/i.test(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`) || button.matches('[class*="buyButton___"],[class*="controlPanelButton___"]')));
+    if (!native) return null;
+    const existing = marketQuickBuys.get(native); if (existing) { existing.node = node; existing.price = price; positionMarketQuickBuy(existing.button, native); return native; }
+    const button = document.createElement('button'); button.type = 'button'; button.dataset.slinkMarketBuy = 'true'; button.textContent = 'SLINK Buy'; button.title = 'SLINK Buy maximum available quantity';
+    button.style.cssText = 'position:fixed;box-sizing:border-box;display:flex;align-items:center;justify-content:center;margin:0;padding:0 3px;border:1px solid rgba(255,255,255,.32);border-radius:4px;background:linear-gradient(#b9ff68,#68c51d);box-shadow:inset 0 1px rgba(255,255,255,.48),0 0 7px rgba(112,255,40,.55);color:#111;font:700 10px/1.1 Arial,sans-serif;text-align:center;text-transform:uppercase;overflow:hidden;cursor:pointer;pointer-events:auto';
+    button.addEventListener('click', event => { if (!event.isTrusted || document.visibilityState !== 'visible' || !document.hasFocus()) return; event.preventDefault(); event.stopImmediatePropagation(); const spec = marketQuickBuys.get(native); if (!spec || native.disabled) return; marketFillMaximum(spec.node, spec.price); native.click(); [40, 160, 450].forEach(delay => global.setTimeout(scheduleMarketDomFormat, delay)); });
+    native.dataset.slinkMarketBuyNative = 'true'; ensureMarketQuickBuyLayer().appendChild(button); marketQuickBuys.set(native, { button, node, price }); positionMarketQuickBuy(button, native); return native;
+  }
+
+  function formatMarketPurchasePage() {
+    const page = marketPurchasePage();
+    const cleanup = node => { ['data-slink-market-highlight','data-slink-market-targeted','data-slink-market-shop-profit','data-slink-market-one-dollar','data-slink-market-reason'].forEach(name => node.removeAttribute(name)); node.style.removeProperty('outline'); node.style.removeProperty('outline-offset'); node.style.removeProperty('box-shadow'); marketQuickBuys.forEach((spec, native) => { if (spec.node === node) removeMarketQuickBuy(native); }); };
+    if (!page || marketWatchLimit() <= 0) { document.querySelectorAll('[data-slink-market-highlight]').forEach(cleanup); clearMarketQuickBuys(); return; }
+    const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+    const nodes = marketPurchaseNodes(page); const matched = new Set(); const activeBuys = new Set();
+    for (const node of nodes) {
+      const price = marketNodePrice(node); const itemId = marketNodeItemId(node) || marketPageItemId(page);
+      const image = node.querySelector('img[src*="/images/items/"],img[srcset*="/images/items/"]'); const name = String(node.querySelector('[data-testid="name"]')?.textContent || image?.getAttribute('alt') || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const item = catalog.find(row => row.id === itemId) || catalog.find(row => name && row.name.toLowerCase() === name);
+      const available = !marketNodeUnavailable(node); const targeted = page.linked && (page.itemId <= 0 || itemId <= 0 || itemId === page.itemId) && price === page.price; const oneDollar = available && price === 1; const shopProfit = available && price > 0 && Number(item?.shopSellPrice) > 0 && price < Number(item.shopSellPrice);
+      if (!targeted && !oneDollar && !shopProfit) { if (node.hasAttribute('data-slink-market-highlight')) cleanup(node); continue; }
+      matched.add(node); node.dataset.slinkMarketHighlight = targeted ? 'targeted' : shopProfit ? 'shop-profit' : 'one-dollar'; node.toggleAttribute('data-slink-market-targeted', targeted); node.toggleAttribute('data-slink-market-shop-profit', shopProfit); node.toggleAttribute('data-slink-market-one-dollar', oneDollar);
+      const color = targeted || oneDollar ? '#39ff14' : '#ff4fbd'; const glow = targeted || oneDollar ? 'rgba(57,255,20,.72)' : 'rgba(255,79,189,.68)'; node.style.setProperty('outline', `4px solid ${color}`, 'important'); node.style.setProperty('outline-offset', '2px', 'important'); node.style.setProperty('box-shadow', `0 0 18px 5px ${glow}`, 'important'); node.dataset.slinkMarketReason = targeted ? 'SLINK API-matched listing' : shopProfit ? `Below city shop sell price (${marketMoney(item.shopSellPrice)})` : '$1 purchase opportunity';
+      if (available) { const native = installMarketQuickBuy(node, price); if (native) activeBuys.add(native); }
+    }
+    document.querySelectorAll('[data-slink-market-highlight]').forEach(node => { if (!matched.has(node)) cleanup(node); }); marketQuickBuys.forEach((_spec, native) => { if (!activeBuys.has(native)) removeMarketQuickBuy(native); });
+  }
+
+  function scheduleMarketDomFormat() {
+    if (marketFormatTimer) return;
+    marketFormatTimer = global.setTimeout(() => { marketFormatTimer = null; formatMarketPurchasePage(); }, 80);
   }
 
   function cleanAwardText(value) {
@@ -1181,12 +1880,12 @@
     if (!dashboardOpen || document.hidden) return;
     const name = activeModuleName();
     if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
-    const loaders = { leveling:refreshLeveling, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, merits:refreshMerits };
+    const loaders = { leveling:refreshLeveling, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderWar(); renderStats(); renderAlerts(); renderMerits(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -1194,6 +1893,8 @@
     schedulerTimer = global.setInterval(() => {
       const canRefreshAlerts = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
       if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
+      const canRefreshMarket = Boolean(currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
+      if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= 15_000) void refreshMarket(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -1243,7 +1944,7 @@
     .target-list,.alert-list,.merit-list{display:grid;gap:7px}.target,.alert,.merit{display:grid;gap:7px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target{grid-template-columns:minmax(0,1fr) auto;align-items:center}.target strong,.target small{display:block}.target small{color:var(--s-muted)}.target button{padding:5px 12px}.alert{border-left:4px solid var(--s-ready)}.alert.warn{border-left-color:var(--s-warning)}.alert strong,.alert span{display:block}.alert span{color:var(--s-muted)}
     .two-column{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.mini{padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mini span,.mini strong{display:block}.mini span{color:var(--s-muted);font-size:9px}
     .meter{height:6px;overflow:hidden;border-radius:99px;background:#05080b}.meter i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--s-accent),var(--s-alt))}
-    .later{color:var(--s-muted);font-size:10px}.theme-row{display:flex;gap:7px;flex-wrap:wrap}.theme-row button{padding:7px 11px}.theme-row button[aria-selected="true"]{outline:2px solid var(--s-alt);outline-offset:1px}
+    .later{color:var(--s-muted);font-size:10px}.theme-row{display:flex;gap:7px;flex-wrap:wrap}.theme-row button{display:flex;align-items:center;gap:7px;padding:7px 11px}.theme-row button[aria-selected="true"]{outline:2px solid var(--s-alt);outline-offset:1px}.theme-swatch{width:29px;height:15px;border:1px solid var(--s-soft);border-radius:999px;background:linear-gradient(90deg,var(--c1) 0 33%,var(--c2) 33% 67%,var(--c3) 67%);box-shadow:0 0 5px var(--s-shadow)}
     .recovery{display:grid;gap:8px}.recovery code{padding:3px 5px;border-radius:4px;background:var(--s-bg);color:var(--s-alt)}
     .module-message{padding:11px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.module-message.error{border-color:var(--s-error);color:var(--s-error)}.module-message.locked{border-color:var(--s-warning);color:var(--s-warning)}
     .module-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:10px}.module-toolbar>span{min-width:0;flex:1;color:var(--s-muted)}.module-toolbar button{padding:6px 12px}
@@ -1252,14 +1953,15 @@
     .target-actions{display:flex;flex-wrap:wrap;gap:6px}.target-actions a,.alert a{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:5px 10px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-control);color:var(--s-text);text-decoration:none}.target-actions button,.alert button{padding:5px 10px}
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
+    .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}
-    @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}}
+    @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:700px){
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:7px max(8px,env(safe-area-inset-right)) max(7px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -7px 20px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:5px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:1px;font-size:18px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:10px max(9px,env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) max(9px,env(safe-area-inset-left))}.page-head{align-items:center}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:44px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:11px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:11px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(orientation:landscape) and (max-height:520px){.topbar{min-height:50px}.brand-mark{width:32px;height:32px}.scroll{padding-top:8px}.primary-nav{position:absolute;top:50px;right:0;bottom:0;left:auto;width:94px;flex-direction:column;justify-content:flex-start;padding:8px max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) 8px;border-top:0;border-bottom:0;border-left:1px solid var(--s-border);box-shadow:-7px 0 20px var(--s-shadow)}.primary-nav button{width:100%;min-width:0;min-height:54px;flex:0 0 auto}.scroll{padding-right:104px;padding-bottom:max(10px,env(safe-area-inset-bottom))}}
@@ -1300,15 +2002,16 @@
         <div class="subpage" data-combat-panel="stats" hidden><div data-module-root="stats"></div></div>
       </section>
       <section class="page" data-page-panel="efficiency" hidden>
-        <div class="page-head"><div><h1>Efficiency</h1><p>API-backed reminders and Merit farms, locally coordinated inside PDA.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
-        <nav class="subnav" aria-label="Efficiency tools"><button type="button" data-efficiency-tab="alerts">Alerts</button><button type="button" data-efficiency-tab="merits">Merits</button></nav>
+        <div class="page-head"><div><h1>Efficiency</h1><p>API-backed reminders, market watches, and Merit farms coordinated inside PDA.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
+        <nav class="subnav" aria-label="Efficiency tools"><button type="button" data-efficiency-tab="alerts">Alerts</button><button type="button" data-efficiency-tab="market">Market</button><button type="button" data-efficiency-tab="merits">Merits</button></nav>
         <div class="subpage" data-efficiency-panel="alerts"><div data-module-root="alerts"></div></div>
+        <div class="subpage" data-efficiency-panel="market" hidden><div data-module-root="market"></div></div>
         <div class="subpage" data-efficiency-panel="merits" hidden><div data-module-root="merits"></div></div>
       </section>
       <section class="page" data-page-panel="access" hidden>
         <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
         <div data-module-root="access"></div>
-        <div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The movable bubble appears only after the dashboard closes.</span><span>Drag the bubble anywhere. Its position is clamped back onscreen after rotation and resizing.</span><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Pursuit and Underglow require their SLINK theme permissions.</span></div></div><div class="theme-row"><button type="button" data-theme-choice="slink-dark">Dark</button><button type="button" data-theme-choice="slinky-pursuit">Pursuit</button><button type="button" data-theme-choice="slinky-underglow">Underglow</button></div></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
+        <div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The movable bubble appears only after the dashboard closes.</span><span>Drag the bubble anywhere. Its position is clamped back onscreen after rotation and resizing.</span><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Loaded from the same permission-gated catalog as the extension.</span></div><button type="button" data-action="refresh-themes">Refresh</button></div><div class="theme-row"></div></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
       </section>
     </main>`;
 
@@ -1352,7 +2055,7 @@
   }
 
   function selectSubpage(group, tab, persist = true) {
-    const allowed = group === 'combat' ? ['leveling', 'war', 'stats'] : ['alerts', 'merits'];
+    const allowed = group === 'combat' ? ['leveling', 'war', 'stats'] : ['alerts', 'market', 'merits'];
     if (!allowed.includes(tab)) tab = allowed[0];
     state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
     shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
@@ -1362,11 +2065,13 @@
   }
 
   function setTheme(theme, persist = true) {
-    if (!['slink-dark', 'slinky-pursuit', 'slinky-underglow'].includes(theme)) theme = 'slink-dark';
-    const required = { 'slinky-pursuit':'slink.theme.pursuit', 'slinky-underglow':'slink.theme.underglow' }[theme];
-    if (required && !hasThemeScope(required)) theme = 'slink-dark';
+    let definition = themeCatalog().find(item => item.id === theme) || themeCatalog().find(item => item.id === 'slink-dark') || bundledThemes()[0];
+    if (definition.scope && !hasThemeScope(definition.scope)) definition = themeCatalog().find(item => item.id === 'slink-dark') || bundledThemes()[0];
+    theme = definition.id;
     state.theme = theme;
     host.dataset.theme = theme;
+    for (const property of new Set(Object.values(THEME_TOKEN_MAP))) host.style.removeProperty(property);
+    for (const [name, value] of Object.entries(definition.tokens || {})) if (THEME_TOKEN_MAP[name]) host.style.setProperty(THEME_TOKEN_MAP[name], value);
     shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
     if (persist) writeState();
   }
@@ -1462,6 +2167,7 @@
     if (action === 'reset-layout') resetLayout();
     if (action === 'refresh-active') void loadActiveModule(true);
     if (action === 'load-terms') void loadTerms(true);
+    if (action === 'refresh-themes') void loadThemeCatalog(true);
     if (action === 'save-access') void saveAccess();
     if (action === 'clear-access') {
       dataState.apiKey = '';
@@ -1491,6 +2197,29 @@
       writeDataState();
       renderAlerts();
     }
+    if (action === 'save-market-watch') saveMarketWatch();
+    if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.error = ''; renderMarket(); }
+    if (action === 'edit-market-watch') { moduleState.market.editingUid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || ''); moduleState.market.error = ''; renderMarket(); shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' }); }
+    if (action === 'remove-market-watch') {
+      const uid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
+      const settings = marketSettings(); settings.watches = settings.watches.filter(watch => watch.uid !== uid); if (moduleState.market.editingUid === uid) moduleState.market.editingUid = '';
+      const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; writeDataState(); renderMarket(); scheduleMarketDomFormat();
+    }
+    if (action === 'dismiss-market-deal') {
+      const key = String(event.target.closest('[data-market-dismiss]')?.dataset.marketDismiss || '');
+      if (key) { marketSettings().dismissals[key] = Date.now() + 5 * 60_000; writeDataState(); renderMarket(); }
+    }
+    if (action === 'copy-market-deal' || action === 'send-market-deal') {
+      const id = String(event.target.closest('[data-market-deal]')?.dataset.marketDeal || '');
+      const deal = marketOpportunities(moduleState.market.data || marketRuntime()).find(row => row.id === id);
+      const button = event.target.closest('button');
+      if (deal && button) void (async () => { button.disabled = true; const okay = action === 'copy-market-deal' ? await copyText(deal.shareText) : await sendToFaction(deal.shareText); button.textContent = okay ? action === 'copy-market-deal' ? 'Copied' : 'Sent to Faction' : action === 'copy-market-deal' ? 'Copy failed' : 'Open/focus Faction Chat'; button.disabled = false; })();
+    }
+    if (action === 'copy-market-list' || action === 'send-market-list') {
+      const text = marketOpportunities(moduleState.market.data || marketRuntime()).slice(0, 12).map(row => row.shareText).join('\n');
+      const button = event.target.closest('button');
+      if (text && button) void (async () => { button.disabled = true; const okay = action === 'copy-market-list' ? await copyText(text) : await sendToFaction(text); button.textContent = okay ? action === 'copy-market-list' ? 'List copied' : 'Sent to Faction' : action === 'copy-market-list' ? 'Copy failed' : 'Open/focus Faction Chat'; button.disabled = false; })();
+    }
     if (action === 'pin-merit') {
       const key = String(event.target.closest('[data-merit-key]')?.dataset.meritKey || '');
       const pinned = new Set(dataState.settings.merits.pinned || []);
@@ -1514,7 +2243,7 @@
     if (efficiencyTab) selectSubpage('efficiency', efficiencyTab);
     const theme = event.target.closest('[data-theme-choice]')?.dataset.themeChoice;
     if (theme) {
-      const required = { 'slinky-pursuit':'slink.theme.pursuit', 'slinky-underglow':'slink.theme.underglow' }[theme];
+      const required = themeCatalog().find(item => item.id === theme)?.scope || null;
       if (required && !hasThemeScope(required)) {
         moduleState.access.error = `This theme requires ${required}.`;
         renderAccess();
@@ -1533,6 +2262,20 @@
       dataState.settings.merits.page = 1;
       writeDataState();
       renderMerits();
+    }
+    if (event.target.matches('[data-field="market-priority"]')) {
+      dataState.settings.market.lastPriority = normalizeMarketPriority(event.target.value); writeDataState();
+    }
+    if (event.target.matches('[data-field="market-enabled"]')) {
+      marketSettings().enabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
+    }
+    if (event.target.matches('[data-field="market-quick-buy"]')) {
+      marketSettings().quickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearMarketQuickBuys(); else scheduleMarketDomFormat();
+    }
+    if (event.target.matches('[data-field="market-type"]')) {
+      const points = event.target.value === 'points';
+      const root = moduleRoot('market'); const item = root?.querySelector('[data-field="market-item"]'); const sources = root?.querySelector('.market-sources');
+      if (item) item.disabled = points; if (sources) sources.disabled = points;
     }
   });
 
@@ -1556,6 +2299,10 @@
   });
   global.addEventListener('resize', () => clampLauncher(true));
   global.addEventListener('orientationchange', () => global.setTimeout(() => clampLauncher(true), 180));
+  global.addEventListener('hashchange', scheduleMarketDomFormat);
+  global.addEventListener('popstate', scheduleMarketDomFormat);
+  global.addEventListener('resize', syncMarketQuickBuyPositions);
+  global.addEventListener('scroll', syncMarketQuickBuyPositions, true);
   document.addEventListener('visibilitychange', () => { if (dashboardOpen && !document.hidden) void loadActiveModule(false); });
   global.addEventListener('pagehide', unlockTornScroll, { once:true });
 
@@ -1563,12 +2310,15 @@
     if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
   });
   guardian.observe(document, { childList:true, subtree:true });
+  marketObserver = new MutationObserver(scheduleMarketDomFormat);
+  marketObserver.observe(document.body, { childList:true, subtree:true });
 
   if (typeof GM_API.menu === 'function') {
     GM_API.menu('Open SLINK PDA Dashboard', openDashboard);
     GM_API.menu('Reset SLINK PDA layout', resetLayout);
   }
 
+  renderThemeChoices();
   setTheme(state.theme, false);
   selectPage(state.page, false);
   selectSubpage('combat', state.combatTab, false);
@@ -1580,7 +2330,10 @@
     writeDataState();
   }
   startScheduler();
+  global.setTimeout(() => void loadThemeCatalog(false), 2_000);
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
+  if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
+  scheduleMarketDomFormat();
 
   global.SLINK_PDA_DASHBOARD = Object.freeze({
     build:BUILD,
@@ -1588,6 +2341,7 @@
     close:closeDashboard,
     toggle:toggleDashboard,
     reset:resetLayout,
-    isOpen:() => dashboardOpen
+    isOpen:() => dashboardOpen,
+    refreshMarket:() => refreshMarket(true)
   });
 })(globalThis);

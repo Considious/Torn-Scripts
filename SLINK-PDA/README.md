@@ -28,6 +28,12 @@ or resizing. Reset Layout is available under Access.
   100-city-item daily cap, local 5-minute/1-hour snoozes, launcher count, and
   notifications for newly active alerts. The city reminder can also be hidden
   until the next Torn daily reset.
+- **Efficiency / Market:** the extension's API-only Torn Item Market, Weaver
+  Bazaar, and Points Market watches. Permission tiers allow 5–40 watches. The
+  searchable item list loads automatically and includes item IDs and city-shop
+  sell prices. High/normal/low priority budgets, Torn cache-delay scheduling,
+  deal dismissal, copy/faction sharing, page highlights, and the native-control
+  SLINK Buy overlay match the extension behavior.
 - **Efficiency / Merits:** one next incomplete medal or honor per milestone
   family, with later thresholds summarized on that tile, filters, pagination,
   and up to three local pins.
@@ -35,19 +41,28 @@ or resizing. Reset Layout is available under Access.
 ## Safety and usage boundaries
 
 - no `@require` dependency or runtime GitHub download;
-- no Torn navigation, reload, or automatic page interaction;
+- no Torn navigation or reload; the optional SLINK Buy button only acts after a
+  trusted user tap and forwards that tap to Torn's own highlighted buy/cart
+  control;
 - one Shadow DOM host so Torn styles cannot garble the dashboard;
 - starts minimized after every new page load.
 - Leveling and War do not contribute API checks or send heartbeat loops;
-- alerts check every five minutes while Torn PDA keeps the Torn page/WebView
+- alerts check every five minutes and Market Watch follows each API source's
+  cache/rate schedule while Torn PDA keeps the Torn page/WebView
   alive, even when the SLINK panel is minimized; mobile operating systems can
   suspend or terminate the WebView after PDA is closed, so a userscript cannot
   guarantee fully closed-app polling;
-- Torn API requests pass through one shared 60-per-minute local ledger;
+- Torn API requests pass through one shared 60-per-minute local ledger. Market
+  high uses available capacity, normal reserves 10 calls/minute, and low
+  reserves 20 calls/minute for other modules;
+- Weaver prices come only from `weav3r.dev/api/marketplace`; the DOM observer
+  never scrapes market or bazaar prices for watch decisions;
 - API keys and session tokens stay in the userscript's local storage.
 
 Access accepts separate Torn and FFScouter keys. Each can independently use the
 key injected by Torn PDA, with the saved value serving as the fallback. Theme
+choices are loaded from the same validated Worker catalog used by the extension,
+so Dragon's Breath and future themes arrive without updating this script. Theme
 permissions accept their normal `slink.theme.*` scopes or an `admin.*` grant.
 The raw scope list is collapsed by default; it is diagnostic metadata rather
 than an authorization secret.
