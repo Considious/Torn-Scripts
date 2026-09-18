@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.3.1
+// @version      0.3.2
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.3.1-weekly-play-points';
+  const BUILD = '0.3.2-market-permission-refresh';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.3.1';
+  const CLIENT_VERSION = '0.3.2';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_URL = 'https://play.google.com/store/points';
   const URLS = Object.freeze({
@@ -185,7 +185,7 @@
     war:{ busy:false, error:'', data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
-    market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0 },
+    market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0, refreshPermissions:true },
     merits:{ busy:false, error:'', data:dataState.caches.merits || null }
   };
 
@@ -666,9 +666,11 @@
     if (dashboardOpen) renderMarket();
     const runtime = marketRuntime();
     try {
-      await ensurePermissionSession(false);
+      const refreshPermissions = moduleState.market.refreshPermissions;
+      moduleState.market.refreshPermissions = false;
+      await ensurePermissionSession(refreshPermissions);
       const limit = marketWatchLimit();
-      if (!limit) throw new Error('Your account does not have a SLINK Market Watch tier.');
+      if (!limit) throw new Error('Your account does not have a SLINK Market Watch tier (.5 through .40).');
       const settings = marketSettings();
       await marketEnsureCatalog(runtime, false);
       if (!settings.enabled) {
@@ -728,6 +730,24 @@
       writeDataState();
     } catch (error) { current.error = errorMessage(error); runtime.lastError = current.error; current.data = dataState.caches.market = runtime; writeDataState(); }
     finally { current.busy = false; renderMarket(); scheduleMarketDomFormat(); scheduleMarketWake(current.data || runtime); }
+  }
+
+  async function refreshMarketPermissions() {
+    const current = moduleState.market;
+    if (current.busy) return;
+    current.busy = true;
+    current.error = '';
+    renderMarket();
+    try {
+      await ensurePermissionSession(true);
+      current.refreshPermissions = false;
+    } catch (error) {
+      current.error = errorMessage(error);
+    } finally {
+      current.busy = false;
+      renderAllModules();
+    }
+    if (marketWatchLimit() > 0) void refreshMarket(false);
   }
 
   function validSession(name) {
@@ -1023,7 +1043,7 @@
       ['[data-combat-tab="leveling"]', 'slink.level'],
       ['[data-combat-tab="war"]', 'slink.war'],
       ['[data-efficiency-tab="alerts"]', 'slink.adhd.alerts'],
-      ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch.5'],
+      ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch tier'],
       ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
       ['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
       ['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
@@ -1031,7 +1051,7 @@
     for (const [selector, scope] of gates) {
       const control = shadow?.querySelector?.(selector);
       if (!control) continue;
-      const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : scope === 'slink.adhd.marketwatch.5' ? marketWatchLimit() > 0 : hasScope(scope);
+      const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : scope === 'slink.adhd.marketwatch tier' ? marketWatchLimit() > 0 : hasScope(scope);
       control.classList.toggle('permission-lock', !allowed);
       control.title = allowed ? '' : `Requires ${scope}`;
     }
@@ -1565,9 +1585,9 @@
   function renderMarket() {
     const root = moduleRoot('market');
     if (!root) return;
-    const limit = marketWatchLimit();
-    if (!limit) { root.innerHTML = lockedModule('slink.adhd.marketwatch.5', 'SLINK Market Watch'); return; }
     const current = moduleState.market;
+    const limit = marketWatchLimit();
+    if (!limit) { root.innerHTML = `${lockedModule('a slink.adhd.marketwatch tier (.5 through .40)', 'SLINK Market Watch')}${current.error ? moduleMessage(current.error, 'error') : ''}<div class="market-bulk-actions"><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing permissions…' : 'Refresh permissions'}</button></div>`; return; }
     const runtime = current.data || marketRuntime();
     const settings = marketSettings();
     const deals = marketOpportunities(runtime);
@@ -1579,7 +1599,7 @@
     const itemValue = selectedItem ? marketItemLabel(selectedItem) : form.label ? `${form.label}${form.itemId ? ` [${form.itemId}]` : ''}` : '';
     const error = current.error || runtime.lastError;
     root.innerHTML = `<div class="grid">
-      <article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2><span class="muted">API only: Torn Item/Points Market and Weaver marketplace JSON. Page DOM is used only for highlighting and the SLINK Buy control.</span></div><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
+      <article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2><span class="muted">API only: Torn Item/Points Market and Weaver marketplace JSON. Page DOM is used only for highlighting and the SLINK Buy control.</span></div><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>Refresh permissions</button><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
         ${error ? moduleMessage(error, 'error') : ''}
         <div class="market-form">
           <label>Watch type<select data-field="market-type"><option value="item" ${form.marketType === 'item' ? 'selected' : ''}>Item</option><option value="points" ${form.marketType === 'points' ? 'selected' : ''}>Points Market</option></select></label>
@@ -2061,6 +2081,7 @@
     const allowed = group === 'combat' ? ['leveling', 'war', 'stats'] : ['alerts', 'market', 'merits'];
     if (!allowed.includes(tab)) tab = allowed[0];
     state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
+    if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
     shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
     shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[`${group}Tab`] === tab)));
     if (persist) writeState();
@@ -2206,6 +2227,7 @@
       writeDataState();
       renderAlerts();
     }
+    if (action === 'refresh-market-permissions') void refreshMarketPermissions();
     if (action === 'save-market-watch') saveMarketWatch();
     if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.error = ''; renderMarket(); }
     if (action === 'edit-market-watch') { moduleState.market.editingUid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || ''); moduleState.market.error = ''; renderMarket(); shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' }); }
