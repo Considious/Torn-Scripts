@@ -4,7 +4,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
-assert.match(source, /@version\s+0\.3\.0/);
+assert.match(source, /@version\s+0\.3\.1/);
 assert.match(source, /@grant\s+GM_xmlhttpRequest/);
 assert.match(source, /@grant\s+GM_notification/);
 assert.match(source, /@connect\s+api\.torn\.com/);
@@ -50,6 +50,9 @@ assert.match(source, /data-action="hide-city-until-reset"/);
 assert.match(source, /cityDoneDay/);
 assert.match(source, /cityAtReset/);
 assert.match(source, /cityBaselineVersion:2/);
+assert.match(source, /https:\/\/play\.google\.com\/store\/points/);
+assert.match(source, /googlePlayPointsClaimedAt/);
+assert.match(source, /data-action="claim-google-play-points"/);
 assert.match(source, /Math\.floor\(reset \/ 1000\) - 1/);
 assert.match(source, /function raceActive/);
 assert.match(source, /waiting\\s\+for\\s\+\(\?:a\\s\+\)\?race/);
