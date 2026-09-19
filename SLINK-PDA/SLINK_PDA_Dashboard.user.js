@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.3.3
+// @version      0.3.4
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.3.3-mobile-market-stability';
+  const BUILD = '0.3.4-mobile-viewport-stability';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.3.3';
+  const CLIENT_VERSION = '0.3.4';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_URL = 'https://play.google.com/store/points';
   const URLS = Object.freeze({
@@ -1748,7 +1748,7 @@
     const itemValue = form.itemText || (selectedItem ? marketItemLabel(selectedItem) : form.label ? `${form.label}${form.itemId ? ` [${form.itemId}]` : ''}` : '');
     const error = current.error || runtime.lastError;
     root.innerHTML = `<div class="grid">
-      <article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2><span class="muted">API only: Torn Item/Points Market and Weaver marketplace JSON. Page DOM is used only for highlighting and the SLINK Buy control.</span></div><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>Refresh permissions</button><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
+      <article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2></div><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>Refresh permissions</button><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
         ${error ? moduleMessage(error, 'error') : ''}
         <div class="market-form">
           <label>Watch type<select data-field="market-type"><option value="item" ${form.marketType === 'item' ? 'selected' : ''}>Item</option><option value="points" ${form.marketType === 'points' ? 'selected' : ''}>Points Market</option></select></label>
@@ -2095,7 +2095,7 @@
     .coil{position:relative;width:31px;height:27px;pointer-events:none}.coil i{position:absolute;left:3px;width:25px;height:10px;border:2px solid #edf4f7;border-radius:50%;filter:drop-shadow(0 0 3px var(--s-alt))}.coil i:nth-child(1){top:0}.coil i:nth-child(2){top:6px}.coil i:nth-child(3){top:12px}.coil i:nth-child(4){top:18px}
     .launcher-label{position:absolute;right:52px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-panel);color:var(--s-text);font:bold 10px/1 Arial,sans-serif;white-space:nowrap;pointer-events:none;opacity:0;transform:translateX(5px);transition:.16s}.launcher:focus-visible .launcher-label,.launcher:hover .launcher-label{opacity:1;transform:none}
     .launcher-alert-count{position:absolute;top:-5px;right:-5px;display:grid;min-width:23px;height:23px;padding:0 5px;place-items:center;border:2px solid var(--s-bg);border-radius:999px;background:var(--s-error);color:#170404;font:bold 10px/1 Arial,sans-serif;pointer-events:none}.launcher-alert-count[hidden]{display:none}
-    .overlay[hidden]{display:none}.overlay{position:fixed;inset:0;z-index:2147483646;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);overflow:hidden;background:var(--s-page);color:var(--s-text);font:13px/1.42 Arial,sans-serif;overscroll-behavior:contain}
+    .overlay[hidden]{display:none}.overlay{position:fixed;inset:0;z-index:2147483646;display:grid;width:100%;max-width:none;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);overflow:hidden;background:var(--s-page);color:var(--s-text);font:13px/1.42 Arial,sans-serif;overscroll-behavior:contain}
     .topbar{display:flex;align-items:center;gap:10px;min-height:64px;padding:max(9px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 9px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--s-border);background:color-mix(in srgb,var(--s-bg) 94%,transparent);box-shadow:0 7px 22px var(--s-shadow);touch-action:pan-x}
     .brand-mark{display:grid;width:39px;height:39px;flex:0 0 auto;place-items:center;border-radius:10px;background:linear-gradient(145deg,var(--s-accent),var(--s-bg));box-shadow:inset 0 0 0 1px var(--s-border),0 0 13px color-mix(in srgb,var(--s-alt) 30%,transparent);font-weight:900}
     .brand{min-width:0;flex:1}.brand strong,.brand span{display:block}.brand strong{font-size:15px}.brand span{overflow:hidden;color:var(--s-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
@@ -2103,7 +2103,7 @@
     .close{display:flex;align-items:center;justify-content:center;gap:5px;min-width:46px;padding:0 12px;font-size:14px}.close>span:first-child{font-size:22px}.close-label{font-weight:700}
     .primary-nav{display:flex;gap:7px;padding:8px max(14px,env(safe-area-inset-right)) 8px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--s-soft);background:color-mix(in srgb,var(--s-panel) 93%,transparent)}
     .primary-nav button{min-width:105px;padding:7px 17px;color:var(--s-muted);font-weight:700}.primary-nav button[aria-selected="true"]{border-color:var(--s-alt);background:linear-gradient(135deg,var(--s-accent),var(--s-control));color:var(--s-text);box-shadow:0 0 12px color-mix(in srgb,var(--s-alt) 22%,transparent)}
-    .scroll{min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:14px max(14px,calc((100vw - 1240px)/2)) max(24px,env(safe-area-inset-bottom))}
+    .scroll{width:100%;min-width:0;min-height:0;overflow:auto;overflow-anchor:none;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:14px max(14px,calc((100vw - 1240px)/2)) max(24px,env(safe-area-inset-bottom))}
     .page[hidden],.subpage[hidden]{display:none}
     .page-head{display:flex;align-items:start;gap:12px;margin:2px 0 12px}.page-head>div{min-width:0;flex:1}.page-head h1{margin:0;font-size:22px}.page-head p{margin:3px 0 0;color:var(--s-muted)}
     .page-actions{display:flex;gap:7px}.page-actions button{padding:6px 12px}
@@ -2126,12 +2126,12 @@
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
-    .mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav,:host([data-keyboard-open]) .subnav{display:none!important}:host([data-keyboard-open]) .scroll{padding-bottom:max(10px,env(safe-area-inset-bottom))!important}:host([data-keyboard-open]) .page-head{margin-bottom:7px}
+    .mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav{visibility:hidden;pointer-events:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:700px){
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
-      .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:7px max(8px,env(safe-area-inset-right)) max(7px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -7px 20px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:5px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:1px;font-size:18px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
-      .scroll{padding:10px max(9px,env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) max(9px,env(safe-area-inset-left))}.page-head{align-items:center}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:44px}
+      .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
+      .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
       .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
@@ -2192,12 +2192,40 @@
   function keyboardEditable(node) {
     if (!node?.matches) return false;
     if (node.matches('textarea,[contenteditable="true"]')) return true;
-    return node.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="range"]):not([type="color"]),select');
+    return node.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="range"]):not([type="color"])');
   }
 
   function syncKeyboardState() {
     const focused = dashboardOpen && keyboardEditable(shadow.activeElement);
     host.toggleAttribute('data-keyboard-open', focused);
+  }
+
+  function keepFocusedFieldVisible(node) {
+    const scroller = shadow.querySelector('.scroll');
+    if (!scroller || shadow.activeElement !== node) return;
+    const field = node.closest('label,.market-item-field,.access-form') || node;
+    const fieldRect = field.getBoundingClientRect();
+    const scrollRect = scroller.getBoundingClientRect();
+    const viewportBottom = global.visualViewport ? global.visualViewport.offsetTop + global.visualViewport.height : scrollRect.bottom;
+    const visibleTop = scrollRect.top + 8;
+    const visibleBottom = Math.min(scrollRect.bottom, viewportBottom) - 10;
+    if (fieldRect.bottom > visibleBottom) scroller.scrollTop += fieldRect.bottom - visibleBottom;
+    else if (fieldRect.top < visibleTop) scroller.scrollTop -= visibleTop - fieldRect.top;
+  }
+
+  function guardUnexpectedBottomJump(expectedTop, node) {
+    const scroller = shadow.querySelector('.scroll');
+    if (!scroller || !keyboardEditable(node)) return;
+    const check = () => {
+      if (shadow.activeElement !== node) return;
+      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const jumpedToEnd = max > expectedTop + 140 && scroller.scrollTop >= max - 3;
+      if (jumpedToEnd) scroller.scrollTop = expectedTop;
+      keepFocusedFieldVisible(node);
+    };
+    global.requestAnimationFrame(check);
+    global.setTimeout(check, 90);
+    global.setTimeout(check, 260);
   }
 
   function clamp(value, min, max) {
@@ -2492,15 +2520,20 @@
   });
 
   overlay.addEventListener('input', event => {
-    if (!event.target.matches('[data-field="market-item"],[data-field="market-price"]')) return;
-    captureMarketDraft();
-    if (event.target.matches('[data-field="market-item"]')) renderMarketSuggestions(event.target.value);
+    const expectedTop = shadow.querySelector('.scroll')?.scrollTop || 0;
+    if (event.target.matches('[data-field="market-item"],[data-field="market-price"]')) {
+      captureMarketDraft();
+      if (event.target.matches('[data-field="market-item"]')) renderMarketSuggestions(event.target.value);
+    }
+    guardUnexpectedBottomJump(expectedTop, event.target);
   });
 
   overlay.addEventListener('focusin', event => {
+    const expectedTop = shadow.querySelector('.scroll')?.scrollTop || 0;
     if (keyboardFocusTimer) global.clearTimeout(keyboardFocusTimer);
     syncKeyboardState();
     if (event.target.matches('[data-field="market-item"]')) renderMarketSuggestions(event.target.value);
+    guardUnexpectedBottomJump(expectedTop, event.target);
   });
 
   overlay.addEventListener('focusout', event => {
@@ -2532,8 +2565,8 @@
       toggleDashboard();
     }
   });
-  global.addEventListener('resize', () => { clampLauncher(true); syncKeyboardState(); });
-  global.visualViewport?.addEventListener('resize', syncKeyboardState);
+  global.addEventListener('resize', () => { clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+  global.visualViewport?.addEventListener('resize', () => { syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
   global.addEventListener('orientationchange', () => global.setTimeout(() => clampLauncher(true), 180));
   global.addEventListener('hashchange', scheduleMarketDomFormat);
   global.addEventListener('popstate', scheduleMarketDomFormat);
