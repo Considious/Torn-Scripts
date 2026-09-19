@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.3.5
+// @version      0.4.0
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.3.5-fixed-mobile-navigation';
+  const BUILD = '0.4.0-war-panel-parity';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.3.5';
+  const CLIENT_VERSION = '0.4.0';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_URL = 'https://play.google.com/store/points';
   const URLS = Object.freeze({
@@ -146,7 +146,13 @@
       caches:value.caches && typeof value.caches === 'object' ? value.caches : {},
       settings:{
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
-        war:{ mode:'war', idleMinutes:5, ...(value.settings?.war || {}) },
+        war:{
+          mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
+          targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetSort:'availability',
+          outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt:0, lastAttackEnded:0,
+          armoryMode:'ranked-all', armoryWhitelist:[],
+          ...(value.settings?.war || {})
+        },
         alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, ...(value.settings?.alerts || {}) },
         market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
@@ -187,7 +193,7 @@
   const moduleState = {
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
-    war:{ busy:false, error:'', data:dataState.caches.war || null },
+    war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
     market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0, refreshPermissions:true, draft:null, renderPending:false },
@@ -1231,9 +1237,278 @@
     document.querySelectorAll('div[class*="dialog___"] div[class*="title___"],div[class*="green___"] div[class*="title___"]').forEach(recordMugResultNode);
   }
 
-  function renderWar() {
+  function warOfficer() {
+    return hasScope('slink.war.officer') || hasScope('admin.*');
+  }
+
+  function warMemberId(member) {
+    return Math.trunc(Number(member?.id ?? member?.user_id ?? member?.player_id ?? member?.attackerId) || 0);
+  }
+
+  function warMemberStatus(member) {
+    return String(member?.statusState ?? member?.status?.state ?? member?.status ?? 'Unknown');
+  }
+
+  function warMemberActivity(member) {
+    return String(member?.activity ?? member?.last_action?.status ?? member?.lastAction?.status ?? 'Unknown');
+  }
+
+  function warStatusSeconds(member) {
+    const until = Number(member?.statusUntil ?? member?.status?.until) || 0;
+    return Math.max(0, until - Math.floor(Date.now() / 1000));
+  }
+
+  function warTctTime(seconds) {
+    if (!seconds) return '';
+    return new Date(Number(seconds) * 1000).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' });
+  }
+
+  function warSortMembers(rows, sort = 'availability') {
+    const values = [...(Array.isArray(rows) ? rows : [])];
+    return values.sort((left, right) => {
+      const leftFf = finite(left?.fairFight ?? left?.fair_fight) ?? Number.POSITIVE_INFINITY;
+      const rightFf = finite(right?.fairFight ?? right?.fair_fight) ?? Number.POSITIVE_INFINITY;
+      if (sort === 'fairFightAsc') return leftFf - rightFf;
+      if (sort === 'fairFightDesc') return rightFf - leftFf;
+      const score = member => {
+        const status = warMemberStatus(member).toLowerCase();
+        const activity = warMemberActivity(member).toLowerCase();
+        if (status === 'okay' && activity === 'online') return 0;
+        if (status === 'okay' && activity === 'idle') return 1;
+        if (status === 'okay') return 2;
+        if (status.includes('hospital')) return 3 + warStatusSeconds(member) / 100000;
+        return 4;
+      };
+      return score(left) - score(right) || leftFf - rightFf;
+    });
+  }
+
+  function warMemberContext(member) {
+    const bits = [];
+    const description = String(member?.statusDescription ?? member?.status?.description ?? '').trim();
+    const lastAction = String(member?.lastActionRelative ?? member?.last_action?.relative ?? '').trim();
+    if (description && description.toLowerCase() !== warMemberStatus(member).toLowerCase()) bits.push(description);
+    if (lastAction) bits.push(lastAction);
+    return bits.length ? `<span class="war-context">${escapeHtml(bits.join(' · '))}</span>` : '';
+  }
+
+  function warCallout(member) {
+    const id = warMemberId(member);
+    const status = warMemberStatus(member);
+    const activity = warMemberActivity(member);
+    const ff = finite(member?.fairFight ?? member?.fair_fight);
+    const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate ?? member?.bs_estimate);
+    return `${String(member?.name || `Player ${id}`)} [${id}] · ${activity} · ${status}${estimate === null ? '' : ` · BS ${number(estimate)}`}${ff === null ? '' : ` · FF ${number(ff, 2)}`} · https://www.torn.com/profiles.php?XID=${id}`;
+  }
+
+  function warInsideGate(targetId) {
+    const data = moduleState.war.data || {};
+    const config = data.snapshot?.config || dataState.settings.war;
+    const chain = Math.max(0, Number(data.panelStats?.chain?.current) || 0);
+    const range = [[0, 100], [200, 250], [450, 500], [950, 1000], [2350, 2500], [4850, 5000], [9900, 10000]].find(([minimum, maximum]) => chain >= minimum && chain <= maximum);
+    const opponentIds = new Set((data.snapshot?.members || []).map(warMemberId));
+    const mode = ['off', 'warn', 'block'].includes(config.insideBlockMode) ? config.insideBlockMode : 'warn';
+    return { active:Boolean(config.mode === 'termed' && mode !== 'off' && range && opponentIds.has(Number(targetId))), mode, chain, range };
+  }
+
+  function warInsideMessage(gate) {
+    return `Inside hits disabled: chain ${gate.chain} is inside the ${gate.range?.[0]}–${gate.range?.[1]} major bonus window.`;
+  }
+
+  function warMemberCard(member, outside = false) {
+    const id = warMemberId(member);
+    const status = warMemberStatus(member);
+    const activity = warMemberActivity(member);
+    const hospitalized = /hospital/i.test(status);
+    const remaining = warStatusSeconds(member);
+    const ff = finite(member?.fairFight ?? member?.fair_fight);
+    const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate ?? member?.bs_estimate);
+    const gate = outside ? { active:false } : warInsideGate(id);
+    const attack = `<a class="action-link ${gate.active ? 'war-inside-attack' : ''}" href="https://www.torn.com/page.php?sid=attack&user2ID=${id}" ${gate.active ? `data-action="war-inside-attack" data-war-target="${id}" data-war-gate="${gate.mode}"` : ''}>${gate.active && gate.mode === 'block' ? 'INSIDES DISABLED' : 'Attack'}</a>`;
+    return `<article class="war-card ${gate.active ? 'war-inside-blocked' : ''}"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(member?.name || `Player ${id}`)} [${id}]</a><span>Lv ${number(member?.level)}</span></div><div class="war-meta"><span class="war-pill ${/^online$/i.test(activity) ? 'online' : ''}">${escapeHtml(activity)}</span><span class="war-pill ${hospitalized ? 'hospital' : ''}">${escapeHtml(status)}${hospitalized && remaining ? ` · ${duration(remaining)} · ${warTctTime(Number(member?.statusUntil ?? member?.status?.until))} TCT` : ''}</span><span class="war-pill">BS ${estimate === null ? '?' : number(estimate)}</span><span class="war-pill">FF ${ff === null ? '?' : number(ff, 2)}</span>${warMemberContext(member)}</div>${gate.active ? `<div class="war-inside-warning">${escapeHtml(warInsideMessage(gate))}</div>` : ''}<div class="target-actions">${attack}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}<button type="button" data-action="copy-war-target" data-war-target="${id}" data-war-outside="${outside ? 'true' : 'false'}">Copy</button><button type="button" data-action="send-war-target" data-war-target="${id}" data-war-outside="${outside ? 'true' : 'false'}">Send to Faction</button></div></article>`;
+  }
+
+  function warTargetView(snapshot) {
+    const settings = dataState.settings.war;
+    const minimum = Math.min(Number(settings.targetMinFF) || 1, Number(settings.targetMaxFF) || 3);
+    const maximum = Math.max(Number(settings.targetMinFF) || 1, Number(settings.targetMaxFF) || 3);
+    const members = warSortMembers(snapshot?.members || snapshot?.targets || [], settings.targetSort).filter(member => {
+      const ff = finite(member?.fairFight ?? member?.fair_fight);
+      const okay = /^okay$/i.test(warMemberStatus(member).trim());
+      if (ff !== null && (ff < minimum || ff > maximum)) return false;
+      return settings.targetStatus === 'okay' ? okay : settings.targetStatus === 'notOkay' ? !okay : true;
+    });
+    return `<div class="war-filters"><label>Minimum FF<input type="number" min="0" max="100" step="0.1" data-field="war-target-min" value="${minimum}"></label><label>Maximum FF<input type="number" min="0" max="100" step="0.1" data-field="war-target-max" value="${maximum}"></label><label>Status<select data-field="war-target-status"><option value="all" ${settings.targetStatus === 'all' ? 'selected' : ''}>All</option><option value="okay" ${settings.targetStatus === 'okay' ? 'selected' : ''}>Okay</option><option value="notOkay" ${settings.targetStatus === 'notOkay' ? 'selected' : ''}>Not okay</option></select></label><label>Sort<select data-field="war-target-sort"><option value="availability" ${settings.targetSort === 'availability' ? 'selected' : ''}>Availability</option><option value="fairFightDesc" ${settings.targetSort === 'fairFightDesc' ? 'selected' : ''}>FF high to low</option><option value="fairFightAsc" ${settings.targetSort === 'fairFightAsc' ? 'selected' : ''}>FF low to high</option></select></label></div><div class="war-stack">${members.length ? members.map(member => warMemberCard(member)).join('') : moduleMessage('No ranked-war opponents match the current filters.')}</div>`;
+  }
+
+  function warOutsideView(data) {
+    const settings = dataState.settings.war;
+    const members = warSortMembers(data?.outsideTargets || [], 'fairFightAsc');
+    return `<div class="war-filters"><label>Minimum FF<input type="number" min="1" max="3" step="0.1" data-field="war-outside-min" value="${Number(settings.outsideMinFF) || 1}"></label><label>Maximum FF<input type="number" min="1" max="3" step="0.1" data-field="war-outside-max" value="${Number(settings.outsideMaxFF) || 3}"></label><div class="war-filter-action"><button type="button" data-action="refresh-war-outside" ${moduleState.war.outsideBusy ? 'disabled' : ''}>${moduleState.war.outsideBusy ? 'Polling…' : 'Poll up to 50 outside targets'}</button></div></div>${moduleState.war.outsideError ? moduleMessage(moduleState.war.outsideError, 'error') : ''}<div class="war-stack">${members.length ? members.map(member => warMemberCard(member, true)).join('') : moduleMessage('Choose a Fair Fight range and poll FFScouter for outside targets.')}</div>`;
+  }
+
+  function warClaimForm(snapshot) {
+    const officer = warOfficer();
+    const members = Array.isArray(snapshot?.members) ? snapshot.members : [];
+    return `<div class="war-claim-form"><label>Target<select data-field="war-claim-target"><option value="">Select a war target</option>${members.map(member => `<option value="${warMemberId(member)}">${escapeHtml(member?.name || `Player ${warMemberId(member)}`)} [${warMemberId(member)}]</option>`).join('')}</select></label>${officer ? '<label>Assign Torn ID (optional)<input type="number" min="1" data-field="war-claim-assignee" placeholder="Leave blank to claim for yourself"></label>' : ''}<button type="button" data-action="claim-war-target">Claim med-out target</button></div>`;
+  }
+
+  function warClaimsView(snapshot) {
+    const session = dataState.sessions.permission || {};
+    const claims = Array.isArray(snapshot?.claims) ? snapshot.claims : [];
+    return `${warClaimForm(snapshot)}<div class="war-stack">${claims.length ? claims.map(claim => {
+      const mine = Number(claim?.claimedById ?? claim?.claimed_by_id) === Number(session.userId);
+      const targetId = Number(claim?.targetId ?? claim?.target_id) || 0;
+      const expiresAt = Number(claim?.expiresAt ?? claim?.expires_at) || 0;
+      return `<article class="war-card"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${targetId}">${escapeHtml(claim?.targetName ?? claim?.target_name ?? `Player ${targetId}`)} [${targetId}]</a><span>${duration((expiresAt - Date.now()) / 1000)}</span></div><div class="war-meta"><span class="war-pill">Claimed by ${escapeHtml(claim?.claimedByName ?? claim?.claimed_by_name ?? claim?.claimedById ?? claim?.claimed_by_id ?? 'Unknown')}</span></div>${mine || warOfficer() ? `<div class="target-actions"><button type="button" data-action="release-war-claim" data-war-target="${targetId}">Release claim</button></div>` : ''}</article>`;
+    }).join('') : moduleMessage('No med-out targets are currently claimed.')}</div>`;
+  }
+
+  function warVisibleRetals(snapshot, active) {
+    const settings = dataState.settings.war;
+    const now = Math.floor(Date.now() / 1000);
+    const dismissed = settings.dismissedRetals && typeof settings.dismissedRetals === 'object' ? settings.dismissedRetals : {};
+    const opponentIds = new Set((snapshot?.members || []).map(warMemberId));
+    return (Array.isArray(snapshot?.retals) ? snapshot.retals : []).filter(retal => {
+      const expiresAt = Number(retal?.expiresAt ?? retal?.expires_at) || now + 300;
+      const key = `user:${Number(retal?.attackerId) || String(retal?.attackId || '')}`;
+      const opponentRetal = settings.mode === 'termed' && (Number(retal?.attackerFactionId) === Number(active?.opponentId) || opponentIds.has(Number(retal?.attackerId)));
+      return expiresAt > now && !opponentRetal && Number(dismissed[key] || dismissed[String(retal?.attackId)]) <= now;
+    });
+  }
+
+  function warRetalCards(snapshot, active) {
+    const now = Math.floor(Date.now() / 1000);
+    const retals = warVisibleRetals(snapshot, active);
+    if (!retals.length) return '';
+    return `<section class="war-alert-block"><strong>Active retaliation alerts</strong><div class="war-stack">${retals.map(retal => {
+      const id = Number(retal?.attackerId) || 0;
+      const attackId = String(retal?.attackId || id);
+      const status = String(retal?.attackerStatus || retal?.attackerActivity || 'Unknown');
+      const expires = Number(retal?.expiresAt) || now + 300;
+      const faction = retal?.attackerFactionName || (retal?.attackerFactionId ? `Faction ${retal.attackerFactionId}` : 'No faction');
+      return `<article class="war-card war-retal"><button class="war-dismiss" type="button" data-action="dismiss-war-retal" data-war-retal="${escapeHtml(attackId)}" aria-label="Dismiss retaliation alert">×</button><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(retal?.attackerName || `Player ${id}`)} [${id}]</a><span>${duration(expires - now)}</span></div><div class="war-retal-report"><span>Faction</span><strong>${escapeHtml(faction)}</strong><span>Attacked</span><strong>${escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`)}</strong><span>Status</span><strong>${escapeHtml(status)}</strong><span>Fair Fight</span><strong>${number(retal?.fairFight, 2)}</strong></div><div class="target-actions"><button type="button" data-action="copy-war-retal" data-war-retal="${escapeHtml(attackId)}">Copy</button><button type="button" data-action="send-war-retal" data-war-retal="${escapeHtml(attackId)}">Send to Faction</button>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}</div></article>`;
+    }).join('')}</div></section>`;
+  }
+
+  function warItemRequests(snapshot) {
+    if (!warOfficer()) return '';
+    const requests = Array.isArray(snapshot?.itemRequests) ? snapshot.itemRequests : [];
+    if (!requests.length) return '';
+    return `<section class="war-alert-block"><strong>Armory item requests</strong><div class="war-stack">${requests.map(request => `<article class="war-card"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${Number(request?.requesterId) || 0}">${escapeHtml(request?.requesterName || `Player ${request?.requesterId || '?'}`)} [${Number(request?.requesterId) || '?'}]</a><span>${escapeHtml(request?.bonusName || 'Ranked')}</span></div><div class="war-meta"><span class="war-pill">${escapeHtml(request?.itemName || 'Item')}</span><span class="war-pill">Held by ${escapeHtml(request?.holderName || `Player ${request?.holderId || '?'}`)}</span><span class="war-context">${escapeHtml(request?.holderStatus || 'Unknown')} · ${escapeHtml(request?.holderLastAction || 'Unknown')}</span></div><div class="target-actions">${actionLink('Open armory', request?.armoryUrl || 'https://www.torn.com/factions.php?step=your#/tab=armoury')}<button type="button" data-action="resolve-war-armory-request" data-war-request="${escapeHtml(request?.requestId || '')}">Dismiss</button></div></article>`).join('')}</div></section>`;
+  }
+
+  function warLogsView(data) {
+    const rows = Array.isArray(data?.logs) ? data.logs : [];
+    if (!rows.length) return moduleMessage('No loss, escape, or online-hit counters yet.');
+    const grouped = new Map();
+    for (const row of rows) {
+      const id = Number(row?.attacker_id ?? row?.attackerId) || 0;
+      if (!grouped.has(id)) grouped.set(id, { id, name:String(row?.attacker_name ?? row?.attackerName ?? `Player ${id}`), total:0, rows:[] });
+      const group = grouped.get(id); group.total += Number(row?.event_count ?? row?.eventCount) || 0; group.rows.push(row);
+    }
+    return `<div class="war-stack">${[...grouped.values()].sort((a, b) => b.total - a.total).map(group => `<details class="war-log"><summary><strong>${escapeHtml(group.name)} [${group.id}]</strong><span>${number(group.total)} recorded</span></summary>${group.rows.map(row => `<div class="war-log-event"><strong>${escapeHtml(String(row?.outcome || 'unknown').replaceAll('_', ' '))} × ${number(row?.event_count ?? row?.eventCount)}</strong><span>${escapeHtml(row?.defender_name ?? row?.defenderName ?? `Player ${row?.defender_id ?? row?.defenderId ?? '?'}`)} · ${new Date(Number(row?.last_seen_at ?? row?.lastSeenAt) || 0).toLocaleString()}</span></div>`).join('')}</details>`).join('')}</div>`;
+  }
+
+  function activeWarArmoryTab() {
+    return [document.querySelector('[id="tab=armoury&sub=weapons"]'), document.querySelector('[id="tab=armoury&sub=armour"]')].filter(Boolean).find(tab => tab.getAttribute('aria-hidden') !== 'true' && global.getComputedStyle(tab).display !== 'none') || null;
+  }
+
+  function warArmoryBorrower(row) {
+    const link = row.querySelector('.loaned a[href*="XID="]');
+    const match = link?.getAttribute('href')?.match(/[?&]XID=(\d+)/i);
+    return match ? { id:String(match[1]), name:link.textContent.trim() || match[1] } : null;
+  }
+
+  function warArmoryEligible(row, tab) {
+    const borrower = warArmoryBorrower(row);
+    const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+    if (!borrower || whitelist.has(borrower.id) || !row.querySelector('.item-action [data-role="retrieve"].active')) return null;
+    const image = row.querySelector('.img-wrap img.torn-item');
+    if (!image || !['glow-yellow', 'glow-orange', 'glow-red'].some(name => image.classList.contains(name))) return null;
+    const proficience = Boolean(row.querySelector('.bonus-attachment-experience'));
+    const mode = dataState.settings.war.armoryMode || 'ranked-all';
+    if (mode === 'ranked-no-prof' && proficience) return null;
+    if (mode === 'proficience-15-plus') {
+      const isWeapons = tab?.id?.includes('sub=weapons');
+      const member = (dataState.caches.warArmoryMembers?.members || []).find(item => String(item.id) === borrower.id);
+      if (!isWeapons || !proficience || Number(member?.level) < 15) return null;
+    }
+    return borrower;
+  }
+
+  async function refreshWarArmoryMembers(force = false) {
+    const cached = dataState.caches.warArmoryMembers;
+    if (!force && cached?.at && Date.now() - cached.at < 12 * 60 * 60_000 && cached?.members?.length) return cached.members;
+    const response = await tornJson('/v2/faction/members', 'SLINK PDA Armory roster');
+    const source = response?.members ?? response?.faction?.members ?? [];
+    const rows = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+    const members = rows.map(row => ({ id:String(warMemberId(row)), name:String(row?.name || `Player ${warMemberId(row)}`), level:Number(row?.level) || 0, rank:String(row?.position?.name ?? row?.position_name ?? row?.position ?? row?.rank ?? 'Member').trim() || 'Member', statusState:String(row?.status?.state || 'Unknown'), statusDescription:String(row?.status?.description || ''), lastActionRelative:String(row?.last_action?.relative || 'Unknown') })).filter(row => Number(row.id) > 0).sort((left, right) => left.rank.localeCompare(right.rank, undefined, { sensitivity:'base', numeric:true }) || left.name.localeCompare(right.name, undefined, { sensitivity:'base', numeric:true }));
+    if (!members.length) throw new Error('Torn returned no faction members. A faction-capable API key may be required.');
+    dataState.caches.warArmoryMembers = { at:Date.now(), members };
+    writeDataState();
+    return members;
+  }
+
+  async function retrieveWarArmoryItem() {
+    const current = moduleState.war;
+    const tab = activeWarArmoryTab();
+    if (!tab) { current.error = 'Open the Weapons or Armor tab in Faction Armoury first.'; renderWar(); return; }
+    try {
+      if (dataState.settings.war.armoryMode === 'proficience-15-plus') await refreshWarArmoryMembers(false);
+      for (const row of tab.querySelectorAll('ul.item-list > li')) {
+        const borrower = warArmoryEligible(row, tab);
+        if (!borrower) continue;
+        const item = row.querySelector('.name')?.textContent.trim() || 'item';
+        row.querySelector('.item-action [data-role="retrieve"].active')?.click();
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await new Promise(resolve => global.setTimeout(resolve, 50));
+          const confirm = row.querySelector('.retrieve-cont .retrieve-yes');
+          if (confirm && confirm.getClientRects().length) {
+            confirm.click(); current.error = ''; current.armoryStatus = `Retrieved one ${item} from ${borrower.name}.`; renderWar(); return;
+          }
+        }
+        throw new Error('Torn did not display the retrieval confirmation.');
+      }
+      current.armoryStatus = 'No eligible ranked items remain on this page.'; current.error = ''; renderWar();
+    } catch (error) { current.error = errorMessage(error); renderWar(); }
+  }
+
+  function nextWarArmoryPage() {
+    const tab = activeWarArmoryTab();
+    if (!tab) { moduleState.war.error = 'Open the Weapons or Armor tab in Faction Armoury first.'; renderWar(); return; }
+    const selectors = ['.gallery-wrapper.pagination a[href] > i.pagination-right', '.pagination a[href] > i.pagination-right', '.pagination a.next:not(.disabled)', '.pagination .next:not(.disabled) a', 'a[aria-label="Next"]', 'a[title="Next"]', '[data-page="next"]'];
+    for (const selector of selectors) {
+      const found = tab.querySelector(selector);
+      const control = found?.matches('a,button') ? found : found?.closest('a,button');
+      if (control && !control.classList.contains('disabled') && !control.classList.contains('disable')) { control.click(); moduleState.war.armoryStatus = 'Moved to the next armory page.'; renderWar(); return; }
+    }
+    moduleState.war.armoryStatus = 'No enabled Next Page control was found.'; renderWar();
+  }
+
+  function warArmoryView(snapshot) {
+    const requests = Array.isArray(snapshot?.itemRequests) ? snapshot.itemRequests : [];
+    const onArmory = Boolean(activeWarArmoryTab());
+    const members = dataState.caches.warArmoryMembers?.members || [];
+    const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+    const ranks = [...new Set(members.map(member => member.rank))];
+    return `<div class="war-stack"><article class="war-card"><div class="war-card-head"><strong>Officer Armory Recaller</strong><span>${requests.length} request${requests.length === 1 ? '' : 's'}</span></div>${onArmory ? '' : `<p class="muted">Open Torn's armory, then choose Weapons or Armor.</p><div class="target-actions">${actionLink('Open faction armory', 'https://www.torn.com/factions.php?step=your#/tab=armoury')}</div>`}<div class="war-armory-controls"><label>Recall mode<select data-field="war-armory-mode"><option value="ranked-all" ${dataState.settings.war.armoryMode === 'ranked-all' ? 'selected' : ''}>All ranked items</option><option value="ranked-no-prof" ${dataState.settings.war.armoryMode === 'ranked-no-prof' ? 'selected' : ''}>Ranked except Proficience</option><option value="proficience-15-plus" ${dataState.settings.war.armoryMode === 'proficience-15-plus' ? 'selected' : ''}>Proficience from level 15+</option></select></label><div class="target-actions"><button type="button" data-action="retrieve-war-armory" ${onArmory ? '' : 'disabled'}>Retrieve Next</button><button type="button" data-action="next-war-armory" ${onArmory ? '' : 'disabled'}>Next Page</button></div></div><span class="muted">${escapeHtml(moduleState.war.armoryStatus || 'Retrieval only runs after you press Retrieve Next.')}</span><details class="war-armory-manager"><summary>Never retrieve from (${whitelist.size})</summary><input type="search" data-field="war-armory-search" placeholder="Search name, rank, or ID"><div class="target-actions"><button type="button" data-action="refresh-war-armory-members">Refresh roster</button><button type="button" data-action="select-shown-war-armory">Select shown</button><button type="button" data-action="clear-shown-war-armory">Clear shown</button></div><div class="war-armory-ranks">${ranks.map(rank => { const rankMembers = members.filter(member => member.rank === rank); const selected = rankMembers.filter(member => whitelist.has(String(member.id))).length; return `<button type="button" data-action="toggle-war-armory-rank" data-armory-rank="${escapeHtml(rank)}">${escapeHtml(rank)} ${selected}/${rankMembers.length}</button>`; }).join('')}</div><div class="war-armory-members">${members.length ? members.map(member => `<label data-armory-search-row="${escapeHtml(`${member.name} ${member.rank} ${member.id}`.toLowerCase())}"><input type="checkbox" data-war-armory-member="${member.id}" ${whitelist.has(String(member.id)) ? 'checked' : ''}><span><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.rank)} · level ${member.level || '?'} · ID ${member.id}</small></span></label>`).join('') : moduleMessage('Refresh the faction roster to manage the whitelist.')}</div></details></article>${requests.length ? warItemRequests(snapshot) : moduleMessage('No active armory item requests.')}</div>`;
+  }
+
+  function warSettingsView(snapshot) {
+    const config = snapshot?.config || {};
+    const settings = dataState.settings.war;
+    return `<div class="war-settings"><label>Faction War mode<select data-field="war-mode"><option value="war" ${(config.mode || settings.mode) === 'war' ? 'selected' : ''}>Real war</option><option value="termed" ${(config.mode || settings.mode) === 'termed' ? 'selected' : ''}>Termed war</option></select></label><label>Faction idle filter<input type="number" min="0" max="60" data-field="war-idle" value="${Number(config.idleMinutes ?? settings.idleMinutes) || 0}"></label><label>Inside-hit cap<input type="number" min="0" max="9999" data-field="war-inside-cap" value="${Number(config.insideHitCap ?? settings.insideHitCap) || 0}"></label><label>Major-window inside gate<select data-field="war-inside-mode"><option value="off" ${(config.insideBlockMode || settings.insideBlockMode) === 'off' ? 'selected' : ''}>Off</option><option value="warn" ${(config.insideBlockMode || settings.insideBlockMode || 'warn') === 'warn' ? 'selected' : ''}>Warning with override</option><option value="block" ${(config.insideBlockMode || settings.insideBlockMode) === 'block' ? 'selected' : ''}>Hard block</option></select></label><div class="war-settings-note">These faction-wide controls apply to every SLINK War user. Major-window gating only activates in Termed mode.</div><button type="button" data-action="save-war-settings">Save War settings</button></div>`;
+  }
+
+  function renderWar(force = false) {
     const root = moduleRoot('war');
     if (!root) return;
+    if (!force && moduleState.war.data && root.contains(shadow?.activeElement) && shadow.activeElement.matches('input,select,textarea')) {
+      moduleState.war.renderPending = true;
+      return;
+    }
+    moduleState.war.renderPending = false;
     if (!hasScope('slink.war')) { root.innerHTML = lockedModule('slink.war', 'SLINK War'); return; }
     const current = moduleState.war;
     if (current.busy && !current.data) { root.innerHTML = moduleMessage('Finding your ranked war…'); return; }
@@ -1242,50 +1517,193 @@
     const active = current.data.activeWar;
     const snapshot = current.data.snapshot || {};
     const members = Array.isArray(snapshot.members) ? snapshot.members : Array.isArray(snapshot.targets) ? snapshot.targets : [];
-    const retals = Array.isArray(snapshot.retals) ? snapshot.retals : [];
-    const officer = hasScope('slink.war.officer');
+    const officer = warOfficer();
+    const settings = dataState.settings.war;
+    const allowedTabs = ['targets', 'outside', 'claims', ...(officer ? ['armory', 'logs', 'settings'] : [])];
+    if (!allowedTabs.includes(settings.activeTab)) settings.activeTab = 'targets';
+    const tab = settings.activeTab;
+    const tabBody = tab === 'targets' ? warTargetView(snapshot) : tab === 'outside' ? warOutsideView(current.data) : tab === 'claims' ? warClaimsView(snapshot) : tab === 'armory' ? warArmoryView(snapshot) : tab === 'logs' ? warLogsView(current.data) : warSettingsView(snapshot);
     const mugStats = mugStatsForWar(active.warId);
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>${escapeHtml(active.opponentName)}</h2><span class="muted">${active.phase === 'active' ? 'Ranked war active' : `Assigned · starts ${new Date(active.start * 1000).toLocaleString()}`}</span></div><span class="badge ${officer ? 'ready' : ''}">${officer ? 'Officer' : 'Member'}</span></div>
-      <div class="stats"><div class="stat"><strong>${members.length}</strong><span>Targets</span></div><div class="stat"><strong>${retals.length}</strong><span>Retals</span></div><div class="stat"><strong>${number(snapshot?.stats?.attacks ?? snapshot?.attacks ?? 0)}</strong><span>Attacks</span></div><div class="stat"><strong>${number(snapshot?.stats?.chain ?? snapshot?.chain ?? 0)}</strong><span>Chain</span></div></div>
-      <div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · PDA snapshot${officer ? ' · officer tools unlocked' : ''} · mug results stay on this device</span></div>
-      <article class="mug-report"><div><strong>Mug report</strong><span>${mugStats.count ? `${number(mugStats.count)} mugs · ${money(mugStats.total)} total · ${money(mugStats.average)} average · ${money(mugStats.min)} min · ${money(mugStats.max)} max` : 'No completed war mugs captured on this device yet.'}</span></div><button type="button" data-action="copy-war-mug-report" ${mugStats.count ? '' : 'disabled'}>Copy report</button></article>
-      ${current.error ? moduleMessage(current.error, 'error') : ''}
-      <div class="target-stack">${members.slice(0, 30).map(member => {
-        const id = Math.trunc(Number(member?.id ?? member?.user_id) || 0);
-        const name = String(member?.name || `Player ${id}`);
-        const activity = String(member?.activity ?? member?.last_action?.status ?? 'Unknown');
-        const status = String(member?.statusState ?? member?.status?.state ?? 'Unknown');
-        const ff = finite(member?.fairFight ?? member?.fair_fight);
-        const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate);
-        return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>${escapeHtml(activity)} · ${escapeHtml(status)}${estimate === null ? '' : ` · BS ${number(estimate)}`}${ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}</div></article>`;
-      }).join('') || moduleMessage('No targets were returned for this war.')}</div>
-    </article></div>`;
+    const panelStats = current.data.panelStats || {};
+    const chain = panelStats?.chain?.current ? `${number(panelStats.chain.current)}${panelStats.chain.target ? `/${number(panelStats.chain.target)}` : ''}` : 'None';
+    const itemRequestCount = officer && Array.isArray(snapshot.itemRequests) ? snapshot.itemRequests.length : 0;
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>${escapeHtml(active.opponentName)}</h2><span class="muted">${active.phase === 'active' ? 'Ranked war active' : `Assigned · starts ${new Date(active.start * 1000).toLocaleString()}`}</span></div><span class="badge ${officer ? 'ready' : ''}">${officer ? 'Officer' : 'Member'}</span></div><nav class="war-tabs">${allowedTabs.map(name => `<button type="button" data-action="select-war-tab" data-war-tab="${name}" aria-selected="${tab === name}">${name[0].toUpperCase()}${name.slice(1)}${name === 'armory' && itemRequestCount ? `<span class="nav-count">${itemRequestCount > 99 ? '99+' : itemRequestCount}</span>` : ''}</button>`).join('')}</nav>${tab === 'armory' ? '' : `<div class="stats"><div class="stat"><strong>${number(panelStats.attacks || 0)}</strong><span>Attacks</span></div><div class="stat"><strong>${number(panelStats.warAttacks || 0)}${Number(snapshot?.config?.insideHitCap) ? `/${number(snapshot.config.insideHitCap)}` : ''}</strong><span>War / cap</span></div><div class="stat"><strong>${number(mugStats.count)}</strong><span>Mugs</span></div><div class="stat"><strong>${chain}</strong><span>Chain</span></div></div><article class="mug-report"><div><strong>Mug report</strong><span>${mugStats.count ? `${number(mugStats.count)} mugs · ${money(mugStats.total)} total · ${money(mugStats.average)} average · ${money(mugStats.min)} min · ${money(mugStats.max)} max` : 'No completed war mugs captured on this device yet.'}</span></div><button type="button" data-action="copy-war-mug-report" ${mugStats.count ? '' : 'disabled'}>Copy report</button></article>${warItemRequests(snapshot)}${warRetalCards(snapshot, active)}`}<div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · ${members.length} ranked-war opponents${current.busy ? ' · refreshing…' : ''}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}<div class="war-tab-body">${tabBody}</div></article></div>`;
+  }
+
+  function warAttackRows(payload) {
+    const source = payload?.attacks ?? payload?.data ?? [];
+    return Array.isArray(source) ? source : Object.values(source || {});
+  }
+
+  function updateWarPersonalStats(attacks, active, session) {
+    if (!Array.isArray(attacks) || !attacks.length) return;
+    const cache = dataState.caches.warPersonalStats?.warId === active.warId ? dataState.caches.warPersonalStats : { warId:active.warId, attacks:0, warAttacks:0, seen:[] };
+    const seen = new Set(cache.seen || []);
+    for (const attack of attacks) {
+      const attackId = String(attack?.id ?? attack?.attack_id ?? '');
+      const attackerId = Number(attack?.attacker?.id ?? attack?.attacker_id) || 0;
+      if (!attackId || seen.has(attackId) || attackerId !== Number(session.userId)) continue;
+      seen.add(attackId); cache.attacks += 1;
+      const factionId = Number(attack?.defender?.faction?.id ?? attack?.defender?.faction_id ?? attack?.defender_faction_id) || 0;
+      if (attack?.is_ranked_war === true || factionId === Number(active.opponentId)) cache.warAttacks += 1;
+    }
+    cache.seen = [...seen].slice(-1000);
+    dataState.caches.warPersonalStats = cache;
   }
 
   async function refreshWar(force = false) {
     const current = moduleState.war;
     const cached = dataState.caches.war;
-    if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.data = cached; renderWar(); return; }
+    if (!force && cached?.at && Date.now() - cached.at < 30_000) { current.data = cached; renderWar(); return; }
     current.busy = true; current.error = ''; renderWar();
     try {
       const session = await ensurePermissionSession(false);
       await ensureWarSession(false);
       if (!session.factionId) throw new Error('Your permission session does not include a faction.');
-      const wars = await tornJson(`/v2/faction/${encodeURIComponent(session.factionId)}/rankedwars?sort=desc&limit=10`, 'SLINK PDA ranked war detection');
-      const found = currentRankedWar(wars, session.factionId);
-      if (!found) {
-        current.data = dataState.caches.war = { at:Date.now(), activeWar:null, snapshot:null };
+      let activeWar = cached?.activeWar || null;
+      if (force || !Number(cached?.detectedAt) || Date.now() - Number(cached.detectedAt) >= 5 * 60_000) {
+        const wars = await tornJson(`/v2/faction/${encodeURIComponent(session.factionId)}/rankedwars?sort=desc&limit=10`, 'SLINK PDA ranked war detection');
+        const found = currentRankedWar(wars, session.factionId);
+        activeWar = found ? { opponentId:found.opponentId, opponentName:found.opponentName, start:found.start, phase:found.start * 1000 <= Date.now() ? 'active' : 'assigned', warId:makeWarId(session.factionId, found.opponentId, found.start) } : null;
+      }
+      if (!activeWar) {
+        current.data = dataState.caches.war = { at:Date.now(), detectedAt:Date.now(), activeWar:null, snapshot:null, outsideTargets:cached?.outsideTargets || [] };
       } else {
-        const activeWar = { opponentId:found.opponentId, opponentName:found.opponentName, start:found.start, phase:found.start * 1000 <= Date.now() ? 'active' : 'assigned', warId:makeWarId(session.factionId, found.opponentId, found.start) };
-        const query = new URLSearchParams({ opponent_faction_id:String(found.opponentId), mode:String(dataState.settings.war.mode || 'war'), idle_minutes:String(dataState.settings.war.idleMinutes || 5) });
+        const body = { opponent_faction_id:activeWar.opponentId };
+        if (activeWar.phase === 'active') {
+          const heartbeat = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/heartbeat`, { method:'POST', body });
+          if (heartbeat?.collectStatus && Date.now() - Number(dataState.settings.war.lastStatusAt || 0) >= 30_000) {
+            const response = await tornJson(`/v2/faction/${encodeURIComponent(activeWar.opponentId)}/members`, 'SLINK PDA War opponent status');
+            const source = response?.members ?? response?.faction?.members ?? [];
+            const members = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+            if (members.length) {
+              await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/status`, { method:'POST', body:{ ...body, observedAt:Date.now(), members } });
+              dataState.settings.war.lastStatusAt = Date.now();
+            }
+          }
+          if (heartbeat?.collectAttacks && hasGrantedScope('slink.war.faction') && Date.now() - Number(dataState.settings.war.lastAttackAt || 0) >= 30_000) {
+            const now = Math.floor(Date.now() / 1000);
+            const from = Math.max(now - 600, Number(dataState.settings.war.lastAttackEnded || 0) - 60);
+            const response = await tornJson(`/v2/faction/attacks?from=${from}&to=${now}&limit=100&sort=desc`, 'SLINK PDA War attack collection');
+            const attacks = warAttackRows(response);
+            await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/attacks`, { method:'POST', body:{ ...body, attacks } });
+            updateWarPersonalStats(attacks, activeWar, session);
+            dataState.settings.war.lastAttackAt = Date.now();
+            dataState.settings.war.lastAttackEnded = attacks.reduce((maximum, attack) => Math.max(maximum, Number(attack?.ended ?? attack?.ended_at) || 0), Number(dataState.settings.war.lastAttackEnded) || 0);
+          }
+        }
+        const query = new URLSearchParams({ opponent_faction_id:String(activeWar.opponentId), mode:String(dataState.settings.war.mode || 'war'), idle_minutes:String(dataState.settings.war.idleMinutes || 5) });
         const snapshot = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/snapshot?${query}`);
+        if (activeWar.phase !== 'active' && !snapshot?.members?.length) {
+          const response = await tornJson(`/v2/faction/${encodeURIComponent(activeWar.opponentId)}/members`, 'SLINK PDA scheduled War roster');
+          const source = response?.members ?? response?.faction?.members ?? [];
+          snapshot.members = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+          snapshot.retals = [];
+        }
         if (Array.isArray(snapshot?.members)) snapshot.members = await refineWithFfScouter(snapshot.members);
-        else if (Array.isArray(snapshot?.targets)) snapshot.targets = await refineWithFfScouter(snapshot.targets);
-        current.data = dataState.caches.war = { at:Date.now(), activeWar, snapshot };
+        if (Array.isArray(snapshot?.retals) && snapshot.retals.length) {
+          const rows = snapshot.retals.map(retal => ({ id:retal.attackerId, name:retal.attackerName, ...retal }));
+          const refined = await refineWithFfScouter(rows);
+          snapshot.retals = snapshot.retals.map((retal, index) => ({ ...retal, fairFight:refined[index]?.fairFight ?? refined[index]?.fair_fight ?? retal.fairFight, battleStatsEstimate:refined[index]?.battleStatsEstimate ?? retal.battleStatsEstimate }));
+        }
+        if (snapshot?.config) {
+          dataState.settings.war.mode = snapshot.config.mode || dataState.settings.war.mode;
+          dataState.settings.war.idleMinutes = Number(snapshot.config.idleMinutes ?? dataState.settings.war.idleMinutes) || 0;
+          dataState.settings.war.insideHitCap = Number(snapshot.config.insideHitCap) || 0;
+          dataState.settings.war.insideBlockMode = snapshot.config.insideBlockMode || 'warn';
+        }
+        let logs = cached?.logs || [];
+        let logsAt = Number(cached?.logsAt) || 0;
+        if (warOfficer() && activeWar.phase === 'active' && (force || Date.now() - logsAt >= 10 * 60_000)) {
+          try {
+            const response = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/logs?limit=200&include_stored=1`);
+            logs = [...(Array.isArray(response?.stored) ? response.stored : []), ...(Array.isArray(response?.pending) ? response.pending : [])];
+            logsAt = Date.now();
+          } catch (error) { current.error = `War logs: ${errorMessage(error)}`; }
+        }
+        let chain = cached?.panelStats?.chain || null;
+        try {
+          const response = await tornJson('/v2/faction/chain', 'SLINK PDA War chain');
+          const value = response?.chain ?? response;
+          chain = { current:Number(value?.current ?? value?.hits ?? value?.length) || 0, target:Number(value?.max ?? value?.target) || 0, secondsLeft:Number(value?.timeout ?? value?.seconds_left ?? value?.time_left) || 0 };
+        } catch {}
+        const personal = dataState.caches.warPersonalStats?.warId === activeWar.warId ? dataState.caches.warPersonalStats : { attacks:0, warAttacks:0 };
+        current.data = dataState.caches.war = { at:Date.now(), detectedAt:cached?.activeWar?.warId === activeWar.warId ? Number(cached.detectedAt) || Date.now() : Date.now(), activeWar, snapshot, logs, logsAt, outsideTargets:cached?.outsideTargets || [], panelStats:{ attacks:Number(personal.attacks) || 0, warAttacks:Number(personal.warAttacks) || 0, chain } };
       }
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
     finally { current.busy = false; renderWar(); }
+  }
+
+  async function refreshWarOutside() {
+    const current = moduleState.war;
+    if (current.outsideBusy) return;
+    const settings = dataState.settings.war;
+    const root = moduleRoot('war');
+    const minimum = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="war-outside-min"]')?.value ?? settings.outsideMinFF) || 1));
+    const maximum = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="war-outside-max"]')?.value ?? settings.outsideMaxFF) || 3));
+    if (minimum > maximum) { current.outsideError = 'Minimum Fair Fight cannot be higher than maximum Fair Fight.'; renderWar(); return; }
+    const key = currentFfKey();
+    if (!key) { current.outsideError = 'Save an FFScouter API key under Access before polling outside targets.'; renderWar(); return; }
+    current.outsideBusy = true; current.outsideError = ''; renderWar();
+    try {
+      const query = new URLSearchParams({ key, minlevel:'1', maxlevel:'100', inactiveonly:'0', factionless:'0', minff:String(minimum), maxff:String(maximum), limit:'50' });
+      const response = await requestJson(`https://ffscouter.com/api/v1/get-targets?${query}`);
+      if (response?.error) throw new Error(String(response.error?.message || response.error));
+      const now = Math.floor(Date.now() / 1000);
+      const rows = (Array.isArray(response?.targets) ? response.targets : []).map(row => {
+        const lastAction = Number(row?.last_action ?? row?.lastAction) || 0;
+        const hospitalUntil = Number(row?.hospital_until ?? row?.status_until) || 0;
+        const minutes = lastAction ? Math.max(0, Math.floor((now - lastAction) / 60)) : null;
+        return { id:warMemberId(row), name:String(row?.name || `Player ${warMemberId(row)}`), level:Number(row?.level) || 0, activity:minutes === null ? 'Unknown' : minutes < 5 ? 'Online' : minutes < 15 ? 'Idle' : 'Offline', lastActionRelative:minutes === null ? '' : `${minutes}m ago`, statusState:hospitalUntil > now ? 'Hospital' : 'Unknown', statusUntil:hospitalUntil, fairFight:finite(row?.fair_fight ?? row?.fairFight ?? row?.ff), battleStatsEstimate:finite(row?.bs_estimate ?? row?.battle_stats_estimate ?? row?.total_stats) };
+      }).filter(row => row.id > 0).slice(0, 50);
+      settings.outsideMinFF = minimum; settings.outsideMaxFF = maximum;
+      current.data = dataState.caches.war = { ...(current.data || dataState.caches.war || {}), outsideTargets:rows, at:Number(current.data?.at || dataState.caches.war?.at) || Date.now() };
+      writeDataState();
+    } catch (error) { current.outsideError = errorMessage(error); }
+    finally { current.outsideBusy = false; renderWar(); }
+  }
+
+  async function updateWarClaim(operation, targetId = 0) {
+    const current = moduleState.war;
+    const active = current.data?.activeWar;
+    if (!active) return;
+    const root = moduleRoot('war');
+    if (operation === 'claim') targetId = Number(root?.querySelector('[data-field="war-claim-target"]')?.value) || 0;
+    if (!targetId) { current.error = 'Select a med-out target first.'; renderWar(); return; }
+    const member = (current.data?.snapshot?.members || []).find(row => warMemberId(row) === targetId);
+    const assigneeId = warOfficer() ? Number(root?.querySelector('[data-field="war-claim-assignee"]')?.value) || 0 : 0;
+    try {
+      const response = await productRequest('war', `/api/wars/${encodeURIComponent(active.warId)}/claims`, { method:'POST', body:{ opponent_faction_id:active.opponentId, operation, targetId, targetName:String(member?.name || `Player ${targetId}`), assigneeId, minutes:30 } });
+      current.data.snapshot.claims = Array.isArray(response?.claims) ? response.claims : current.data.snapshot.claims;
+      current.error = ''; writeDataState(); renderWar();
+    } catch (error) { current.error = errorMessage(error); renderWar(); }
+  }
+
+  async function resolveWarArmoryRequest(requestId) {
+    const current = moduleState.war;
+    const active = current.data?.activeWar;
+    if (!active || !requestId) return;
+    try {
+      const response = await productRequest('war', `/api/wars/${encodeURIComponent(active.warId)}/item-requests`, { method:'POST', body:{ opponent_faction_id:active.opponentId, operation:'resolve', requestId } });
+      current.data.snapshot.itemRequests = Array.isArray(response?.itemRequests) ? response.itemRequests : [];
+      current.error = ''; writeDataState(); renderWar();
+    } catch (error) { current.error = errorMessage(error); renderWar(); }
+  }
+
+  async function saveWarOfficerSettings() {
+    const current = moduleState.war;
+    const active = current.data?.activeWar;
+    const root = moduleRoot('war');
+    if (!active || !warOfficer()) return;
+    const body = { opponent_faction_id:active.opponentId, mode:root?.querySelector('[data-field="war-mode"]')?.value === 'termed' ? 'termed' : 'war', idleMinutes:Math.max(0, Math.min(60, Number(root?.querySelector('[data-field="war-idle"]')?.value) || 0)), insideHitCap:Math.max(0, Math.min(9999, Number(root?.querySelector('[data-field="war-inside-cap"]')?.value) || 0)), insideBlockMode:root?.querySelector('[data-field="war-inside-mode"]')?.value || 'warn' };
+    try {
+      const response = await productRequest('war', `/api/wars/${encodeURIComponent(active.warId)}/config`, { method:'POST', body });
+      const config = response?.config || body;
+      current.data.snapshot.config = config;
+      Object.assign(dataState.settings.war, { mode:config.mode, idleMinutes:config.idleMinutes, insideHitCap:config.insideHitCap, insideBlockMode:config.insideBlockMode });
+      current.error = ''; writeDataState(); renderWar();
+    } catch (error) { current.error = errorMessage(error); renderWar(); }
   }
 
   const PLAYER_STATS = ['xantaken','energydrinkused','refills','attackswon','respectforfaction','retals','timeplayed','networth'];
@@ -2066,6 +2484,8 @@
       if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
       const canRefreshMarket = Boolean(currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
       if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= 15_000) void refreshMarket(false);
+      const canRefreshWar = Boolean(currentApiKey() && hasGrantedScope('slink.war') && (validSession('war') || termsAccepted('war')));
+      if (canRefreshWar && !moduleState.war.busy && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -2123,8 +2543,11 @@
     .terms-list,.scope-list{display:flex;flex-wrap:wrap;gap:6px}.terms-list a,.scope-list span,.action-link{display:inline-flex;align-items:center;min-height:32px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);color:var(--s-alt);text-decoration:none}.scope-list span{color:var(--s-text)}.scope-details summary{min-height:40px;padding:9px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);cursor:pointer}.scope-details[open] summary{margin-bottom:8px}
     .target-actions{display:flex;flex-wrap:wrap;gap:6px}.target-actions a,.alert a{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:5px 10px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-control);color:var(--s-text);text-decoration:none}.target-actions button,.alert button{padding:5px 10px}
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}.mug-report{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mug-report>div{min-width:0;flex:1}.mug-report strong,.mug-report span{display:block}.mug-report span{color:var(--s-muted);font-size:10px}.mug-report button{padding:5px 10px}
+    .war-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:5px;margin-bottom:9px}.war-tabs button{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:5px}.war-tabs button[aria-selected="true"]{border-color:var(--s-alt);background:var(--s-accent)}.nav-count{display:grid;min-width:19px;height:19px;padding:0 4px;place-items:center;border:2px solid #090909;border-radius:99px;background:#e32727;color:#fff;font:bold 9px/1 Arial,sans-serif}.war-tab-body{margin-top:9px}.war-stack{display:grid;gap:7px}.war-card{position:relative;display:grid;gap:7px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-card-head{display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--s-soft)}.war-card-head>a,.war-card-head>strong{min-width:0;flex:1;color:var(--s-text);font-weight:800;text-decoration:none}.war-card-head>span{color:var(--s-muted);white-space:nowrap}.war-meta{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px}.war-pill{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--s-soft);border-radius:99px;background:var(--s-control)}.war-pill.online{color:var(--s-ready)}.war-pill.hospital{color:var(--s-warning)}.war-context{flex-basis:100%;color:var(--s-muted);font-size:10px}.war-filters,.war-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}.war-filters label,.war-settings label,.war-claim-form label{display:grid;gap:3px;color:var(--s-muted)}.war-filters input,.war-filters select,.war-settings input,.war-settings select,.war-claim-form input,.war-claim-form select{width:100%;min-width:0;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-filter-action{display:flex;align-items:end}.war-filter-action button,.war-settings>button{width:100%;padding:5px 8px}.war-settings-note{grid-column:1/-1;padding:8px;border:1px solid var(--s-soft);border-radius:7px;color:var(--s-muted)}.war-settings>button{grid-column:1/-1}.war-claim-form{display:grid;grid-template-columns:minmax(150px,2fr) minmax(130px,1fr) auto;align-items:end;gap:7px;margin-bottom:9px}.war-claim-form button{padding:5px 9px}.war-alert-block{display:grid;gap:7px;margin:9px 0;padding:8px;border:1px solid var(--s-border);border-radius:8px;background:color-mix(in srgb,var(--s-panel) 80%,transparent)}.war-retal{padding-right:39px;border-left:4px solid var(--s-error)}.war-dismiss{position:absolute;top:7px;right:7px;display:grid;width:27px;min-height:27px;padding:0;place-items:center;border-color:var(--s-error);border-radius:50%;color:var(--s-error);font-weight:900}.war-retal-report{display:grid;grid-template-columns:75px minmax(0,1fr);gap:4px 7px}.war-retal-report>span{color:var(--s-muted)}.war-inside-blocked{outline:3px solid var(--s-error);box-shadow:0 0 15px color-mix(in srgb,var(--s-error) 48%,transparent)}.war-inside-warning{color:var(--s-error);font-weight:800}.target-actions .war-inside-attack{border-color:var(--s-error);color:var(--s-error);font-weight:800}.war-log{border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-log summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px;cursor:pointer}.war-log summary span{color:var(--s-muted)}.war-log-event{display:grid;gap:2px;margin:0 8px 7px;padding:7px;border-left:3px solid var(--s-border);background:var(--s-panel)}.war-log-event span{color:var(--s-muted);font-size:10px}
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}
+    .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
+    .war-armory-controls{grid-template-columns:1fr}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav{visibility:hidden;pointer-events:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -2132,7 +2555,7 @@
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
@@ -2426,6 +2849,82 @@
         button.disabled = false;
       })();
     }
+    if (action === 'select-war-tab') {
+      const tab = String(event.target.closest('[data-war-tab]')?.dataset.warTab || 'targets');
+      const officerTabs = warOfficer() ? ['armory', 'logs', 'settings'] : [];
+      if (['targets', 'outside', 'claims', ...officerTabs].includes(tab)) {
+        dataState.settings.war.activeTab = tab;
+        writeDataState();
+        renderWar();
+      }
+    }
+    if (action === 'refresh-war-outside') void refreshWarOutside();
+    if (action === 'war-inside-attack') {
+      const link = event.target.closest('[data-war-target]');
+      const gate = warInsideGate(Number(link?.dataset.warTarget) || 0);
+      if (gate.active && (gate.mode === 'block' || !global.confirm(`${warInsideMessage(gate)}\n\nOpen this inside target anyway?`))) {
+        event.preventDefault();
+        event.stopPropagation();
+        moduleState.war.error = warInsideMessage(gate);
+        renderWar();
+      }
+    }
+    if (action === 'claim-war-target') void updateWarClaim('claim');
+    if (action === 'release-war-claim') void updateWarClaim('release', Number(event.target.closest('[data-war-target]')?.dataset.warTarget) || 0);
+    if (action === 'resolve-war-armory-request') void resolveWarArmoryRequest(String(event.target.closest('[data-war-request]')?.dataset.warRequest || ''));
+    if (action === 'save-war-settings') void saveWarOfficerSettings();
+    if (action === 'retrieve-war-armory') void retrieveWarArmoryItem();
+    if (action === 'next-war-armory') nextWarArmoryPage();
+    if (action === 'refresh-war-armory-members') void refreshWarArmoryMembers(true).then(() => { moduleState.war.error = ''; renderWar(); }).catch(error => { moduleState.war.error = errorMessage(error); renderWar(); });
+    if (action === 'toggle-war-armory-rank') {
+      const rank = String(event.target.closest('[data-armory-rank]')?.dataset.armoryRank || '');
+      const members = (dataState.caches.warArmoryMembers?.members || []).filter(member => member.rank === rank);
+      const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+      const select = !members.every(member => whitelist.has(String(member.id)));
+      members.forEach(member => select ? whitelist.add(String(member.id)) : whitelist.delete(String(member.id)));
+      dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+    }
+    if (action === 'select-shown-war-armory' || action === 'clear-shown-war-armory') {
+      const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+      const checked = action === 'select-shown-war-armory';
+      moduleRoot('war')?.querySelectorAll('[data-armory-search-row]:not([hidden]) [data-war-armory-member]').forEach(input => checked ? whitelist.add(String(input.dataset.warArmoryMember)) : whitelist.delete(String(input.dataset.warArmoryMember)));
+      dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+    }
+    if (action === 'dismiss-war-retal') {
+      const attackId = String(event.target.closest('[data-war-retal]')?.dataset.warRetal || '');
+      const retal = (moduleState.war.data?.snapshot?.retals || []).find(row => String(row?.attackId || row?.attackerId) === attackId);
+      if (retal) {
+        const key = `user:${Number(retal.attackerId) || attackId}`;
+        if (!dataState.settings.war.dismissedRetals || typeof dataState.settings.war.dismissedRetals !== 'object') dataState.settings.war.dismissedRetals = {};
+        dataState.settings.war.dismissedRetals[key] = Number(retal.expiresAt) || Math.floor(Date.now() / 1000) + 300;
+        writeDataState();
+        renderWar();
+      }
+    }
+    if (action === 'copy-war-target' || action === 'send-war-target') {
+      const button = event.target.closest('[data-war-target]');
+      const id = Number(button?.dataset.warTarget) || 0;
+      const rows = button?.dataset.warOutside === 'true' ? moduleState.war.data?.outsideTargets : moduleState.war.data?.snapshot?.members;
+      const member = (rows || []).find(row => warMemberId(row) === id);
+      if (member && button) void (async () => {
+        button.disabled = true;
+        const okay = action === 'copy-war-target' ? await copyText(warCallout(member)) : await sendToFaction(warCallout(member));
+        button.textContent = okay ? action === 'copy-war-target' ? 'Copied' : 'Sent to Faction' : 'Try again';
+        button.disabled = false;
+      })();
+    }
+    if (action === 'copy-war-retal' || action === 'send-war-retal') {
+      const button = event.target.closest('[data-war-retal]');
+      const attackId = String(button?.dataset.warRetal || '');
+      const retal = (moduleState.war.data?.snapshot?.retals || []).find(row => String(row?.attackId || row?.attackerId) === attackId);
+      if (retal && button) void (async () => {
+        const text = `RETAL: ${retal.attackerName || `Player ${retal.attackerId}`} [${retal.attackerId}] attacked ${retal.defenderName || `Player ${retal.defenderId || '?'}`} · ${retal.attackerStatus || retal.attackerActivity || 'Unknown'} · https://www.torn.com/page.php?sid=attack&user2ID=${retal.attackerId}`;
+        button.disabled = true;
+        const okay = action === 'copy-war-retal' ? await copyText(text) : await sendToFaction(text);
+        button.textContent = okay ? action === 'copy-war-retal' ? 'Copied' : 'Sent to Faction' : 'Try again';
+        button.disabled = false;
+      })();
+    }
     if (action === 'refresh-market-permissions') void refreshMarketPermissions();
     if (action === 'save-market-watch') saveMarketWatch();
     if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = ''; renderMarket(false); }
@@ -2489,6 +2988,24 @@
   });
 
   overlay.addEventListener('change', event => {
+    if (event.target.matches('[data-field="war-armory-mode"]')) {
+      dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); writeDataState();
+    }
+    if (event.target.matches('[data-war-armory-member]')) {
+      const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+      const id = String(event.target.dataset.warArmoryMember || '');
+      if (event.target.checked) whitelist.add(id); else whitelist.delete(id);
+      dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState();
+    }
+    if (event.target.matches('[data-field="war-target-min"],[data-field="war-target-max"],[data-field="war-target-status"],[data-field="war-target-sort"]')) {
+      const root = moduleRoot('war');
+      dataState.settings.war.targetMinFF = Math.max(0, Number(root?.querySelector('[data-field="war-target-min"]')?.value) || 0);
+      dataState.settings.war.targetMaxFF = Math.max(0, Number(root?.querySelector('[data-field="war-target-max"]')?.value) || 3);
+      dataState.settings.war.targetStatus = root?.querySelector('[data-field="war-target-status"]')?.value || 'all';
+      dataState.settings.war.targetSort = root?.querySelector('[data-field="war-target-sort"]')?.value || 'availability';
+      writeDataState();
+      renderWar(true);
+    }
     if (event.target.closest?.('.market-form')) captureMarketDraft();
     if (event.target.matches('[data-field="merit-refresh"]')) {
       dataState.settings.merits.refreshMinutes = Math.max(5, Number(event.target.value) || 15);
@@ -2520,6 +3037,10 @@
 
   overlay.addEventListener('input', event => {
     const expectedTop = shadow.querySelector('.scroll')?.scrollTop || 0;
+    if (event.target.matches('[data-field="war-armory-search"]')) {
+      const needle = String(event.target.value || '').trim().toLowerCase();
+      moduleRoot('war')?.querySelectorAll('[data-armory-search-row]').forEach(row => { row.hidden = Boolean(needle && !String(row.dataset.armorySearchRow || '').includes(needle)); });
+    }
     if (event.target.matches('[data-field="market-item"],[data-field="market-price"]')) {
       captureMarketDraft();
       if (event.target.matches('[data-field="market-item"]')) renderMarketSuggestions(event.target.value);
@@ -2543,6 +3064,7 @@
       const suggestions = moduleRoot('market')?.querySelector('[data-market-item-suggestions]');
       if (suggestions && !shadow.activeElement?.closest?.('[data-market-item-suggestions]')) suggestions.hidden = true;
       if (moduleState.market.renderPending && !shadow.activeElement?.closest?.('[data-module-root="market"] .market-form')) renderMarket();
+      if (moduleState.war.renderPending && !shadow.activeElement?.closest?.('[data-module-root="war"] input,[data-module-root="war"] select,[data-module-root="war"] textarea')) renderWar(true);
     }, 150);
   });
 

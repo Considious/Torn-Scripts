@@ -21,8 +21,12 @@ or resizing. Reset Layout is available under Access.
 
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
-- **Combat / War:** assigned/active ranked-war detection and a live, read-only
-  Worker snapshot. Officer capability is derived from `slink.war.officer`.
+- **Combat / War:** the complete ranked-war workspace with separate opponent,
+  outside-target, and med-out-claim views; live retals; item requests; local mug
+  reporting; target filters and faction-chat sharing. PDA participates in the
+  shared Worker collector election while the WebView is alive. Armory, logs,
+  and faction-wide settings are visible only to `slink.war.officer` or
+  `admin.*` users.
 - **Combat / Stats:** private direct-Torn-API daily player statistics.
 - **Efficiency / Alerts:** direct-Torn-API reminders, including the shared
   100-city-item daily cap, local 5-minute/1-hour snoozes, launcher count, and
@@ -48,7 +52,9 @@ or resizing. Reset Layout is available under Access.
   control;
 - one Shadow DOM host so Torn styles cannot garble the dashboard;
 - starts minimized after every new page load.
-- Leveling and War do not contribute API checks or send heartbeat loops;
+- Leveling remains read-only. War sends the same shared Worker heartbeat as the
+  extension and contributes opponent-status or faction-attack checks only when
+  that session is elected as the appropriate collector;
 - alerts check every five minutes and Market Watch follows each API source's
   cache/rate schedule while Torn PDA keeps the Torn page/WebView
   alive, even when the SLINK panel is minimized; mobile operating systems can
