@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.3.4
+// @version      0.3.5
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.3.4-mobile-viewport-stability';
+  const BUILD = '0.3.5-fixed-mobile-navigation';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.3.4';
+  const CLIENT_VERSION = '0.3.5';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_URL = 'https://play.google.com/store/points';
   const URLS = Object.freeze({
@@ -2135,7 +2135,6 @@
       .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
-    @media(orientation:landscape) and (max-height:520px){.topbar{min-height:50px}.brand-mark{width:32px;height:32px}.scroll{padding-top:8px}.primary-nav{position:absolute;top:50px;right:0;bottom:0;left:auto;width:94px;flex-direction:column;justify-content:flex-start;padding:8px max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) 8px;border-top:0;border-bottom:0;border-left:1px solid var(--s-border);box-shadow:-7px 0 20px var(--s-shadow)}.primary-nav button{width:100%;min-width:0;min-height:54px;flex:0 0 auto}.scroll{padding-right:104px;padding-bottom:max(10px,env(safe-area-inset-bottom))}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
   `;
 

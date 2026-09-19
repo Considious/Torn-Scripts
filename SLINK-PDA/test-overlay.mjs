@@ -4,7 +4,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
-assert.match(source, /@version\s+0\.3\.4/);
+assert.match(source, /@version\s+0\.3\.5/);
 assert.match(source, /@grant\s+GM_xmlhttpRequest/);
 assert.match(source, /@grant\s+GM_notification/);
 assert.match(source, /@connect\s+api\.torn\.com/);
@@ -16,7 +16,8 @@ assert.match(source, /\.scroll\{width:100%;min-width:0;min-height:0/);
 assert.match(source, /\.launcher\[hidden\]\{display:none\}/);
 assert.match(source, /launcher\.hidden = true/);
 assert.match(source, /launcher\.hidden = false/);
-assert.match(source, /orientation:landscape[\s\S]*position:absolute;top:50px;right:0/);
+assert.doesNotMatch(source, /@media\(orientation:landscape\)/);
+assert.doesNotMatch(source, /padding-right:104px/);
 assert.match(source, /data-action="reset-layout"/);
 assert.match(source, /orientationchange/);
 assert.match(source, /MutationObserver/);
