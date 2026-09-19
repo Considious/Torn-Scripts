@@ -63,7 +63,10 @@ or resizing. Reset Layout is available under Access.
 - Torn API requests pass through one shared 60-per-minute local ledger. Market
   high uses available capacity, normal reserves 10 calls/minute, and low
   reserves 20 calls/minute for other modules;
-- Weaver prices come only from `weav3r.dev/api/marketplace`; the DOM observer
+- Weaver prices come only from the public `weav3r.dev/api/marketplace` and
+  `/api/pricelist/{userId}` JSON endpoints. One all-item marketplace summary
+  screens both saved SLINK watches and the optional Weaver price list locally;
+  seller details are fetched only for qualifying item IDs. The DOM observer
   never scrapes market or bazaar prices for watch decisions;
 - API keys and session tokens stay in the userscript's local storage.
 

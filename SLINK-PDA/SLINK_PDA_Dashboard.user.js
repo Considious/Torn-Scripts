@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.0
+// @version      0.4.1
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.0-war-panel-parity';
+  const BUILD = '0.4.1-weaver-summary-pricelist';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.0';
+  const CLIENT_VERSION = '0.4.1';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_URL = 'https://play.google.com/store/points';
   const URLS = Object.freeze({
@@ -56,6 +56,7 @@
   const WEAVER_RATE_LIMIT = 80;
   const WEAVER_RATE_WINDOW_MS = 60_000;
   const WEAVER_MIN_REQUEST_SPACING_MS = Math.ceil(WEAVER_RATE_WINDOW_MS / WEAVER_RATE_LIMIT);
+  const WEAVER_PRICELIST_REFRESH_MS = 3 * 60_000;
   const PDA_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const PDA_API_KEY_AVAILABLE = Boolean(PDA_API_KEY && PDA_API_KEY !== PDA_KEY_TOKEN);
@@ -154,7 +155,7 @@
           ...(value.settings?.war || {})
         },
         alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, ...(value.settings?.alerts || {}) },
-        market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
+        market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
       }
     };
@@ -483,6 +484,9 @@
       enabled:input.enabled !== false,
       quickBuyEnabled:input.quickBuyEnabled !== false,
       lastPriority:normalizeMarketPriority(input.lastPriority),
+      listedItemsEnabled:input.listedItemsEnabled !== false,
+      weaverPricelistEnabled:input.weaverPricelistEnabled === true,
+      weaverSourceOrder:input.weaverSourceOrder === 'pricelist-first' ? 'pricelist-first' : 'listed-first',
       watches:(Array.isArray(input.watches) ? input.watches : []).map(normalizeMarketWatch),
       dismissals:input.dismissals && typeof input.dismissals === 'object' ? input.dismissals : {}
     };
@@ -494,6 +498,9 @@
     return {
       catalog:stored.catalog && typeof stored.catalog === 'object' ? stored.catalog : { fetchedAt:0, items:[] },
       results:stored.results && typeof stored.results === 'object' ? stored.results : {},
+      pricelistResults:stored.pricelistResults && typeof stored.pricelistResults === 'object' ? stored.pricelistResults : {},
+      weaverSummary:stored.weaverSummary && typeof stored.weaverSummary === 'object' ? stored.weaverSummary : { fetchedAt:0, items:[] },
+      weaverPricelist:stored.weaverPricelist && typeof stored.weaverPricelist === 'object' ? stored.weaverPricelist : { userId:null, fetchedAt:0, nextCheckAt:0, items:[], lastError:'' },
       weaver:stored.weaver && typeof stored.weaver === 'object' ? stored.weaver : { events:[], cooldownUntil:0 },
       fetchedAt:Number(stored.fetchedAt) || 0,
       lastError:String(stored.lastError || '')
@@ -557,6 +564,31 @@
     }).filter(Boolean).sort((a, b) => a.price - b.price);
   }
 
+  function weaverMarketplaceItems(body = {}) {
+    const rows = Array.isArray(body?.items) ? body.items : Array.isArray(body?.data?.items) ? body.data.items : [];
+    return rows.map(row => ({
+      itemId:Math.max(0, Math.trunc(Number(row?.item_id ?? row?.itemId ?? row?.id) || 0)),
+      name:String(row?.item_name ?? row?.itemName ?? row?.name ?? '').trim(),
+      lowestPrice:Math.max(0, Math.trunc(Number(row?.lowest_price ?? row?.lowestPrice) || 0))
+    })).filter(row => row.itemId > 0 && row.lowestPrice > 0);
+  }
+
+  function weaverPricelistItems(body = {}) {
+    const rows = Array.isArray(body) ? body : Array.isArray(body?.items) ? body.items : Array.isArray(body?.data) ? body.data : [];
+    return rows.map(row => ({
+      itemId:Math.trunc(Number(row?.itemId ?? row?.item_id ?? row?.id) || 0),
+      name:String(row?.name ?? row?.itemName ?? row?.item_name ?? '').trim(),
+      buyPrice:Math.max(0, Math.trunc(Number(row?.buyPrice ?? row?.buy_price) || 0)),
+      bulkThreshold:Math.max(0, Math.trunc(Number(row?.bulkThreshold ?? row?.bulk_threshold) || 0)),
+      bulkBuyPrice:Math.max(0, Math.trunc(Number(row?.bulkBuyPrice ?? row?.bulk_buy_price) || 0))
+    })).filter(row => row.itemId > 0 && row.buyPrice > 0);
+  }
+
+  function weaverPricelistTarget(item = {}, quantity = 0) {
+    const bulk = item.bulkThreshold > 0 && Number(quantity) >= item.bulkThreshold && item.bulkBuyPrice > 0;
+    return Math.max(0, Math.trunc(Number(bulk ? item.bulkBuyPrice : item.buyPrice) || 0));
+  }
+
   function itemMarketUrl(itemId, price = 0) {
     return `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${encodeURIComponent(Math.trunc(Number(itemId)))}${price > 0 ? `&slinkPrice=${encodeURIComponent(Math.trunc(Number(price)))}` : ''}`;
   }
@@ -581,7 +613,7 @@
     const catalog = new Map((runtime.catalog?.items || []).map(item => [Number(item.id), item]));
     const now = Date.now();
     settings.dismissals = Object.fromEntries(Object.entries(settings.dismissals || {}).filter(([, until]) => Number(until) > now));
-    return settings.watches.slice(0, limit).flatMap(watch => {
+    const rows = (settings.listedItemsEnabled ? settings.watches.slice(0, limit) : []).flatMap(watch => {
       if (!watch.enabled || !(watch.maxPrice > 0)) return [];
       const result = runtime.results?.[watch.uid] || {};
       if (watch.marketType === 'points') {
@@ -601,9 +633,28 @@
       }
       const best = new Map();
       for (const listing of result.bazaar?.listings || []) if (!best.has(listing.sellerId) || listing.price < best.get(listing.sellerId).price) best.set(listing.sellerId, listing);
-      if (watch.bazaarEnabled) for (const listing of [...best.values()].filter(row => row.price <= watch.maxPrice).slice(0, 5)) rows.push({ id:`bazaar:${watch.uid}:${listing.sellerId}`, watchUid:watch.uid, source:'Bazaar', itemId:watch.itemId, itemName:name, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Bazaar | ${name} | ${marketMoney(listing.price)} | ${listing.sellerName} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${listing.href}` });
+      if (watch.bazaarEnabled) for (const listing of [...best.values()].filter(row => row.price <= watch.maxPrice).slice(0, 5)) rows.push({ id:`bazaar:${watch.uid}:${listing.sellerId}`, watchUid:watch.uid, source:'Bazaar', itemId:watch.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Bazaar | ${name} | ${marketMoney(listing.price)} | ${listing.sellerName} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${listing.href}` });
       return rows;
-    }).map(row => ({ ...row, dismissKey:dealDismissKey(row) })).filter(row => !settings.dismissals[row.dismissKey]).sort((a, b) => a.price - b.price);
+    });
+    if (settings.weaverPricelistEnabled) for (const priceItem of weaverPricelistItems(runtime.weaverPricelist?.items || [])) {
+      const result = runtime.pricelistResults?.[priceItem.itemId] || {};
+      const item = catalog.get(priceItem.itemId) || {};
+      const name = priceItem.name || item.name || `Item ${priceItem.itemId}`;
+      const sellText = item.shopSellPrice > 0 ? `${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : '';
+      const best = new Map();
+      for (const listing of result.bazaar?.listings || []) if (!best.has(listing.sellerId) || listing.price < best.get(listing.sellerId).price) best.set(listing.sellerId, listing);
+      for (const listing of [...best.values()].slice(0, 5)) {
+        const maxPrice = weaverPricelistTarget(priceItem, listing.quantity);
+        if (!(maxPrice > 0) || listing.price > maxPrice) continue;
+        rows.push({ id:`bazaar:weaver-pricelist:${priceItem.itemId}:${listing.sellerId}`, watchUid:'', source:'Weaver Pricelist', itemId:priceItem.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · Weaver target ${marketMoney(maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Weaver Pricelist | ${name} | ${marketMoney(listing.price)} | ${listing.sellerName} | target ${marketMoney(maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${listing.href}` });
+      }
+    }
+    const unique = new Map();
+    for (const row of rows) {
+      const key = `${row.source === 'Bazaar' || row.source === 'Weaver Pricelist' ? 'bazaar' : row.source}:${row.itemId}:${row.sellerId || 0}:${row.price}`;
+      if (!unique.has(key)) unique.set(key, row);
+    }
+    return [...unique.values()].map(row => ({ ...row, dismissKey:dealDismissKey(row) })).filter(row => !settings.dismissals[row.dismissKey]).sort((a, b) => a.price - b.price);
   }
 
   async function marketTornJson(url, endpoint, priority) {
@@ -630,17 +681,98 @@
   }
 
   async function marketWeaverJson(url, runtime) {
-    const now = Date.now();
+    let now = Date.now();
     const prior = runtime.weaver || {};
     const events = (Array.isArray(prior.events) ? prior.events : []).map(Number).filter(at => at > now - WEAVER_RATE_WINDOW_MS && at <= now + 5_000).sort((a, b) => a - b);
     const retryAt = Math.max(Number(prior.cooldownUntil) || 0, Number(events.at(-1) || 0) + WEAVER_MIN_REQUEST_SPACING_MS, events.length >= WEAVER_RATE_LIMIT ? Number(events[0]) + WEAVER_RATE_WINDOW_MS : 0);
     runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0 };
-    if (retryAt > now) { const error = new Error('Weaver request budget is reserved for a later watch.'); error.retryAfterMs = retryAt - now; throw error; }
+    if (retryAt > now && retryAt - now <= WEAVER_MIN_REQUEST_SPACING_MS + 100) {
+      await new Promise(resolve => global.setTimeout(resolve, retryAt - now)); now = Date.now();
+      runtime.weaver.events = runtime.weaver.events.filter(at => at > now - WEAVER_RATE_WINDOW_MS);
+    } else if (retryAt > now) { const error = new Error('Weaver request budget is reserved for a later watch.'); error.code = 'SLINK_WEAVER_RATE_LIMIT'; error.retryAfterMs = retryAt - now; throw error; }
     runtime.weaver.events.push(now);
     try { return await requestJson(url); }
     catch (error) {
       if (Number(error?.status) === 429) runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
       throw error;
+    }
+  }
+
+  async function syncMarketWeaverPricelist(runtime, force = false) {
+    const session = validSession('permission');
+    const userId = Number(session?.userId) || 0;
+    if (!(userId > 0)) throw new Error('Refresh SLINK permissions so Weaver can identify your Torn account.');
+    const previous = runtime.weaverPricelist || {};
+    if (!force && Number(previous.userId) === userId && Number(previous.nextCheckAt) > Date.now()) return previous;
+    try {
+      const body = await marketWeaverJson(`${URLS.weaver}/api/pricelist/${encodeURIComponent(userId)}`, runtime); const now = Date.now();
+      runtime.weaverPricelist = { userId, fetchedAt:now, nextCheckAt:now + WEAVER_PRICELIST_REFRESH_MS, items:weaverPricelistItems(body), lastError:'' };
+    } catch (error) {
+      runtime.weaverPricelist = { ...previous, userId, nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || 15_000), lastError:errorMessage(error) };
+    }
+    return runtime.weaverPricelist;
+  }
+
+  async function marketWeaverSummary(runtime, force = false, maxAgeMs = WEAVER_REFRESH_MS.normal) {
+    if (!force && runtime.weaverSummary?.items?.length && Date.now() - Number(runtime.weaverSummary.fetchedAt) < maxAgeMs) return runtime.weaverSummary;
+    const body = await marketWeaverJson(`${URLS.weaver}/api/marketplace`, runtime); const now = Date.now();
+    runtime.weaverSummary = { fetchedAt:now, items:weaverMarketplaceItems(body) };
+    return runtime.weaverSummary;
+  }
+
+  function marketWeaverTargets(settings, allowed, runtime, force) {
+    const targets = new Map();
+    const add = (itemId, threshold, source, priority, destination) => {
+      if (!(itemId > 0) || !(threshold > 0) || !marketDue(destination?.bazaar, force)) return;
+      const target = targets.get(itemId) || { itemId, threshold:0, priority, manual:[], pricelist:false };
+      target.threshold = Math.max(target.threshold, threshold);
+      if (MARKET_PRIORITIES[priority] < MARKET_PRIORITIES[target.priority]) target.priority = priority;
+      if (source === 'pricelist') target.pricelist = true; else target.manual.push(source);
+      targets.set(itemId, target);
+    };
+    if (settings.listedItemsEnabled) for (const watch of allowed) if (watch.enabled && watch.marketType === 'item' && watch.bazaarEnabled) add(watch.itemId, watch.maxPrice, watch, marketPriorityFor(watch, runtime.results[watch.uid]), runtime.results[watch.uid]);
+    if (settings.weaverPricelistEnabled) for (const item of weaverPricelistItems(runtime.weaverPricelist?.items || [])) add(item.itemId, Math.max(item.buyPrice, item.bulkBuyPrice || 0), 'pricelist', 'normal', runtime.pricelistResults[item.itemId]);
+    const priceFirst = settings.weaverSourceOrder === 'pricelist-first';
+    return [...targets.values()].sort((left, right) => {
+      const leftRank = priceFirst ? (left.pricelist ? 0 : 1) : (left.manual.length ? 0 : 1);
+      const rightRank = priceFirst ? (right.pricelist ? 0 : 1) : (right.manual.length ? 0 : 1);
+      return leftRank - rightRank || MARKET_PRIORITIES[left.priority] - MARKET_PRIORITIES[right.priority] || left.itemId - right.itemId;
+    });
+  }
+
+  function storeMarketWeaverResult(target, runtime, payload) {
+    for (const watch of target.manual) {
+      const result = runtime.results[watch.uid] || { errors:{} }; result.errors ||= {};
+      result.bazaar = payload; delete result.errors.bazaar; runtime.results[watch.uid] = result;
+    }
+    if (target.pricelist) runtime.pricelistResults[target.itemId] = { bazaar:payload, errors:{} };
+  }
+
+  async function pollMarketWeaverTargets(settings, allowed, runtime, force) {
+    const targets = marketWeaverTargets(settings, allowed, runtime, force);
+    if (!targets.length) return;
+    const maxAge = Math.min(...targets.map(target => WEAVER_REFRESH_MS[target.priority]));
+    let summary;
+    try { summary = await marketWeaverSummary(runtime, force, maxAge); }
+    catch (error) {
+      const retryAt = Date.now() + (Number(error?.retryAfterMs) || 5_000);
+      for (const target of targets) storeMarketWeaverResult(target, runtime, { nextCheckAt:retryAt, listings:[] });
+      throw error;
+    }
+    const lowest = new Map(summary.items.map(item => [item.itemId, item.lowestPrice]));
+    for (const target of targets) {
+      const now = Date.now(); const nextCheckAt = now + WEAVER_REFRESH_MS[target.priority];
+      if (!(Number(lowest.get(target.itemId)) > 0) || Number(lowest.get(target.itemId)) > target.threshold) {
+        storeMarketWeaverResult(target, runtime, { fetchedAt:now, nextCheckAt, screenedAt:summary.fetchedAt, listings:[] }); continue;
+      }
+      const url = `${URLS.weaver}/api/marketplace/${encodeURIComponent(target.itemId)}?maxPrice=${encodeURIComponent(target.threshold)}&limit=5`;
+      try {
+        const body = await marketWeaverJson(url, runtime);
+        storeMarketWeaverResult(target, runtime, { fetchedAt:Date.now(), nextCheckAt, screenedAt:summary.fetchedAt, sourceUrl:url, listings:weaverListings(body, target.itemId) });
+      } catch (error) {
+        storeMarketWeaverResult(target, runtime, { nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || 5_000), listings:[] });
+        if (error?.code === 'SLINK_WEAVER_RATE_LIMIT') break;
+      }
     }
   }
 
@@ -659,12 +791,18 @@
     if (marketWakeTimer) global.clearTimeout(marketWakeTimer);
     marketWakeTimer = null;
     if (!marketSettings().enabled || marketWatchLimit() <= 0) return;
-    const times = marketSettings().watches.slice(0, marketWatchLimit()).filter(watch => watch.enabled && watch.maxPrice > 0).flatMap(watch => {
+    const settings = marketSettings();
+    const activeWatches = settings.listedItemsEnabled ? settings.watches.slice(0, marketWatchLimit()) : [];
+    const times = activeWatches.filter(watch => watch.enabled && watch.maxPrice > 0).flatMap(watch => {
       const result = runtime.results?.[watch.uid] || {};
       return watch.marketType === 'points'
         ? [Number(result.points?.nextCheckAt) || Date.now()]
         : [watch.marketEnabled ? Number(result.market?.nextCheckAt) || Date.now() : 0, watch.bazaarEnabled ? Number(result.bazaar?.nextCheckAt) || Date.now() : 0].filter(Boolean);
     });
+    if (settings.weaverPricelistEnabled) {
+      times.push(Number(runtime.weaverPricelist?.nextCheckAt) || Date.now());
+      for (const item of weaverPricelistItems(runtime.weaverPricelist?.items || [])) times.push(Number(runtime.pricelistResults?.[item.itemId]?.bazaar?.nextCheckAt) || Date.now());
+    }
     if (!times.length) return;
     const delay = Math.max(1_000, Math.min(...times) - Date.now());
     marketWakeTimer = global.setTimeout(() => { marketWakeTimer = null; void refreshMarket(false); }, delay);
@@ -690,7 +828,9 @@
       const allowed = settings.watches.slice(0, limit);
       const valid = new Set(allowed.map(watch => watch.uid));
       runtime.results = Object.fromEntries(Object.entries(runtime.results).filter(([uid]) => valid.has(uid)));
-      const ordered = [...allowed].sort((a, b) => MARKET_PRIORITIES[marketPriorityFor(a, runtime.results[a.uid])] - MARKET_PRIORITIES[marketPriorityFor(b, runtime.results[b.uid])]);
+      if (settings.weaverPricelistEnabled) await syncMarketWeaverPricelist(runtime, force);
+      else runtime.pricelistResults = {};
+      const ordered = [...(settings.listedItemsEnabled ? allowed : [])].sort((a, b) => MARKET_PRIORITIES[marketPriorityFor(a, runtime.results[a.uid])] - MARKET_PRIORITIES[marketPriorityFor(b, runtime.results[b.uid])]);
       let tornBlockedUntil = 0;
       for (const watch of ordered) {
         if (!watch.enabled || !(watch.maxPrice > 0)) continue;
@@ -724,17 +864,10 @@
               const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.market = errorMessage(error); next.market = { ...(previous.market || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
             }
           }
-          if (watch.bazaarEnabled) {
-            const priority = marketPriorityFor(watch, previous);
-            const dueAt = Number(previous.bazaar?.nextCheckAt) || Number(previous.bazaar?.fetchedAt || 0) + WEAVER_REFRESH_MS[priority];
-            if (force || dueAt <= Date.now()) try {
-              const url = `${URLS.weaver}/api/marketplace/${encodeURIComponent(watch.itemId)}?maxPrice=${encodeURIComponent(watch.maxPrice)}&limit=5`;
-              const body = await marketWeaverJson(url, runtime); const now = Date.now(); next.bazaar = { fetchedAt:now, nextCheckAt:now + WEAVER_REFRESH_MS[priority], sourceUrl:url, listings:weaverListings(body, watch.itemId) }; delete next.errors.bazaar;
-            } catch (error) { next.errors.bazaar = errorMessage(error); next.bazaar = { ...(previous.bazaar || {}), nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || 5_000) }; }
-          }
         }
         runtime.results[watch.uid] = next;
       }
+      await pollMarketWeaverTargets(settings, allowed, runtime, force);
       runtime.fetchedAt = Date.now(); runtime.lastError = marketErrorSummary(allowed, runtime.results);
       current.data = dataState.caches.market = runtime;
       reconcileMarketNotifications(runtime);
@@ -759,6 +892,21 @@
       renderAllModules();
     }
     if (marketWatchLimit() > 0) void refreshMarket(false);
+  }
+
+  async function syncMarketPricelistNow() {
+    const current = moduleState.market;
+    if (current.busy) return;
+    current.busy = true; current.error = ''; renderMarket();
+    const runtime = marketRuntime();
+    try {
+      await ensurePermissionSession(true);
+      const synced = await syncMarketWeaverPricelist(runtime, true);
+      current.data = dataState.caches.market = runtime; writeDataState();
+      if (synced.lastError) throw new Error(synced.lastError);
+    } catch (error) { current.error = errorMessage(error); }
+    finally { current.busy = false; renderMarket(); }
+    if (marketSettings().weaverPricelistEnabled) void refreshMarket(false);
   }
 
   function validSession(name) {
@@ -2158,6 +2306,11 @@
     const runtime = current.data || marketRuntime();
     const settings = marketSettings();
     const deals = marketOpportunities(runtime);
+    const pricelistItems = weaverPricelistItems(runtime.weaverPricelist?.items || []);
+    const pricelistStatus = runtime.weaverPricelist?.lastError
+      ? `Weaver sync issue: ${runtime.weaverPricelist.lastError}`
+      : runtime.weaverPricelist?.fetchedAt ? `${number(pricelistItems.length)} active Weaver prices synced ${relativeTime(runtime.weaverPricelist.fetchedAt)}.`
+        : settings.weaverPricelistEnabled ? 'Weaver price list will sync on refresh.' : 'Weaver price list is off.';
     const usage = apiUsage();
     const edit = settings.watches.find(watch => watch.uid === current.editingUid) || null;
     const form = current.draft || edit || { marketType:'item', itemId:0, label:'', itemText:'', maxPrice:'', priority:settings.lastPriority, marketEnabled:true, bazaarEnabled:true };
@@ -2176,7 +2329,7 @@
           <fieldset class="market-sources" ${form.marketType === 'points' ? 'disabled' : ''}><legend>Sources</legend><label><input type="checkbox" data-field="market-source" ${form.marketEnabled ? 'checked' : ''}> Item Market</label><label><input type="checkbox" data-field="bazaar-source" ${form.bazaarEnabled ? 'checked' : ''}> Weaver Bazaar</label></fieldset>
           <div class="market-form-actions"><button type="button" data-action="save-market-watch">${edit ? 'Update watch' : 'Save watch'}</button><button type="button" data-action="clear-market-form">Clear</button></div>
         </div>
-        <div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label></div>
+        <div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-listed-items" ${settings.listedItemsEnabled ? 'checked' : ''}> Listed SLINK watches</label><label><input type="checkbox" data-field="market-weaver-pricelist" ${settings.weaverPricelistEnabled ? 'checked' : ''}> My Weaver price list</label><label>Check first <select data-field="market-weaver-source-order"><option value="listed-first" ${settings.weaverSourceOrder === 'listed-first' ? 'selected' : ''}>Listed SLINK watches</option><option value="pricelist-first" ${settings.weaverSourceOrder === 'pricelist-first' ? 'selected' : ''}>Weaver price list</option></select></label><button type="button" data-action="sync-market-weaver-pricelist" ${current.busy ? 'disabled' : ''}>Sync Weaver price list</button><span class="muted">${escapeHtml(pricelistStatus)}</span><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label></div><p class="muted">One Weaver marketplace snapshot screens every active ID locally; seller details are requested only for items that can meet a SLINK or Weaver target.</p>
       </article>
       <article class="card full"><div class="card-head"><div><h2>Active deals</h2><span class="muted">Updated ${relativeTime(runtime.fetchedAt)} · Torn API ${usage.count}/${usage.limit} in the shared rolling minute</span></div><span class="badge ${deals.length ? 'ready' : ''}">${deals.length}</span></div>
         <div class="market-bulk-actions"><button type="button" data-action="copy-market-list" ${deals.length ? '' : 'disabled'}>Copy item list</button><button type="button" data-action="send-market-list" ${deals.length ? '' : 'disabled'}>Send list to Faction</button></div>
@@ -2926,6 +3079,7 @@
       })();
     }
     if (action === 'refresh-market-permissions') void refreshMarketPermissions();
+    if (action === 'sync-market-weaver-pricelist') void syncMarketPricelistNow();
     if (action === 'save-market-watch') saveMarketWatch();
     if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = ''; renderMarket(false); }
     if (action === 'edit-market-watch') {
@@ -3023,6 +3177,15 @@
     }
     if (event.target.matches('[data-field="market-enabled"]')) {
       marketSettings().enabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
+    }
+    if (event.target.matches('[data-field="market-listed-items"]')) {
+      marketSettings().listedItemsEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+    }
+    if (event.target.matches('[data-field="market-weaver-pricelist"]')) {
+      marketSettings().weaverPricelistEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+    }
+    if (event.target.matches('[data-field="market-weaver-source-order"]')) {
+      marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; writeDataState(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
     }
     if (event.target.matches('[data-field="market-quick-buy"]')) {
       marketSettings().quickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearMarketQuickBuys(); else scheduleMarketDomFormat();
