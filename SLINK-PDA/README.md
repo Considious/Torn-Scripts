@@ -31,9 +31,10 @@ or resizing. Reset Layout is available under Access.
 - **Efficiency / Alerts:** direct-Torn-API reminders, including the shared
   100-city-item daily cap, local 5-minute/1-hour snoozes, launcher count, and
   notifications for newly active alerts. The city reminder can also be hidden
-  until the next Torn daily reset. A local Google Play Points reminder opens the
-  same Play Points URL on desktop or Android and returns seven days after the
-  weekly prize is marked claimed.
+  until the next Torn daily reset. The local Google Play Points reminder opens
+  the Play Store app directly on Android, gives the Google Play Games claim path
+  on Windows, and explains the unsupported iOS case. It returns seven days after
+  the weekly prize is marked claimed.
 - **Efficiency / Market:** the extension's API-only Torn Item Market, Weaver
   Bazaar, and Points Market watches. Permission tiers allow 5–40 watches. The
   searchable item list loads automatically and includes item IDs and city-shop

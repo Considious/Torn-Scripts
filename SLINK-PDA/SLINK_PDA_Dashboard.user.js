@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.1
+// @version      0.4.2
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.1-weaver-summary-pricelist';
+  const BUILD = '0.4.2-platform-play-points';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,9 +35,10 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.1';
+  const CLIENT_VERSION = '0.4.2';
   const WEEK_MS = 7 * 86_400_000;
-  const GOOGLE_PLAY_POINTS_URL = 'https://play.google.com/store/points';
+  const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
+  const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
   const URLS = Object.freeze({
     permission:'https://slinkcontributionworker.richard-johnson554.workers.dev',
     leveling:'https://slinkyleveling.richard-johnson554.workers.dev',
@@ -1986,6 +1987,27 @@
     });
   }
 
+  function googlePlayPointsAccess() {
+    const userAgent = String(global.navigator?.userAgent || '');
+    const maxTouchPoints = Number(global.navigator?.maxTouchPoints) || 0;
+    if (/android/i.test(userAgent)) return {
+      detail:'Open the Play Store app, then use Profile → Play Points → Perks. If the app opens its home page, follow that same path.',
+      links:[['Open Play Store app',GOOGLE_PLAY_POINTS_ANDROID_INTENT],['Official instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+    };
+    if (/windows/i.test(userAgent)) return {
+      detail:'Open Google Play Games on your PC, then choose Play Points → Perks → Claim. Google does not provide a reliable web link into that screen.',
+      links:[['Official PC instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+    };
+    if (/iphone|ipad|ipod/i.test(userAgent) || (/macintosh/i.test(userAgent) && maxTouchPoints > 1)) return {
+      detail:'Google does not support claiming the weekly prize on iPhone or iPad. Use the Play Store app on Android or Google Play Games on Windows.',
+      links:[['Official claiming instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+    };
+    return {
+      detail:'Claim in the Play Store app on Android or Google Play Games on Windows, then mark it claimed here.',
+      links:[['Official claiming instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+    };
+  }
+
   function alertRows(snapshot) {
     const body = snapshot?.body || {};
     const fetchedAt = Number(snapshot?.at) || Date.now();
@@ -2008,6 +2030,7 @@
     const away = ['traveling', 'abroad'].includes(String(profile?.status?.state || '').toLowerCase()) || travelSeconds > 0;
     const activeRace = raceActive(body?.races, profile?.status, body?.icons);
     const racewayKnown = body?.enlistedcars !== undefined || body?.races !== undefined || body?.icons !== undefined;
+    const playPoints = googlePlayPointsAccess();
     add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('boosterCooldown', booster === 0, 'Booster cooldown is clear', 'You can use a booster now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
@@ -2016,7 +2039,7 @@
     add('energyRefill', refillAvailable(body?.refills, 'energy'), 'Energy refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('nerveRefill', refillAvailable(body?.refills, 'nerve'), 'Nerve refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('missions', missions.length > 0, missions.length >= 3 ? 'Mission cap reached' : `${missions.length} unfinished mission${missions.length === 1 ? '' : 's'}`, missions.length >= 3 ? 'Complete one before another arrives so you do not miss mission credits.' : missions.map(row => row?.title).filter(Boolean).slice(0, 2).join(' / '), [['Missions','https://www.torn.com/page.php?sid=missions']]);
-    add('googlePlayPoints', Number(dataState.settings.alerts.googlePlayPointsClaimedAt || 0) + WEEK_MS <= Date.now(), 'Claim your weekly Google Play Points prize', 'Open Google Play Points, claim the weekly prize, then mark it claimed here. This reminder returns seven days after confirmation.', [['Open Google Play Points',GOOGLE_PLAY_POINTS_URL]]);
+    add('googlePlayPoints', Number(dataState.settings.alerts.googlePlayPointsClaimedAt || 0) + WEEK_MS <= Date.now(), 'Claim your weekly Google Play Points prize', `${playPoints.detail} This reminder returns seven days after confirmation.`, playPoints.links);
     add('cityItems', !cityHidden && cityBought !== null && cityBought < 100, 'Buy 100 city items', `${number(cityBought)} / 100 bought since daily reset. Once the shared cap reaches 100, every city-item reminder stops.`, [['City','https://www.torn.com/city.php']]);
     add('raceOrFly', racewayKnown && !activeRace && !away, 'Start a race or take a flight', 'You are on the ground and not entered in an active race.', [['Raceway','https://www.torn.com/page.php?sid=racing'],['Travel','https://www.torn.com/travelagency.php']]);
     add('landing', travelSeconds > 0 && travelSeconds <= 10 * 60, 'Landing soon', `${travel?.destination ? `Arriving in ${travel.destination} in ` : 'Landing in '}${duration(travelSeconds)}`, [['Travel','https://www.torn.com/index.php']]);
@@ -2053,7 +2076,8 @@
   function openAlertDestination(href) {
     try {
       const destination = new URL(String(href || ''), global.location.href);
-      if (!/^https?:$/.test(destination.protocol)) return false;
+      const androidIntent = destination.protocol === 'intent:' && /android/i.test(String(global.navigator?.userAgent || ''));
+      if (!/^https?:$/.test(destination.protocol) && !androidIntent) return false;
       global.location.href = destination.href;
       return true;
     } catch {
