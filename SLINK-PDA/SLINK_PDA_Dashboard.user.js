@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.2
+// @version      0.4.3
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.2-platform-play-points';
+  const BUILD = '0.4.3-dollar-bazaars';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.2';
+  const CLIENT_VERSION = '0.4.3';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -58,6 +58,8 @@
   const WEAVER_RATE_WINDOW_MS = 60_000;
   const WEAVER_MIN_REQUEST_SPACING_MS = Math.ceil(WEAVER_RATE_WINDOW_MS / WEAVER_RATE_LIMIT);
   const WEAVER_PRICELIST_REFRESH_MS = 3 * 60_000;
+  const DOLLAR_BAZAAR_REFRESH_MS = 60 * 60_000;
+  const DOLLAR_BAZAAR_LIMIT = 100;
   const PDA_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const PDA_API_KEY_AVAILABLE = Boolean(PDA_API_KEY && PDA_API_KEY !== PDA_KEY_TOKEN);
@@ -199,6 +201,7 @@
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
     market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0, refreshPermissions:true, draft:null, renderPending:false },
+    dollarBazaars:{ busy:false, error:'', data:dataState.caches.dollarBazaars || null, lastAttemptAt:0 },
     merits:{ busy:false, error:'', data:dataState.caches.merits || null }
   };
 
@@ -572,6 +575,31 @@
       name:String(row?.item_name ?? row?.itemName ?? row?.name ?? '').trim(),
       lowestPrice:Math.max(0, Math.trunc(Number(row?.lowest_price ?? row?.lowestPrice) || 0))
     })).filter(row => row.itemId > 0 && row.lowestPrice > 0);
+  }
+
+  function weaverDollarBazaarItems(body = {}) {
+    const rows = Array.isArray(body?.items) ? body.items : Array.isArray(body?.data?.items) ? body.data.items : [];
+    return rows.map(row => {
+      const itemId = Math.max(0, Math.trunc(Number(row?.itemId ?? row?.item_id) || 0));
+      const sellerId = Math.max(0, Math.trunc(Number(row?.playerId ?? row?.player_id ?? row?.sellerId ?? row?.seller_id) || 0));
+      const marketPrice = Math.max(0, Math.trunc(Number(row?.marketPrice ?? row?.market_price) || 0));
+      const quantity = Math.max(0, Math.trunc(Number(row?.quantity ?? row?.amount) || 0));
+      const updatedAt = externalTimestampMs(row?.lastUpdated ?? row?.last_updated ?? row?.updatedAt ?? row?.updated_at);
+      return {
+        itemId,
+        itemName:String(row?.itemName ?? row?.item_name ?? row?.name ?? `Item ${itemId}`).trim().slice(0, 160),
+        itemType:String(row?.itemType ?? row?.item_type ?? row?.type ?? '').trim().slice(0, 80),
+        sellerId,
+        sellerName:String(row?.sellerName ?? row?.seller_name ?? row?.playerName ?? row?.player_name ?? `Player ${sellerId}`).trim().slice(0, 160),
+        quantity,
+        marketPrice,
+        totalValue:Math.max(0, Math.trunc(Number(row?.totalValue ?? row?.total_value) || marketPrice * quantity)),
+        updatedAt,
+        href:bazaarUrl(sellerId, itemId, 1, updatedAt)
+      };
+    }).filter(row => row.itemId > 0 && row.sellerId > 0 && row.marketPrice > 0 && row.quantity > 0)
+      .sort((left, right) => right.totalValue - left.totalValue || right.marketPrice - left.marketPrice || left.itemName.localeCompare(right.itemName))
+      .slice(0, DOLLAR_BAZAAR_LIMIT);
   }
 
   function weaverPricelistItems(body = {}) {
@@ -1205,6 +1233,7 @@
       ['[data-efficiency-tab="alerts"]', 'slink.adhd.alerts'],
       ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch tier'],
       ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
+      ['[data-efficiency-tab="dollarBazaars"]', 'slink.adhd.alerts'],
       ['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
       ['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
     ];
@@ -2520,6 +2549,53 @@
     marketFormatTimer = global.setTimeout(() => { marketFormatTimer = null; formatMarketPurchasePage(); }, 80);
   }
 
+  function renderDollarBazaars() {
+    const root = moduleRoot('dollarBazaars');
+    if (!root) return;
+    if (!hasScope('slink.adhd.alerts')) { root.innerHTML = lockedModule('slink.adhd.alerts', 'Weaver $1 Bazaars'); return; }
+    const current = moduleState.dollarBazaars;
+    if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Weaver $1 Bazaar listings through its JSON API…'); return; }
+    if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+    const items = Array.isArray(current.data?.items) ? [...current.data.items].sort((left, right) => Number(right.totalValue) - Number(left.totalValue)) : [];
+    const next = Number(current.data?.nextRefreshAt) ? new Date(current.data.nextRefreshAt).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' }) : '—';
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Weaver $1 Bazaars</h2><span class="muted">Top ${DOLLAR_BAZAAR_LIMIT} API listings ranked by total market value. No page scraping and no Torn API usage.</span></div><button type="button" data-action="refresh-dollar-bazaars" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing…' : 'Refresh now'}</button></div>
+      ${current.error ? moduleMessage(`${current.error}${current.data?.fetchedAt ? ` Showing the saved results from ${relativeTime(current.data.fetchedAt)}.` : ''}`, 'error') : ''}
+      <div class="stats"><div class="stat"><strong>${number(items.length)}</strong><span>Listings</span></div><div class="stat"><strong>${current.data?.fetchedAt ? relativeTime(current.data.fetchedAt) : '—'}</strong><span>Updated</span></div><div class="stat"><strong>${escapeHtml(next)}</strong><span>Next update</span></div><div class="stat"><strong>1 hour</strong><span>Cache time</span></div></div>
+      <div class="dollar-bazaar-list">${items.length ? items.map(item => `<article class="dollar-bazaar-row"><div><strong>${escapeHtml(item.itemName)} [${Number(item.itemId)}]</strong><small>${escapeHtml(item.sellerName)} [${Number(item.sellerId)}] · ${number(item.quantity)} available${item.itemType ? ` · ${escapeHtml(item.itemType)}` : ''}</small></div><div class="dollar-bazaar-value"><strong>${marketMoney(item.totalValue)}</strong><small>${marketMoney(item.marketPrice)} each</small></div><a class="action-link" href="${escapeHtml(item.href)}">Open bazaar</a></article>`).join('') : moduleMessage('Weaver returned no active $1 Bazaar listings.')}</div>
+      <div class="module-toolbar"><span>One shared Weaver JSON request per hour. Last successful results remain available after an API error.</span><a class="action-link" href="https://weav3r.dev/dollar-bazaars">Weaver source</a></div>
+    </article></div>`;
+  }
+
+  async function refreshDollarBazaars(force = false) {
+    const current = moduleState.dollarBazaars;
+    if (current.busy) return false;
+    const cached = dataState.caches.dollarBazaars;
+    if (!force && Number(cached?.nextRefreshAt) > Date.now()) { current.data = cached; renderDollarBazaars(); return false; }
+    current.lastAttemptAt = Date.now();
+    current.busy = true;
+    current.error = '';
+    renderDollarBazaars();
+    try {
+      await ensurePermissionSession(false);
+      if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
+      const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/items?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
+      const fetchedAt = Date.now();
+      current.data = dataState.caches.dollarBazaars = {
+        fetchedAt,
+        nextRefreshAt:fetchedAt + DOLLAR_BAZAAR_REFRESH_MS,
+        sourceUrl:'https://weav3r.dev/dollar-bazaars',
+        items:weaverDollarBazaarItems(body)
+      };
+      writeDataState();
+    } catch (error) {
+      current.error = errorMessage(error);
+    } finally {
+      current.busy = false;
+      renderDollarBazaars();
+    }
+    return true;
+  }
+
   function cleanAwardText(value) {
     return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
   }
@@ -2646,12 +2722,12 @@
     if (!dashboardOpen || document.hidden) return;
     const name = activeModuleName();
     if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
-    const loaders = { leveling:refreshLeveling, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits };
+    const loaders = { leveling:refreshLeveling, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -2661,6 +2737,8 @@
       if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
       const canRefreshMarket = Boolean(currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
       if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= 15_000) void refreshMarket(false);
+      const canRefreshDollarBazaars = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
+      if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
       const canRefreshWar = Boolean(currentApiKey() && hasGrantedScope('slink.war') && (validSession('war') || termsAccepted('war')));
       if (canRefreshWar && !moduleState.war.busy && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
@@ -2722,7 +2800,7 @@
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}.mug-report{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mug-report>div{min-width:0;flex:1}.mug-report strong,.mug-report span{display:block}.mug-report span{color:var(--s-muted);font-size:10px}.mug-report button{padding:5px 10px}
     .war-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:5px;margin-bottom:9px}.war-tabs button{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:5px}.war-tabs button[aria-selected="true"]{border-color:var(--s-alt);background:var(--s-accent)}.nav-count{display:grid;min-width:19px;height:19px;padding:0 4px;place-items:center;border:2px solid #090909;border-radius:99px;background:#e32727;color:#fff;font:bold 9px/1 Arial,sans-serif}.war-tab-body{margin-top:9px}.war-stack{display:grid;gap:7px}.war-card{position:relative;display:grid;gap:7px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-card-head{display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--s-soft)}.war-card-head>a,.war-card-head>strong{min-width:0;flex:1;color:var(--s-text);font-weight:800;text-decoration:none}.war-card-head>span{color:var(--s-muted);white-space:nowrap}.war-meta{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px}.war-pill{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--s-soft);border-radius:99px;background:var(--s-control)}.war-pill.online{color:var(--s-ready)}.war-pill.hospital{color:var(--s-warning)}.war-context{flex-basis:100%;color:var(--s-muted);font-size:10px}.war-filters,.war-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}.war-filters label,.war-settings label,.war-claim-form label{display:grid;gap:3px;color:var(--s-muted)}.war-filters input,.war-filters select,.war-settings input,.war-settings select,.war-claim-form input,.war-claim-form select{width:100%;min-width:0;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-filter-action{display:flex;align-items:end}.war-filter-action button,.war-settings>button{width:100%;padding:5px 8px}.war-settings-note{grid-column:1/-1;padding:8px;border:1px solid var(--s-soft);border-radius:7px;color:var(--s-muted)}.war-settings>button{grid-column:1/-1}.war-claim-form{display:grid;grid-template-columns:minmax(150px,2fr) minmax(130px,1fr) auto;align-items:end;gap:7px;margin-bottom:9px}.war-claim-form button{padding:5px 9px}.war-alert-block{display:grid;gap:7px;margin:9px 0;padding:8px;border:1px solid var(--s-border);border-radius:8px;background:color-mix(in srgb,var(--s-panel) 80%,transparent)}.war-retal{padding-right:39px;border-left:4px solid var(--s-error)}.war-dismiss{position:absolute;top:7px;right:7px;display:grid;width:27px;min-height:27px;padding:0;place-items:center;border-color:var(--s-error);border-radius:50%;color:var(--s-error);font-weight:900}.war-retal-report{display:grid;grid-template-columns:75px minmax(0,1fr);gap:4px 7px}.war-retal-report>span{color:var(--s-muted)}.war-inside-blocked{outline:3px solid var(--s-error);box-shadow:0 0 15px color-mix(in srgb,var(--s-error) 48%,transparent)}.war-inside-warning{color:var(--s-error);font-weight:800}.target-actions .war-inside-attack{border-color:var(--s-error);color:var(--s-error);font-weight:800}.war-log{border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-log summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px;cursor:pointer}.war-log summary span{color:var(--s-muted)}.war-log-event{display:grid;gap:2px;margin:0 8px 7px;padding:7px;border-left:3px solid var(--s-border);background:var(--s-panel)}.war-log-event span{color:var(--s-muted);font-size:10px}
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
-    .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}
+    .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
     .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
     .war-armory-controls{grid-template-columns:1fr}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
@@ -2732,7 +2810,7 @@
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
@@ -2773,10 +2851,11 @@
       </section>
       <section class="page" data-page-panel="efficiency" hidden>
         <div class="page-head"><div><h1>Efficiency</h1><p>API-backed reminders, market watches, and Merit farms coordinated inside PDA.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
-        <nav class="subnav" aria-label="Efficiency tools"><button type="button" data-efficiency-tab="alerts">Alerts</button><button type="button" data-efficiency-tab="market">Market</button><button type="button" data-efficiency-tab="merits">Merits</button></nav>
+        <nav class="subnav" aria-label="Efficiency tools"><button type="button" data-efficiency-tab="alerts">Alerts</button><button type="button" data-efficiency-tab="market">Market</button><button type="button" data-efficiency-tab="merits">Merits</button><button type="button" data-efficiency-tab="dollarBazaars">$1 Bazaars</button></nav>
         <div class="subpage" data-efficiency-panel="alerts"><div data-module-root="alerts"></div></div>
         <div class="subpage" data-efficiency-panel="market" hidden><div data-module-root="market"></div></div>
         <div class="subpage" data-efficiency-panel="merits" hidden><div data-module-root="merits"></div></div>
+        <div class="subpage" data-efficiency-panel="dollarBazaars" hidden><div data-module-root="dollarBazaars"></div></div>
       </section>
       <section class="page" data-page-panel="access" hidden>
         <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
@@ -2864,7 +2943,7 @@
   }
 
   function selectSubpage(group, tab, persist = true) {
-    const allowed = group === 'combat' ? ['leveling', 'war', 'stats'] : ['alerts', 'market', 'merits'];
+    const allowed = group === 'combat' ? ['leveling', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
     if (!allowed.includes(tab)) tab = allowed[0];
     state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
     if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
@@ -3103,6 +3182,7 @@
       })();
     }
     if (action === 'refresh-market-permissions') void refreshMarketPermissions();
+    if (action === 'refresh-dollar-bazaars') void refreshDollarBazaars(true);
     if (action === 'sync-market-weaver-pricelist') void syncMarketPricelistNow();
     if (action === 'save-market-watch') saveMarketWatch();
     if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = ''; renderMarket(false); }
@@ -3310,6 +3390,7 @@
   global.setTimeout(() => void loadThemeCatalog(false), 2_000);
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
   if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
+  if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
   scheduleMarketDomFormat();
   scanAttackMugResults();
 
@@ -3320,6 +3401,7 @@
     toggle:toggleDashboard,
     reset:resetLayout,
     isOpen:() => dashboardOpen,
-    refreshMarket:() => refreshMarket(true)
+    refreshMarket:() => refreshMarket(true),
+    refreshDollarBazaars:() => refreshDollarBazaars(true)
   });
 })(globalThis);

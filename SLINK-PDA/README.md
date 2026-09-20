@@ -44,6 +44,11 @@ or resizing. Reset Layout is available under Access.
 - **Efficiency / Merits:** one next incomplete medal or honor per milestone
   family, with later thresholds summarized on that tile, filters, pagination,
   and up to three local pins.
+- **Efficiency / $1 Bazaars:** Weaver's public JSON feed, sorted by highest
+  total market value, with direct seller-bazaar links. PDA stores the last
+  successful top-100 snapshot locally, refreshes it at most once per hour, and
+  also provides a manual refresh button. This feed uses neither Torn API quota
+  nor Market Watch slots.
 
 ## Safety and usage boundaries
 
@@ -64,11 +69,13 @@ or resizing. Reset Layout is available under Access.
 - Torn API requests pass through one shared 60-per-minute local ledger. Market
   high uses available capacity, normal reserves 10 calls/minute, and low
   reserves 20 calls/minute for other modules;
-- Weaver prices come only from the public `weav3r.dev/api/marketplace` and
-  `/api/pricelist/{userId}` JSON endpoints. One all-item marketplace summary
-  screens both saved SLINK watches and the optional Weaver price list locally;
-  seller details are fetched only for qualifying item IDs. The DOM observer
-  never scrapes market or bazaar prices for watch decisions;
+- Weaver prices come only from the public `weav3r.dev/api/marketplace`,
+  `/api/pricelist/{userId}`, and `/api/dollar-bazaars/items` JSON endpoints.
+  One all-item marketplace summary screens both saved SLINK watches and the
+  optional Weaver price list locally; seller details are fetched only for
+  qualifying item IDs. The $1 Bazaar feed performs one API request per hourly
+  refresh. The DOM observer never scrapes market or bazaar prices for watch
+  decisions;
 - API keys and session tokens stay in the userscript's local storage.
 
 Access accepts separate Torn and FFScouter keys. Each can independently use the
