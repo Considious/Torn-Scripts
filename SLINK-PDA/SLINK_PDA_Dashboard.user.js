@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.3
+// @version      0.4.4
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.3-dollar-bazaars';
+  const BUILD = '0.4.4-reminder-controls';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.3';
+  const CLIENT_VERSION = '0.4.4';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -157,7 +157,7 @@
           armoryMode:'ranked-all', armoryWhitelist:[],
           ...(value.settings?.war || {})
         },
-        alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, ...(value.settings?.alerts || {}) },
+        alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}) },
         market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
       }
@@ -1610,8 +1610,9 @@
     if (mode === 'proficience-15-plus') {
       const isWeapons = tab?.id?.includes('sub=weapons');
       const member = (dataState.caches.warArmoryMembers?.members || []).find(item => String(item.id) === borrower.id);
-      if (!isWeapons || !proficience || Number(member?.level) < 15) return null;
+      if (!isWeapons || !proficience || !member || !Number.isFinite(Number(member.level)) || Number(member.level) < 15) return null;
     }
+    if (!['ranked-all', 'ranked-no-prof', 'proficience-15-plus'].includes(mode)) return null;
     return borrower;
   }
 
@@ -1628,49 +1629,145 @@
     return members;
   }
 
+  // Retrieval and pagination adapted from Considious Armory Recaller 1.2.6.
+  function warArmoryPageFocused() {
+      return document.visibilityState === 'visible' && document.hasFocus();
+  }
+
+  function warArmorySetStatus(message, state = 'normal') {
+    moduleState.war.armoryStatus = message;
+    moduleState.war.error = state === 'error' ? message : '';
+      renderWar();
+  }
+
+  async function retrieveOneWarArmoryItem(row, borrower) {
+      const open = row.querySelector('.item-action [data-role="retrieve"].active');
+      if (!open) throw new Error('Retrieve control was not found.');
+      warArmorySetStatus(`Retrieving ${(row.querySelector('.name')?.textContent.trim() || 'item')} from ${borrower.name}…`);
+      open.click();
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          if (!warArmoryPageFocused()) throw new Error('The Torn page lost focus before confirmation. Nothing else was clicked.');
+          const confirm = row.querySelector('.retrieve-cont .retrieve-yes');
+          if (confirm && confirm.getClientRects().length > 0) {
+              confirm.click();
+              return;
+          }
+      }
+      throw new Error('Torn did not display the retrieval confirmation.');
+  }
+
+  function findNextWarArmoryPageControl(tab) {
+      const roots = [tab, document.querySelector('#faction-armoury'), document].filter(Boolean);
+      const selectors = [
+          '.gallery-wrapper.pagination a[href] > i.pagination-right',
+          '.pagination a[href] > i.pagination-right',
+          '.pagination a.next:not(.disabled)',
+          '.pagination .next:not(.disabled) a',
+          'a[aria-label="Next"]',
+          'a[title="Next"]',
+          '[data-page="next"]',
+      ];
+
+      for (const root of roots) {
+          for (const selector of selectors) {
+              const found = root.querySelector(selector);
+              if (!found) continue;
+              const control = found.matches('a, button') ? found : found.closest('a, button');
+              if (!control || control.disabled || control.classList.contains('disable') || control.classList.contains('disabled')) continue;
+              return control;
+          }
+      }
+
+      return [...(tab?.querySelectorAll('a, button') || [])].find((el) => {
+          const values = [el.textContent, el.getAttribute('aria-label'), el.getAttribute('title')].map((v) => (v || '').trim().toLowerCase());
+          return values.includes('next') && !el.disabled && !el.classList.contains('disabled') && !el.classList.contains('disable');
+      }) || null;
+  }
+
   async function retrieveWarArmoryItem() {
     const current = moduleState.war;
-    const tab = activeWarArmoryTab();
-    if (!tab) { current.error = 'Open the Weapons or Armor tab in Faction Armoury first.'; renderWar(); return; }
+    if (current.armoryBusy) return;
+    current.armoryBusy = true;
     try {
+      renderWar();
+      if (!warArmoryPageFocused()) throw new Error('Focus this Torn page before retrieving an item.');
+      const tab = activeWarArmoryTab();
+      if (!tab) throw new Error('Open the Weapons or Armor tab in Faction Armoury first.');
       if (dataState.settings.war.armoryMode === 'proficience-15-plus') await refreshWarArmoryMembers(false);
+      if (!warArmoryPageFocused()) throw new Error('The Torn page lost focus. Nothing was retrieved.');
+      let skippedWhitelist = 0;
+      const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
       for (const row of tab.querySelectorAll('ul.item-list > li')) {
+        if (whitelist.has(warArmoryBorrower(row)?.id)) skippedWhitelist++;
         const borrower = warArmoryEligible(row, tab);
         if (!borrower) continue;
         const item = row.querySelector('.name')?.textContent.trim() || 'item';
-        row.querySelector('.item-action [data-role="retrieve"].active')?.click();
-        for (let attempt = 0; attempt < 20; attempt += 1) {
-          await new Promise(resolve => global.setTimeout(resolve, 50));
-          const confirm = row.querySelector('.retrieve-cont .retrieve-yes');
-          if (confirm && confirm.getClientRects().length) {
-            confirm.click(); current.error = ''; current.armoryStatus = `Retrieved one ${item} from ${borrower.name}.`; renderWar(); return;
-          }
-        }
-        throw new Error('Torn did not display the retrieval confirmation.');
+        await retrieveOneWarArmoryItem(row, borrower);
+        current.error = ''; current.armoryStatus = `Retrieved one ${item} from ${borrower.name}.`; return;
       }
-      current.armoryStatus = 'No eligible ranked items remain on this page.'; current.error = ''; renderWar();
-    } catch (error) { current.error = errorMessage(error); renderWar(); }
+      current.armoryStatus = skippedWhitelist ? `No eligible items. Skipped ${skippedWhitelist} whitelisted loan${skippedWhitelist === 1 ? '' : 's'}.` : 'No eligible items remain on this page.';
+      current.error = '';
+    } catch (error) { current.error = errorMessage(error); }
+    finally { current.armoryBusy = false; renderWar(); }
   }
 
   function nextWarArmoryPage() {
-    const tab = activeWarArmoryTab();
-    if (!tab) { moduleState.war.error = 'Open the Weapons or Armor tab in Faction Armoury first.'; renderWar(); return; }
-    const selectors = ['.gallery-wrapper.pagination a[href] > i.pagination-right', '.pagination a[href] > i.pagination-right', '.pagination a.next:not(.disabled)', '.pagination .next:not(.disabled) a', 'a[aria-label="Next"]', 'a[title="Next"]', '[data-page="next"]'];
-    for (const selector of selectors) {
-      const found = tab.querySelector(selector);
-      const control = found?.matches('a,button') ? found : found?.closest('a,button');
-      if (control && !control.classList.contains('disabled') && !control.classList.contains('disable')) { control.click(); moduleState.war.armoryStatus = 'Moved to the next armory page.'; renderWar(); return; }
-    }
-    moduleState.war.armoryStatus = 'No enabled Next Page control was found.'; renderWar();
+      if (!warArmoryPageFocused()) return warArmorySetStatus('Page is not focused. Page was not changed.', 'error');
+      const tab = activeWarArmoryTab();
+      if (!tab) return warArmorySetStatus('Open the Weapons or Armor armory tab.', 'error');
+      const next = findNextWarArmoryPageControl(tab);
+      if (!next) return warArmorySetStatus('No enabled Next Page control was found.', 'done');
+
+      const href = next.getAttribute('href');
+      next.click();
+
+      // Torn's armory pagination is hash-routed. Fall back to assigning the
+      // exact href when another script prevents the synthetic click.
+      if (href?.startsWith('#') && global.location.hash !== href) {
+          global.location.hash = href.slice(1);
+      }
+      warArmorySetStatus('Moved to the next page.');
+  }
+
+  function discordTimestamp(value) {
+    // TCT is UTC. Never parse the datetime-local input as the device's local time.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(value))) return null;
+    const date = new Date(`${value}:00Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 16) !== value) return null;
+    return {
+      code:`<t:${Math.floor(date.getTime() / 1000)}:R>`,
+      local:date.toLocaleString(undefined, { year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short' })
+    };
+  }
+
+  function armoryTimestampHtml(value) {
+    const result = discordTimestamp(value);
+    const escape = escapeHtml;
+    return `<div data-armory-timestamp style="display:grid;gap:5px;margin:10px 0;min-width:0">
+      <label>TCT date &amp; time (UTC) <input type="datetime-local" data-armory-time value="${escape(value)}" style="max-width:100%;box-sizing:border-box"></label>
+      <small data-armory-local>${escape(result ? `Your time: ${result.local}` : 'Enter a valid TCT date and time.')}</small>
+      <div style="display:flex;flex-wrap:wrap;gap:5px"><input type="text" data-armory-code aria-label="Relative Discord timestamp" readonly value="${escape(result?.code || '')}" style="min-width:0;flex:1"><button type="button" data-armory-copy ${result ? '' : 'disabled'}>Copy relative timestamp</button></div>
+      <small data-armory-time-message role="status">Discord shows “in X hours” or “X hours ago”.</small>
+    </div>`;
+  }
+
+  function updateArmoryTimestamp(root, value) {
+    const result = discordTimestamp(value);
+    root.querySelector('[data-armory-local]').textContent = result ? `Your time: ${result.local}` : 'Enter a valid TCT date and time.';
+    root.querySelector('[data-armory-code]').value = result?.code || '';
+    root.querySelector('[data-armory-copy]').disabled = !result;
+    root.querySelector('[data-armory-time-message]').textContent = 'Discord shows “in X hours” or “X hours ago”.';
   }
 
   function warArmoryView(snapshot) {
+    moduleState.war.armoryTimestampValue ??= new Date().toISOString().slice(0, 16);
     const requests = Array.isArray(snapshot?.itemRequests) ? snapshot.itemRequests : [];
     const onArmory = Boolean(activeWarArmoryTab());
     const members = dataState.caches.warArmoryMembers?.members || [];
     const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
     const ranks = [...new Set(members.map(member => member.rank))];
-    return `<div class="war-stack"><article class="war-card"><div class="war-card-head"><strong>Officer Armory Recaller</strong><span>${requests.length} request${requests.length === 1 ? '' : 's'}</span></div>${onArmory ? '' : `<p class="muted">Open Torn's armory, then choose Weapons or Armor.</p><div class="target-actions">${actionLink('Open faction armory', 'https://www.torn.com/factions.php?step=your#/tab=armoury')}</div>`}<div class="war-armory-controls"><label>Recall mode<select data-field="war-armory-mode"><option value="ranked-all" ${dataState.settings.war.armoryMode === 'ranked-all' ? 'selected' : ''}>All ranked items</option><option value="ranked-no-prof" ${dataState.settings.war.armoryMode === 'ranked-no-prof' ? 'selected' : ''}>Ranked except Proficience</option><option value="proficience-15-plus" ${dataState.settings.war.armoryMode === 'proficience-15-plus' ? 'selected' : ''}>Proficience from level 15+</option></select></label><div class="target-actions"><button type="button" data-action="retrieve-war-armory" ${onArmory ? '' : 'disabled'}>Retrieve Next</button><button type="button" data-action="next-war-armory" ${onArmory ? '' : 'disabled'}>Next Page</button></div></div><span class="muted">${escapeHtml(moduleState.war.armoryStatus || 'Retrieval only runs after you press Retrieve Next.')}</span><details class="war-armory-manager"><summary>Never retrieve from (${whitelist.size})</summary><input type="search" data-field="war-armory-search" placeholder="Search name, rank, or ID"><div class="target-actions"><button type="button" data-action="refresh-war-armory-members">Refresh roster</button><button type="button" data-action="select-shown-war-armory">Select shown</button><button type="button" data-action="clear-shown-war-armory">Clear shown</button></div><div class="war-armory-ranks">${ranks.map(rank => { const rankMembers = members.filter(member => member.rank === rank); const selected = rankMembers.filter(member => whitelist.has(String(member.id))).length; return `<button type="button" data-action="toggle-war-armory-rank" data-armory-rank="${escapeHtml(rank)}">${escapeHtml(rank)} ${selected}/${rankMembers.length}</button>`; }).join('')}</div><div class="war-armory-members">${members.length ? members.map(member => `<label data-armory-search-row="${escapeHtml(`${member.name} ${member.rank} ${member.id}`.toLowerCase())}"><input type="checkbox" data-war-armory-member="${member.id}" ${whitelist.has(String(member.id)) ? 'checked' : ''}><span><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.rank)} · level ${member.level || '?'} · ID ${member.id}</small></span></label>`).join('') : moduleMessage('Refresh the faction roster to manage the whitelist.')}</div></details></article>${requests.length ? warItemRequests(snapshot) : moduleMessage('No active armory item requests.')}</div>`;
+    return `<div class="war-stack"><article class="war-card"><div class="war-card-head"><strong>Officer Armory Recaller</strong><span>${requests.length} request${requests.length === 1 ? '' : 's'}</span></div>${onArmory ? '' : `<p class="muted">Open Torn's armory, then choose Weapons or Armor.</p><div class="target-actions">${actionLink('Open faction armory', 'https://www.torn.com/factions.php?step=your#/tab=armoury')}</div>`}<div class="war-armory-controls"><label>Recall mode<select data-field="war-armory-mode"><option value="ranked-all" ${dataState.settings.war.armoryMode === 'ranked-all' ? 'selected' : ''}>All ranked items</option><option value="ranked-no-prof" ${dataState.settings.war.armoryMode === 'ranked-no-prof' ? 'selected' : ''}>Ranked except Proficience</option><option value="proficience-15-plus" ${dataState.settings.war.armoryMode === 'proficience-15-plus' ? 'selected' : ''}>Proficience from level 15+</option></select></label><div class="target-actions"><button type="button" data-action="retrieve-war-armory" ${onArmory && !moduleState.war.armoryBusy ? '' : 'disabled'}>${moduleState.war.armoryBusy ? 'Working…' : 'Retrieve Next'}</button><button type="button" data-action="next-war-armory" ${onArmory ? '' : 'disabled'}>Next Page</button></div></div><span class="muted">${escapeHtml(moduleState.war.armoryStatus || 'Retrieval only runs after you press Retrieve Next.')}</span>${armoryTimestampHtml(moduleState.war.armoryTimestampValue)}<details class="war-armory-manager"><summary>Never retrieve from (${whitelist.size})</summary><input type="search" data-field="war-armory-search" placeholder="Search name, rank, or ID"><div class="target-actions"><button type="button" data-action="refresh-war-armory-members">Refresh roster</button><button type="button" data-action="select-shown-war-armory">Select shown</button><button type="button" data-action="clear-shown-war-armory">Clear shown</button></div><div class="war-armory-ranks">${ranks.map(rank => { const rankMembers = members.filter(member => member.rank === rank); const selected = rankMembers.filter(member => whitelist.has(String(member.id))).length; return `<button type="button" data-action="toggle-war-armory-rank" data-armory-rank="${escapeHtml(rank)}">${escapeHtml(rank)} ${selected}/${rankMembers.length}</button>`; }).join('')}</div><div class="war-armory-members">${members.length ? members.map(member => `<label data-armory-search-row="${escapeHtml(`${member.name} ${member.rank} ${member.id}`.toLowerCase())}"><input type="checkbox" data-war-armory-member="${member.id}" ${whitelist.has(String(member.id)) ? 'checked' : ''}><span><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.rank)} · level ${member.level || '?'} · ID ${member.id}</small></span></label>`).join('') : moduleMessage('Refresh the faction roster to manage the whitelist.')}</div></details></article>${requests.length ? warItemRequests(snapshot) : moduleMessage('No active armory item requests.')}</div>`;
   }
 
   function warSettingsView(snapshot) {
@@ -2043,6 +2140,7 @@
     const snoozed = dataState.settings.alerts.snoozedUntil || {};
     const rows = [];
     const add = (id, active, title, detail, links = []) => {
+      if (Number(dataState.settings.alerts.stackModeSince) > 0 && ['energyFull', 'energyRefill'].includes(id)) return;
       if (active && Number(snoozed[id] || 0) <= Date.now()) rows.push({ id, title, detail, links });
     };
     const energy = body?.bars?.energy || {};
@@ -2060,6 +2158,8 @@
     const activeRace = raceActive(body?.races, profile?.status, body?.icons);
     const racewayKnown = body?.enlistedcars !== undefined || body?.races !== undefined || body?.icons !== undefined;
     const playPoints = googlePlayPointsAccess();
+    const timerEnd = Number(dataState.settings.alerts.timer24EndsAt) || 0;
+    add('timer24', timerEnd > 0 && timerEnd <= Date.now(), '24-hour timer finished', 'Your countdown has finished. Dismiss it or start another timer.');
     add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
     add('boosterCooldown', booster === 0, 'Booster cooldown is clear', 'You can use a booster now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
@@ -2074,7 +2174,7 @@
     add('landing', travelSeconds > 0 && travelSeconds <= 10 * 60, 'Landing soon', `${travel?.destination ? `Arriving in ${travel.destination} in ` : 'Landing in '}${duration(travelSeconds)}`, [['Travel','https://www.torn.com/index.php']]);
     add('organizedCrime', Number(profile?.faction_id || 0) > 0 && (body?.organizedcrime ?? body?.organizedCrime) === null, 'Join an organized crime', 'No current organized crime was returned for your faction membership.', [['Faction crimes','https://www.torn.com/factions.php?step=your#/tab=crimes']]);
     add('education', Boolean(body?.education) && body.education.current === null, 'Start an education course', 'No active education course was returned.', [['Education','https://www.torn.com/education.php']]);
-    add('casinoTokens', Number(body?.casino?.tokens) > 0, 'Spend casino tokens', `${number(body.casino.tokens)} token${Number(body.casino.tokens) === 1 ? '' : 's'} available.`, [['Casino','https://www.torn.com/casino.php']]);
+    add('casinoTokens', Number(body?.casino?.tokens) > 0, 'Spend casino tokens', `${number(body?.casino?.tokens)} token${Number(body?.casino?.tokens) === 1 ? '' : 's'} available.`, [['Casino','https://www.torn.com/casino.php']]);
     const stocks = Array.isArray(body?.stocks) ? body.stocks : [];
     const catalogRows = Array.isArray(snapshot?.stockCatalog?.stocks) ? snapshot.stockCatalog.stocks : Array.isArray(snapshot?.stockCatalog) ? snapshot.stockCatalog : [];
     const stockCatalog = new Map(catalogRows.map(stock => [Number(stock?.id), stock]));
@@ -2144,13 +2244,27 @@
     updateAlertIndicator(active.length);
   }
 
+  function endStackIfSpent(snapshot) {
+    const since = Number(dataState.settings.alerts.stackModeSince) || 0;
+    const energy = finite(snapshot?.body?.bars?.energy?.current);
+    if (since > 0 && Number(snapshot?.energyObservedAt ?? snapshot?.at) > since && energy !== null && energy >= 0 && energy < 150) {
+      dataState.settings.alerts.stackModeSince = 0;
+      return true;
+    }
+    return false;
+  }
+
+  function timer24Label() {
+    const end = Number(dataState.settings.alerts.timer24EndsAt) || 0;
+    const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+    return !end ? '24-hour timer: not started' : remaining ? `24-hour timer: ${duration(remaining)} remaining` : '24-hour timer finished';
+  }
+
   function renderAlerts() {
     const root = moduleRoot('alerts');
     if (!root) return;
     if (!hasScope('slink.adhd.alerts')) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
     const current = moduleState.alerts;
-    if (current.busy && !current.data) { updateAlertIndicator(0); root.innerHTML = moduleMessage('Loading Torn API timers…'); return; }
-    if (current.error && !current.data) { updateAlertIndicator(0); root.innerHTML = moduleMessage(current.error, 'error'); return; }
     const alerts = alertRows(current.data);
     const cityBought = finite(current.data?.cityBought);
     const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
@@ -2162,12 +2276,15 @@
     updateAlertIndicator(alerts.length);
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
       <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+      <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
+      <div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
       <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
     </article></div>`;
   }
 
   async function refreshAlerts(force = false) {
     const current = moduleState.alerts;
+    if (current.busy) return;
     const cached = dataState.caches.alerts;
     if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.lastAttemptAt = Number(cached.at) || Date.now(); current.data = cached; renderAlerts(); return; }
     current.lastAttemptAt = Date.now();
@@ -2178,6 +2295,7 @@
       const selections = 'bars,cooldowns,travel,education,organizedcrime,refills,missions,casino,profile,races,enlistedcars,icons,stocks,battlestats';
       const day = utcDay();
       const reset = day * 86_400_000;
+      const energyObservedAt = Date.now();
       const [body, cityCurrent] = await Promise.all([
         tornJson(`/v2/user?selections=${selections}`, 'SLINK PDA efficiency alerts'),
         tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total')
@@ -2194,7 +2312,8 @@
         stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
         dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
       }
-      current.data = dataState.caches.alerts = { at:Date.now(), body, stockCatalog, cityDay:day, cityBaselineVersion:2, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
+      current.data = dataState.caches.alerts = { at:Date.now(), energyObservedAt, body, stockCatalog, cityDay:day, cityBaselineVersion:2, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
+      endStackIfSpent(current.data);
       reconcileAlertNotifications(current.data);
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
@@ -2734,6 +2853,13 @@
     if (schedulerTimer) return;
     schedulerTimer = global.setInterval(() => {
       const canRefreshAlerts = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
+      if (canRefreshAlerts) {
+        const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
+        reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+        if (previousIds !== JSON.stringify(dataState.caches.alertNotificationIds)) { writeDataState(); renderAlerts(); }
+        const clock = shadow.querySelector('[data-timer24-clock]');
+        if (clock) clock.textContent = timer24Label();
+      }
       if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
       const canRefreshMarket = Boolean(currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
       if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= 15_000) void refreshMarket(false);
@@ -3071,6 +3197,17 @@
       setTheme('slink-dark');
       renderAllModules();
     }
+    if (action === 'toggle-stack' || action === 'timer24-start' || action === 'timer24-cancel') {
+      const settings = dataState.settings.alerts;
+      const resetIds = action === 'toggle-stack' ? ['energyFull', 'energyRefill'] : ['timer24'];
+      if (action === 'toggle-stack') settings.stackModeSince = settings.stackModeSince > 0 ? 0 : Date.now();
+      else settings.timer24EndsAt = action === 'timer24-start' ? Date.now() + 86_400_000 : 0;
+      for (const id of resetIds) delete settings.snoozedUntil[id];
+      dataState.caches.alertNotificationIds = (dataState.caches.alertNotificationIds || []).filter(id => !resetIds.includes(id));
+      reconcileAlertNotifications(moduleState.alerts.data);
+      writeDataState();
+      renderAlerts();
+    }
     if (action === 'snooze-alert') {
       const button = event.target.closest('[data-alert-id]');
       const id = String(button?.dataset.alertId || '');
@@ -3302,7 +3439,23 @@
     }
   });
 
+  overlay.addEventListener('click', async event => {
+    const button = event.target.closest('[data-armory-copy]');
+    if (!button) return;
+    const root = button.closest('[data-armory-timestamp]');
+    const result = discordTimestamp(root.querySelector('[data-armory-time]').value);
+    if (!result) return;
+    let copied = false;
+    try { copied = await copyText(result.code); } catch {}
+    root.querySelector('[data-armory-time-message]').textContent = copied ? 'Copied — paste into Discord.' : 'Select and copy the timestamp above.';
+    if (!copied) root.querySelector('[data-armory-code]').select();
+  });
+
   overlay.addEventListener('input', event => {
+    if (event.target.matches('[data-armory-time]')) {
+      moduleState.war.armoryTimestampValue = event.target.value;
+      updateArmoryTimestamp(event.target.closest('[data-armory-timestamp]'), event.target.value);
+    }
     const expectedTop = shadow.querySelector('.scroll')?.scrollTop || 0;
     if (event.target.matches('[data-field="war-armory-search"]')) {
       const needle = String(event.target.value || '').trim().toLowerCase();

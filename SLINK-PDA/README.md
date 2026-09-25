@@ -19,6 +19,30 @@ or resizing. Reset Layout is available under Access.
 
 ## Modules
 
+The Armory Recaller uses the retrieval and pagination flow from Considious
+Armory Recaller 1.2.6 within SLINK's existing interface. Each tap retrieves one
+eligible item, checks Torn's confirmation every 50 ms for up to one second,
+and immediately releases the button afterward. Concurrent taps are ignored.
+Whitelist exclusions, ranked-item modes, and known member levels are checked
+before retrieval. Next Page includes the original script's hash-route fallback.
+Roster lookups continue to use SLINK's existing cache and shared API budget.
+
+The Armory also includes a small TCT (UTC) date/time converter. Enter the date
+and time from Torn, check the preview in your device's local timezone, and tap
+**Copy relative timestamp** to get Discord's `<t:UNIX:R>` format (“in X hours”
+or “X hours ago”). The starting value is the current TCT time. All conversion
+happens locally, including daylight-saving adjustments.
+
+Version 0.4.4 adds **Start 24h timer** and **Enable Stack mode** under
+Efficiency / Alerts. The separate countdown survives page reloads and can be
+restarted or cancelled; completion stays visible until dismissed. Stack mode
+pauses both full-energy and energy-refill notifications until a fresh API
+reading is below 150E, then automatically restores normal reminder checks.
+It has no 24-hour expiry. Existing five-minute API checks detect the energy
+drop; the countdown uses the local clock without additional API calls.
+PDA must keep the WebView alive to deliver a notification on time; a timer
+that expires while suspended is recognized when the script runs again.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
