@@ -4,7 +4,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
-assert.match(source, /@version\s+0\.4\.4/);
+assert.match(source, /@version\s+0\.4\.5/);
 assert.match(source, /@grant\s+GM_xmlhttpRequest/);
 assert.match(source, /@grant\s+GM_notification/);
 assert.match(source, /@connect\s+api\.torn\.com/);
@@ -79,7 +79,9 @@ assert.match(source, /\/api\/pricelist\/\$\{encodeURIComponent\(userId\)\}/);
 assert.match(source, /function pollMarketWeaverTargets/);
 assert.match(source, /function weaverDollarBazaarItems/);
 assert.match(source, /function refreshDollarBazaars/);
-assert.match(source, /\/api\/dollar-bazaars\/items\?page=1&limit=\$\{DOLLAR_BAZAAR_LIMIT\}/);
+assert.match(source, /\/api\/dollar-bazaars\/bazaars\?page=1&limit=\$\{DOLLAR_BAZAAR_LIMIT\}/);
+assert.match(source, /totalMarketValue/);
+assert.match(source, /function sellerBazaarUrl/);
 assert.match(source, /DOLLAR_BAZAAR_REFRESH_MS = 60 \* 60_000/);
 assert.match(source, /data-action="refresh-dollar-bazaars"/);
 assert.match(source, /No page scraping and no Torn API usage/);
@@ -162,3 +164,4 @@ assert.doesNotMatch(source, /chrome\.(?:runtime|storage|alarms)/);
 assert.match(preview, /SLINK_PDA_Dashboard\.user\.js/);
 
 console.log('SLINK PDA overlay static safety and recovery checks passed.');
+

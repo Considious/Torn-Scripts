@@ -43,6 +43,9 @@ drop; the countdown uses the local clock without additional API calls.
 PDA must keep the WebView alive to deliver a notification on time; a timer
 that expires while suspended is recognized when the script runs again.
 
+Version 0.4.5 changes **$1 Bazaars** to one row per seller. Each row uses
+Weaver's complete bazaar market value and links to the seller's bazaar.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
@@ -94,7 +97,7 @@ that expires while suspended is recognized when the script runs again.
   high uses available capacity, normal reserves 10 calls/minute, and low
   reserves 20 calls/minute for other modules;
 - Weaver prices come only from the public `weav3r.dev/api/marketplace`,
-  `/api/pricelist/{userId}`, and `/api/dollar-bazaars/items` JSON endpoints.
+  `/api/pricelist/{userId}`, and `/api/dollar-bazaars/bazaars` JSON endpoints.
   One all-item marketplace summary screens both saved SLINK watches and the
   optional Weaver price list locally; seller details are fetched only for
   qualifying item IDs. The $1 Bazaar feed performs one API request per hourly
@@ -114,3 +117,4 @@ Open **Access** first, load and accept the current terms, then authenticate. The
 Contribution Worker remains the canonical feature-permission source; Leveling
 and War establish their own product sessions only after the required scope has
 been granted.
+

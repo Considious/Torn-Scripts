@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.4
+// @version      0.4.5
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.4-reminder-controls';
+  const BUILD = '0.4.5-dollar-bazaar-totals';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.4';
+  const CLIENT_VERSION = '0.4.5';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -551,6 +551,13 @@
     return url.toString();
   }
 
+  function sellerBazaarUrl(sellerId) {
+    const url = new URL('https://www.torn.com/bazaar.php');
+    url.searchParams.set('userId', String(Math.trunc(Number(sellerId))));
+    url.hash = '/';
+    return url.toString();
+  }
+
   function weaverListings(body = {}, itemId = 0) {
     const candidates = [body?.listings, body?.bazaarListings, body?.bazaar_listings, body?.marketplace?.listings, body?.item?.listings, body?.data?.listings, body?.data?.bazaarListings, body?.data?.bazaar_listings, body];
     const rows = candidates.find(Array.isArray) || [];
@@ -578,27 +585,43 @@
   }
 
   function weaverDollarBazaarItems(body = {}) {
-    const rows = Array.isArray(body?.items) ? body.items : Array.isArray(body?.data?.items) ? body.data.items : [];
-    return rows.map(row => {
-      const itemId = Math.max(0, Math.trunc(Number(row?.itemId ?? row?.item_id) || 0));
+    const bazaarRows = Array.isArray(body?.bazaars) ? body.bazaars : Array.isArray(body?.data?.bazaars) ? body.data.bazaars : [];
+    if (bazaarRows.length) return bazaarRows.map(row => {
       const sellerId = Math.max(0, Math.trunc(Number(row?.playerId ?? row?.player_id ?? row?.sellerId ?? row?.seller_id) || 0));
+      return {
+        sellerId,
+        sellerName:String(row?.name ?? row?.sellerName ?? row?.seller_name ?? row?.playerName ?? row?.player_name ?? `Player ${sellerId}`).trim().slice(0, 160),
+        itemCount:Math.max(0, Math.trunc(Number(row?.itemCount ?? row?.item_count) || 0)),
+        totalValue:Math.max(0, Math.trunc(Number(row?.totalMarketValue ?? row?.total_market_value ?? row?.totalValue ?? row?.total_value) || 0)),
+        href:sellerBazaarUrl(sellerId)
+      };
+    }).filter(row => row.sellerId > 0 && row.itemCount > 0 && row.totalValue > 0)
+      .sort((left, right) => right.totalValue - left.totalValue || right.itemCount - left.itemCount || left.sellerName.localeCompare(right.sellerName))
+      .slice(0, DOLLAR_BAZAAR_LIMIT);
+
+    // Group the item-oriented cache used by 0.4.3-0.4.4 so saved results
+    // immediately follow the new one-row-per-bazaar presentation.
+    const itemRows = Array.isArray(body?.items) ? body.items : Array.isArray(body?.data?.items) ? body.data.items : [];
+    const grouped = new Map();
+    for (const row of itemRows) {
+      const sellerId = Math.max(0, Math.trunc(Number(row?.playerId ?? row?.player_id ?? row?.sellerId ?? row?.seller_id) || 0));
+      if (!sellerId) continue;
       const marketPrice = Math.max(0, Math.trunc(Number(row?.marketPrice ?? row?.market_price) || 0));
       const quantity = Math.max(0, Math.trunc(Number(row?.quantity ?? row?.amount) || 0));
-      const updatedAt = externalTimestampMs(row?.lastUpdated ?? row?.last_updated ?? row?.updatedAt ?? row?.updated_at);
-      return {
-        itemId,
-        itemName:String(row?.itemName ?? row?.item_name ?? row?.name ?? `Item ${itemId}`).trim().slice(0, 160),
-        itemType:String(row?.itemType ?? row?.item_type ?? row?.type ?? '').trim().slice(0, 80),
+      const current = grouped.get(sellerId) || {
         sellerId,
         sellerName:String(row?.sellerName ?? row?.seller_name ?? row?.playerName ?? row?.player_name ?? `Player ${sellerId}`).trim().slice(0, 160),
-        quantity,
-        marketPrice,
-        totalValue:Math.max(0, Math.trunc(Number(row?.totalValue ?? row?.total_value) || marketPrice * quantity)),
-        updatedAt,
-        href:bazaarUrl(sellerId, itemId, 1, updatedAt)
+        itemCount:0,
+        totalValue:0,
+        href:sellerBazaarUrl(sellerId)
       };
-    }).filter(row => row.itemId > 0 && row.sellerId > 0 && row.marketPrice > 0 && row.quantity > 0)
-      .sort((left, right) => right.totalValue - left.totalValue || right.marketPrice - left.marketPrice || left.itemName.localeCompare(right.itemName))
+      current.itemCount += Math.max(1, Math.trunc(Number(row?.itemCount ?? row?.item_count) || 1));
+      current.totalValue += Math.max(0, Math.trunc(Number(row?.totalValue ?? row?.total_value) || marketPrice * quantity));
+      grouped.set(sellerId, current);
+    }
+    return [...grouped.values()]
+      .filter(row => row.totalValue > 0)
+      .sort((left, right) => right.totalValue - left.totalValue || right.itemCount - left.itemCount || left.sellerName.localeCompare(right.sellerName))
       .slice(0, DOLLAR_BAZAAR_LIMIT);
   }
 
@@ -2675,12 +2698,12 @@
     const current = moduleState.dollarBazaars;
     if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Weaver $1 Bazaar listings through its JSON API…'); return; }
     if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
-    const items = Array.isArray(current.data?.items) ? [...current.data.items].sort((left, right) => Number(right.totalValue) - Number(left.totalValue)) : [];
+    const items = weaverDollarBazaarItems(current.data?.bazaars ? { bazaars:current.data.bazaars } : current.data?.items ? { items:current.data.items } : current.data || {});
     const next = Number(current.data?.nextRefreshAt) ? new Date(current.data.nextRefreshAt).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' }) : '—';
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Weaver $1 Bazaars</h2><span class="muted">Top ${DOLLAR_BAZAAR_LIMIT} API listings ranked by total market value. No page scraping and no Torn API usage.</span></div><button type="button" data-action="refresh-dollar-bazaars" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing…' : 'Refresh now'}</button></div>
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Weaver $1 Bazaars</h2><span class="muted">Top ${DOLLAR_BAZAAR_LIMIT} seller bazaars ranked by complete bazaar market value. No page scraping and no Torn API usage.</span></div><button type="button" data-action="refresh-dollar-bazaars" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing…' : 'Refresh now'}</button></div>
       ${current.error ? moduleMessage(`${current.error}${current.data?.fetchedAt ? ` Showing the saved results from ${relativeTime(current.data.fetchedAt)}.` : ''}`, 'error') : ''}
-      <div class="stats"><div class="stat"><strong>${number(items.length)}</strong><span>Listings</span></div><div class="stat"><strong>${current.data?.fetchedAt ? relativeTime(current.data.fetchedAt) : '—'}</strong><span>Updated</span></div><div class="stat"><strong>${escapeHtml(next)}</strong><span>Next update</span></div><div class="stat"><strong>1 hour</strong><span>Cache time</span></div></div>
-      <div class="dollar-bazaar-list">${items.length ? items.map(item => `<article class="dollar-bazaar-row"><div><strong>${escapeHtml(item.itemName)} [${Number(item.itemId)}]</strong><small>${escapeHtml(item.sellerName)} [${Number(item.sellerId)}] · ${number(item.quantity)} available${item.itemType ? ` · ${escapeHtml(item.itemType)}` : ''}</small></div><div class="dollar-bazaar-value"><strong>${marketMoney(item.totalValue)}</strong><small>${marketMoney(item.marketPrice)} each</small></div><a class="action-link" href="${escapeHtml(item.href)}">Open bazaar</a></article>`).join('') : moduleMessage('Weaver returned no active $1 Bazaar listings.')}</div>
+      <div class="stats"><div class="stat"><strong>${number(items.length)}</strong><span>Bazaars</span></div><div class="stat"><strong>${current.data?.fetchedAt ? relativeTime(current.data.fetchedAt) : '—'}</strong><span>Updated</span></div><div class="stat"><strong>${escapeHtml(next)}</strong><span>Next update</span></div><div class="stat"><strong>1 hour</strong><span>Cache time</span></div></div>
+      <div class="dollar-bazaar-list">${items.length ? items.map(item => `<article class="dollar-bazaar-row"><div><strong>${escapeHtml(item.sellerName)} [${Number(item.sellerId)}]</strong><small>${number(item.itemCount)} $1 item type${Number(item.itemCount) === 1 ? '' : 's'}</small></div><div class="dollar-bazaar-value"><strong>${marketMoney(item.totalValue)}</strong><small>Complete bazaar value</small></div><a class="action-link" href="${escapeHtml(item.href)}">Open bazaar</a></article>`).join('') : moduleMessage('Weaver returned no active $1 Bazaars.')}</div>
       <div class="module-toolbar"><span>One shared Weaver JSON request per hour. Last successful results remain available after an API error.</span><a class="action-link" href="https://weav3r.dev/dollar-bazaars">Weaver source</a></div>
     </article></div>`;
   }
@@ -2697,13 +2720,13 @@
     try {
       await ensurePermissionSession(false);
       if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
-      const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/items?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
+      const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
       const fetchedAt = Date.now();
       current.data = dataState.caches.dollarBazaars = {
         fetchedAt,
         nextRefreshAt:fetchedAt + DOLLAR_BAZAAR_REFRESH_MS,
         sourceUrl:'https://weav3r.dev/dollar-bazaars',
-        items:weaverDollarBazaarItems(body)
+        bazaars:weaverDollarBazaarItems(body)
       };
       writeDataState();
     } catch (error) {
@@ -3558,3 +3581,4 @@
     refreshDollarBazaars:() => refreshDollarBazaars(true)
   });
 })(globalThis);
+
