@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.5
+// @version      0.4.6
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.5-dollar-bazaar-totals';
+  const BUILD = '0.4.6-bounty-tracker';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.5';
+  const CLIENT_VERSION = '0.4.6';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -60,6 +60,11 @@
   const WEAVER_PRICELIST_REFRESH_MS = 3 * 60_000;
   const DOLLAR_BAZAAR_REFRESH_MS = 60 * 60_000;
   const DOLLAR_BAZAAR_LIMIT = 100;
+  const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
+  const BOUNTY_FF_CACHE_MS = 7 * 86_400_000;
+  const BOUNTY_PAGE_LIMIT = 100;
+  const BOUNTY_PAGES_PER_BATCH = 2;
+  const BOUNTY_FF_BATCH_SIZE = 205;
   const PDA_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const PDA_API_KEY_AVAILABLE = Boolean(PDA_API_KEY && PDA_API_KEY !== PDA_KEY_TOKEN);
@@ -150,6 +155,7 @@
       caches:value.caches && typeof value.caches === 'object' ? value.caches : {},
       settings:{
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
+        bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(value.settings?.bounties || {}) },
         war:{
           mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
           targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetSort:'availability',
@@ -184,6 +190,8 @@
   let drag = null;
   let swipe = null;
   let networkQueue = Promise.resolve();
+  let bountyBudgetQueue = Promise.resolve();
+  let bountyLastDomObservation = '';
   let schedulerTimer = null;
   let marketObserver = null;
   let marketFormatTimer = null;
@@ -197,6 +205,7 @@
   const moduleState = {
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
+    bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
     war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
@@ -1355,6 +1364,277 @@
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
     finally { current.busy = false; renderLeveling(); }
+  }
+
+  function bountySettings() {
+    const source = dataState.settings.bounties || {};
+    source.enabled = source.enabled === true;
+    source.minimumReward = Math.max(1, Math.trunc(Number(source.minimumReward) || 300000));
+    source.scanFullList = source.scanFullList === true;
+    source.minFF = Math.max(1, Math.min(3, Number(source.minFF) || 1));
+    source.maxFF = Math.max(1, Math.min(3, Number(source.maxFF) || 3));
+    source.maxBattleStats = Math.max(0, Math.trunc(Number(source.maxBattleStats) || 0));
+    source.includeUnknownEstimates = source.includeUnknownEstimates === true;
+    source.includeAbroad = source.includeAbroad === true;
+    source.statusFilter = ['all', 'okay', 'hospital', 'hide-hospital'].includes(source.statusFilter) ? source.statusFilter : 'hide-hospital';
+    source.tornCallsPerMinute = Math.max(1, Math.min(20, Math.trunc(Number(source.tornCallsPerMinute) || 20)));
+    source.ffBatchesPerMinute = Math.max(1, Math.min(20, Math.trunc(Number(source.ffBatchesPerMinute) || 5)));
+    dataState.settings.bounties = source;
+    return source;
+  }
+
+  function freshBountyRuntime(previous = null) {
+    return { targets:[], fairFight:previous?.fairFight && typeof previous.fairFight === 'object' ? previous.fairFight : {}, statuses:previous?.statuses && typeof previous.statuses === 'object' ? previous.statuses : {}, nextUrl:`${URLS.torn}/v2/torn/bounties?limit=${BOUNTY_PAGE_LIMIT}&offset=0`, scannedRows:0, reportedTotal:0, pagesFetched:0, completed:false, stoppedAtMinimum:false, snapshotTimestamp:0, cacheDelaySeconds:30, nextRefreshAt:0, at:0 };
+  }
+
+  function bountyRuntime() {
+    const stored = dataState.caches.bounties && typeof dataState.caches.bounties === 'object' ? dataState.caches.bounties : {};
+    const runtime = { ...freshBountyRuntime(), ...stored };
+    runtime.targets = Array.isArray(runtime.targets) ? runtime.targets : [];
+    runtime.fairFight = runtime.fairFight && typeof runtime.fairFight === 'object' ? runtime.fairFight : {};
+    runtime.statuses = runtime.statuses && typeof runtime.statuses === 'object' ? runtime.statuses : {};
+    dataState.caches.bounties = runtime;
+    moduleState.bounties.data = runtime;
+    return runtime;
+  }
+
+  function bountyActive(now = Date.now()) {
+    return bountySettings().enabled && now - Number(dataState.caches.bountyActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS;
+  }
+
+  function touchBounties() {
+    dataState.caches.bountyActivityAt = Date.now();
+    writeDataState();
+  }
+
+  function bountyReserve(kind, limit) {
+    const run = async () => {
+      while (true) {
+        const now = Date.now();
+        const key = kind === 'ff' ? 'bountyFfBudget' : 'bountyTornBudget';
+        const recent = (Array.isArray(dataState.caches[key]) ? dataState.caches[key] : []).map(Number).filter(at => at > now - 60_000 && at <= now + 5000).sort((a, b) => a - b);
+        if (recent.length < limit) {
+          recent.push(now); dataState.caches[key] = recent; writeDataState(); return;
+        }
+        await new Promise(resolve => global.setTimeout(resolve, Math.max(50, Math.min(5000, recent[0] + 60_025 - now))));
+      }
+    };
+    const result = bountyBudgetQueue.then(run, run);
+    bountyBudgetQueue = result.catch(() => undefined);
+    return result;
+  }
+
+  async function bountyTornJson(path) {
+    const settings = bountySettings();
+    const key = currentApiKey();
+    if (!key) throw new Error('Save a Torn public API key under Access first.');
+    const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
+    url.searchParams.delete('key');
+    if (!url.searchParams.has('comment')) url.searchParams.set('comment', 'SLINK PDA Bounties');
+    await bountyReserve('torn', settings.tornCallsPerMinute);
+    await reserveTornApi(url.pathname, { limit:API_LIMIT, priority:'normal' });
+    const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
+    if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
+    return result;
+  }
+
+  function cleanBountyNext(input) {
+    if (!input) return '';
+    try { const url = new URL(input, URLS.torn); if (url.origin !== URLS.torn) return ''; url.searchParams.delete('key'); return url.href; }
+    catch { return ''; }
+  }
+
+  function mergeBountyRows(targets, rows) {
+    const map = new Map((targets || []).map(target => [Number(target.id), { ...target }]));
+    for (const row of rows || []) {
+      const id = Math.trunc(Number(row?.target_id ?? row?.id) || 0);
+      const reward = Math.max(0, Number(row?.reward) || 0);
+      if (!id || !reward) continue;
+      const quantity = Math.max(1, Number(row?.quantity) || 1);
+      const previous = map.get(id);
+      if (!previous) {
+        map.set(id, { id, name:String(row?.target_name || row?.name || `Player ${id}`).slice(0, 80), level:Math.max(0, Number(row?.target_level ?? row?.level) || 0), highestReward:reward, highestQuantity:quantity, apiRows:1 });
+      } else {
+        previous.apiRows = Number(previous.apiRows || 0) + 1;
+        if (reward > Number(previous.highestReward || 0)) { previous.highestReward = reward; previous.highestQuantity = quantity; }
+        else if (reward === Number(previous.highestReward || 0)) previous.highestQuantity = Number(previous.highestQuantity || 0) + quantity;
+      }
+    }
+    return [...map.values()].sort((a, b) => b.highestReward - a.highestReward || a.id - b.id);
+  }
+
+  function bountyFfRows(response) {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.results)) return response.results;
+    if (Array.isArray(response?.data)) return response.data;
+    const object = response?.results || response?.data || response;
+    return object && typeof object === 'object' ? Object.entries(object).map(([id, row]) => ({ player_id:Number(row?.player_id ?? row?.id ?? id), ...(row || {}) })) : [];
+  }
+
+  async function enrichBountyFairFight(runtime, targets) {
+    const key = currentFfKey();
+    if (!key || !targets.length) return;
+    const now = Date.now();
+    const ids = [...new Set(targets.map(target => Number(target.id)).filter(id => id > 0 && now - Number(runtime.fairFight[id]?.checkedAt || 0) >= BOUNTY_FF_CACHE_MS))];
+    for (let index = 0; index < ids.length; index += BOUNTY_FF_BATCH_SIZE) {
+      const chunk = ids.slice(index, index + BOUNTY_FF_BATCH_SIZE);
+      await bountyReserve('ff', bountySettings().ffBatchesPerMinute);
+      const response = await requestJson(`https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(key)}&targets=${encodeURIComponent(chunk.join(','))}`);
+      const returned = new Set();
+      for (const row of bountyFfRows(response)) {
+        const id = Math.trunc(Number(row?.player_id ?? row?.id) || 0);
+        if (!id) continue;
+        returned.add(id);
+        runtime.fairFight[id] = { fairFight:finite(row?.fair_fight), battleStats:finite(row?.bs_estimate), source:String(row?.source || 'FFScouter'), checkedAt:now };
+      }
+      for (const id of chunk) if (!returned.has(id)) runtime.fairFight[id] = { fairFight:null, battleStats:null, source:'FFScouter', checkedAt:now };
+      dataState.caches.bounties = runtime; writeDataState();
+    }
+  }
+
+  function bountyStateName(value) {
+    const lower = String(value || '').trim().toLowerCase();
+    if (lower.includes('hospital')) return 'Hospital';
+    if (lower.includes('federal')) return 'Federal';
+    if (lower.includes('hiding')) return 'Hiding Out';
+    if (lower.includes('travel') || lower.includes('flying')) return 'Traveling';
+    if (lower.includes('abroad')) return 'Abroad';
+    if (lower === 'okay' || lower === 'ok') return 'Okay';
+    return String(value || 'Unknown').slice(0, 40);
+  }
+
+  function effectiveBountyStatus(record) {
+    const state = bountyStateName(record?.state);
+    const until = Math.max(0, Number(record?.until) || 0);
+    if (state === 'Hospital' && until && until * 1000 <= Date.now()) return { state:'Okay', label:'Presumed Okay', until:0 };
+    return { state, label:state, until };
+  }
+
+  function bountyCandidates(runtime) {
+    const settings = bountySettings();
+    const low = Math.min(settings.minFF, settings.maxFF), high = Math.max(settings.minFF, settings.maxFF);
+    return runtime.targets.map(target => {
+      const estimate = runtime.fairFight[target.id] || {};
+      return { ...target, fairFight:finite(estimate.fairFight), battleStats:finite(estimate.battleStats), status:effectiveBountyStatus(runtime.statuses[target.id]) };
+    }).filter(target => {
+      if (!settings.scanFullList && target.highestReward < settings.minimumReward) return false;
+      if (target.fairFight === null || target.battleStats === null) { if (!settings.includeUnknownEstimates) return false; }
+      else if (target.fairFight < low || target.fairFight > high || (settings.maxBattleStats > 0 && target.battleStats > settings.maxBattleStats)) return false;
+      if (target.status.state === 'Federal') return false;
+      if (!settings.includeAbroad && ['Abroad', 'Traveling', 'Hiding Out'].includes(target.status.state)) return false;
+      if (settings.statusFilter === 'okay' && target.status.state !== 'Okay') return false;
+      if (settings.statusFilter === 'hospital' && target.status.state !== 'Hospital') return false;
+      if (settings.statusFilter === 'hide-hospital' && target.status.state === 'Hospital') return false;
+      return true;
+    }).sort((a, b) => b.highestReward - a.highestReward || (b.fairFight || 0) - (a.fairFight || 0));
+  }
+
+  function renderBounties() {
+    const root = moduleRoot('bounties');
+    if (!root) return;
+    const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
+    const controls = `<div class="bounty-form"><label class="check-row wide"><input type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${target.id}`)}${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}</div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets match the current filters.')}</div></article></div>`;
+  }
+
+  async function refreshBounties(force = false) {
+    const current = moduleState.bounties, settings = bountySettings();
+    if (!settings.enabled || !bountyActive()) { renderBounties(); return; }
+    if (current.busy) return;
+    current.busy = true; current.error = ''; renderBounties();
+    try {
+      let runtime = bountyRuntime();
+      if ((force && runtime.completed) || !runtime.nextUrl || (runtime.completed && Date.now() >= Number(runtime.nextRefreshAt || 0))) runtime = dataState.caches.bounties = freshBountyRuntime(runtime);
+      if (runtime.completed) return;
+      for (let page = 0; page < BOUNTY_PAGES_PER_BATCH; page++) {
+        const data = await bountyTornJson(cleanBountyNext(runtime.nextUrl) || `/v2/torn/bounties?limit=${BOUNTY_PAGE_LIMIT}&offset=${runtime.scannedRows}`);
+        const rows = Array.isArray(data?.bounties) ? data.bounties : [];
+        const eligible = settings.scanFullList ? rows : rows.filter(row => Number(row?.reward) >= settings.minimumReward);
+        runtime.targets = mergeBountyRows(runtime.targets, eligible);
+        runtime.scannedRows += rows.length; runtime.pagesFetched += 1;
+        runtime.reportedTotal = Math.max(Number(data?._metadata?.total) || 0, runtime.reportedTotal || 0);
+        runtime.snapshotTimestamp = Math.max(Number(data?.bounties_timestamp) || 0, runtime.snapshotTimestamp || 0);
+        runtime.cacheDelaySeconds = Math.max(1, Number(data?.bounties_delay) || runtime.cacheDelaySeconds || 30);
+        runtime.nextUrl = cleanBountyNext(data?._metadata?.links?.next);
+        const crossed = !settings.scanFullList && rows.some(row => Number(row?.reward) < settings.minimumReward);
+        const exhausted = rows.length < BOUNTY_PAGE_LIMIT || !runtime.nextUrl || (runtime.reportedTotal > 0 && runtime.scannedRows >= runtime.reportedTotal);
+        runtime.stoppedAtMinimum = crossed; runtime.completed = crossed || exhausted; runtime.at = Date.now();
+        dataState.caches.bounties = runtime; writeDataState();
+        if (runtime.completed) break;
+      }
+      await enrichBountyFairFight(runtime, runtime.targets);
+      if (runtime.completed) runtime.nextRefreshAt = Math.max(Date.now() + runtime.cacheDelaySeconds * 1000, (runtime.snapshotTimestamp + runtime.cacheDelaySeconds) * 1000);
+      runtime.at = Date.now(); dataState.caches.bounties = runtime; current.data = runtime; writeDataState();
+    } catch (error) { current.error = errorMessage(error); }
+    finally { current.busy = false; renderBounties(); }
+  }
+
+  function saveBountySettings() {
+    const root = moduleRoot('bounties'); if (!root) return;
+    const previous = { ...bountySettings() };
+    dataState.settings.bounties = {
+      enabled:root.querySelector('[data-field="bounty-enabled"]')?.checked === true,
+      minimumReward:root.querySelector('[data-field="bounty-minimum"]')?.value,
+      scanFullList:root.querySelector('[data-field="bounty-full-list"]')?.checked === true,
+      minFF:root.querySelector('[data-field="bounty-min-ff"]')?.value,
+      maxFF:root.querySelector('[data-field="bounty-max-ff"]')?.value,
+      maxBattleStats:root.querySelector('[data-field="bounty-max-bs"]')?.value,
+      statusFilter:root.querySelector('[data-field="bounty-status"]')?.value,
+      includeUnknownEstimates:root.querySelector('[data-field="bounty-unknown"]')?.checked === true,
+      includeAbroad:root.querySelector('[data-field="bounty-abroad"]')?.checked === true,
+      tornCallsPerMinute:root.querySelector('[data-field="bounty-torn-rate"]')?.value,
+      ffBatchesPerMinute:root.querySelector('[data-field="bounty-ff-rate"]')?.value
+    };
+    bountySettings();
+    if (previous.minimumReward !== dataState.settings.bounties.minimumReward || previous.scanFullList !== dataState.settings.bounties.scanFullList) dataState.caches.bounties = freshBountyRuntime(bountyRuntime());
+    if (dataState.settings.bounties.enabled) touchBounties(); else writeDataState();
+    moduleState.bounties.error = ''; renderBounties(); void refreshBounties(false);
+  }
+
+  function parseBountyTimer(text) {
+    const lower = String(text || '').toLowerCase();
+    return [[/([0-9]+)\s*d(?:ay)?s?/,86400],[/([0-9]+)\s*h(?:our)?s?/,3600],[/([0-9]+)\s*m(?:in(?:ute)?)?s?/,60],[/([0-9]+)\s*s(?:ec(?:ond)?)?s?/,1]].reduce((sum,[pattern,unit]) => sum + Number(lower.match(pattern)?.[1] || 0) * unit, 0);
+  }
+
+  function detectBountyDomState(text) {
+    const lower = String(text || '').toLowerCase();
+    if (lower.includes('federal jail')) return 'Federal';
+    if (lower.includes('hiding out')) return 'Hiding Out';
+    if (lower.includes('hospitalized') || lower.includes('in hospital')) return 'Hospital';
+    if (lower.includes('traveling') || lower.includes('flying')) return 'Traveling';
+    if (lower.includes('abroad')) return 'Abroad';
+    if (lower.includes('okay')) return 'Okay';
+    return '';
+  }
+
+  async function scanBountyPageStatus() {
+    if (!bountyActive()) return;
+    const url = new URL(global.location.href), attack = url.searchParams.get('sid') === 'attack', profile = url.pathname.toLowerCase().includes('profiles.php');
+    const id = Math.trunc(Number(attack ? url.searchParams.get('user2ID') : profile ? url.searchParams.get('XID') : 0) || 0);
+    const runtime = bountyRuntime();
+    if (!id || !runtime.targets.some(target => Number(target.id) === id)) return;
+    const selectors = profile ? ['[class*="status"]','[class*="basic-information"]','[data-testid*="status"]'] : ['[class*="dialog"]','[class*="status"]','[class*="result"]','[data-testid*="status"]'];
+    for (const node of document.querySelectorAll(selectors.join(','))) {
+      const text = String(node.innerText || node.textContent || '').trim(), state = detectBountyDomState(text);
+      if (!state) continue;
+      let until = parseBountyTimer(text); until = until ? Math.floor(Date.now() / 1000 + until) : 0;
+      let finalState = state, description = text.slice(0, 500), source = profile ? 'profile' : 'attack';
+      const prior = runtime.statuses[id] || {};
+      if (attack && state === 'Hospital' && !until && prior.state === 'Hospital' && Number(prior.until) * 1000 > Date.now()) return;
+      const signature = `${id}:${source}:${state}:${until}`;
+      if (signature === bountyLastDomObservation) return;
+      bountyLastDomObservation = signature;
+      if (attack && state === 'Hospital' && !until) {
+        const result = await bountyTornJson(`/v2/user/${id}/basic`);
+        const status = result?.profile?.status || result?.status || {};
+        finalState = bountyStateName(status.state || state); until = Math.max(0, Number(status.until) || 0); description = String(status.description || status.details || description).slice(0, 500); source = 'attack+api';
+      }
+      if (prior.state !== finalState || Number(prior.until) !== until) {
+        runtime.statuses[id] = { state:finalState, until, description, source, checkedAt:Date.now() };
+        dataState.caches.bounties = runtime; writeDataState(); renderBounties();
+      }
+      return;
+    }
   }
 
   function warFactionEntries(factions) {
@@ -2864,12 +3144,14 @@
     if (!dashboardOpen || document.hidden) return;
     const name = activeModuleName();
     if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
-    const loaders = { leveling:refreshLeveling, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
+    if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
+    if (name === 'bounties') touchBounties();
+    const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -2890,6 +3172,8 @@
       if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
       const canRefreshWar = Boolean(currentApiKey() && hasGrantedScope('slink.war') && (validSession('war') || termsAccepted('war')));
       if (canRefreshWar && !moduleState.war.busy && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
+      if (Date.now() - Number(dataState.caches.levelingActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS && !moduleState.leveling.busy) void refreshLeveling(false);
+      if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -2949,6 +3233,7 @@
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}.mug-report{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mug-report>div{min-width:0;flex:1}.mug-report strong,.mug-report span{display:block}.mug-report span{color:var(--s-muted);font-size:10px}.mug-report button{padding:5px 10px}
     .war-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:5px;margin-bottom:9px}.war-tabs button{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:5px}.war-tabs button[aria-selected="true"]{border-color:var(--s-alt);background:var(--s-accent)}.nav-count{display:grid;min-width:19px;height:19px;padding:0 4px;place-items:center;border:2px solid #090909;border-radius:99px;background:#e32727;color:#fff;font:bold 9px/1 Arial,sans-serif}.war-tab-body{margin-top:9px}.war-stack{display:grid;gap:7px}.war-card{position:relative;display:grid;gap:7px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-card-head{display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--s-soft)}.war-card-head>a,.war-card-head>strong{min-width:0;flex:1;color:var(--s-text);font-weight:800;text-decoration:none}.war-card-head>span{color:var(--s-muted);white-space:nowrap}.war-meta{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px}.war-pill{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--s-soft);border-radius:99px;background:var(--s-control)}.war-pill.online{color:var(--s-ready)}.war-pill.hospital{color:var(--s-warning)}.war-context{flex-basis:100%;color:var(--s-muted);font-size:10px}.war-filters,.war-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}.war-filters label,.war-settings label,.war-claim-form label{display:grid;gap:3px;color:var(--s-muted)}.war-filters input,.war-filters select,.war-settings input,.war-settings select,.war-claim-form input,.war-claim-form select{width:100%;min-width:0;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-filter-action{display:flex;align-items:end}.war-filter-action button,.war-settings>button{width:100%;padding:5px 8px}.war-settings-note{grid-column:1/-1;padding:8px;border:1px solid var(--s-soft);border-radius:7px;color:var(--s-muted)}.war-settings>button{grid-column:1/-1}.war-claim-form{display:grid;grid-template-columns:minmax(150px,2fr) minmax(130px,1fr) auto;align-items:end;gap:7px;margin-bottom:9px}.war-claim-form button{padding:5px 9px}.war-alert-block{display:grid;gap:7px;margin:9px 0;padding:8px;border:1px solid var(--s-border);border-radius:8px;background:color-mix(in srgb,var(--s-panel) 80%,transparent)}.war-retal{padding-right:39px;border-left:4px solid var(--s-error)}.war-dismiss{position:absolute;top:7px;right:7px;display:grid;width:27px;min-height:27px;padding:0;place-items:center;border-color:var(--s-error);border-radius:50%;color:var(--s-error);font-weight:900}.war-retal-report{display:grid;grid-template-columns:75px minmax(0,1fr);gap:4px 7px}.war-retal-report>span{color:var(--s-muted)}.war-inside-blocked{outline:3px solid var(--s-error);box-shadow:0 0 15px color-mix(in srgb,var(--s-error) 48%,transparent)}.war-inside-warning{color:var(--s-error);font-weight:800}.target-actions .war-inside-attack{border-color:var(--s-error);color:var(--s-error);font-weight:800}.war-log{border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-log summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px;cursor:pointer}.war-log summary span{color:var(--s-muted)}.war-log-event{display:grid;gap:2px;margin:0 8px 7px;padding:7px;border-left:3px solid var(--s-border);background:var(--s-panel)}.war-log-event span{color:var(--s-muted);font-size:10px}
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
+    .bounty-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.bounty-form>label{display:grid;gap:4px;color:var(--s-muted)}.bounty-form input,.bounty-form select{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-panel);color:var(--s-text)}.bounty-form .wide{grid-column:1/-1}.bounty-form .check-row{display:flex;align-items:center;gap:7px;color:var(--s-text)}.bounty-form .check-row input{width:19px;height:19px;min-height:19px}.bounty-form-actions{display:flex;gap:7px}.bounty-form-actions button{padding:6px 12px}
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
     .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
     .war-armory-controls{grid-template-columns:1fr}
@@ -2959,7 +3244,7 @@
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form{grid-template-columns:1fr}.access-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
@@ -2992,9 +3277,10 @@
     </nav>
     <main class="scroll">
       <section class="page" data-page-panel="combat">
-        <div class="page-head"><div><h1>Combat</h1><p>Leveling, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
-        <nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
+        <div class="page-head"><div><h1>Combat</h1><p>Leveling, bounties, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
+        <nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="bounties">Bounties</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
         <div class="subpage" data-combat-panel="leveling"><div data-module-root="leveling"></div></div>
+        <div class="subpage" data-combat-panel="bounties" hidden><div data-module-root="bounties"></div></div>
         <div class="subpage" data-combat-panel="war" hidden><div data-module-root="war"></div></div>
         <div class="subpage" data-combat-panel="stats" hidden><div data-module-root="stats"></div></div>
       </section>
@@ -3092,7 +3378,7 @@
   }
 
   function selectSubpage(group, tab, persist = true) {
-    const allowed = group === 'combat' ? ['leveling', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
+    const allowed = group === 'combat' ? ['leveling', 'bounties', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
     if (!allowed.includes(tab)) tab = allowed[0];
     state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
     if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
@@ -3342,6 +3628,14 @@
       })();
     }
     if (action === 'refresh-market-permissions') void refreshMarketPermissions();
+    if (action === 'save-bounties') saveBountySettings();
+    if (action === 'restart-bounties') {
+      dataState.caches.bounties = freshBountyRuntime(bountyRuntime());
+      touchBounties();
+      moduleState.bounties.error = '';
+      renderBounties();
+      void refreshBounties(false);
+    }
     if (action === 'refresh-dollar-bazaars') void refreshDollarBazaars(true);
     if (action === 'sync-market-weaver-pricelist') void syncMarketPricelistNow();
     if (action === 'save-market-watch') saveMarketWatch();
@@ -3543,7 +3837,7 @@
     if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
   });
   guardian.observe(document, { childList:true, subtree:true });
-  marketObserver = new MutationObserver(() => { scheduleMarketDomFormat(); scanAttackMugResults(); });
+  marketObserver = new MutationObserver(() => { scheduleMarketDomFormat(); scanAttackMugResults(); void scanBountyPageStatus(); });
   marketObserver.observe(document.body, { childList:true, subtree:true });
 
   if (typeof GM_API.menu === 'function') {
@@ -3568,6 +3862,7 @@
   if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
   scheduleMarketDomFormat();
+  void scanBountyPageStatus();
   scanAttackMugResults();
 
   global.SLINK_PDA_DASHBOARD = Object.freeze({
