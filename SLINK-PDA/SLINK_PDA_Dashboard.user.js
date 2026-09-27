@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.6
+// @version      0.4.7
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.6-bounty-tracker';
+  const BUILD = '0.4.7-bounty-profile-scope';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.6';
+  const CLIENT_VERSION = '0.4.7';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -61,6 +61,7 @@
   const DOLLAR_BAZAAR_REFRESH_MS = 60 * 60_000;
   const DOLLAR_BAZAAR_LIMIT = 100;
   const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
+  const BOUNTY_PROFILE_INTENT_KEY = 'slink-pda-dashboard:bounty-profile-intent:v1';
   const BOUNTY_FF_CACHE_MS = 7 * 86_400_000;
   const BOUNTY_PAGE_LIMIT = 100;
   const BOUNTY_PAGES_PER_BATCH = 2;
@@ -1534,7 +1535,7 @@
     if (!root) return;
     const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
     const controls = `<div class="bounty-form"><label class="check-row wide"><input type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${target.id}`)}${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}</div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets match the current filters.')}</div></article></div>`;
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}</div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets match the current filters.')}</div></article></div>`;
   }
 
   async function refreshBounties(force = false) {
@@ -1607,32 +1608,71 @@
     return '';
   }
 
+  function rememberBountyProfileIntent(id) {
+    const targetId = Math.trunc(Number(id) || 0);
+    if (!targetId) return;
+    try {
+      global.sessionStorage.setItem(BOUNTY_PROFILE_INTENT_KEY, JSON.stringify({
+        id:targetId,
+        expiresAt:Date.now() + BOUNTY_ACTIVE_GRACE_MS
+      }));
+    } catch {}
+  }
+
+  function readBountyProfileIntent() {
+    try {
+      const value = JSON.parse(global.sessionStorage.getItem(BOUNTY_PROFILE_INTENT_KEY) || 'null');
+      const id = Math.trunc(Number(value?.id) || 0);
+      if (!id || Number(value?.expiresAt) <= Date.now()) {
+        global.sessionStorage.removeItem(BOUNTY_PROFILE_INTENT_KEY);
+        return null;
+      }
+      return { id, expiresAt:Number(value.expiresAt) };
+    } catch {
+      try { global.sessionStorage.removeItem(BOUNTY_PROFILE_INTENT_KEY); } catch {}
+      return null;
+    }
+  }
+
+  function clearBountyProfileIntent() {
+    try { global.sessionStorage.removeItem(BOUNTY_PROFILE_INTENT_KEY); } catch {}
+  }
+
   async function scanBountyPageStatus() {
     if (!bountyActive()) return;
-    const url = new URL(global.location.href), attack = url.searchParams.get('sid') === 'attack', profile = url.pathname.toLowerCase().includes('profiles.php');
-    const id = Math.trunc(Number(attack ? url.searchParams.get('user2ID') : profile ? url.searchParams.get('XID') : 0) || 0);
+    let url;
+    try { url = new URL(global.location.href); } catch { return; }
+    if (!url.pathname.toLowerCase().includes('profiles.php')) return;
+    const id = Math.trunc(Number(url.searchParams.get('XID')) || 0);
+    const intent = readBountyProfileIntent();
+    if (!id || !intent || intent.id !== id) return;
     const runtime = bountyRuntime();
-    if (!id || !runtime.targets.some(target => Number(target.id) === id)) return;
-    const selectors = profile ? ['[class*="status"]','[class*="basic-information"]','[data-testid*="status"]'] : ['[class*="dialog"]','[class*="status"]','[class*="result"]','[data-testid*="status"]'];
+    if (!runtime.targets.some(target => Number(target.id) === id)) {
+      clearBountyProfileIntent();
+      return;
+    }
+    const selectors = ['[class*="status"]','[class*="basic-information"]','[data-testid*="status"]'];
     for (const node of document.querySelectorAll(selectors.join(','))) {
-      const text = String(node.innerText || node.textContent || '').trim(), state = detectBountyDomState(text);
+      const text = String(node.innerText || node.textContent || '').trim();
+      const state = detectBountyDomState(text);
       if (!state) continue;
-      let until = parseBountyTimer(text); until = until ? Math.floor(Date.now() / 1000 + until) : 0;
-      let finalState = state, description = text.slice(0, 500), source = profile ? 'profile' : 'attack';
+      const remaining = parseBountyTimer(text);
+      const until = remaining ? Math.floor(Date.now() / 1000 + remaining) : 0;
+      const description = text.slice(0, 500);
       const prior = runtime.statuses[id] || {};
-      if (attack && state === 'Hospital' && !until && prior.state === 'Hospital' && Number(prior.until) * 1000 > Date.now()) return;
-      const signature = `${id}:${source}:${state}:${until}`;
-      if (signature === bountyLastDomObservation) return;
+      const signature = `${id}:bounty-profile:${state}:${until}`;
+      if (signature === bountyLastDomObservation) {
+        clearBountyProfileIntent();
+        return;
+      }
       bountyLastDomObservation = signature;
-      if (attack && state === 'Hospital' && !until) {
-        const result = await bountyTornJson(`/v2/user/${id}/basic`);
-        const status = result?.profile?.status || result?.status || {};
-        finalState = bountyStateName(status.state || state); until = Math.max(0, Number(status.until) || 0); description = String(status.description || status.details || description).slice(0, 500); source = 'attack+api';
+      if (prior.state !== state || Number(prior.until) !== until) {
+        runtime.statuses[id] = { state, until, description, source:'bounty-profile', checkedAt:Date.now() };
+        dataState.caches.bounties = runtime;
+        writeDataState();
+        renderBounties();
       }
-      if (prior.state !== finalState || Number(prior.until) !== until) {
-        runtime.statuses[id] = { state:finalState, until, description, source, checkedAt:Date.now() };
-        dataState.caches.bounties = runtime; writeDataState(); renderBounties();
-      }
+      clearBountyProfileIntent();
       return;
     }
   }
@@ -3487,6 +3527,8 @@
   });
 
   overlay.addEventListener('click', event => {
+    const bountyProfile = event.target.closest('[data-bounty-profile]');
+    if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (action === 'close') closeDashboard();
     if (action === 'reset-layout') resetLayout();
