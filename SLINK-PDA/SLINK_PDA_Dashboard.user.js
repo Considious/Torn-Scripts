@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.7
+// @version      0.4.8
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.7-bounty-profile-scope';
+  const BUILD = '0.4.8-inactive-cycle-guidance';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.7';
+  const CLIENT_VERSION = '0.4.8';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -1339,7 +1339,7 @@
         const ff = finite(row?.fair_fight ?? row?.fairFight);
         const status = String(row?.status ?? row?.previous_status ?? 'Unknown');
         return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>Level ${number(row?.level)} · ${escapeHtml(status)}${ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}</div></article>`;
-      }).join('') : moduleMessage('No recommendations are currently assigned.')}</div>
+      }).join('') : moduleMessage('No targets are currently loaded. Press Refresh to start or restart the five-minute Leveling cycle.')}</div>
     </article></div>`;
   }
 
@@ -1535,7 +1535,7 @@
     if (!root) return;
     const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
     const controls = `<div class="bounty-form"><label class="check-row wide"><input type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}</div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets match the current filters.')}</div></article></div>`;
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}</div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets are currently loaded. Press Refresh to start or restart the five-minute Bounty cycle.')}</div></article></div>`;
   }
 
   async function refreshBounties(force = false) {
