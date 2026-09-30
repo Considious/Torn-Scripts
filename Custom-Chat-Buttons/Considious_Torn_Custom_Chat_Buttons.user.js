@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.2.3
+// @version      0.2.4
 // @description  User-defined two-click HTML messages for Torn chats and faction newsletters.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -23,6 +23,7 @@
   const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"]';
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
   const CHAT_HEADER_SELECTOR = 'button[class*="header___"], [class*="header___"]';
+  const CHAT_HEADER_DISCOVERY_SELECTOR = 'button[data-prevent-flyout-swipe="true"][class*="header___"], button[class*="header___"]';
   const MINIMIZE_CONTROL_SELECTOR = 'svg[aria-label="Minimize"], svg[class*="minimizeIcon___"]';
   const SCOPE_CONTEXTS = Object.freeze({
     faction: ['faction'],
@@ -130,7 +131,10 @@
 
   function contextType(root) {
     if (isNewsletterRoot(root)) return 'newsletter';
-    return String(root?.id || '').startsWith('faction-') ? 'faction' : 'private';
+    const id = String(root?.id || '');
+    if (id.startsWith('faction-')) return 'faction';
+    if (id.startsWith('private-')) return 'private';
+    return chatHeader(root)?.querySelector('[class*="arrowIcon___"]') ? 'faction' : 'private';
   }
 
   function contextTitle(root) {
@@ -256,8 +260,32 @@
     }, 80);
   }
 
+  function chatRootFromHeader(header) {
+    if (!header) return null;
+    const legacyRoot = header.closest(CHAT_ROOT_SELECTOR);
+    if (legacyRoot) return legacyRoot;
+    let candidate = header.parentElement;
+    const fallback = candidate;
+    for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
+      if (candidate.querySelector(COMPOSER_SELECTOR)) return candidate;
+      candidate = candidate.parentElement;
+    }
+    return fallback;
+  }
+
   function scanContexts() {
-    document.querySelectorAll(CHAT_ROOT_SELECTOR).forEach(injectMenuTrigger);
+    const handledHeaders = new Set();
+    document.querySelectorAll(CHAT_ROOT_SELECTOR).forEach((root) => {
+      const header = chatHeader(root);
+      if (!header) return;
+      handledHeaders.add(header);
+      injectMenuTrigger(root, header);
+    });
+    document.querySelectorAll(CHAT_HEADER_DISCOVERY_SELECTOR).forEach((header) => {
+      if (handledHeaders.has(header) || !minimizeControl(header)) return;
+      const root = chatRootFromHeader(header);
+      if (root) injectMenuTrigger(root, header);
+    });
     injectNewsletterTrigger();
     if (menuChatRoot && !menuChatRoot.isConnected) closeMenu();
     else if (menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
@@ -305,11 +333,14 @@
     event.stopImmediatePropagation?.();
   }
 
-  function injectMenuTrigger(root) {
-    const header = chatHeader(root);
+  function injectMenuTrigger(root, suppliedHeader = null) {
+    const header = suppliedHeader || chatHeader(root);
     if (!header) return;
-    const current = root.querySelector('[data-ccb-trigger]');
+    const minimize = minimizeControl(header) || minimizeControl(root);
+    const actionContainer = minimize?.parentElement || header;
+    const current = actionContainer.querySelector(':scope > [data-ccb-trigger]');
     if (current) return;
+    const currentRoot = () => chatRootFromHeader(header) || root;
 
     const trigger = document.createElement('span');
     trigger.dataset.ccbTrigger = 'true';
@@ -325,16 +356,14 @@
     });
     trigger.addEventListener('click', (event) => {
       stopHeaderAction(event);
-      toggleMenu(root);
+      toggleMenu(currentRoot());
     });
     trigger.addEventListener('keydown', (event) => {
       if (!['Enter', ' '].includes(event.key)) return;
       stopHeaderAction(event);
-      toggleMenu(root);
+      toggleMenu(currentRoot());
     });
 
-    const minimize = minimizeControl(root);
-    const actionContainer = minimize?.parentElement || header;
     actionContainer.insertBefore(trigger, minimize?.parentElement === actionContainer ? minimize : null);
   }
 
