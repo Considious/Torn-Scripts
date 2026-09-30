@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.2.2
+// @version      0.2.3
 // @description  User-defined two-click HTML messages for Torn chats and faction newsletters.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -22,6 +22,8 @@
   const NEWSLETTER_FALLBACK_LIMIT = 60_000;
   const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"]';
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
+  const CHAT_HEADER_SELECTOR = 'button[class*="header___"], [class*="header___"]';
+  const MINIMIZE_CONTROL_SELECTOR = 'svg[aria-label="Minimize"], svg[class*="minimizeIcon___"]';
   const SCOPE_CONTEXTS = Object.freeze({
     faction: ['faction'],
     private: ['private'],
@@ -133,14 +135,22 @@
 
   function contextTitle(root) {
     if (isNewsletterRoot(root)) return 'Faction newsletter';
-    const title = root?.querySelector('button[class*="header___"] span[class*="title___"]')
-      || root?.querySelector('button svg[aria-label="Minimize"]')?.parentElement?.querySelector('span');
+    const header = chatHeader(root);
+    const title = header?.querySelector('span[class*="title___"]')
+      || root?.querySelector('span[class*="title___"]')
+      || minimizeControl(root)?.parentElement?.querySelector('span');
     return String(title?.textContent || (contextType(root) === 'faction' ? 'Faction' : 'Private chat')).trim();
   }
 
+  function minimizeControl(root) {
+    return root?.querySelector(MINIMIZE_CONTROL_SELECTOR) || null;
+  }
+
   function chatHeader(root) {
-    return root?.querySelector('button[class*="header___"]')
-      || [...(root?.querySelectorAll('button') || [])].find((button) => button.querySelector('svg[aria-label="Minimize"]'))
+    const minimize = minimizeControl(root);
+    return root?.querySelector(CHAT_HEADER_SELECTOR)
+      || minimize?.closest('button, [role="button"], [class*="header___"]')
+      || minimize?.parentElement
       || null;
   }
 
@@ -298,7 +308,7 @@
   function injectMenuTrigger(root) {
     const header = chatHeader(root);
     if (!header) return;
-    const current = header.querySelector(':scope > [data-ccb-trigger]');
+    const current = root.querySelector('[data-ccb-trigger]');
     if (current) return;
 
     const trigger = document.createElement('span');
@@ -323,8 +333,9 @@
       toggleMenu(root);
     });
 
-    const minimize = header.querySelector(':scope > svg[aria-label="Minimize"]');
-    header.insertBefore(trigger, minimize || null);
+    const minimize = minimizeControl(root);
+    const actionContainer = minimize?.parentElement || header;
+    actionContainer.insertBefore(trigger, minimize?.parentElement === actionContainer ? minimize : null);
   }
 
   function ensureMenu() {
