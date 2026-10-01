@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.8
+// @version      0.4.9
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.8-inactive-cycle-guidance';
+  const BUILD = '0.4.9-faction-chat-redesign';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.8';
+  const CLIENT_VERSION = '0.4.9';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -2672,17 +2672,24 @@
     return Promise.resolve(copied);
   }
 
+  const FACTION_COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."],textarea[class*="_resizable-chat_"],textarea[class*="textarea___"]';
+  const FACTION_SEND_ICON_PATH_PREFIX = 'M18,0l-4.5,16.5-6.1-5.43';
+
   function factionContainer() {
-    const exact = [...document.querySelectorAll('[id^="faction-"]')].find(node => node.querySelector('textarea[placeholder="Type your message here..."],textarea[class*="textarea"]'));
+    const current = document.querySelector('#faction');
+    if (current) return current;
+    const exact = [...document.querySelectorAll('[id^="faction-"]')].find(node => node.querySelector(FACTION_COMPOSER_SELECTOR));
     if (exact) return exact;
     return [...document.querySelectorAll('div,section')].find(node => {
-      const composer = node.querySelector('textarea[placeholder*="message" i],[contenteditable="true"]');
-      const title = node.querySelector('button span,header span');
-      return composer && String(title?.textContent || '').trim().toLowerCase() === 'faction';
+      const composer = node.querySelector(FACTION_COMPOSER_SELECTOR);
+      const header = node.querySelector('button[data-prevent-flyout-swipe="true"][class*="header___"]');
+      return composer && Boolean(header?.querySelector('svg[class*="arrowIcon___"]'));
     }) || null;
   }
 
   function factionLauncher() {
+    const currentHeader = document.querySelector('#faction button[data-prevent-flyout-swipe="true"][class*="header___"]');
+    if (currentHeader) return currentHeader;
     return [...document.querySelectorAll('button,a,[role="button"]')].find(node => {
       const label = [node.getAttribute?.('aria-label'), node.getAttribute?.('title'), node.textContent].filter(Boolean).join(' ').trim().toLowerCase();
       return label === 'faction' || label.includes('faction chat') || label.includes('open faction');
@@ -2690,7 +2697,29 @@
   }
 
   function factionComposer(container) {
-    return container?.querySelector('textarea[placeholder="Type your message here..."],textarea[class*="textarea"],textarea,[contenteditable="true"]') || null;
+    return container?.querySelector(FACTION_COMPOSER_SELECTOR) || null;
+  }
+
+  function factionSendPath(path) {
+    return String(path?.getAttribute?.('d') || '').replace(/\s+/g, '');
+  }
+
+  function isFactionSendButton(button) {
+    const path = button?.querySelector?.('svg[viewBox="0 0 18 18"] path');
+    const label = [button?.getAttribute?.('aria-label'), button?.getAttribute?.('title'), button?.textContent]
+      .filter(Boolean).join(' ').trim().toLowerCase();
+    return factionSendPath(path).startsWith(FACTION_SEND_ICON_PATH_PREFIX)
+      || label === 'send'
+      || label.includes('send message');
+  }
+
+  function factionSendButton(container, composer) {
+    const scopes = [...new Set([composer?.parentElement, container].filter(Boolean))];
+    for (const scope of scopes) {
+      const button = [...scope.querySelectorAll('button,[role="button"]')].find(isFactionSendButton);
+      if (button) return button;
+    }
+    return null;
   }
 
   async function waitFor(check, timeoutMs = 2_000) {
@@ -2720,10 +2749,10 @@
     } else input.textContent = text;
     input.dispatchEvent(new Event('input', { bubbles:true, composed:true }));
     input.dispatchEvent(new Event('change', { bubbles:true, composed:true }));
-    const send = await waitFor(() => [...(container?.querySelectorAll('button,[role="button"]') || [])].find(button => {
-      const label = [button.getAttribute('aria-label'), button.getAttribute('title'), button.textContent].filter(Boolean).join(' ').toLowerCase();
-      return !button.disabled && (button.type === 'submit' || label.trim() === 'send' || label.includes('send message'));
-    }), 1_500);
+    const send = await waitFor(() => {
+      const button = factionSendButton(container, input);
+      return button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null;
+    }, 1_500);
     if (!send || !document.hasFocus()) return false;
     send.click(); return true;
   }
