@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.9
+// @version      0.4.10
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.9-faction-chat-redesign';
+  const BUILD = '0.4.10-unified-faction-sharing';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.9';
+  const CLIENT_VERSION = '0.4.10';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -682,7 +682,7 @@
         const listing = result.points?.listings?.[0];
         if (!listing || listing.price > watch.maxPrice) return [];
         const href = 'https://www.torn.com/pmarket.php';
-        return [{ id:`points:${watch.uid}`, watchUid:watch.uid, source:'Points Market', itemName:'Points', itemId:0, price:listing.price, quantity:listing.quantity, href, detail:`${marketMoney(listing.price)} per point${listing.quantity ? ` × ${number(listing.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}`, shareText:`Points Market | ${marketMoney(listing.price)} per point | target ${marketMoney(watch.maxPrice)} | ${href}` }];
+        return [{ id:`points:${watch.uid}`, watchUid:watch.uid, source:'Points Market', itemName:'Points', itemId:0, price:listing.price, quantity:listing.quantity, href, detail:`${marketMoney(listing.price)} per point${listing.quantity ? ` × ${number(listing.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}`, shareText:`Points Market | ${marketMoney(listing.price)} per point | target ${marketMoney(watch.maxPrice)} | ${chatLink('Open Points Market', href)}` }];
       }
       const item = catalog.get(watch.itemId) || {};
       const name = watch.label || item.name || `Item ${watch.itemId}`;
@@ -691,11 +691,11 @@
       const market = result.market?.listings?.[0];
       if (watch.marketEnabled && market && market.price <= watch.maxPrice) {
         const href = itemMarketUrl(watch.itemId, market.price);
-        rows.push({ id:`market:${watch.uid}`, watchUid:watch.uid, source:'Item Market', itemId:watch.itemId, itemName:name, price:market.price, quantity:market.quantity, shopSellPrice:item.shopSellPrice || 0, href, detail:`${marketMoney(market.price)}${market.quantity ? ` × ${number(market.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Item Market | ${name} | ${marketMoney(market.price)} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${href}` });
+        rows.push({ id:`market:${watch.uid}`, watchUid:watch.uid, source:'Item Market', itemId:watch.itemId, itemName:name, price:market.price, quantity:market.quantity, shopSellPrice:item.shopSellPrice || 0, href, detail:`${marketMoney(market.price)}${market.quantity ? ` × ${number(market.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Item Market | ${escapeHtml(name)} | ${marketMoney(market.price)} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${chatLink('Open Item Market', href)}` });
       }
       const best = new Map();
       for (const listing of result.bazaar?.listings || []) if (!best.has(listing.sellerId) || listing.price < best.get(listing.sellerId).price) best.set(listing.sellerId, listing);
-      if (watch.bazaarEnabled) for (const listing of [...best.values()].filter(row => row.price <= watch.maxPrice).slice(0, 5)) rows.push({ id:`bazaar:${watch.uid}:${listing.sellerId}`, watchUid:watch.uid, source:'Bazaar', itemId:watch.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Bazaar | ${name} | ${marketMoney(listing.price)} | ${listing.sellerName} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${listing.href}` });
+      if (watch.bazaarEnabled) for (const listing of [...best.values()].filter(row => row.price <= watch.maxPrice).slice(0, 5)) rows.push({ id:`bazaar:${watch.uid}:${listing.sellerId}`, watchUid:watch.uid, source:'Bazaar', itemId:watch.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Bazaar | ${escapeHtml(name)} | ${marketMoney(listing.price)} | ${escapeHtml(listing.sellerName)} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${chatLink('Open Bazaar', listing.href)}` });
       return rows;
     });
     if (settings.weaverPricelistEnabled) for (const priceItem of weaverPricelistItems(runtime.weaverPricelist?.items || [])) {
@@ -708,7 +708,7 @@
       for (const listing of [...best.values()].slice(0, 5)) {
         const maxPrice = weaverPricelistTarget(priceItem, listing.quantity);
         if (!(maxPrice > 0) || listing.price > maxPrice) continue;
-        rows.push({ id:`bazaar:weaver-pricelist:${priceItem.itemId}:${listing.sellerId}`, watchUid:'', source:'Weaver Pricelist', itemId:priceItem.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · Weaver target ${marketMoney(maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Weaver Pricelist | ${name} | ${marketMoney(listing.price)} | ${listing.sellerName} | target ${marketMoney(maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${listing.href}` });
+        rows.push({ id:`bazaar:weaver-pricelist:${priceItem.itemId}:${listing.sellerId}`, watchUid:'', source:'Weaver Pricelist', itemId:priceItem.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · Weaver target ${marketMoney(maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Weaver Pricelist | ${escapeHtml(name)} | ${marketMoney(listing.price)} | ${escapeHtml(listing.sellerName)} | target ${marketMoney(maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${chatLink('Open Bazaar', listing.href)}` });
       }
     }
     const unique = new Map();
@@ -1189,6 +1189,14 @@
     return `<a class="action-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
   }
 
+  function chatLink(label, href) {
+    return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+  }
+
+  function attackLink(href) {
+    return chatLink('【ATTACK】', href);
+  }
+
   function lockedModule(scope, label) {
     if (!currentApiKey()) return moduleMessage('Add your Torn API key under Access to start this module.', 'locked');
     if (!validSession('permission')) return moduleMessage('Authenticate under Access so SLINK can load your feature permissions.', 'locked');
@@ -1338,7 +1346,7 @@
         const name = String(row?.name || `Player ${id}`);
         const ff = finite(row?.fair_fight ?? row?.fairFight);
         const status = String(row?.status ?? row?.previous_status ?? 'Unknown');
-        return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>Level ${number(row?.level)} · ${escapeHtml(status)}${ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}</div></article>`;
+        return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>Level ${number(row?.level)} · ${escapeHtml(status)}${ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}</div></article>`;
       }).join('') : moduleMessage('No targets are currently loaded. Press Refresh to start or restart the five-minute Leveling cycle.')}</div>
     </article></div>`;
   }
@@ -1813,13 +1821,41 @@
     return bits.length ? `<span class="war-context">${escapeHtml(bits.join(' · '))}</span>` : '';
   }
 
+  function warTargetShareKey(member) {
+    return `war:target:${warMemberId(member)}`;
+  }
+
+  function warRetalShareKey(retal) {
+    return `war:retal:${String(retal?.attackId || retal?.attackerId || '')}`;
+  }
+
   function warCallout(member) {
     const id = warMemberId(member);
     const status = warMemberStatus(member);
     const activity = warMemberActivity(member);
     const ff = finite(member?.fairFight ?? member?.fair_fight);
     const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate ?? member?.bs_estimate);
-    return `${String(member?.name || `Player ${id}`)} [${id}] · ${activity} · ${status}${estimate === null ? '' : ` · BS ${number(estimate)}`}${ff === null ? '' : ` · FF ${number(ff, 2)}`} · https://www.torn.com/profiles.php?XID=${id}`;
+    const profile = `https://www.torn.com/profiles.php?XID=${id}`;
+    const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
+    const details = [attackLink(attack), `Status: ${escapeHtml(status)} / ${escapeHtml(activity)}`];
+    if (/hospital/i.test(status) && warStatusSeconds(member)) {
+      const readyAt = warTctTime(Number(member?.statusUntil ?? member?.status?.until));
+      details.push(`Hospital: ${duration(warStatusSeconds(member))}${readyAt ? ` / ready ${readyAt} TCT` : ''}`);
+    }
+    if (estimate !== null) details.push(`Estimated BS: ${number(estimate)}`);
+    if (ff !== null) details.push(`FF: ${number(ff, 2)}`);
+    const name = escapeHtml(member?.name || `Player ${id}`);
+    return `${chatLink(`${name} [${id}]`, profile)} - ${details.join(' - ')}`;
+  }
+
+  function warRetalCallout(retal) {
+    const id = Number(retal?.attackerId) || 0;
+    const name = escapeHtml(retal?.attackerName || `Player ${id}`);
+    const defender = escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`);
+    const status = escapeHtml(retal?.attackerStatus || retal?.attackerActivity || 'Unknown');
+    const profile = `https://www.torn.com/profiles.php?XID=${id}`;
+    const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
+    return `🚨 Retaliation: Please Hospitalize 🚨<br>${chatLink(`${name} [${id}]`, profile)} - ${attackLink(attack)}<br>Attacked: ${defender} • Status: ${status}`;
   }
 
   function warInsideGate(targetId) {
@@ -1845,7 +1881,7 @@
     const ff = finite(member?.fairFight ?? member?.fair_fight);
     const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate ?? member?.bs_estimate);
     const gate = outside ? { active:false } : warInsideGate(id);
-    const attack = `<a class="action-link ${gate.active ? 'war-inside-attack' : ''}" href="https://www.torn.com/page.php?sid=attack&user2ID=${id}" ${gate.active ? `data-action="war-inside-attack" data-war-target="${id}" data-war-gate="${gate.mode}"` : ''}>${gate.active && gate.mode === 'block' ? 'INSIDES DISABLED' : 'Attack'}</a>`;
+    const attack = `<a class="action-link ${gate.active ? 'war-inside-attack' : ''}" href="https://www.torn.com/page.php?sid=attack&user2ID=${id}" ${gate.active ? `data-action="war-inside-attack" data-war-target="${id}" data-war-gate="${gate.mode}"` : ''}>${gate.active && gate.mode === 'block' ? 'INSIDES DISABLED' : '【ATTACK】'}</a>`;
     return `<article class="war-card ${gate.active ? 'war-inside-blocked' : ''}"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(member?.name || `Player ${id}`)} [${id}]</a><span>Lv ${number(member?.level)}</span></div><div class="war-meta"><span class="war-pill ${/^online$/i.test(activity) ? 'online' : ''}">${escapeHtml(activity)}</span><span class="war-pill ${hospitalized ? 'hospital' : ''}">${escapeHtml(status)}${hospitalized && remaining ? ` · ${duration(remaining)} · ${warTctTime(Number(member?.statusUntil ?? member?.status?.until))} TCT` : ''}</span><span class="war-pill">BS ${estimate === null ? '?' : number(estimate)}</span><span class="war-pill">FF ${ff === null ? '?' : number(ff, 2)}</span>${warMemberContext(member)}</div>${gate.active ? `<div class="war-inside-warning">${escapeHtml(warInsideMessage(gate))}</div>` : ''}<div class="target-actions">${attack}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}<button type="button" data-action="copy-war-target" data-war-target="${id}" data-war-outside="${outside ? 'true' : 'false'}">Copy</button><button type="button" data-action="send-war-target" data-war-target="${id}" data-war-outside="${outside ? 'true' : 'false'}">Send to Faction</button></div></article>`;
   }
 
@@ -1859,7 +1895,7 @@
       if (ff !== null && (ff < minimum || ff > maximum)) return false;
       return settings.targetStatus === 'okay' ? okay : settings.targetStatus === 'notOkay' ? !okay : true;
     });
-    return `<div class="war-filters"><label>Minimum FF<input type="number" min="0" max="100" step="0.1" data-field="war-target-min" value="${minimum}"></label><label>Maximum FF<input type="number" min="0" max="100" step="0.1" data-field="war-target-max" value="${maximum}"></label><label>Status<select data-field="war-target-status"><option value="all" ${settings.targetStatus === 'all' ? 'selected' : ''}>All</option><option value="okay" ${settings.targetStatus === 'okay' ? 'selected' : ''}>Okay</option><option value="notOkay" ${settings.targetStatus === 'notOkay' ? 'selected' : ''}>Not okay</option></select></label><label>Sort<select data-field="war-target-sort"><option value="availability" ${settings.targetSort === 'availability' ? 'selected' : ''}>Availability</option><option value="fairFightDesc" ${settings.targetSort === 'fairFightDesc' ? 'selected' : ''}>FF high to low</option><option value="fairFightAsc" ${settings.targetSort === 'fairFightAsc' ? 'selected' : ''}>FF low to high</option></select></label></div><div class="war-stack">${members.length ? members.map(member => warMemberCard(member)).join('') : moduleMessage('No ranked-war opponents match the current filters.')}</div>`;
+    return `<div class="war-filters"><label>Minimum FF<input type="number" min="0" step="0.1" data-field="war-target-min" value="${minimum}"></label><label>Maximum FF<input type="number" min="0" step="0.1" data-field="war-target-max" value="${maximum}"></label><label>Status<select data-field="war-target-status"><option value="all" ${settings.targetStatus === 'all' ? 'selected' : ''}>All</option><option value="okay" ${settings.targetStatus === 'okay' ? 'selected' : ''}>Okay</option><option value="notOkay" ${settings.targetStatus === 'notOkay' ? 'selected' : ''}>Not okay</option></select></label><label>Sort<select data-field="war-target-sort"><option value="availability" ${settings.targetSort === 'availability' ? 'selected' : ''}>Availability</option><option value="fairFightDesc" ${settings.targetSort === 'fairFightDesc' ? 'selected' : ''}>FF high to low</option><option value="fairFightAsc" ${settings.targetSort === 'fairFightAsc' ? 'selected' : ''}>FF low to high</option></select></label></div><div class="war-stack">${members.length ? members.map(member => warMemberCard(member)).join('') : moduleMessage('No ranked-war opponents match the current filters.')}</div>`;
   }
 
   function warOutsideView(data) {
@@ -1908,7 +1944,7 @@
       const status = String(retal?.attackerStatus || retal?.attackerActivity || 'Unknown');
       const expires = Number(retal?.expiresAt) || now + 300;
       const faction = retal?.attackerFactionName || (retal?.attackerFactionId ? `Faction ${retal.attackerFactionId}` : 'No faction');
-      return `<article class="war-card war-retal"><button class="war-dismiss" type="button" data-action="dismiss-war-retal" data-war-retal="${escapeHtml(attackId)}" aria-label="Dismiss retaliation alert">×</button><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(retal?.attackerName || `Player ${id}`)} [${id}]</a><span>${duration(expires - now)}</span></div><div class="war-retal-report"><span>Faction</span><strong>${escapeHtml(faction)}</strong><span>Attacked</span><strong>${escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`)}</strong><span>Status</span><strong>${escapeHtml(status)}</strong><span>Fair Fight</span><strong>${number(retal?.fairFight, 2)}</strong></div><div class="target-actions"><button type="button" data-action="copy-war-retal" data-war-retal="${escapeHtml(attackId)}">Copy</button><button type="button" data-action="send-war-retal" data-war-retal="${escapeHtml(attackId)}">Send to Faction</button>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}</div></article>`;
+      return `<article class="war-card war-retal"><button class="war-dismiss" type="button" data-action="dismiss-war-retal" data-war-retal="${escapeHtml(attackId)}" aria-label="Dismiss retaliation alert">×</button><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(retal?.attackerName || `Player ${id}`)} [${id}]</a><span>${duration(expires - now)}</span></div><div class="war-retal-report"><span>Faction</span><strong>${escapeHtml(faction)}</strong><span>Attacked</span><strong>${escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`)}</strong><span>Status</span><strong>${escapeHtml(status)}</strong><span>Fair Fight</span><strong>${number(retal?.fairFight, 2)}</strong></div><div class="target-actions"><button type="button" data-action="copy-war-retal" data-war-retal="${escapeHtml(attackId)}">Copy</button><button type="button" data-action="send-war-retal" data-war-retal="${escapeHtml(attackId)}">Send to Faction</button>${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}</div></article>`;
     }).join('')}</div></section>`;
   }
 
@@ -2674,6 +2710,8 @@
 
   const FACTION_COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."],textarea[class*="_resizable-chat_"],textarea[class*="textarea___"]';
   const FACTION_SEND_ICON_PATH_PREFIX = 'M18,0l-4.5,16.5-6.1-5.43';
+  const FACTION_PRIME_TTL_MS = 120_000;
+  let primedFactionMessage = null;
 
   function factionContainer() {
     const current = document.querySelector('#faction');
@@ -2755,6 +2793,34 @@
     }, 1_500);
     if (!send || !document.hasFocus()) return false;
     send.click(); return true;
+  }
+
+  function currentPrimedFactionMessage(key = '') {
+    if (primedFactionMessage && primedFactionMessage.expiresAt <= Date.now()) primedFactionMessage = null;
+    if (!primedFactionMessage) return null;
+    return key && primedFactionMessage.key !== String(key) ? null : primedFactionMessage;
+  }
+
+  function isFactionMessagePrimed(key) {
+    return Boolean(currentPrimedFactionMessage(String(key || '')));
+  }
+
+  async function primeFactionMessage(text, key) {
+    const value = String(text || '').trim();
+    const normalizedKey = String(key || '');
+    if (!value) return { ok:false, label:'Nothing to copy' };
+    const copied = await copyText(value);
+    if (!copied) return { ok:false, label:'Copy failed' };
+    primedFactionMessage = { key:normalizedKey, text:value, expiresAt:Date.now() + FACTION_PRIME_TTL_MS };
+    return { ok:true, label:'Copied' };
+  }
+
+  async function sendPrimedFactionMessage(key) {
+    const message = currentPrimedFactionMessage(String(key || ''));
+    if (!message) return { ok:false, label:'Copy this message first' };
+    const ok = await sendToFaction(message.text);
+    if (ok && primedFactionMessage === message) primedFactionMessage = null;
+    return { ok, label:ok ? 'Sent to Faction' : 'Open/focus Faction Chat' };
   }
 
   function reconcileMarketNotifications(runtime) {
@@ -3681,8 +3747,11 @@
       const member = (rows || []).find(row => warMemberId(row) === id);
       if (member && button) void (async () => {
         button.disabled = true;
-        const okay = action === 'copy-war-target' ? await copyText(warCallout(member)) : await sendToFaction(warCallout(member));
-        button.textContent = okay ? action === 'copy-war-target' ? 'Copied' : 'Sent to Faction' : 'Try again';
+        const key = warTargetShareKey(member);
+        const result = action === 'copy-war-target'
+          ? await primeFactionMessage(warCallout(member), key)
+          : await sendPrimedFactionMessage(key);
+        button.textContent = result.label;
         button.disabled = false;
       })();
     }
@@ -3691,10 +3760,12 @@
       const attackId = String(button?.dataset.warRetal || '');
       const retal = (moduleState.war.data?.snapshot?.retals || []).find(row => String(row?.attackId || row?.attackerId) === attackId);
       if (retal && button) void (async () => {
-        const text = `RETAL: ${retal.attackerName || `Player ${retal.attackerId}`} [${retal.attackerId}] attacked ${retal.defenderName || `Player ${retal.defenderId || '?'}`} · ${retal.attackerStatus || retal.attackerActivity || 'Unknown'} · https://www.torn.com/page.php?sid=attack&user2ID=${retal.attackerId}`;
+        const key = warRetalShareKey(retal);
         button.disabled = true;
-        const okay = action === 'copy-war-retal' ? await copyText(text) : await sendToFaction(text);
-        button.textContent = okay ? action === 'copy-war-retal' ? 'Copied' : 'Sent to Faction' : 'Try again';
+        const result = action === 'copy-war-retal'
+          ? await primeFactionMessage(warRetalCallout(retal), key)
+          : await sendPrimedFactionMessage(key);
+        button.textContent = result.label;
         button.disabled = false;
       })();
     }
@@ -3732,12 +3803,12 @@
       const id = String(event.target.closest('[data-market-deal]')?.dataset.marketDeal || '');
       const deal = marketOpportunities(moduleState.market.data || marketRuntime()).find(row => row.id === id);
       const button = event.target.closest('button');
-      if (deal && button) void (async () => { button.disabled = true; const okay = action === 'copy-market-deal' ? await copyText(deal.shareText) : await sendToFaction(deal.shareText); button.textContent = okay ? action === 'copy-market-deal' ? 'Copied' : 'Sent to Faction' : action === 'copy-market-deal' ? 'Copy failed' : 'Open/focus Faction Chat'; button.disabled = false; })();
+      if (deal && button) void (async () => { button.disabled = true; const key = `market:${deal.id}`; const result = action === 'copy-market-deal' ? await primeFactionMessage(deal.shareText, key) : await sendPrimedFactionMessage(key); button.textContent = result.label; button.disabled = false; })();
     }
     if (action === 'copy-market-list' || action === 'send-market-list') {
       const text = marketOpportunities(moduleState.market.data || marketRuntime()).slice(0, 12).map(row => row.shareText).join('\n');
       const button = event.target.closest('button');
-      if (text && button) void (async () => { button.disabled = true; const okay = action === 'copy-market-list' ? await copyText(text) : await sendToFaction(text); button.textContent = okay ? action === 'copy-market-list' ? 'List copied' : 'Sent to Faction' : action === 'copy-market-list' ? 'Copy failed' : 'Open/focus Faction Chat'; button.disabled = false; })();
+      if (text && button) void (async () => { button.disabled = true; const key = 'market:all'; const result = action === 'copy-market-list' ? await primeFactionMessage(text, key) : await sendPrimedFactionMessage(key); button.textContent = result.ok && action === 'copy-market-list' ? 'List copied' : result.label; button.disabled = false; })();
     }
     if (action === 'pin-merit') {
       const key = String(event.target.closest('[data-merit-key]')?.dataset.meritKey || '');
