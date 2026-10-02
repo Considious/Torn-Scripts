@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.11
+// @version      0.4.12
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.11-war-travel-filters';
+  const BUILD = '0.4.12-war-live-status';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.11';
+  const CLIENT_VERSION = '0.4.12';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -1837,12 +1837,9 @@
   }
 
   function warMemberContext(member) {
-    const bits = [];
     const description = String(member?.statusDescription ?? member?.status?.description ?? '').trim();
-    const lastAction = String(member?.lastActionRelative ?? member?.last_action?.relative ?? '').trim();
-    if (description && description.toLowerCase() !== warMemberStatus(member).toLowerCase()) bits.push(description);
-    if (lastAction) bits.push(lastAction);
-    return bits.length ? `<span class="war-context">${escapeHtml(bits.join(' · '))}</span>` : '';
+    if (!description || description.toLowerCase() === warMemberStatus(member).toLowerCase()) return '';
+    return `<span class="war-context">${escapeHtml(description)}</span>`;
   }
 
   function warTargetShareKey(member) {
@@ -1866,6 +1863,8 @@
       const readyAt = warTctTime(Number(member?.statusUntil ?? member?.status?.until));
       details.push(`Hospital: ${duration(warStatusSeconds(member))}${readyAt ? ` / ready ${readyAt} TCT` : ''}`);
     }
+    const statusDescription = String(member?.statusDescription ?? member?.status?.description ?? '').trim();
+    if (statusDescription && statusDescription.toLowerCase() !== status.toLowerCase()) details.push(`Status detail: ${escapeHtml(statusDescription)}`);
     if (estimate !== null) details.push(`Estimated BS: ${number(estimate)}`);
     if (ff !== null) details.push(`FF: ${number(ff, 2)}`);
     const name = escapeHtml(member?.name || `Player ${id}`);
