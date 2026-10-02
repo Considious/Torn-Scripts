@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.10
+// @version      0.4.11
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.10-unified-faction-sharing';
+  const BUILD = '0.4.11-war-travel-filters';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.10';
+  const CLIENT_VERSION = '0.4.11';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -159,7 +159,7 @@
         bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(value.settings?.bounties || {}) },
         war:{
           mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
-          targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetSort:'availability',
+          targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetAbroad:'all', targetLocation:'all', targetSort:'availability',
           outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt:0, lastAttackEnded:0,
           armoryMode:'ranked-all', armoryWhitelist:[],
           ...(value.settings?.war || {})
@@ -1782,6 +1782,30 @@
     return String(member?.activity ?? member?.last_action?.status ?? member?.lastAction?.status ?? 'Unknown');
   }
 
+  const WAR_TRAVEL_LOCATION_ALIASES = Object.freeze([
+    ['Mexico', ['mexico']], ['Cayman Islands', ['cayman islands']], ['Canada', ['canada']],
+    ['Hawaii', ['hawaii']], ['United Kingdom', ['united kingdom', 'uk']], ['Argentina', ['argentina']],
+    ['Switzerland', ['switzerland']], ['Japan', ['japan']], ['China', ['china']],
+    ['United Arab Emirates', ['united arab emirates', 'uae']], ['South Africa', ['south africa']]
+  ]);
+
+  function warTravelLocation(member) {
+    const explicit = String(member?.travelLocation ?? member?.travel_location ?? member?.location?.name ?? (typeof member?.location === 'string' ? member.location : '')).trim();
+    const status = `${warMemberStatus(member)} ${member?.statusDescription ?? member?.status?.description ?? ''} ${explicit}`.toLowerCase();
+    for (const [location, aliases] of WAR_TRAVEL_LOCATION_ALIASES) {
+      if (aliases.some(alias => status.includes(alias))) return location;
+    }
+    return '';
+  }
+
+  function warMemberIsAbroad(member) {
+    if (warTravelLocation(member)) return true;
+    return /\babroad\b|\btravel(?:ing|ling)\b|\breturning to torn\b/i.test(`${warMemberStatus(member)} ${member?.statusDescription ?? member?.status?.description ?? ''}`);
+  }
+
+  function warTravelLocations(rows) {
+    return [...new Set((Array.isArray(rows) ? rows : []).map(warTravelLocation).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  }
   function warStatusSeconds(member) {
     const until = Number(member?.statusUntil ?? member?.status?.until) || 0;
     return Math.max(0, until - Math.floor(Date.now() / 1000));
@@ -1889,15 +1913,24 @@
     const settings = dataState.settings.war;
     const minimum = Math.min(Number(settings.targetMinFF) || 1, Number(settings.targetMaxFF) || 3);
     const maximum = Math.max(Number(settings.targetMinFF) || 1, Number(settings.targetMaxFF) || 3);
-    const members = warSortMembers(snapshot?.members || snapshot?.targets || [], settings.targetSort).filter(member => {
+    const source = snapshot?.members || snapshot?.targets || [];
+    const locations = warTravelLocations(source);
+    if (!locations.includes(settings.targetLocation)) settings.targetLocation = 'all';
+    const locationOptions = ['<option value="all">All locations</option>', ...locations.map(location => `<option value="${escapeHtml(location)}" ${settings.targetLocation === location ? 'selected' : ''}>${escapeHtml(location)}</option>`)].join('');
+    const members = warSortMembers(source, settings.targetSort).filter(member => {
       const ff = finite(member?.fairFight ?? member?.fair_fight);
       const okay = /^okay$/i.test(warMemberStatus(member).trim());
       if (ff !== null && (ff < minimum || ff > maximum)) return false;
-      return settings.targetStatus === 'okay' ? okay : settings.targetStatus === 'notOkay' ? !okay : true;
+      if (settings.targetStatus === 'okay' && !okay) return false;
+      if (settings.targetStatus === 'notOkay' && okay) return false;
+      const abroad = warMemberIsAbroad(member);
+      if (settings.targetAbroad === 'hide' && abroad) return false;
+      if (settings.targetAbroad === 'only' && !abroad) return false;
+      if (settings.targetAbroad === 'only' && settings.targetLocation !== 'all' && warTravelLocation(member) !== settings.targetLocation) return false;
+      return true;
     });
-    return `<div class="war-filters"><label>Minimum FF<input type="number" min="0" step="0.1" data-field="war-target-min" value="${minimum}"></label><label>Maximum FF<input type="number" min="0" step="0.1" data-field="war-target-max" value="${maximum}"></label><label>Status<select data-field="war-target-status"><option value="all" ${settings.targetStatus === 'all' ? 'selected' : ''}>All</option><option value="okay" ${settings.targetStatus === 'okay' ? 'selected' : ''}>Okay</option><option value="notOkay" ${settings.targetStatus === 'notOkay' ? 'selected' : ''}>Not okay</option></select></label><label>Sort<select data-field="war-target-sort"><option value="availability" ${settings.targetSort === 'availability' ? 'selected' : ''}>Availability</option><option value="fairFightDesc" ${settings.targetSort === 'fairFightDesc' ? 'selected' : ''}>FF high to low</option><option value="fairFightAsc" ${settings.targetSort === 'fairFightAsc' ? 'selected' : ''}>FF low to high</option></select></label></div><div class="war-stack">${members.length ? members.map(member => warMemberCard(member)).join('') : moduleMessage('No ranked-war opponents match the current filters.')}</div>`;
+    return `<div class="war-filters"><label>Minimum FF<input type="number" min="0" step="0.1" data-field="war-target-min" value="${minimum}"></label><label>Maximum FF<input type="number" min="0" step="0.1" data-field="war-target-max" value="${maximum}"></label><label>Status<select data-field="war-target-status"><option value="all" ${settings.targetStatus === 'all' ? 'selected' : ''}>All</option><option value="okay" ${settings.targetStatus === 'okay' ? 'selected' : ''}>Okay</option><option value="notOkay" ${settings.targetStatus === 'notOkay' ? 'selected' : ''}>Not okay</option></select></label><label>Abroad<select data-field="war-target-abroad"><option value="all" ${settings.targetAbroad === 'all' ? 'selected' : ''}>Show all targets</option><option value="hide" ${settings.targetAbroad === 'hide' ? 'selected' : ''}>Hide abroad</option><option value="only" ${settings.targetAbroad === 'only' ? 'selected' : ''}>Abroad only</option></select></label><label ${settings.targetAbroad === 'only' ? '' : 'hidden'}>Location<select data-field="war-target-location">${locationOptions}</select></label><label>Sort<select data-field="war-target-sort"><option value="availability" ${settings.targetSort === 'availability' ? 'selected' : ''}>Availability</option><option value="fairFightDesc" ${settings.targetSort === 'fairFightDesc' ? 'selected' : ''}>FF high to low</option><option value="fairFightAsc" ${settings.targetSort === 'fairFightAsc' ? 'selected' : ''}>FF low to high</option></select></label></div><div class="war-stack">${members.length ? members.map(member => warMemberCard(member)).join('') : moduleMessage('No ranked-war opponents match the current Fair Fight, status, and travel filters.')}</div>`;
   }
-
   function warOutsideView(data) {
     const settings = dataState.settings.war;
     const members = warSortMembers(data?.outsideTargets || [], 'fairFightAsc');
@@ -3851,11 +3884,13 @@
       if (event.target.checked) whitelist.add(id); else whitelist.delete(id);
       dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState();
     }
-    if (event.target.matches('[data-field="war-target-min"],[data-field="war-target-max"],[data-field="war-target-status"],[data-field="war-target-sort"]')) {
+    if (event.target.matches('[data-field="war-target-min"],[data-field="war-target-max"],[data-field="war-target-status"],[data-field="war-target-abroad"],[data-field="war-target-location"],[data-field="war-target-sort"]')) {
       const root = moduleRoot('war');
       dataState.settings.war.targetMinFF = Math.max(0, Number(root?.querySelector('[data-field="war-target-min"]')?.value) || 0);
       dataState.settings.war.targetMaxFF = Math.max(0, Number(root?.querySelector('[data-field="war-target-max"]')?.value) || 3);
       dataState.settings.war.targetStatus = root?.querySelector('[data-field="war-target-status"]')?.value || 'all';
+      dataState.settings.war.targetAbroad = root?.querySelector('[data-field="war-target-abroad"]')?.value || 'all';
+      dataState.settings.war.targetLocation = root?.querySelector('[data-field="war-target-location"]')?.value || 'all';
       dataState.settings.war.targetSort = root?.querySelector('[data-field="war-target-sort"]')?.value || 'availability';
       writeDataState();
       renderWar(true);
