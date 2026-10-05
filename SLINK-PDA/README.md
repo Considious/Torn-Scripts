@@ -46,6 +46,13 @@ that expires while suspended is recognized when the script runs again.
 Version 0.4.5 changes **$1 Bazaars** to one row per seller. Each row uses
 Weaver's complete bazaar market value and links to the seller's bazaar.
 
+Version 0.4.14 adds the shared player-intelligence foundation used by
+Bounties and future Target List / Mugging features. Status observations now merge
+into one persistent cache, known Hospital/Jail/Travel timers suppress redundant
+API checks until near expiry, and concurrent requests for the same player share
+one in-flight Torn API call. Bounty DOM status collection remains restricted to
+profile pages deliberately opened from the Bounty module.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
@@ -118,3 +125,9 @@ Contribution Worker remains the canonical feature-permission source; Leveling
 and War establish their own product sessions only after the required scope has
 been granted.
 
+
+## Rollback baseline
+
+The last pre-foundation PDA release is **0.4.13** at commit
+`e921cec301c0f8acf24c39c02d5d480139e30ecb`. GitHub branch
+`backup/pre-mugging-foundation-2026-10-04` preserves that exact version.

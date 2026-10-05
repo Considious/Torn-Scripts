@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.13
+// @version      0.4.14
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.13-weaver-five-second-screen';
+  const BUILD = '0.4.14-shared-player-intelligence';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.13';
+  const CLIENT_VERSION = '0.4.14';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -62,6 +62,9 @@
   const DOLLAR_BAZAAR_REFRESH_MS = 60 * 60_000;
   const DOLLAR_BAZAAR_LIMIT = 100;
   const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
+  const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
+  const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
+  const PLAYER_INTELLIGENCE_TIMED_STATES = new Set(['Hospital', 'Jail', 'Traveling']);
   const BOUNTY_PROFILE_INTENT_KEY = 'slink-pda-dashboard:bounty-profile-intent:v1';
   const BOUNTY_FF_CACHE_MS = 7 * 86_400_000;
   const BOUNTY_PAGE_LIMIT = 100;
@@ -194,6 +197,7 @@
   let networkQueue = Promise.resolve();
   let bountyBudgetQueue = Promise.resolve();
   let bountyLastDomObservation = '';
+  const playerIntelligenceInFlight = new Map();
   let schedulerTimer = null;
   let marketObserver = null;
   let marketFormatTimer = null;
@@ -371,6 +375,238 @@
     const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
     if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
     return result;
+  }
+
+
+  function validPlayerIntelligenceId(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  function normalizePlayerIntelligenceState(value) {
+    const text = String(value || '').trim();
+    const lower = text.toLowerCase();
+    if (!lower) return 'Unknown';
+    if (lower.includes('federal')) return 'Federal';
+    if (lower.includes('hospital')) return 'Hospital';
+    if (lower.includes('jail')) return 'Jail';
+    if (lower.includes('travel') || lower.includes('flying')) return 'Traveling';
+    if (lower.includes('hiding')) return 'Hiding Out';
+    if (lower.includes('abroad')) return 'Abroad';
+    if (lower === 'okay' || lower === 'ok') return 'Okay';
+    if (lower.includes('fallen')) return 'Fallen';
+    return text.slice(0, 40);
+  }
+
+  function normalizePlayerIntelligenceUntil(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.trunc(parsed > 10_000_000_000 ? parsed / 1000 : parsed);
+  }
+
+  function playerIntelligenceUntilMilliseconds(record = {}) {
+    const seconds = normalizePlayerIntelligenceUntil(record.until ?? record.statusUntil);
+    return seconds > 0 ? seconds * 1000 : 0;
+  }
+
+  function normalizePlayerIntelligenceRecord(input = {}, existing = {}) {
+    const playerId = validPlayerIntelligenceId(
+      input.playerId ?? input.player_id ?? input.targetId ?? input.id ??
+      existing.playerId ?? existing.id
+    );
+    if (!playerId) throw new Error('A valid Torn player ID is required.');
+    const observedAt = Math.max(0, Number(input.observedAt ?? input.checkedAt ?? input.updatedAt) || Date.now());
+    const state = normalizePlayerIntelligenceState(
+      input.state ?? input.status?.state ?? existing.state ?? existing.status?.state
+    );
+    const until = normalizePlayerIntelligenceUntil(
+      input.until ?? input.statusUntil ?? input.status?.until ??
+      existing.until ?? existing.status?.until
+    );
+    const description = String(
+      input.description ?? input.status?.description ??
+      existing.description ?? existing.status?.description ?? ''
+    ).slice(0, 500);
+    const source = String(input.source || existing.source || 'unknown').slice(0, 80);
+    const fairFightValue = input.fairFight ?? existing.fairFight;
+    const battleStatsValue = input.battleStatsEstimate ?? input.bsEstimate ?? existing.battleStatsEstimate;
+    return {
+      playerId,
+      id:playerId,
+      name:String(input.name ?? existing.name ?? `Player ${playerId}`).slice(0, 80),
+      level:Math.max(0, Number(input.level ?? existing.level) || 0),
+      state,
+      until,
+      description,
+      source,
+      observedAt,
+      checkedAt:Math.max(0, Number(input.checkedAt) || observedAt),
+      fairFight:Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
+      battleStatsEstimate:Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
+      bountyCount:Math.max(0, Math.trunc(Number(input.bountyCount ?? input.bounty_count ?? existing.bountyCount) || 0)),
+      bountyTotal:Math.max(0, Number(input.bountyTotal ?? input.bounty_total ?? existing.bountyTotal) || 0),
+      lastSeenMugged:Math.max(0, Number(input.lastSeenMugged ?? existing.lastSeenMugged) || 0),
+      sources:[...new Set([
+        ...(Array.isArray(existing.sources) ? existing.sources : []),
+        ...(Array.isArray(input.sources) ? input.sources : []),
+        source
+      ].map(String).filter(Boolean))].sort()
+    };
+  }
+
+  function mergePlayerIntelligenceRecord(existing = null, incoming = {}) {
+    const previous = existing && typeof existing === 'object'
+      ? normalizePlayerIntelligenceRecord(existing)
+      : null;
+    const next = normalizePlayerIntelligenceRecord(incoming, previous || {});
+    if (!previous) return next;
+    const useIncomingStatus = next.observedAt >= previous.observedAt;
+    const hasOwn = key => Object.prototype.hasOwnProperty.call(incoming, key);
+    const merged = {
+      ...previous,
+      playerId:next.playerId,
+      id:next.playerId,
+      name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
+      level:next.level || previous.level,
+      fairFight:next.fairFight ?? previous.fairFight,
+      battleStatsEstimate:next.battleStatsEstimate ?? previous.battleStatsEstimate,
+      bountyCount:hasOwn('bountyCount') || hasOwn('bounty_count') ? next.bountyCount : previous.bountyCount,
+      bountyTotal:hasOwn('bountyTotal') || hasOwn('bounty_total') ? next.bountyTotal : previous.bountyTotal,
+      lastSeenMugged:Math.max(previous.lastSeenMugged, next.lastSeenMugged),
+      checkedAt:Math.max(previous.checkedAt, next.checkedAt),
+      observedAt:Math.max(previous.observedAt, next.observedAt),
+      sources:[...new Set([...previous.sources, ...next.sources])].sort()
+    };
+    if (useIncomingStatus) {
+      merged.state = next.state;
+      merged.until = next.until;
+      merged.description = next.description;
+      merged.source = next.source;
+    }
+    return merged;
+  }
+
+  function effectivePlayerIntelligenceStatus(record = {}, now = Date.now()) {
+    const normalized = normalizePlayerIntelligenceRecord(record);
+    const untilMs = playerIntelligenceUntilMilliseconds(normalized);
+    if (PLAYER_INTELLIGENCE_TIMED_STATES.has(normalized.state) && untilMs > 0 && untilMs <= now) {
+      return {
+        state:'Okay',
+        until:0,
+        description:'Known timer expired; presumed Okay until refreshed.',
+        presumed:true,
+        source:normalized.source
+      };
+    }
+    return {
+      state:normalized.state,
+      until:normalized.until,
+      description:normalized.description,
+      presumed:false,
+      source:normalized.source
+    };
+  }
+
+  function playerIntelligenceRequestDecision(record, options = {}) {
+    const now = Number(options.now) || Date.now();
+    const maxAgeMs = Math.max(0, Number(options.maxAgeMs) || PLAYER_INTELLIGENCE_FRESH_MS);
+    const timerBufferMs = Math.max(0, Number(options.timerBufferMs) || PLAYER_INTELLIGENCE_TIMER_BUFFER_MS);
+    if (options.forceApi) return { required:true, reason:'forced', nextCheckAt:now };
+    if (!record) return { required:true, reason:'missing', nextCheckAt:now };
+    const normalized = normalizePlayerIntelligenceRecord(record);
+    const untilMs = playerIntelligenceUntilMilliseconds(normalized);
+    if (PLAYER_INTELLIGENCE_TIMED_STATES.has(normalized.state) && untilMs > now + timerBufferMs) {
+      return { required:false, reason:'known-timer', nextCheckAt:untilMs + timerBufferMs };
+    }
+    if (normalized.observedAt > 0 && now - normalized.observedAt < maxAgeMs) {
+      return { required:false, reason:'fresh-cache', nextCheckAt:normalized.observedAt + maxAgeMs };
+    }
+    return { required:true, reason:'stale', nextCheckAt:now };
+  }
+
+  function playerIntelligenceCache() {
+    const stored = dataState.caches.playerIntelligence;
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) return stored;
+    dataState.caches.playerIntelligence = {};
+    return dataState.caches.playerIntelligence;
+  }
+
+  function playerIntelligenceRecord(playerId) {
+    const id = validPlayerIntelligenceId(playerId);
+    return id ? playerIntelligenceCache()[String(id)] || null : null;
+  }
+
+  function observePlayerIntelligence(input = {}, persist = true) {
+    const playerId = validPlayerIntelligenceId(
+      input.playerId ?? input.player_id ?? input.targetId ?? input.id
+    );
+    if (!playerId) throw new Error('A valid Torn player ID is required.');
+    const cache = playerIntelligenceCache();
+    const record = mergePlayerIntelligenceRecord(cache[String(playerId)], { ...input, playerId });
+    cache[String(playerId)] = record;
+    if (persist) writeDataState();
+    return record;
+  }
+
+  function playerIntelligenceFromTornResponse(playerId, response = {}, now = Date.now()) {
+    const profile = response?.profile || response?.basic || response?.user || response;
+    const status = profile?.status || {};
+    const bounties = Array.isArray(profile?.bounties) ? profile.bounties : [];
+    return normalizePlayerIntelligenceRecord({
+      playerId,
+      name:profile?.name,
+      level:profile?.level,
+      state:status?.state,
+      until:status?.until,
+      description:status?.description,
+      bountyCount:bounties.length,
+      bountyTotal:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
+      source:'torn-api',
+      observedAt:now,
+      checkedAt:now
+    });
+  }
+
+  function getPlayerIntelligence(input = {}) {
+    const playerId = validPlayerIntelligenceId(
+      input.playerId ?? input.player_id ?? input.targetId ?? input.id
+    );
+    if (!playerId) throw new Error('A valid Torn player ID is required.');
+    const record = playerIntelligenceRecord(playerId);
+    return {
+      record:record ? { ...record, status:effectivePlayerIntelligenceStatus(record) } : null,
+      decision:playerIntelligenceRequestDecision(record, input)
+    };
+  }
+
+  async function refreshPlayerIntelligence(input = {}) {
+    const playerId = validPlayerIntelligenceId(
+      input.playerId ?? input.player_id ?? input.targetId ?? input.id
+    );
+    if (!playerId) throw new Error('A valid Torn player ID is required.');
+    const current = playerIntelligenceRecord(playerId);
+    const decision = playerIntelligenceRequestDecision(current, input);
+    if (!decision.required) {
+      return {
+        record:current ? { ...current, status:effectivePlayerIntelligenceStatus(current) } : null,
+        fetched:false,
+        reason:decision.reason,
+        nextCheckAt:decision.nextCheckAt
+      };
+    }
+    if (playerIntelligenceInFlight.has(playerId)) return playerIntelligenceInFlight.get(playerId);
+    const pending = (async () => {
+      const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence');
+      const record = observePlayerIntelligence(playerIntelligenceFromTornResponse(playerId, response, Date.now()));
+      return {
+        record:{ ...record, status:effectivePlayerIntelligenceStatus(record) },
+        fetched:true,
+        reason:'api',
+        nextCheckAt:playerIntelligenceRequestDecision(record, input).nextCheckAt
+      };
+    })().finally(() => playerIntelligenceInFlight.delete(playerId));
+    playerIntelligenceInFlight.set(playerId, pending);
+    return pending;
   }
 
   function scopeMatches(granted, required) {
@@ -1404,7 +1640,19 @@
     const runtime = { ...freshBountyRuntime(), ...stored };
     runtime.targets = Array.isArray(runtime.targets) ? runtime.targets : [];
     runtime.fairFight = runtime.fairFight && typeof runtime.fairFight === 'object' ? runtime.fairFight : {};
-    runtime.statuses = runtime.statuses && typeof runtime.statuses === 'object' ? runtime.statuses : {};
+    const sharedStatuses = playerIntelligenceCache();
+    const legacyStatuses = runtime.statuses && typeof runtime.statuses === 'object' ? runtime.statuses : {};
+    if (legacyStatuses !== sharedStatuses) {
+      for (const [rawId, legacy] of Object.entries(legacyStatuses)) {
+        const playerId = validPlayerIntelligenceId(rawId);
+        if (!playerId || !legacy || typeof legacy !== 'object') continue;
+        sharedStatuses[String(playerId)] = mergePlayerIntelligenceRecord(
+          sharedStatuses[String(playerId)],
+          { ...legacy, playerId, source:legacy.source || 'bounty-legacy' }
+        );
+      }
+    }
+    runtime.statuses = sharedStatuses;
     dataState.caches.bounties = runtime;
     moduleState.bounties.data = runtime;
     return runtime;
@@ -1516,10 +1764,13 @@
   }
 
   function effectiveBountyStatus(record) {
-    const state = bountyStateName(record?.state);
-    const until = Math.max(0, Number(record?.until) || 0);
-    if (state === 'Hospital' && until && until * 1000 <= Date.now()) return { state:'Okay', label:'Presumed Okay', until:0 };
-    return { state, label:state, until };
+    if (!record) return { state:'Unknown', label:'Unknown', until:0 };
+    const status = effectivePlayerIntelligenceStatus(record);
+    return {
+      state:status.state,
+      label:status.presumed ? 'Presumed Okay' : status.state,
+      until:status.until
+    };
   }
 
   function bountyCandidates(runtime) {
@@ -1670,7 +1921,7 @@
       const remaining = parseBountyTimer(text);
       const until = remaining ? Math.floor(Date.now() / 1000 + remaining) : 0;
       const description = text.slice(0, 500);
-      const prior = runtime.statuses[id] || {};
+      const prior = playerIntelligenceRecord(id) || {};
       const signature = `${id}:bounty-profile:${state}:${until}`;
       if (signature === bountyLastDomObservation) {
         clearBountyProfileIntent();
@@ -1678,9 +1929,18 @@
       }
       bountyLastDomObservation = signature;
       if (prior.state !== state || Number(prior.until) !== until) {
-        runtime.statuses[id] = { state, until, description, source:'bounty-profile', checkedAt:Date.now() };
+        const record = observePlayerIntelligence({
+          playerId:id,
+          state,
+          until,
+          description,
+          source:'bounty-profile',
+          observedAt:Date.now(),
+          checkedAt:Date.now()
+        });
+        runtime.statuses = playerIntelligenceCache();
+        runtime.statuses[id] = record;
         dataState.caches.bounties = runtime;
-        writeDataState();
         renderBounties();
       }
       clearBountyProfileIntent();
@@ -4052,7 +4312,12 @@
     reset:resetLayout,
     isOpen:() => dashboardOpen,
     refreshMarket:() => refreshMarket(true),
-    refreshDollarBazaars:() => refreshDollarBazaars(true)
+    refreshDollarBazaars:() => refreshDollarBazaars(true),
+    playerIntelligence:Object.freeze({
+      get:getPlayerIntelligence,
+      observe:observePlayerIntelligence,
+      refresh:refreshPlayerIntelligence
+    })
   });
 })(globalThis);
 
