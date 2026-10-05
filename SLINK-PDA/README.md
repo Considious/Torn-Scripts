@@ -60,6 +60,16 @@ timer display, Last Seen Mugged and bounty summaries when known, Profile/Attack
 links, editing, removal confirmation, and smart manual refresh through the
 shared player-intelligence cache.
 
+Version 0.4.16 adds explicit **Save Target** actions to Leveling,
+Bounties, ranked-war targets, and Outside Targets. Source saves merge into the
+same Torn-ID-deduplicated Target List, retain source context and tags, and reuse
+already-visible status and estimate data without making a new API call. Nothing
+is imported automatically.
+
+Rollback baseline: the completed PDA Target List release before source
+integrations is commit `0d8547e8432e2731bde904dd71b7bd9c0f2632f7`, preserved
+on `backup/pre-target-list-integrations-phase3-2026-10-05`.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
