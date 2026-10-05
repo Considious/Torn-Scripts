@@ -53,6 +53,13 @@ API checks until near expiry, and concurrent requests for the same player share
 one in-flight Torn API call. Bounty DOM status collection remains restricted to
 profile pages deliberately opened from the Bounty module.
 
+Version 0.4.15 adds the reusable **Combat / Targets** list. Players are
+saved only by an explicit user action and deduplicated by Torn ID. Each saved
+target supports multiple tags, local notes, source metadata, cached status and
+timer display, Last Seen Mugged and bounty summaries when known, Profile/Attack
+links, editing, removal confirmation, and smart manual refresh through the
+shared player-intelligence cache.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
@@ -131,3 +138,9 @@ been granted.
 The last pre-foundation PDA release is **0.4.13** at commit
 `e921cec301c0f8acf24c39c02d5d480139e30ecb`. GitHub branch
 `backup/pre-mugging-foundation-2026-10-04` preserves that exact version.
+
+### Phase 2 rollback point
+
+The completed PDA shared-intelligence foundation before Target List is preserved
+at commit `7fa6f29ba94476140b30c81cf2486f5d512ad64f` on branch
+`backup/pre-target-list-phase2-2026-10-05`.

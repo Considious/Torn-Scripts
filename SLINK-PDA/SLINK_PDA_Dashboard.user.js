@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.14
+// @version      0.4.15
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.14-shared-player-intelligence';
+  const BUILD = '0.4.15-target-list';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.14';
+  const CLIENT_VERSION = '0.4.15';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -65,6 +65,7 @@
   const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
   const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
   const PLAYER_INTELLIGENCE_TIMED_STATES = new Set(['Hospital', 'Jail', 'Traveling']);
+  const TARGET_LIST_DEFAULT_TAGS = Object.freeze(['Level', 'Mug', 'War', 'Target']);
   const BOUNTY_PROFILE_INTENT_KEY = 'slink-pda-dashboard:bounty-profile-intent:v1';
   const BOUNTY_FF_CACHE_MS = 7 * 86_400_000;
   const BOUNTY_PAGE_LIMIT = 100;
@@ -212,6 +213,7 @@
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
     bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
+    targetList:{ busyId:0, error:'', notice:'', editingId:0, formOpen:Object.keys(dataState.caches.targetList || {}).length === 0 },
     war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
@@ -607,6 +609,157 @@
     })().finally(() => playerIntelligenceInFlight.delete(playerId));
     playerIntelligenceInFlight.set(playerId, pending);
     return pending;
+  }
+
+
+  function normalizeTargetListTag(value) {
+    const text = String(value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+    if (!text) return '';
+    return TARGET_LIST_DEFAULT_TAGS.find(tag => tag.toLowerCase() === text.toLowerCase()) || text;
+  }
+
+  function normalizeTargetListTags(values) {
+    const tags = [], seen = new Set();
+    for (const value of Array.isArray(values) ? values : [values]) {
+      const tag = normalizeTargetListTag(value), key = tag.toLowerCase();
+      if (!tag || seen.has(key)) continue;
+      seen.add(key); tags.push(tag);
+      if (tags.length >= 16) break;
+    }
+    return tags;
+  }
+
+  function targetListSafeContext(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const result = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (!/^[a-z0-9_.-]{1,40}$/i.test(key)) continue;
+      if (['string', 'number', 'boolean'].includes(typeof item) || item === null) result[key] = typeof item === 'string' ? item.slice(0, 200) : item;
+    }
+    return result;
+  }
+
+  function normalizeTargetListSource(input = {}, now = Date.now()) {
+    const source = String(input.source || input.id || 'manual').trim().slice(0, 40) || 'manual';
+    return {
+      source,
+      label:String(input.label || source).trim().slice(0, 60) || source,
+      addedAt:Math.max(0, Number(input.addedAt) || now),
+      updatedAt:Math.max(0, Number(input.updatedAt) || now),
+      context:targetListSafeContext(input.context)
+    };
+  }
+
+  function mergeTargetListSources(existing = [], incoming = [], now = Date.now()) {
+    const bySource = new Map();
+    for (const value of Array.isArray(existing) ? existing : []) {
+      const source = normalizeTargetListSource(value, now);
+      bySource.set(source.source.toLowerCase(), source);
+    }
+    for (const value of Array.isArray(incoming) ? incoming : []) {
+      const source = normalizeTargetListSource(value, now), key = source.source.toLowerCase(), previous = bySource.get(key);
+      bySource.set(key, previous ? {
+        ...previous, ...source,
+        addedAt:Math.min(previous.addedAt, source.addedAt),
+        updatedAt:Math.max(previous.updatedAt, source.updatedAt),
+        context:{ ...previous.context, ...source.context }
+      } : source);
+    }
+    return [...bySource.values()].sort((a, b) => a.addedAt - b.addedAt || a.source.localeCompare(b.source));
+  }
+
+  function normalizePdaTarget(input = {}, existing = {}) {
+    const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id ?? existing.playerId ?? existing.id);
+    if (!playerId) throw new Error('Enter a valid Torn player ID.');
+    const now = Math.max(0, Number(input.updatedAt) || Date.now());
+    const sourceRows = Array.isArray(input.sources) ? [...input.sources] : [];
+    if (input.source || !sourceRows.length) sourceRows.push({
+      source:input.source || 'manual',
+      label:input.sourceLabel || input.source || 'Manual',
+      context:input.sourceContext || input.context,
+      addedAt:input.sourceAddedAt || now,
+      updatedAt:now
+    });
+    const createdAt = Math.max(0, Number(input.createdAt ?? existing.createdAt) || now);
+    return {
+      playerId, id:playerId,
+      name:String(input.name ?? existing.name ?? `Player ${playerId}`).trim().slice(0, 80) || `Player ${playerId}`,
+      tags:normalizeTargetListTags(input.tags ?? existing.tags ?? ['Target']),
+      description:String(input.description ?? input.notes ?? existing.description ?? '').trim().slice(0, 500),
+      createdAt,
+      updatedAt:Math.max(createdAt, now),
+      sources:mergeTargetListSources(existing.sources, sourceRows, now)
+    };
+  }
+
+  function mergePdaTarget(existing = null, incoming = {}) {
+    if (!existing) return normalizePdaTarget(incoming);
+    const previous = normalizePdaTarget(existing), next = normalizePdaTarget(incoming, previous);
+    const hasOwn = key => Object.prototype.hasOwnProperty.call(incoming, key);
+    return {
+      ...previous,
+      playerId:next.playerId, id:next.playerId,
+      name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
+      tags:normalizeTargetListTags([...previous.tags, ...next.tags]),
+      description:hasOwn('description') || hasOwn('notes') ? next.description : previous.description,
+      createdAt:Math.min(previous.createdAt, next.createdAt),
+      updatedAt:Math.max(previous.updatedAt, next.updatedAt),
+      sources:mergeTargetListSources(previous.sources, next.sources, next.updatedAt)
+    };
+  }
+
+  function pdaTargetListMap() {
+    const stored = dataState.caches.targetList;
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) return stored;
+    dataState.caches.targetList = {};
+    return dataState.caches.targetList;
+  }
+
+  function pdaTargetListEntries() {
+    return Object.values(pdaTargetListMap()).map(target => {
+      const normalized = normalizePdaTarget(target);
+      const intelligence = playerIntelligenceRecord(normalized.playerId);
+      return {
+        ...normalized,
+        intelligence,
+        status:intelligence ? effectivePlayerIntelligenceStatus(intelligence) : null,
+        lastChecked:Math.max(0, Number(intelligence?.checkedAt || intelligence?.observedAt) || 0),
+        lastSeenMugged:Math.max(0, Number(intelligence?.lastSeenMugged) || 0),
+        bountyCount:Math.max(0, Math.trunc(Number(intelligence?.bountyCount) || 0)),
+        bountyTotal:Math.max(0, Number(intelligence?.bountyTotal) || 0)
+      };
+    }).sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+  }
+
+  function addPdaTarget(input = {}) {
+    const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
+    if (!playerId) throw new Error('Enter a valid Torn player ID.');
+    const entries = pdaTargetListMap();
+    entries[String(playerId)] = mergePdaTarget(entries[String(playerId)], { ...input, playerId, source:input.source || 'manual', sourceLabel:input.sourceLabel || 'Manual' });
+    if (input.status && typeof input.status === 'object') observePlayerIntelligence({ ...input.status, playerId, name:input.name, source:input.status.source || input.source || 'target-list' }, false);
+    writeDataState();
+    return entries[String(playerId)];
+  }
+
+  function updatePdaTarget(input = {}) {
+    const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
+    const entries = pdaTargetListMap(), existing = playerId ? entries[String(playerId)] : null;
+    if (!playerId || !existing) throw new Error('The saved target was not found.');
+    const updated = mergePdaTarget(existing, { ...input, playerId });
+    if (Object.prototype.hasOwnProperty.call(input, 'tags')) updated.tags = normalizeTargetListTags(input.tags);
+    if (!updated.tags.length) updated.tags = ['Target'];
+    entries[String(playerId)] = updated;
+    writeDataState();
+    return updated;
+  }
+
+  function removePdaTarget(playerId) {
+    const id = validPlayerIntelligenceId(playerId);
+    if (!id) return false;
+    const entries = pdaTargetListMap(), existed = Boolean(entries[String(id)]);
+    delete entries[String(id)];
+    writeDataState();
+    return existed;
   }
 
   function scopeMatches(granted, required) {
@@ -1798,6 +1951,43 @@
     const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
     const controls = `<div class="bounty-form"><label class="check-row wide"><input type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}</div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets are currently loaded. Press Refresh to start or restart the five-minute Bounty cycle.')}</div></article></div>`;
+  }
+
+
+  function targetListStatusLabel(target) {
+    const status = target.status || {};
+    if (PLAYER_INTELLIGENCE_TIMED_STATES.has(status.state) && Number(status.until) > Date.now() / 1000) return `${status.state} · ${duration(Number(status.until) - Date.now() / 1000)}`;
+    return status.state || 'Unknown';
+  }
+
+  function renderTargetList() {
+    const root = moduleRoot('targetList');
+    if (!root) return;
+    const state = moduleState.targetList, targets = pdaTargetListEntries();
+    const editing = targets.find(target => target.id === Number(state.editingId)) || null;
+    const selectedTags = new Set(editing?.tags || ['Target']);
+    const form = state.formOpen ? `<div class="target-list-form">
+      <label>Player ID<input type="number" min="1" inputmode="numeric" data-field="target-list-id" value="${editing?.id || ''}" ${editing ? 'disabled' : ''} placeholder="123456"></label>
+      <label>Name (optional)<input type="text" maxlength="80" data-field="target-list-name" value="${escapeHtml(editing?.name || '')}" placeholder="Player name"></label>
+      <label class="wide">Notes<textarea maxlength="500" data-field="target-list-description" placeholder="Why are you tracking this player?">${escapeHtml(editing?.description || '')}</textarea></label>
+      <div class="target-list-tags wide">${TARGET_LIST_DEFAULT_TAGS.map(tag => `<label class="check-row"><input type="checkbox" data-target-list-tag="${escapeHtml(tag)}" ${selectedTags.has(tag) ? 'checked' : ''}>${escapeHtml(tag)}</label>`).join('')}</div>
+      <div class="target-list-form-actions wide"><button type="button" data-action="save-target-list">${editing ? 'Save changes' : 'Add target'}</button><button type="button" data-action="cancel-target-list">Cancel</button></div>
+    </div>` : '';
+    const rows = targets.map(target => {
+      const profile = `https://www.torn.com/profiles.php?XID=${target.id}`, attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
+      return `<article class="target-card target-list-card" data-target-list-id="${target.id}"><div>
+        <strong>${escapeHtml(target.name)} [${target.id}]</strong>
+        <div class="target-list-tags">${target.tags.map(tag => `<span class="target-list-tag">${escapeHtml(tag)}</span>`).join('')}</div>
+        ${target.description ? `<div class="target-list-description">${escapeHtml(target.description)}</div>` : ''}
+        <small>${escapeHtml(targetListStatusLabel(target))} · checked ${escapeHtml(relativeTime(target.lastChecked))}${target.lastSeenMugged ? ` · mugged ${escapeHtml(relativeTime(target.lastSeenMugged))}` : ''}${target.bountyCount ? ` · ${target.bountyCount} bounties / ${money(target.bountyTotal)}` : ''}</small>
+        <div class="target-list-sources">${target.sources.map(source => `<span>${escapeHtml(source.label || source.source)}</span>`).join('')}</div>
+      </div><div class="target-actions"><a href="${profile}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
+    }).join('');
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button></div>
+      <div class="module-message">Other SLINK target feeds are not copied here automatically.</div>
+      ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}
+      <div class="target-stack">${rows || moduleMessage('No saved targets yet. Use Add target to save one manually.')}</div>
+    </article></div>`;
   }
 
   async function refreshBounties(force = false) {
@@ -3576,12 +3766,13 @@
     if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
     if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
     if (name === 'bounties') touchBounties();
+    if (name === 'targetList') { renderTargetList(); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderBounties(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -3663,7 +3854,7 @@
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}.mug-report{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mug-report>div{min-width:0;flex:1}.mug-report strong,.mug-report span{display:block}.mug-report span{color:var(--s-muted);font-size:10px}.mug-report button{padding:5px 10px}
     .war-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:5px;margin-bottom:9px}.war-tabs button{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:5px}.war-tabs button[aria-selected="true"]{border-color:var(--s-alt);background:var(--s-accent)}.nav-count{display:grid;min-width:19px;height:19px;padding:0 4px;place-items:center;border:2px solid #090909;border-radius:99px;background:#e32727;color:#fff;font:bold 9px/1 Arial,sans-serif}.war-tab-body{margin-top:9px}.war-stack{display:grid;gap:7px}.war-card{position:relative;display:grid;gap:7px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-card-head{display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--s-soft)}.war-card-head>a,.war-card-head>strong{min-width:0;flex:1;color:var(--s-text);font-weight:800;text-decoration:none}.war-card-head>span{color:var(--s-muted);white-space:nowrap}.war-meta{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px}.war-pill{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--s-soft);border-radius:99px;background:var(--s-control)}.war-pill.online{color:var(--s-ready)}.war-pill.hospital{color:var(--s-warning)}.war-context{flex-basis:100%;color:var(--s-muted);font-size:10px}.war-filters,.war-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}.war-filters label,.war-settings label,.war-claim-form label{display:grid;gap:3px;color:var(--s-muted)}.war-filters input,.war-filters select,.war-settings input,.war-settings select,.war-claim-form input,.war-claim-form select{width:100%;min-width:0;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-filter-action{display:flex;align-items:end}.war-filter-action button,.war-settings>button{width:100%;padding:5px 8px}.war-settings-note{grid-column:1/-1;padding:8px;border:1px solid var(--s-soft);border-radius:7px;color:var(--s-muted)}.war-settings>button{grid-column:1/-1}.war-claim-form{display:grid;grid-template-columns:minmax(150px,2fr) minmax(130px,1fr) auto;align-items:end;gap:7px;margin-bottom:9px}.war-claim-form button{padding:5px 9px}.war-alert-block{display:grid;gap:7px;margin:9px 0;padding:8px;border:1px solid var(--s-border);border-radius:8px;background:color-mix(in srgb,var(--s-panel) 80%,transparent)}.war-retal{padding-right:39px;border-left:4px solid var(--s-error)}.war-dismiss{position:absolute;top:7px;right:7px;display:grid;width:27px;min-height:27px;padding:0;place-items:center;border-color:var(--s-error);border-radius:50%;color:var(--s-error);font-weight:900}.war-retal-report{display:grid;grid-template-columns:75px minmax(0,1fr);gap:4px 7px}.war-retal-report>span{color:var(--s-muted)}.war-inside-blocked{outline:3px solid var(--s-error);box-shadow:0 0 15px color-mix(in srgb,var(--s-error) 48%,transparent)}.war-inside-warning{color:var(--s-error);font-weight:800}.target-actions .war-inside-attack{border-color:var(--s-error);color:var(--s-error);font-weight:800}.war-log{border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-log summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px;cursor:pointer}.war-log summary span{color:var(--s-muted)}.war-log-event{display:grid;gap:2px;margin:0 8px 7px;padding:7px;border-left:3px solid var(--s-border);background:var(--s-panel)}.war-log-event span{color:var(--s-muted);font-size:10px}
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
-    .bounty-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.bounty-form>label{display:grid;gap:4px;color:var(--s-muted)}.bounty-form input,.bounty-form select{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-panel);color:var(--s-text)}.bounty-form .wide{grid-column:1/-1}.bounty-form .check-row{display:flex;align-items:center;gap:7px;color:var(--s-text)}.bounty-form .check-row input{width:19px;height:19px;min-height:19px}.bounty-form-actions{display:flex;gap:7px}.bounty-form-actions button{padding:6px 12px}
+    .target-list-form,.bounty-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.target-list-form>label,.bounty-form>label{display:grid;gap:4px;color:var(--s-muted)}.target-list-form input,.target-list-form textarea,.bounty-form input,.bounty-form select{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-panel);color:var(--s-text)}.target-list-form textarea{min-height:70px;resize:vertical}.target-list-form .wide,.bounty-form .wide{grid-column:1/-1}.target-list-form .check-row,.bounty-form .check-row{display:flex;align-items:center;gap:7px;color:var(--s-text)}.target-list-form .check-row input,.bounty-form .check-row input{width:19px;height:19px;min-height:19px}.target-list-form-actions,.bounty-form-actions{display:flex;flex-wrap:wrap;gap:7px}.target-list-form-actions button,.bounty-form-actions button{padding:6px 12px}.target-list-tags,.target-list-sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}.target-list-tag,.target-list-sources span{padding:2px 6px;border-radius:99px;background:var(--s-control);color:var(--s-text);font-size:10px}.target-list-tag{background:var(--s-accent)}.target-list-description{margin-top:6px;white-space:pre-wrap}.target-list-card{align-items:start}
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
     .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
     .war-armory-controls{grid-template-columns:1fr}
@@ -3674,7 +3865,7 @@
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form,.target-list-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide,.target-list-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
@@ -3707,10 +3898,11 @@
     </nav>
     <main class="scroll">
       <section class="page" data-page-panel="combat">
-        <div class="page-head"><div><h1>Combat</h1><p>Leveling, bounties, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
-        <nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="bounties">Bounties</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
+        <div class="page-head"><div><h1>Combat</h1><p>Leveling, bounties, saved targets, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
+        <nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="bounties">Bounties</button><button type="button" data-combat-tab="targetList">Targets</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
         <div class="subpage" data-combat-panel="leveling"><div data-module-root="leveling"></div></div>
         <div class="subpage" data-combat-panel="bounties" hidden><div data-module-root="bounties"></div></div>
+        <div class="subpage" data-combat-panel="targetList" hidden><div data-module-root="targetList"></div></div>
         <div class="subpage" data-combat-panel="war" hidden><div data-module-root="war"></div></div>
         <div class="subpage" data-combat-panel="stats" hidden><div data-module-root="stats"></div></div>
       </section>
@@ -3808,7 +4000,7 @@
   }
 
   function selectSubpage(group, tab, persist = true) {
-    const allowed = group === 'combat' ? ['leveling', 'bounties', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
+    const allowed = group === 'combat' ? ['leveling', 'bounties', 'targetList', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
     if (!allowed.includes(tab)) tab = allowed[0];
     state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
     if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
@@ -4064,6 +4256,66 @@
         button.disabled = false;
       })();
     }
+    if (action === 'toggle-target-list-form') {
+      moduleState.targetList.formOpen = !moduleState.targetList.formOpen;
+      moduleState.targetList.editingId = 0;
+      moduleState.targetList.error = '';
+      moduleState.targetList.notice = '';
+      renderTargetList();
+    }
+    if (action === 'cancel-target-list') {
+      moduleState.targetList.formOpen = false;
+      moduleState.targetList.editingId = 0;
+      moduleState.targetList.error = '';
+      renderTargetList();
+    }
+    if (action === 'save-target-list') {
+      const root = moduleRoot('targetList'), state = moduleState.targetList;
+      try {
+        const playerId = Number(root?.querySelector('[data-field="target-list-id"]')?.value || state.editingId);
+        const tags = [...(root?.querySelectorAll('[data-target-list-tag]:checked') || [])].map(node => node.dataset.targetListTag);
+        const payload = {
+          playerId,
+          name:root?.querySelector('[data-field="target-list-name"]')?.value || '',
+          description:root?.querySelector('[data-field="target-list-description"]')?.value || '',
+          tags,
+          source:'manual',
+          sourceLabel:'Manual'
+        };
+        if (state.editingId) updatePdaTarget(payload); else addPdaTarget(payload);
+        state.formOpen = false; state.editingId = 0; state.error = ''; state.notice = 'Target saved.';
+      } catch (error) { state.error = errorMessage(error); }
+      renderTargetList();
+    }
+    if (action === 'edit-target-list') {
+      const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+      moduleState.targetList.editingId = playerId;
+      moduleState.targetList.formOpen = true;
+      moduleState.targetList.error = '';
+      moduleState.targetList.notice = '';
+      renderTargetList();
+    }
+    if (action === 'remove-target-list') {
+      const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+      if (playerId && global.confirm('Remove this player from Target List?')) {
+        removePdaTarget(playerId);
+        moduleState.targetList.error = '';
+        moduleState.targetList.notice = 'Target removed.';
+        renderTargetList();
+      }
+    }
+    if (action === 'refresh-target-list') {
+      const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+      if (playerId) void (async () => {
+        const state = moduleState.targetList;
+        state.busyId = playerId; state.error = ''; state.notice = ''; renderTargetList();
+        try {
+          const result = await refreshPlayerIntelligence({ playerId, priority:'high' });
+          state.notice = result.fetched ? 'Fresh Torn status loaded.' : result.reason === 'known-timer' ? 'Known status timer is still valid; no API call was needed.' : 'Recent cached status is still fresh; no API call was needed.';
+        } catch (error) { state.error = errorMessage(error); }
+        finally { state.busyId = 0; renderTargetList(); }
+      })();
+    }
     if (action === 'refresh-market-permissions') void refreshMarketPermissions();
     if (action === 'save-bounties') saveBountySettings();
     if (action === 'restart-bounties') {
@@ -4313,6 +4565,12 @@
     isOpen:() => dashboardOpen,
     refreshMarket:() => refreshMarket(true),
     refreshDollarBazaars:() => refreshDollarBazaars(true),
+    targetList:Object.freeze({
+      list:pdaTargetListEntries,
+      add:addPdaTarget,
+      update:updatePdaTarget,
+      remove:removePdaTarget
+    }),
     playerIntelligence:Object.freeze({
       get:getPlayerIntelligence,
       observe:observePlayerIntelligence,
