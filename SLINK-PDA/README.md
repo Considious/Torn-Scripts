@@ -1,5 +1,22 @@
 # SLINK PDA Dashboard
 
+## 0.4.22 — Mugging Phase 9
+
+Mugging contributors now use the shared PDA Torn API ledger. The scheduler offers
+up to 10 player-intelligence checks per minute while the Mugging panel has been
+used within five minutes, then reduces to 5 low-priority checks per minute.
+Known timers and recent shared player-intelligence cache entries skip redundant
+requests. Inactive contributors keep their cached assignments but do not receive
+new personal assignments. New observations are deduplicated locally and marked
+pending for the Phase 10 shared synchronization step.
+
+This release also fixes a Phase 8 parse-time JavaScript error that prevented the
+entire PDA dashboard from loading. The Mugging test now compiles the complete
+userscript so a syntax failure cannot pass unnoticed again.
+
+The pre-Phase-9 rollback point is branch
+`backup/pre-mugging-contributors-phase9-2026-10-05`.
+
 This is the mobile-first, self-contained SLINK dashboard for Torn PDA. It uses
 the existing SLINK Cloudflare permission gateway and product sessions while
 sharing one locally coordinated Torn API budget across its modules.

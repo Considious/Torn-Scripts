@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.21
+// @version      0.4.22
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.21-mugging-rough-assignments';
+  const BUILD = '0.4.22-mugging-contributor-scheduling';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.21';
+  const CLIENT_VERSION = '0.4.22';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -74,6 +74,12 @@
   const TARGET_STAKEOUT_ALERT_LIFETIME_MS = 24 * 60 * 60_000;
   const TARGET_STAKEOUT_MAX_DUE_PER_TICK = 20;
   const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
+  const MUGGING_INACTIVE_AFTER_MS = 5 * 60_000;
+  const MUGGING_ACTIVE_BUDGET = 10;
+  const MUGGING_INACTIVE_BUDGET = 5;
+  const MUGGING_CONTRIBUTION_INTERVAL_MS = 60_000;
+  const MUGGING_ASSIGNMENT_REFRESH_MS = 5 * 60_000;
+  const MUGGING_OWN_STATS_TTL_MS = 6 * 60 * 60_000;
   const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
   const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
   const PLAYER_INTELLIGENCE_TIMED_STATES = new Set(['Hospital', 'Jail', 'Traveling']);
@@ -218,6 +224,7 @@
   let targetStakeoutTimer = null;
   let targetPollingBusy = false;
   let targetStakeoutBusy = false;
+  let muggingContributionBusy = false;
   let marketObserver = null;
   let marketFormatTimer = null;
   let marketWakeTimer = null;
@@ -387,12 +394,12 @@
     return { count:ledger.events.length, limit:API_LIMIT, remaining:Math.max(0, API_LIMIT - ledger.events.length) };
   }
 
-  async function tornJson(path, comment = 'SLINK PDA Dashboard') {
+  async function tornJson(path, comment = 'SLINK PDA Dashboard', options = {}) {
     const key = currentApiKey();
     if (!key) throw new Error('Save a Torn API key under Access first.');
     const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
     if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
-    await reserveTornApi(url.pathname);
+    await reserveTornApi(url.pathname, options);
     const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
     if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
     return result;
@@ -636,7 +643,7 @@
     }
     if (playerIntelligenceInFlight.has(playerId)) return playerIntelligenceInFlight.get(playerId);
     const pending = (async () => {
-      const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence');
+      const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence', { wait:input.wait !== false, priority:input.priority || 'normal' });
       const record = observePlayerIntelligence(playerIntelligenceFromTornResponse(playerId, response, Date.now()));
       return {
         record:{ ...record, status:effectivePlayerIntelligenceStatus(record) },
@@ -2406,14 +2413,114 @@
     }
   }
 
+  function muggingContributionMode(now = Date.now()) {
+    const lastActiveAt = Math.max(0, Number(dataState.caches.muggingActivityAt) || 0);
+    return lastActiveAt > 0 && now - lastActiveAt <= MUGGING_INACTIVE_AFTER_MS ? 'active' : 'inactive';
+  }
+
+  function touchMuggingActivity() {
+    dataState.caches.muggingActivityAt = Date.now();
+    writeDataState();
+    return dataState.caches.muggingActivityAt;
+  }
+
+  function muggingClientId() {
+    let value = String(dataState.caches.muggingClientId || '').trim();
+    if (!value) {
+      value = global.crypto?.randomUUID?.() || `pda-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      dataState.caches.muggingClientId = value;
+      writeDataState();
+    }
+    return value;
+  }
+
+  async function pdaOwnBattleStats() {
+    const cached = dataState.caches.muggingOwnBattleStats;
+    if (Number(cached?.total) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
+    const statsPayload = await tornJson('/v2/user/battlestats', 'SLINK PDA Mugging rough assignment', { priority:'high' });
+    const total = pdaBattleStatsTotal(statsPayload);
+    dataState.caches.muggingOwnBattleStats = { total, checkedAt:Date.now() };
+    writeDataState();
+    return total;
+  }
+
+  function queueMuggingContributionObservation(playerId, record, mode) {
+    const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object' ? dataState.caches.muggingPendingSync : {};
+    pending[String(playerId)] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, pendingSync:true };
+    const rows = Object.values(pending).sort((left, right) => Number(right.observedAt) - Number(left.observedAt)).slice(0, 500);
+    dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [String(row.playerId), row]));
+  }
+
+  async function runMuggingContribution(force = false) {
+    const now = Date.now();
+    const settings = dataState.settings.mugging;
+    const previous = dataState.caches.muggingContribution || {};
+    if (!settings.enabled || !hasScope('slink.mugging') || !currentApiKey()) return previous;
+    if (!force && now - Number(previous.at || 0) < MUGGING_CONTRIBUTION_INTERVAL_MS) return previous;
+    if (muggingContributionBusy) return previous;
+    muggingContributionBusy = true;
+    try {
+      const mode = muggingContributionMode(now);
+      const budget = mode === 'active' ? MUGGING_ACTIVE_BUDGET : MUGGING_INACTIVE_BUDGET;
+      const response = await muggingRequest('/api/contributor/tasks', {
+        method:'POST',
+        body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(40, budget * 4) }
+      });
+      let fetched = 0, skipped = 0, errors = 0;
+      const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
+      for (const task of tasks) {
+        if (fetched >= budget) break;
+        try {
+          const result = await refreshPlayerIntelligence({
+            playerId:task.player_id,
+            maxAgeMs:mode === 'active' ? 5 * 60_000 : 15 * 60_000,
+            priority:mode === 'active' ? 'normal' : 'low',
+            wait:false
+          });
+          if (!result?.fetched) { skipped++; continue; }
+          fetched++;
+          queueMuggingContributionObservation(task.player_id, result.record, mode);
+        } catch (error) {
+          errors++;
+          if (error?.code === 'SLINK_TORN_API_LIMIT') break;
+        }
+      }
+      let assignmentsRefreshed = false;
+      const assignmentCache = muggingCache();
+      const ownStats = Number(dataState.caches.muggingOwnBattleStats?.total) || 0;
+      if (mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
+        try {
+          await refreshMugging(false, { userBattleStats:ownStats, touch:false, background:true });
+          assignmentsRefreshed = true;
+        } catch {}
+      }
+      const status = {
+        at:Date.now(), enabled:true, mode, apiBudgetPerMinute:budget,
+        tasksOffered:tasks.length, fetched, skipped, errors, assignmentsRefreshed,
+        pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length
+      };
+      dataState.caches.muggingContribution = status;
+      writeDataState();
+      renderMugging();
+      return status;
+    } catch (error) {
+      const status = { ...previous, at:Date.now(), enabled:true, mode:muggingContributionMode(), error:errorMessage(error) };
+      dataState.caches.muggingContribution = status;
+      writeDataState();
+      return status;
+    } finally {
+      muggingContributionBusy = false;
+    }
+  }
+
   function muggingCache() {
     const value = dataState.caches.mugging && typeof dataState.caches.mugging === 'object'
       ? dataState.caches.mugging
       : {};
     return {
       updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
-      estimateKind:String(value.estimateKind ?? value.estimate_kind || 'rough'),
-      estimateSource:String(value.estimateSource ?? value.estimate_source || 'cached battle-stat estimate'),
+      estimateKind:String((value.estimateKind ?? value.estimate_kind) || 'rough'),
+      estimateSource:String((value.estimateSource ?? value.estimate_source) || 'cached battle-stat estimate'),
       userBattleStats:Math.max(0, Number(value.userBattleStats ?? value.user_battle_stats) || 0),
       pool:{
         total:Math.max(0, Number(value.pool?.total) || 0),
@@ -2423,19 +2530,19 @@
       targets:(Array.isArray(value.targets) ? value.targets : []).map(target => ({
         ...target,
         id:validPlayerIntelligenceId(target?.id ?? target?.playerId),
-        companyName:String(target?.companyName ?? target?.company_name || ''),
-        companyType:String(target?.companyType ?? target?.company_type || ''),
+        companyName:String((target?.companyName ?? target?.company_name) || ''),
+        companyType:String((target?.companyType ?? target?.company_type) || ''),
         companyRating:Math.max(0, Number(target?.companyRating ?? target?.company_rating) || 0),
         fairFight:finite(target?.fairFight ?? target?.fair_fight),
         battleStatsEstimate:finite(target?.battleStatsEstimate ?? target?.battle_stats_estimate),
-        estimateKind:String(target?.estimateKind ?? target?.estimate_kind || 'rough'),
-        estimateSource:String(target?.estimateSource ?? target?.estimate_source || 'cached'),
+        estimateKind:String((target?.estimateKind ?? target?.estimate_kind) || 'rough'),
+        estimateSource:String((target?.estimateSource ?? target?.estimate_source) || 'cached'),
         confidence:String(target?.confidence || '')
       })).filter(target => target.id)
     };
   }
 
-  async function refreshMugging(force = false) {
+  async function refreshMugging(force = false, options = {}) {
     const settings = dataState.settings.mugging;
     const current = moduleState.mugging;
     if (!hasScope('slink.mugging')) { renderMugging(); return; }
@@ -2448,10 +2555,10 @@
     current.busy = true;
     current.error = '';
     current.notice = '';
+    if (options.touch !== false) touchMuggingActivity();
     renderMugging();
     try {
-      const statsPayload = await tornJson('/v2/user/battlestats', 'SLINK PDA Mugging rough assignment');
-      const userBattleStats = pdaBattleStatsTotal(statsPayload);
+      const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats();
       const response = await muggingRequest('/api/assignments/rough', {
         method:'POST',
         body:{
@@ -2486,6 +2593,12 @@
     const settings = dataState.settings.mugging;
     const state = moduleState.mugging;
     const cache = muggingCache();
+    const contribution = dataState.caches.muggingContribution || {
+      mode:settings.enabled ? muggingContributionMode() : 'disabled',
+      apiBudgetPerMinute:settings.enabled ? (muggingContributionMode() === 'active' ? 10 : 5) : 0,
+      fetched:0,
+      pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length
+    };
     const rows = cache.targets.map(target => {
       const status = target?.status || {};
       const stateLabel = String(status.state || status.label || 'Unknown');
@@ -2503,7 +2616,7 @@
       </div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
     }).join('');
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
-      <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div></div>
+      <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div><div class="stat"><strong>${escapeHtml(contribution.mode || 'disabled')}</strong><span>${Number(contribution.fetched) || 0}/${Number(contribution.apiBudgetPerMinute) || 0} contributor checks</span></div></div>
       ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}
       <div class="bounty-form">
         <label class="check-row wide"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
@@ -2512,7 +2625,7 @@
         <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
         <div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
       </div>
-      <div class="module-message">Phase 8 uses one shared-limiter Torn request for your own battle-stat total, then filters cached Mugging Worker estimates. Every displayed FF is explicitly rough. Contributor scheduling remains off until Phase 9.</div>
+      <div class="module-message">Phase 9 contribution uses the shared Torn limiter: up to 10 checks/min while Mugging was used in the last five minutes, then up to 5/min at low priority. Inactive mode keeps this cached list visible and does not assign new personal targets. Shared-result upload remains queued locally for Phase 10.</div>
       <div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
     </article></div>`;
   }
@@ -4427,7 +4540,7 @@
     if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
-    if (name === 'mugging') { renderMugging(); if (force) await refreshMugging(true); return; }
+    if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
@@ -4456,6 +4569,7 @@
       if (canRefreshWar && !moduleState.war.busy && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
       if (Date.now() - Number(dataState.caches.levelingActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS && !moduleState.leveling.busy) void refreshLeveling(false);
       if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
+      if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -5136,9 +5250,10 @@
       dataState.settings.mugging.maxFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-max-ff"]')?.value) || 3));
       dataState.settings.mugging.limit = Math.max(1, Math.min(100, Math.trunc(Number(root?.querySelector('[data-field="mugging-limit"]')?.value) || 50)));
       moduleState.mugging.error = '';
-      moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging settings saved locally.' : 'Mugging disabled locally; cached assignments were kept.';
-      writeDataState();
+      moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging settings saved locally; contributor scheduling started.' : 'Mugging disabled locally; cached assignments were kept.';
+      if (dataState.settings.mugging.enabled) touchMuggingActivity(); else writeDataState();
       renderMugging();
+      if (dataState.settings.mugging.enabled) void runMuggingContribution(true);
     }
     if (event.target.matches('[data-field="war-armory-mode"]')) {
       dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); writeDataState();
@@ -5311,6 +5426,7 @@
     writeDataState();
   }
   startScheduler();
+  if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) global.setTimeout(() => void runMuggingContribution(true), 3_000);
   global.setTimeout(() => void loadThemeCatalog(false), 2_000);
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
   if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
