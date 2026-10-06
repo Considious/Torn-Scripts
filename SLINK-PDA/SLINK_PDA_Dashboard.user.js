@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.18
+// @version      0.4.19
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.18-target-list-polling';
+  const BUILD = '0.4.19-stakeout-alerts';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.18';
+  const CLIENT_VERSION = '0.4.19';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -64,7 +64,12 @@
   const TARGET_POLL_DEFAULT_MINUTES = 10;
   const TARGET_POLL_MIN_MINUTES = 1;
   const TARGET_POLL_MAX_MINUTES = 1440;
-  const TARGET_POLL_TICK_MS = 60_000;
+  const TARGET_POLL_TICK_MS = 5_000;
+  const TARGET_STAKEOUT_DEFAULT_SECONDS = 10;
+  const TARGET_STAKEOUT_MIN_SECONDS = 10;
+  const TARGET_STAKEOUT_MAX_SECONDS = 3600;
+  const TARGET_STAKEOUT_ALERT_LIFETIME_MS = 24 * 60 * 60_000;
+  const TARGET_STAKEOUT_MAX_DUE_PER_TICK = 20;
   const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
   const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
   const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
@@ -207,6 +212,7 @@
   let schedulerTimer = null;
   let targetPollingTimer = null;
   let targetPollingBusy = false;
+  let targetStakeoutBusy = false;
   let marketObserver = null;
   let marketFormatTimer = null;
   let marketWakeTimer = null;
@@ -712,6 +718,11 @@
       name:String(input.name ?? existing.name ?? `Player ${playerId}`).trim().slice(0, 80) || `Player ${playerId}`,
       tags:normalizeTargetListTags(input.tags ?? existing.tags ?? ['Target']),
       description:String(input.description ?? input.notes ?? existing.description ?? '').trim().slice(0, 500),
+      stakeout:Object.hasOwn(input, 'stakeout') ? input.stakeout === true : existing.stakeout === true,
+      stakeoutIntervalSeconds:Math.max(
+        TARGET_STAKEOUT_MIN_SECONDS,
+        Math.min(TARGET_STAKEOUT_MAX_SECONDS, Math.trunc(Number(input.stakeoutIntervalSeconds ?? existing.stakeoutIntervalSeconds) || TARGET_STAKEOUT_DEFAULT_SECONDS))
+      ),
       createdAt,
       updatedAt:Math.max(createdAt, now),
       sources:mergeTargetListSources(existing.sources, sourceRows, now)
@@ -728,6 +739,8 @@
       name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
       tags:normalizeTargetListTags([...previous.tags, ...next.tags]),
       description:hasOwn('description') || hasOwn('notes') ? next.description : previous.description,
+      stakeout:next.stakeout,
+      stakeoutIntervalSeconds:next.stakeoutIntervalSeconds,
       createdAt:Math.min(previous.createdAt, next.createdAt),
       updatedAt:Math.max(previous.updatedAt, next.updatedAt),
       sources:mergeTargetListSources(previous.sources, next.sources, next.updatedAt)
@@ -754,7 +767,7 @@
         bountyCount:Math.max(0, Math.trunc(Number(intelligence?.bountyCount) || 0)),
         bountyTotal:Math.max(0, Number(intelligence?.bountyTotal) || 0)
       };
-    }).sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+    }).sort((a, b) => Number(b.stakeout) - Number(a.stakeout) || b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
   }
 
   function targetPollingSettings() {
@@ -791,6 +804,7 @@
 
   function targetPollingEligible(settings = targetPollingSettings()) {
     return pdaTargetListEntries()
+      .filter(target => !target.stakeout)
       .filter(target => !settings.mugOnly || target.tags.some(tag => String(tag).toLowerCase() === 'mug'))
       .sort((left, right) => left.playerId - right.playerId);
   }
@@ -864,6 +878,174 @@
       if (moduleRoot('targetList')) renderTargetList();
     } finally {
       targetPollingBusy = false;
+    }
+  }
+
+  function targetStakeoutRuntime() {
+    const value = dataState.caches.targetStakeout && typeof dataState.caches.targetStakeout === 'object'
+      ? dataState.caches.targetStakeout
+      : {};
+    const runtime = {
+      schedule:value.schedule && typeof value.schedule === 'object' && !Array.isArray(value.schedule) ? value.schedule : {},
+      observed:value.observed && typeof value.observed === 'object' && !Array.isArray(value.observed) ? value.observed : {},
+      lastRunAt:Math.max(0, Number(value.lastRunAt) || 0),
+      lastProcessed:Math.max(0, Math.trunc(Number(value.lastProcessed) || 0)),
+      lastApiFetched:Math.max(0, Math.trunc(Number(value.lastApiFetched) || 0)),
+      lastSkipped:Math.max(0, Math.trunc(Number(value.lastSkipped) || 0)),
+      lastError:String(value.lastError || '').slice(0, 500)
+    };
+    dataState.caches.targetStakeout = runtime;
+    return runtime;
+  }
+
+  function targetStakeoutTargets() {
+    return pdaTargetListEntries()
+      .filter(target => target.stakeout)
+      .sort((left, right) => left.stakeoutIntervalSeconds - right.stakeoutIntervalSeconds || left.name.localeCompare(right.name));
+  }
+
+  function targetStakeoutAlertCache() {
+    const value = dataState.caches.targetStakeoutAlerts && typeof dataState.caches.targetStakeoutAlerts === 'object'
+      ? dataState.caches.targetStakeoutAlerts
+      : {};
+    dataState.caches.targetStakeoutAlerts = value;
+    return value;
+  }
+
+  function stakeoutAlertRows(now = Date.now()) {
+    const cache = targetStakeoutAlertCache();
+    const snoozed = dataState.settings.alerts.snoozedUntil || {};
+    const rows = [];
+    for (const [id, alert] of Object.entries(cache)) {
+      if (Number(alert?.expiresAt) <= now) {
+        delete cache[id];
+        continue;
+      }
+      if (Number(snoozed[id] || 0) > now) continue;
+      rows.push(alert);
+    }
+    return rows.sort((left, right) => Number(right.createdAt) - Number(left.createdAt));
+  }
+
+  function targetStakeoutObservation(record, now = Date.now()) {
+    if (!record) return null;
+    const status = effectivePlayerIntelligenceStatus(record, now);
+    return {
+      state:String(status?.state || 'Unknown'),
+      bountyCount:Math.max(0, Math.trunc(Number(record.bountyCount) || 0)),
+      bountyTotal:Math.max(0, Number(record.bountyTotal) || 0),
+      observedAt:Math.max(0, Number(record.observedAt || record.checkedAt) || now)
+    };
+  }
+
+  function collectTargetStakeoutChanges(target, runtime, record, now = Date.now()) {
+    const id = String(target.playerId);
+    const current = targetStakeoutObservation(record, now);
+    if (!current) return [];
+    const previous = runtime.observed[id] || null;
+    runtime.observed[id] = current;
+    if (!previous) return [];
+    const profile = `https://www.torn.com/profiles.php?XID=${target.playerId}`;
+    const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.playerId}`;
+    const links = [['Profile', profile], ['Attack', attack]];
+    const alerts = [];
+    if (previous.state !== current.state && current.state !== 'Unknown') {
+      const attackable = current.state === 'Okay';
+      const event = attackable ? 'attackable' : `state-${current.state.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+      alerts.push({
+        id:`stakeout:${target.playerId}:${event}`,
+        title:attackable ? `${target.name} is attackable` : `${target.name} changed status`,
+        detail:`${previous.state || 'Unknown'} → ${current.state}`,
+        links,
+        createdAt:now,
+        expiresAt:now + TARGET_STAKEOUT_ALERT_LIFETIME_MS,
+        source:'stakeout',
+        playerId:target.playerId
+      });
+    }
+    if (current.bountyCount > previous.bountyCount || current.bountyTotal > previous.bountyTotal) {
+      alerts.push({
+        id:`stakeout:${target.playerId}:bounty`,
+        title:`Bounty appeared on ${target.name}`,
+        detail:`${current.bountyCount} active · ${current.bountyTotal.toLocaleString()}`,
+        links,
+        createdAt:now,
+        expiresAt:now + TARGET_STAKEOUT_ALERT_LIFETIME_MS,
+        source:'stakeout',
+        playerId:target.playerId
+      });
+    }
+    return alerts;
+  }
+
+  function targetStakeoutStatus() {
+    const targets = targetStakeoutTargets();
+    const runtime = targetStakeoutRuntime();
+    const estimate = targets.reduce((total, target) => total + 60 / target.stakeoutIntervalSeconds, 0);
+    return {
+      targetCount:targets.length,
+      estimatedChecksPerMinute:Number(estimate.toFixed(1)),
+      activeAlerts:stakeoutAlertRows(),
+      runtime
+    };
+  }
+
+  async function runTargetStakeouts(now = Date.now()) {
+    if (targetStakeoutBusy) return;
+    targetStakeoutBusy = true;
+    const runtime = targetStakeoutRuntime();
+    const targets = targetStakeoutTargets();
+    const ids = new Set(targets.map(target => String(target.playerId)));
+    for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) delete runtime.schedule[id];
+    for (const id of Object.keys(runtime.observed)) if (!ids.has(id)) delete runtime.observed[id];
+    targets.forEach((target, index) => {
+      const id = String(target.playerId);
+      if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id]) <= 0) {
+        runtime.schedule[id] = now + Math.min(index * 1_000, target.stakeoutIntervalSeconds * 1_000);
+      }
+    });
+    const due = targets
+      .filter(target => Number(runtime.schedule[String(target.playerId)]) <= now)
+      .sort((left, right) => Number(runtime.schedule[String(left.playerId)]) - Number(runtime.schedule[String(right.playerId)]))
+      .slice(0, TARGET_STAKEOUT_MAX_DUE_PER_TICK);
+    let processed = 0, apiFetched = 0, skipped = 0, lastError = '';
+    const generated = [];
+    try {
+      for (const target of due) {
+        const id = String(target.playerId);
+        const intervalMs = target.stakeoutIntervalSeconds * 1_000;
+        generated.push(...collectTargetStakeoutChanges(target, runtime, playerIntelligenceRecord(target.playerId), now));
+        try {
+          const result = await refreshPlayerIntelligence({
+            playerId:target.playerId,
+            maxAgeMs:intervalMs,
+            timerBufferMs:1_000
+          });
+          processed += 1;
+          if (result.fetched) apiFetched += 1; else skipped += 1;
+          generated.push(...collectTargetStakeoutChanges(target, runtime, result.record, now));
+          runtime.schedule[id] = result.reason === 'known-timer' || result.reason === 'fresh-cache'
+            ? Math.max(now + 1_000, Number(result.nextCheckAt) || now + intervalMs)
+            : now + intervalMs;
+        } catch (error) {
+          processed += 1;
+          lastError = errorMessage(error);
+          runtime.schedule[id] = now + Math.max(10_000, intervalMs);
+        }
+      }
+      const cache = targetStakeoutAlertCache();
+      generated.forEach(alert => { cache[alert.id] = alert; });
+      runtime.lastRunAt = now;
+      runtime.lastProcessed = processed;
+      runtime.lastApiFetched = apiFetched;
+      runtime.lastSkipped = skipped;
+      runtime.lastError = lastError;
+      reconcileAlertNotifications(moduleState.alerts.data);
+      writeDataState();
+      if (moduleRoot('targetList')) renderTargetList();
+      if (moduleRoot('alerts')) renderAlerts();
+    } finally {
+      targetStakeoutBusy = false;
     }
   }
 
@@ -2176,6 +2358,7 @@
     if (!root) return;
     const state = moduleState.targetList, targets = pdaTargetListEntries();
     const pollingSettings = targetPollingSettings(), pollingRuntime = targetPollingRuntime();
+    const stakeout = targetStakeoutStatus();
     const pollingEligible = targetPollingEligible(pollingSettings);
     const pollingEstimate = pollingEligible.length ? Math.ceil(pollingEligible.length / pollingSettings.intervalMinutes) : 0;
     const editing = targets.find(target => target.id === Number(state.editingId)) || null;
@@ -2184,6 +2367,8 @@
       <label>Player ID<input type="number" min="1" inputmode="numeric" data-field="target-list-id" value="${editing?.id || ''}" ${editing ? 'disabled' : ''} placeholder="123456"></label>
       <label>Name (optional)<input type="text" maxlength="80" data-field="target-list-name" value="${escapeHtml(editing?.name || '')}" placeholder="Player name"></label>
       <label class="wide">Notes<textarea maxlength="500" data-field="target-list-description" placeholder="Why are you tracking this player?">${escapeHtml(editing?.description || '')}</textarea></label>
+      <label class="check-row wide"><input type="checkbox" data-field="target-list-stakeout" ${editing?.stakeout ? 'checked' : ''}>Stakeout — monitor this target substantially more often</label>
+      <label>Stakeout interval (seconds)<input type="number" min="10" max="3600" step="1" data-field="target-list-stakeout-interval" value="${Number(editing?.stakeoutIntervalSeconds) || TARGET_STAKEOUT_DEFAULT_SECONDS}"></label>
       <div class="target-list-tags wide">${TARGET_LIST_DEFAULT_TAGS.map(tag => `<label class="check-row"><input type="checkbox" data-target-list-tag="${escapeHtml(tag)}" ${selectedTags.has(tag) ? 'checked' : ''}>${escapeHtml(tag)}</label>`).join('')}</div>
       <div class="target-list-form-actions wide"><button type="button" data-action="save-target-list">${editing ? 'Save changes' : 'Add target'}</button><button type="button" data-action="cancel-target-list">Cancel</button></div>
     </div>` : '';
@@ -2191,22 +2376,24 @@
       <label class="check-row wide"><input type="checkbox" data-field="target-poll-enabled" ${pollingSettings.enabled ? 'checked' : ''}>Automatically check saved targets</label>
       <label>Complete each rolling cycle every<input type="number" min="1" max="1440" step="1" data-field="target-poll-interval" value="${pollingSettings.intervalMinutes}"></label>
       <label class="check-row"><input type="checkbox" data-field="target-poll-mug-only" ${pollingSettings.mugOnly ? 'checked' : ''}>Only auto-check targets tagged Mug</label>
-      <div class="module-message wide">${pollingEligible.length} eligible · up to ${pollingEstimate} scheduled checks/min before cache and timer skips${pollingRuntime.lastRunAt ? ` · last cycle ${escapeHtml(relativeTime(pollingRuntime.lastRunAt))}` : ''}${pollingRuntime.lastError ? ` · ${escapeHtml(pollingRuntime.lastError)}` : ''}</div>
+      <div class="module-message wide">${pollingEligible.length} rolling-poll targets · up to ${pollingEstimate} scheduled checks/min before cache and timer skips${pollingRuntime.lastRunAt ? ` · last cycle ${escapeHtml(relativeTime(pollingRuntime.lastRunAt))}` : ''}${pollingRuntime.lastError ? ` · ${escapeHtml(pollingRuntime.lastError)}` : ''}</div>
+      <div class="module-message wide"><strong>Stakeout:</strong> ${stakeout.targetCount} targets · up to ${stakeout.estimatedChecksPerMinute} evaluations/min before DOM, cache, and known-timer skips. Use sparingly; Stakeout can consume substantially more Torn API capacity.</div>
       <div class="target-list-form-actions wide"><button type="button" data-action="save-target-polling">Save polling</button></div>
     </div>` : '';
     const rows = targets.map(target => {
       const profile = `https://www.torn.com/profiles.php?XID=${target.id}`, attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
-      return `<article class="target-card target-list-card" data-target-list-id="${target.id}"><div>
-        <strong>${escapeHtml(target.name)} [${target.id}]</strong>
+      return `<article class="target-card target-list-card${target.stakeout ? ' is-stakeout' : ''}" data-target-list-id="${target.id}"><div>
+        <strong>${escapeHtml(target.name)} [${target.id}]</strong>${target.stakeout ? ` <span class="target-list-stakeout">Stakeout · ${target.stakeoutIntervalSeconds}s</span>` : ''}
         <div class="target-list-tags">${target.tags.map(tag => `<span class="target-list-tag">${escapeHtml(tag)}</span>`).join('')}</div>
         ${target.description ? `<div class="target-list-description">${escapeHtml(target.description)}</div>` : ''}
         <small>${escapeHtml(targetListStatusLabel(target))} · observed ${escapeHtml(relativeTime(target.lastChecked))}${target.intelligence?.lastDomObservedAt ? ` · DOM ${escapeHtml(relativeTime(target.intelligence.lastDomObservedAt))}` : ''}${target.intelligence?.lastApiCheckAt ? ` · API ${escapeHtml(relativeTime(target.intelligence.lastApiCheckAt))}` : ''}${target.lastSeenMugged ? ` · mugged ${escapeHtml(relativeTime(target.lastSeenMugged))}` : ''}${target.bountyCount ? ` · ${target.bountyCount} bounties / ${money(target.bountyTotal)}` : ''}</small>
         <div class="target-list-sources">${target.sources.map(source => `<span>${escapeHtml(source.label || source.source)}</span>`).join('')}</div>
-      </div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
+      </div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="toggle-target-stakeout">${target.stakeout ? 'Stop Stakeout' : 'Stakeout'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
     }).join('');
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><div class="target-actions"><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button><button type="button" data-action="toggle-target-polling">${state.pollingOpen ? 'Close polling' : 'Polling'}</button></div></div>
       <div class="module-message">Other SLINK target feeds are not copied here automatically.${pollingSettings.enabled ? ` Rolling checks are spread across ${pollingSettings.intervalMinutes} minutes.` : ''}</div>
       ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}${pollingForm}
+      ${stakeout.activeAlerts.length ? `<div class="alert-list">${stakeout.activeAlerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('')}</div>` : ''}
       <div class="target-stack">${rows || moduleMessage('No saved targets yet. Use Add target to save one manually.')}</div>
     </article></div>`;
   }
@@ -3351,7 +3538,7 @@
     const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Array.isArray(body?.battlestats?.[name]?.modifiers) ? body.battlestats[name].modifiers : []).filter(row => /addiction/i.test(`${row?.effect || ''} ${row?.type || ''}`));
     const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
     add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
-    return rows;
+    return [...stakeoutAlertRows(), ...rows];
   }
 
   function updateAlertIndicator(count) {
@@ -3427,9 +3614,11 @@
   function renderAlerts() {
     const root = moduleRoot('alerts');
     if (!root) return;
-    if (!hasScope('slink.adhd.alerts')) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+    const permitted = hasScope('slink.adhd.alerts');
+    const stakeoutAlerts = stakeoutAlertRows();
+    if (!permitted && !stakeoutAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
     const current = moduleState.alerts;
-    const alerts = alertRows(current.data);
+    const alerts = permitted ? alertRows(current.data) : stakeoutAlerts;
     const cityBought = finite(current.data?.cityBought);
     const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
     const cityStatus = cityHidden
@@ -4154,7 +4343,7 @@
     .target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}.mug-report{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mug-report>div{min-width:0;flex:1}.mug-report strong,.mug-report span{display:block}.mug-report span{color:var(--s-muted);font-size:10px}.mug-report button{padding:5px 10px}
     .war-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:5px;margin-bottom:9px}.war-tabs button{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:5px}.war-tabs button[aria-selected="true"]{border-color:var(--s-alt);background:var(--s-accent)}.nav-count{display:grid;min-width:19px;height:19px;padding:0 4px;place-items:center;border:2px solid #090909;border-radius:99px;background:#e32727;color:#fff;font:bold 9px/1 Arial,sans-serif}.war-tab-body{margin-top:9px}.war-stack{display:grid;gap:7px}.war-card{position:relative;display:grid;gap:7px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-card-head{display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--s-soft)}.war-card-head>a,.war-card-head>strong{min-width:0;flex:1;color:var(--s-text);font-weight:800;text-decoration:none}.war-card-head>span{color:var(--s-muted);white-space:nowrap}.war-meta{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px}.war-pill{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--s-soft);border-radius:99px;background:var(--s-control)}.war-pill.online{color:var(--s-ready)}.war-pill.hospital{color:var(--s-warning)}.war-context{flex-basis:100%;color:var(--s-muted);font-size:10px}.war-filters,.war-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}.war-filters label,.war-settings label,.war-claim-form label{display:grid;gap:3px;color:var(--s-muted)}.war-filters input,.war-filters select,.war-settings input,.war-settings select,.war-claim-form input,.war-claim-form select{width:100%;min-width:0;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-filter-action{display:flex;align-items:end}.war-filter-action button,.war-settings>button{width:100%;padding:5px 8px}.war-settings-note{grid-column:1/-1;padding:8px;border:1px solid var(--s-soft);border-radius:7px;color:var(--s-muted)}.war-settings>button{grid-column:1/-1}.war-claim-form{display:grid;grid-template-columns:minmax(150px,2fr) minmax(130px,1fr) auto;align-items:end;gap:7px;margin-bottom:9px}.war-claim-form button{padding:5px 9px}.war-alert-block{display:grid;gap:7px;margin:9px 0;padding:8px;border:1px solid var(--s-border);border-radius:8px;background:color-mix(in srgb,var(--s-panel) 80%,transparent)}.war-retal{padding-right:39px;border-left:4px solid var(--s-error)}.war-dismiss{position:absolute;top:7px;right:7px;display:grid;width:27px;min-height:27px;padding:0;place-items:center;border-color:var(--s-error);border-radius:50%;color:var(--s-error);font-weight:900}.war-retal-report{display:grid;grid-template-columns:75px minmax(0,1fr);gap:4px 7px}.war-retal-report>span{color:var(--s-muted)}.war-inside-blocked{outline:3px solid var(--s-error);box-shadow:0 0 15px color-mix(in srgb,var(--s-error) 48%,transparent)}.war-inside-warning{color:var(--s-error);font-weight:800}.target-actions .war-inside-attack{border-color:var(--s-error);color:var(--s-error);font-weight:800}.war-log{border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-log summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px;cursor:pointer}.war-log summary span{color:var(--s-muted)}.war-log-event{display:grid;gap:2px;margin:0 8px 7px;padding:7px;border-left:3px solid var(--s-border);background:var(--s-panel)}.war-log-event span{color:var(--s-muted);font-size:10px}
     .stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
-    .target-list-form,.bounty-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.target-list-form>label,.bounty-form>label{display:grid;gap:4px;color:var(--s-muted)}.target-list-form input,.target-list-form textarea,.bounty-form input,.bounty-form select{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-panel);color:var(--s-text)}.target-list-form textarea{min-height:70px;resize:vertical}.target-list-form .wide,.bounty-form .wide{grid-column:1/-1}.target-list-form .check-row,.bounty-form .check-row{display:flex;align-items:center;gap:7px;color:var(--s-text)}.target-list-form .check-row input,.bounty-form .check-row input{width:19px;height:19px;min-height:19px}.target-list-form-actions,.bounty-form-actions{display:flex;flex-wrap:wrap;gap:7px}.target-list-form-actions button,.bounty-form-actions button{padding:6px 12px}.target-list-tags,.target-list-sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}.target-list-tag,.target-list-sources span{padding:2px 6px;border-radius:99px;background:var(--s-control);color:var(--s-text);font-size:10px}.target-list-tag{background:var(--s-accent)}.target-list-description{margin-top:6px;white-space:pre-wrap}.target-list-card{align-items:start}
+    .target-list-form,.bounty-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.target-list-form>label,.bounty-form>label{display:grid;gap:4px;color:var(--s-muted)}.target-list-form input,.target-list-form textarea,.bounty-form input,.bounty-form select{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-panel);color:var(--s-text)}.target-list-form textarea{min-height:70px;resize:vertical}.target-list-form .wide,.bounty-form .wide{grid-column:1/-1}.target-list-form .check-row,.bounty-form .check-row{display:flex;align-items:center;gap:7px;color:var(--s-text)}.target-list-form .check-row input,.bounty-form .check-row input{width:19px;height:19px;min-height:19px}.target-list-form-actions,.bounty-form-actions{display:flex;flex-wrap:wrap;gap:7px}.target-list-form-actions button,.bounty-form-actions button{padding:6px 12px}.target-list-tags,.target-list-sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}.target-list-tag,.target-list-sources span{padding:2px 6px;border-radius:99px;background:var(--s-control);color:var(--s-text);font-size:10px}.target-list-tag{background:var(--s-accent)}.target-list-description{margin-top:6px;white-space:pre-wrap}.target-list-card{align-items:start}.target-list-card.is-stakeout{border-color:var(--s-warning);background:color-mix(in srgb,var(--s-warning) 8%,var(--s-card))}.target-list-stakeout{padding:2px 6px;border-radius:99px;background:var(--s-warning);color:#101820;font-size:10px;font-weight:800}
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
     .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
     .war-armory-controls{grid-template-columns:1fr}
@@ -4627,6 +4816,8 @@
           playerId,
           name:root?.querySelector('[data-field="target-list-name"]')?.value || '',
           description:root?.querySelector('[data-field="target-list-description"]')?.value || '',
+          stakeout:root?.querySelector('[data-field="target-list-stakeout"]')?.checked === true,
+          stakeoutIntervalSeconds:root?.querySelector('[data-field="target-list-stakeout-interval"]')?.value,
           tags,
           source:'manual',
           sourceLabel:'Manual'
@@ -4635,6 +4826,21 @@
         state.formOpen = false; state.editingId = 0; state.error = ''; state.notice = 'Target saved.';
       } catch (error) { state.error = errorMessage(error); }
       renderTargetList();
+    }
+    if (action === 'toggle-target-stakeout') {
+      const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+      const target = pdaTargetListEntries().find(value => value.id === playerId);
+      if (target) {
+        updatePdaTarget({
+          playerId,
+          stakeout:target.stakeout !== true,
+          stakeoutIntervalSeconds:target.stakeoutIntervalSeconds
+        });
+        moduleState.targetList.notice = target.stakeout ? 'Stakeout stopped.' : 'Stakeout started.';
+        moduleState.targetList.error = '';
+        renderTargetList();
+        void runTargetStakeouts();
+      }
     }
     if (action === 'edit-target-list') {
       const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
@@ -4906,8 +5112,12 @@
   selectSubpage('efficiency', state.efficiencyTab, false);
   clampLauncher(false);
   renderAllModules();
-  targetPollingTimer = global.setInterval(() => void runTargetPolling(), TARGET_POLL_TICK_MS);
-  global.setTimeout(() => void runTargetPolling(), 2_000);
+  const runTargetSchedulers = () => {
+    void runTargetPolling();
+    void runTargetStakeouts();
+  };
+  targetPollingTimer = global.setInterval(runTargetSchedulers, TARGET_POLL_TICK_MS);
+  global.setTimeout(runTargetSchedulers, 2_000);
   if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
     reconcileAlertNotifications(moduleState.alerts.data);
     writeDataState();
@@ -4938,6 +5148,10 @@
       polling:Object.freeze({
         settings:targetPollingSettings,
         run:runTargetPolling
+      }),
+      stakeout:Object.freeze({
+        status:targetStakeoutStatus,
+        run:runTargetStakeouts
       })
     }),
     playerIntelligence:Object.freeze({

@@ -95,6 +95,21 @@ Rollback baseline: the completed PDA DOM-first release before rolling polling
 is commit `a8140c3c97ff0906b2d1b77abd8166190cf3ef3d`, preserved on
 `backup/pre-target-polling-phase5-2026-10-05`.
 
+Version 0.4.19 adds Phase 6 Stakeout monitoring and alert integration. Any
+saved Target List entry can be placed on Stakeout with a configurable 10–3600
+second evaluation interval. Stakeouts sort to the top and are visually
+distinguished. They reuse live DOM observations, cached status, in-flight
+lookups, and known Hospital/Jail/Travel timers before consuming a Torn API
+request. Meaningful status changes and new bounties feed the existing Alerts
+screen and PDA notification path, with Profile/Attack links and the normal
+snooze controls. Stakeout is evaluated only while Torn PDA keeps this userscript
+WebView alive, and the UI displays the estimated maximum evaluation rate.
+
+Rollback baseline: the completed rolling Target List release before Stakeout is
+commit `9394b793bdb90d2bd31d4a4668f00ca91c1a723d`, preserved on
+`backup/pre-stakeout-phase6-2026-10-05`.
+
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
