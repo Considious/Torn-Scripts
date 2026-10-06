@@ -209,3 +209,16 @@ The last pre-foundation PDA release is **0.4.13** at commit
 The completed PDA shared-intelligence foundation before Target List is preserved
 at commit `7fa6f29ba94476140b30c81cf2486f5d512ad64f` on branch
 `backup/pre-target-list-phase2-2026-10-05`.
+
+
+Version 0.4.21 adds Phase 8 rough Fair Fight assignments. A manual **Find
+targets** action reads the requesting player’s own battle-stat total through
+PDA’s shared Torn API limiter, then asks the permission-session authenticated
+Mugging Worker to filter its existing cached target estimates. The minimum and
+maximum rough FF plus result count are configurable, every estimate is labeled
+as rough, and cached assignments load immediately. This phase does not start
+active/inactive contributor scheduling and does not automatically save targets.
+
+Rollback baseline: the completed permission-gated Mugging UI before rough
+assignment is commit `93f9eb134086635d98568d12c39742e8b5a6a0b3`, preserved
+on `backup/pre-mugging-assignments-phase8-2026-10-05`.

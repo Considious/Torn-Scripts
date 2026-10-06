@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.20
+// @version      0.4.21
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -19,13 +19,14 @@
 // @connect      slinkyleveling.richard-johnson554.workers.dev
 // @connect      slinkcontributionworker.richard-johnson554.workers.dev
 // @connect      slinkwarworker.richard-johnson554.workers.dev
+// @connect      slinkmuggingworker.richard-johnson554.workers.dev
 // @run-at       document-end
 // ==/UserScript==
 
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.20-mugging-ui';
+  const BUILD = '0.4.21-mugging-rough-assignments';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.20';
+  const CLIENT_VERSION = '0.4.21';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -43,6 +44,7 @@
     permission:'https://slinkcontributionworker.richard-johnson554.workers.dev',
     leveling:'https://slinkyleveling.richard-johnson554.workers.dev',
     war:'https://slinkwarworker.richard-johnson554.workers.dev',
+    mugging:'https://slinkmuggingworker.richard-johnson554.workers.dev',
     torn:'https://api.torn.com',
     weaver:'https://weav3r.dev'
   });
@@ -172,7 +174,7 @@
       settings:{
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
         bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(value.settings?.bounties || {}) },
-        mugging:{ enabled:false, ...(value.settings?.mugging || {}) },
+        mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(value.settings?.mugging || {}) },
         war:{
           mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
           targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetAbroad:'all', targetLocation:'all', targetSort:'availability',
@@ -229,7 +231,7 @@
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
     bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
-    mugging:{ error:'', notice:'' },
+    mugging:{ busy:false, error:'', notice:'' },
     targetList:{ busyId:0, error:'', notice:'', editingId:0, formOpen:Object.keys(dataState.caches.targetList || {}).length === 0, pollingOpen:false },
     war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
@@ -2371,17 +2373,107 @@
 
 
 
+  function pdaBattleStatsTotal(payload) {
+    const source = payload?.battlestats ?? payload?.battle_stats ?? payload?.stats ?? payload ?? {};
+    const valueOf = value => {
+      const candidate = value && typeof value === 'object' ? value.value ?? value.total ?? value.amount : value;
+      const number = Number(candidate);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const values = ['strength', 'defense', 'speed', 'dexterity'].map(key => valueOf(source[key]));
+    if (values.some(value => value === null)) throw new Error('Torn returned incomplete battle stats for rough Fair Fight assignment.');
+    const total = values.reduce((sum, value) => sum + value, 0);
+    if (!(total > 0)) throw new Error('Your Torn battle-stat total is unavailable.');
+    return total;
+  }
+
+  async function muggingRequest(path, options = {}, retried = false) {
+    const session = await ensurePermissionSession(false);
+    if (!hasScope('slink.mugging')) throw new Error('Your SLINK account does not have slink.mugging permission.');
+    try {
+      return await requestJson(`${URLS.mugging}${path}`, {
+        ...options,
+        headers:{ Authorization:`Bearer ${session.token}`, ...(options.headers || {}) }
+      });
+    } catch (error) {
+      if (error?.status === 401 && !retried) {
+        dataState.sessions.permission = null;
+        writeDataState();
+        await ensurePermissionSession(true);
+        return muggingRequest(path, options, true);
+      }
+      throw error;
+    }
+  }
+
   function muggingCache() {
     const value = dataState.caches.mugging && typeof dataState.caches.mugging === 'object'
       ? dataState.caches.mugging
       : {};
     return {
-      updatedAt:Math.max(0, Number(value.updatedAt) || 0),
+      updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
+      estimateKind:String(value.estimateKind ?? value.estimate_kind || 'rough'),
+      estimateSource:String(value.estimateSource ?? value.estimate_source || 'cached battle-stat estimate'),
+      userBattleStats:Math.max(0, Number(value.userBattleStats ?? value.user_battle_stats) || 0),
+      pool:{
+        total:Math.max(0, Number(value.pool?.total) || 0),
+        estimable:Math.max(0, Number(value.pool?.estimable) || 0),
+        eligible:Math.max(0, Number(value.pool?.eligible) || 0)
+      },
       targets:(Array.isArray(value.targets) ? value.targets : []).map(target => ({
         ...target,
-        id:validPlayerIntelligenceId(target?.id ?? target?.playerId)
+        id:validPlayerIntelligenceId(target?.id ?? target?.playerId),
+        companyName:String(target?.companyName ?? target?.company_name || ''),
+        companyType:String(target?.companyType ?? target?.company_type || ''),
+        companyRating:Math.max(0, Number(target?.companyRating ?? target?.company_rating) || 0),
+        fairFight:finite(target?.fairFight ?? target?.fair_fight),
+        battleStatsEstimate:finite(target?.battleStatsEstimate ?? target?.battle_stats_estimate),
+        estimateKind:String(target?.estimateKind ?? target?.estimate_kind || 'rough'),
+        estimateSource:String(target?.estimateSource ?? target?.estimate_source || 'cached'),
+        confidence:String(target?.confidence || '')
       })).filter(target => target.id)
     };
+  }
+
+  async function refreshMugging(force = false) {
+    const settings = dataState.settings.mugging;
+    const current = moduleState.mugging;
+    if (!hasScope('slink.mugging')) { renderMugging(); return; }
+    if (!settings.enabled) {
+      if (force) current.error = 'Enable Mugging on this PDA installation before requesting assignments.';
+      renderMugging();
+      return;
+    }
+    if (current.busy) return;
+    current.busy = true;
+    current.error = '';
+    current.notice = '';
+    renderMugging();
+    try {
+      const statsPayload = await tornJson('/v2/user/battlestats', 'SLINK PDA Mugging rough assignment');
+      const userBattleStats = pdaBattleStatsTotal(statsPayload);
+      const response = await muggingRequest('/api/assignments/rough', {
+        method:'POST',
+        body:{
+          user_battle_stats:userBattleStats,
+          min_fair_fight:Number(settings.minFairFight) || 1,
+          max_fair_fight:Number(settings.maxFairFight) || 3,
+          limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
+        }
+      });
+      dataState.caches.mugging = {
+        ...response,
+        updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
+      };
+      writeDataState();
+      const cache = muggingCache();
+      current.notice = `Loaded ${cache.targets.length} rough Fair Fight assignments from cached Mugging intelligence.`;
+    } catch (error) {
+      current.error = errorMessage(error);
+    } finally {
+      current.busy = false;
+      renderMugging();
+    }
   }
 
   function renderMugging() {
@@ -2404,19 +2496,27 @@
       const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
       const fairFight = finite(target?.fairFight);
       const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
+      const company = [target.companyName, target.companyRating ? `${target.companyRating}★` : '', target.position].filter(Boolean).join(' · ');
       return `<article class="target-card"><div>
         <strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
-        <small>${escapeHtml(statusLabel)} · FF ${fairFight === null ? '?' : number(fairFight, 2)} · BS ${battleStats === null ? '?' : number(battleStats)}${Number(target.bountyCount) > 0 ? ` · ${Number(target.bountyCount)} bounties / ${money(target.bountyTotal)}` : ''}</small>
+        <small>${escapeHtml(statusLabel)} · Rough FF ${fairFight === null ? '?' : number(fairFight, 2)} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${company ? ` · ${escapeHtml(company)}` : ''}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
       </div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
     }).join('');
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated testing interface</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
-      <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Cached targets</span></div><div class="stat"><strong>10/min</strong><span>Future active budget</span></div><div class="stat"><strong>5/min</strong><span>Future inactive budget</span></div></div>
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
+      <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div></div>
       ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}
-      <label class="check-row"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
-      <div class="module-message">Phase 7 establishes the Cloudflare permission gate and interface only. Rough Fair Fight assignment begins in Phase 8, and contributor scheduling begins in Phase 9. No Mugging API work runs from this screen yet. Cached results remain stored when disabled.</div>
-      <div class="target-stack">${rows || moduleMessage('No cached Mugging assignments yet.')}</div>
+      <div class="bounty-form">
+        <label class="check-row wide"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
+        <label>Minimum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-min-ff" value="${Number(settings.minFairFight) || 1}"></label>
+        <label>Maximum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-max-ff" value="${Number(settings.maxFairFight) || 3}"></label>
+        <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
+        <div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
+      </div>
+      <div class="module-message">Phase 8 uses one shared-limiter Torn request for your own battle-stat total, then filters cached Mugging Worker estimates. Every displayed FF is explicitly rough. Contributor scheduling remains off until Phase 9.</div>
+      <div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
     </article></div>`;
   }
+
 
   function targetListStatusLabel(target) {
     const status = target.status || {};
@@ -4327,7 +4427,7 @@
     if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
-    if (name === 'mugging') { renderMugging(); return; }
+    if (name === 'mugging') { renderMugging(); if (force) await refreshMugging(true); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
@@ -4682,6 +4782,7 @@
     if (action === 'close') closeDashboard();
     if (action === 'reset-layout') resetLayout();
     if (action === 'refresh-active') void loadActiveModule(true);
+    if (action === 'refresh-mugging') void refreshMugging(true);
     if (action === 'load-terms') void loadTerms(true);
     if (action === 'refresh-themes') void loadThemeCatalog(true);
     if (action === 'save-access') void saveAccess();
@@ -5027,11 +5128,15 @@
   });
 
   overlay.addEventListener('change', event => {
-    if (event.target.matches('[data-field="mugging-enabled"]')) {
+    if (event.target.matches('[data-field="mugging-enabled"],[data-field="mugging-min-ff"],[data-field="mugging-max-ff"],[data-field="mugging-limit"]')) {
       if (!hasScope('slink.mugging')) return;
-      dataState.settings.mugging.enabled = event.target.checked === true;
+      const root = moduleRoot('mugging');
+      dataState.settings.mugging.enabled = root?.querySelector('[data-field="mugging-enabled"]')?.checked === true;
+      dataState.settings.mugging.minFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-min-ff"]')?.value) || 1));
+      dataState.settings.mugging.maxFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-max-ff"]')?.value) || 3));
+      dataState.settings.mugging.limit = Math.max(1, Math.min(100, Math.trunc(Number(root?.querySelector('[data-field="mugging-limit"]')?.value) || 50)));
       moduleState.mugging.error = '';
-      moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging enabled locally.' : 'Mugging disabled locally; cached results were kept.';
+      moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging settings saved locally.' : 'Mugging disabled locally; cached assignments were kept.';
       writeDataState();
       renderMugging();
     }
