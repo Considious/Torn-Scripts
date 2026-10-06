@@ -109,7 +109,22 @@ Rollback baseline: the completed rolling Target List release before Stakeout is
 commit `9394b793bdb90d2bd31d4a4668f00ca91c1a723d`, preserved on
 `backup/pre-stakeout-phase6-2026-10-05`.
 
+Version 0.4.20 adds the permission-gated **Combat / Mugging** interface. The
+tab and panel are completely hidden unless the current authenticated backend
+session contains `slink.mugging`. This phase adds a local enable switch, a
+cache-preserving result shell, profile/attack actions, and the existing explicit
+Save Target handoff. It intentionally makes no Mugging API or FFScouter calls;
+rough Fair Fight assignment and active/inactive contributor scheduling remain
+Phases 8 and 9.
 
+Rollback baseline: the completed PDA Stakeout release before Mugging UI is
+commit `4c52c14651115b8e9509cd602787a73d2554c713`, preserved on
+`backup/pre-mugging-ui-phase7-2026-10-05`.
+
+
+- **Combat / Mugging:** shown only with the backend-managed `slink.mugging`
+  scope. Phase 7 provides the local enable/cache interface without starting
+  target assignment or contributor API work.
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,

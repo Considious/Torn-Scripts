@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.19
+// @version      0.4.20
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.19-stakeout-alerts';
+  const BUILD = '0.4.20-mugging-ui';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.19';
+  const CLIENT_VERSION = '0.4.20';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -172,6 +172,7 @@
       settings:{
         leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
         bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(value.settings?.bounties || {}) },
+        mugging:{ enabled:false, ...(value.settings?.mugging || {}) },
         war:{
           mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
           targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetAbroad:'all', targetLocation:'all', targetSort:'availability',
@@ -228,6 +229,7 @@
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
     bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
+    mugging:{ error:'', notice:'' },
     targetList:{ busyId:0, error:'', notice:'', editingId:0, formOpen:Object.keys(dataState.caches.targetList || {}).length === 0, pollingOpen:false },
     war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
@@ -1077,6 +1079,12 @@
       row = bountyCandidates(bountyRuntime()).find(entry => validPlayerIntelligenceId(entry?.id) === id);
       sourceLabel = 'Bounties';
       sourceContext = row ? `Highest bounty ${money(row.highestReward)}${Number(row.highestQuantity) > 1 ? ` ×${row.highestQuantity}` : ''}` : '';
+    } else if (source === 'mugging') {
+      row = (Array.isArray(dataState.caches.mugging?.targets) ? dataState.caches.mugging.targets : [])
+        .find(entry => validPlayerIntelligenceId(entry?.id ?? entry?.playerId) === id);
+      tags = ['Mug'];
+      sourceLabel = 'Mugging';
+      sourceContext = row ? String(row.context || row.reason || 'Cached Mugging assignment') : '';
     } else if (source === 'war') {
       const snapshot = moduleState.war.data?.snapshot || {};
       const rows = Array.isArray(snapshot.members) ? snapshot.members : Array.isArray(snapshot.targets) ? snapshot.targets : [];
@@ -1092,15 +1100,16 @@
     if (!row) throw new Error('That target is no longer present in the current list.');
 
     const isBounty = source === 'bounties';
+    const isMugging = source === 'mugging';
     const isWar = source === 'war' || source === 'outside-targets';
-    const rawStatus = isBounty ? row.status : null;
-    const state = isBounty
+    const rawStatus = isBounty || isMugging ? row.status : null;
+    const state = isBounty || isMugging
       ? String(rawStatus?.state || rawStatus?.label || 'Unknown')
       : isWar
         ? warMemberStatus(row)
         : String(row?.status ?? row?.previous_status ?? row?.statusState ?? 'Unknown');
     const until = Number(
-      isBounty ? rawStatus?.until :
+      isBounty || isMugging ? rawStatus?.until :
       isWar ? (row?.statusUntil ?? row?.status?.until) :
       (row?.statusUntil ?? row?.status_until ?? row?.status?.until)
     ) || 0;
@@ -1122,13 +1131,13 @@
         state,
         until,
         description:String(
-          isBounty ? rawStatus?.description || '' :
+          isBounty || isMugging ? rawStatus?.description || '' :
           row?.statusDescription ?? row?.status_description ?? row?.status?.description ?? ''
         ),
         fairFight,
         battleStatsEstimate,
-        bountyCount:isBounty ? Math.max(0, Number(row?.highestQuantity) || 0) : undefined,
-        bountyTotal:isBounty ? Math.max(0, Number(row?.totalReward ?? row?.highestReward) || 0) : undefined,
+        bountyCount:isBounty || isMugging ? Math.max(0, Number(row?.bountyCount ?? row?.highestQuantity) || 0) : undefined,
+        bountyTotal:isBounty || isMugging ? Math.max(0, Number(row?.bountyTotal ?? row?.totalReward ?? row?.highestReward) || 0) : undefined,
         source,
         observedAt,
         checkedAt:observedAt
@@ -2058,6 +2067,7 @@
     const gates = [
       ['[data-combat-tab="leveling"]', 'slink.level'],
       ['[data-combat-tab="war"]', 'slink.war'],
+      ['[data-combat-tab="mugging"]', 'slink.mugging'],
       ['[data-efficiency-tab="alerts"]', 'slink.adhd.alerts'],
       ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch tier'],
       ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
@@ -2071,6 +2081,17 @@
       const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : scope === 'slink.adhd.marketwatch tier' ? marketWatchLimit() > 0 : hasScope(scope);
       control.classList.toggle('permission-lock', !allowed);
       control.title = allowed ? '' : `Requires ${scope}`;
+    }
+    const muggingAllowed = hasScope('slink.mugging');
+    const muggingTab = shadow?.querySelector?.('[data-combat-tab="mugging"]');
+    const muggingPanel = shadow?.querySelector?.('[data-combat-panel="mugging"]');
+    if (muggingTab) muggingTab.hidden = !muggingAllowed;
+    if (muggingPanel && !muggingAllowed) muggingPanel.hidden = true;
+    if (!muggingAllowed && state.combatTab === 'mugging') {
+      state.combatTab = 'targetList';
+      shadow.querySelectorAll('[data-combat-panel]').forEach(panel => { panel.hidden = panel.dataset.combatPanel !== 'targetList'; });
+      shadow.querySelectorAll('[data-combat-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.combatTab === 'targetList')));
+      writeState();
     }
   }
 
@@ -2348,6 +2369,54 @@
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${target.fairFight === null ? '?' : number(target.fairFight, 2)} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}<button type="button" data-action="save-source-target" data-target-source="bounties" data-target-id="${target.id}">Save Target</button></div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets are currently loaded. Press Refresh to start or restart the five-minute Bounty cycle.')}</div></article></div>`;
   }
 
+
+
+  function muggingCache() {
+    const value = dataState.caches.mugging && typeof dataState.caches.mugging === 'object'
+      ? dataState.caches.mugging
+      : {};
+    return {
+      updatedAt:Math.max(0, Number(value.updatedAt) || 0),
+      targets:(Array.isArray(value.targets) ? value.targets : []).map(target => ({
+        ...target,
+        id:validPlayerIntelligenceId(target?.id ?? target?.playerId)
+      })).filter(target => target.id)
+    };
+  }
+
+  function renderMugging() {
+    const root = moduleRoot('mugging');
+    if (!root) return;
+    if (!hasScope('slink.mugging')) {
+      root.innerHTML = '';
+      return;
+    }
+    const settings = dataState.settings.mugging;
+    const state = moduleState.mugging;
+    const cache = muggingCache();
+    const rows = cache.targets.map(target => {
+      const status = target?.status || {};
+      const stateLabel = String(status.state || status.label || 'Unknown');
+      const statusLabel = Number(status.until) > Date.now() / 1000 && PLAYER_INTELLIGENCE_TIMED_STATES.has(stateLabel)
+        ? `${stateLabel} · ${duration(Number(status.until) - Date.now() / 1000)}`
+        : stateLabel;
+      const profile = `https://www.torn.com/profiles.php?XID=${target.id}`;
+      const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
+      const fairFight = finite(target?.fairFight);
+      const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
+      return `<article class="target-card"><div>
+        <strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
+        <small>${escapeHtml(statusLabel)} · FF ${fairFight === null ? '?' : number(fairFight, 2)} · BS ${battleStats === null ? '?' : number(battleStats)}${Number(target.bountyCount) > 0 ? ` · ${Number(target.bountyCount)} bounties / ${money(target.bountyTotal)}` : ''}</small>
+      </div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
+    }).join('');
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated testing interface</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
+      <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Cached targets</span></div><div class="stat"><strong>10/min</strong><span>Future active budget</span></div><div class="stat"><strong>5/min</strong><span>Future inactive budget</span></div></div>
+      ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}
+      <label class="check-row"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
+      <div class="module-message">Phase 7 establishes the Cloudflare permission gate and interface only. Rough Fair Fight assignment begins in Phase 8, and contributor scheduling begins in Phase 9. No Mugging API work runs from this screen yet. Cached results remain stored when disabled.</div>
+      <div class="target-stack">${rows || moduleMessage('No cached Mugging assignments yet.')}</div>
+    </article></div>`;
+  }
 
   function targetListStatusLabel(target) {
     const status = target.status || {};
@@ -4258,12 +4327,13 @@
     if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
+    if (name === 'mugging') { renderMugging(); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderBounties(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -4389,10 +4459,11 @@
     </nav>
     <main class="scroll">
       <section class="page" data-page-panel="combat">
-        <div class="page-head"><div><h1>Combat</h1><p>Leveling, bounties, saved targets, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
-        <nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="bounties">Bounties</button><button type="button" data-combat-tab="targetList">Targets</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
+        <div class="page-head"><div><h1>Combat</h1><p>Leveling, bounties, permission-gated Mugging, saved targets, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
+        <nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="bounties">Bounties</button><button type="button" data-combat-tab="mugging" hidden>Mugging</button><button type="button" data-combat-tab="targetList">Targets</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
         <div class="subpage" data-combat-panel="leveling"><div data-module-root="leveling"></div></div>
         <div class="subpage" data-combat-panel="bounties" hidden><div data-module-root="bounties"></div></div>
+        <div class="subpage" data-combat-panel="mugging" hidden><div data-module-root="mugging"></div></div>
         <div class="subpage" data-combat-panel="targetList" hidden><div data-module-root="targetList"></div></div>
         <div class="subpage" data-combat-panel="war" hidden><div data-module-root="war"></div></div>
         <div class="subpage" data-combat-panel="stats" hidden><div data-module-root="stats"></div></div>
@@ -4491,8 +4562,9 @@
   }
 
   function selectSubpage(group, tab, persist = true) {
-    const allowed = group === 'combat' ? ['leveling', 'bounties', 'targetList', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
+    const allowed = group === 'combat' ? ['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
     if (!allowed.includes(tab)) tab = allowed[0];
+    if (group === 'combat' && tab === 'mugging' && !hasScope('slink.mugging')) tab = 'targetList';
     state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
     if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
     shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
@@ -4602,6 +4674,8 @@
   overlay.addEventListener('click', event => {
     const bountyProfile = event.target.closest('[data-bounty-profile]');
     if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
+    const muggingProfile = event.target.closest('[data-mugging-profile]');
+    if (muggingProfile) rememberPlayerProfileIntent(muggingProfile.dataset.muggingProfile, 'mugging');
     const targetProfile = event.target.closest('[data-target-list-profile]');
     if (targetProfile) rememberPlayerProfileIntent(targetProfile.dataset.targetListProfile, 'target-list');
     const action = event.target.closest('[data-action]')?.dataset.action;
@@ -4953,6 +5027,14 @@
   });
 
   overlay.addEventListener('change', event => {
+    if (event.target.matches('[data-field="mugging-enabled"]')) {
+      if (!hasScope('slink.mugging')) return;
+      dataState.settings.mugging.enabled = event.target.checked === true;
+      moduleState.mugging.error = '';
+      moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging enabled locally.' : 'Mugging disabled locally; cached results were kept.';
+      writeDataState();
+      renderMugging();
+    }
     if (event.target.matches('[data-field="war-armory-mode"]')) {
       dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); writeDataState();
     }
