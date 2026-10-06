@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.17
+// @version      0.4.18
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.17-dom-first-intelligence';
+  const BUILD = '0.4.18-target-list-polling';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.17';
+  const CLIENT_VERSION = '0.4.18';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -61,6 +61,10 @@
   const WEAVER_PRICELIST_REFRESH_MS = 3 * 60_000;
   const DOLLAR_BAZAAR_REFRESH_MS = 60 * 60_000;
   const DOLLAR_BAZAAR_LIMIT = 100;
+  const TARGET_POLL_DEFAULT_MINUTES = 10;
+  const TARGET_POLL_MIN_MINUTES = 1;
+  const TARGET_POLL_MAX_MINUTES = 1440;
+  const TARGET_POLL_TICK_MS = 60_000;
   const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
   const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
   const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
@@ -201,6 +205,8 @@
   let playerDomObservationBusy = false;
   const playerIntelligenceInFlight = new Map();
   let schedulerTimer = null;
+  let targetPollingTimer = null;
+  let targetPollingBusy = false;
   let marketObserver = null;
   let marketFormatTimer = null;
   let marketWakeTimer = null;
@@ -214,7 +220,7 @@
     access:{ busy:false, error:'' },
     leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
     bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
-    targetList:{ busyId:0, error:'', notice:'', editingId:0, formOpen:Object.keys(dataState.caches.targetList || {}).length === 0 },
+    targetList:{ busyId:0, error:'', notice:'', editingId:0, formOpen:Object.keys(dataState.caches.targetList || {}).length === 0, pollingOpen:false },
     war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
     stats:{ busy:false, error:'', data:dataState.caches.stats || null },
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
@@ -749,6 +755,116 @@
         bountyTotal:Math.max(0, Number(intelligence?.bountyTotal) || 0)
       };
     }).sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+  }
+
+  function targetPollingSettings() {
+    const value = dataState.settings.targetListPolling && typeof dataState.settings.targetListPolling === 'object'
+      ? dataState.settings.targetListPolling
+      : {};
+    const settings = {
+      enabled:value.enabled === true,
+      intervalMinutes:Math.max(TARGET_POLL_MIN_MINUTES, Math.min(TARGET_POLL_MAX_MINUTES, Math.trunc(Number(value.intervalMinutes) || TARGET_POLL_DEFAULT_MINUTES))),
+      mugOnly:value.mugOnly === true,
+      revision:Math.max(0, Number(value.revision) || 0)
+    };
+    dataState.settings.targetListPolling = settings;
+    return settings;
+  }
+
+  function targetPollingRuntime() {
+    const value = dataState.caches.targetPolling && typeof dataState.caches.targetPolling === 'object'
+      ? dataState.caches.targetPolling
+      : {};
+    const runtime = {
+      revision:Math.max(0, Number(value.revision) || 0),
+      schedule:value.schedule && typeof value.schedule === 'object' && !Array.isArray(value.schedule) ? value.schedule : {},
+      lastRunAt:Math.max(0, Number(value.lastRunAt) || 0),
+      lastPlanned:Math.max(0, Math.trunc(Number(value.lastPlanned) || 0)),
+      lastProcessed:Math.max(0, Math.trunc(Number(value.lastProcessed) || 0)),
+      lastApiFetched:Math.max(0, Math.trunc(Number(value.lastApiFetched) || 0)),
+      lastSkipped:Math.max(0, Math.trunc(Number(value.lastSkipped) || 0)),
+      lastError:String(value.lastError || '').slice(0, 500)
+    };
+    dataState.caches.targetPolling = runtime;
+    return runtime;
+  }
+
+  function targetPollingEligible(settings = targetPollingSettings()) {
+    return pdaTargetListEntries()
+      .filter(target => !settings.mugOnly || target.tags.some(tag => String(tag).toLowerCase() === 'mug'))
+      .sort((left, right) => left.playerId - right.playerId);
+  }
+
+  function seedTargetPolling(runtime, targets, settings, now = Date.now()) {
+    const ids = new Set(targets.map(target => String(target.playerId)));
+    for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) delete runtime.schedule[id];
+    if (runtime.revision !== settings.revision) {
+      runtime.schedule = {};
+      runtime.revision = settings.revision;
+    }
+    const intervalMs = settings.intervalMinutes * 60_000;
+    const spacingMs = targets.length ? intervalMs / targets.length : intervalMs;
+    targets.forEach((target, index) => {
+      const id = String(target.playerId);
+      if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id]) <= 0) runtime.schedule[id] = Math.floor(now + index * spacingMs);
+    });
+    return runtime;
+  }
+
+  async function runTargetPolling(now = Date.now()) {
+    if (targetPollingBusy) return;
+    targetPollingBusy = true;
+    const settings = targetPollingSettings();
+    const runtime = targetPollingRuntime();
+    const targets = targetPollingEligible(settings);
+    seedTargetPolling(runtime, targets, settings, now);
+    try {
+      if (!settings.enabled || !targets.length) {
+        runtime.lastRunAt = now;
+        runtime.lastPlanned = 0;
+        runtime.lastProcessed = 0;
+        runtime.lastApiFetched = 0;
+        runtime.lastSkipped = 0;
+        runtime.lastError = '';
+        writeDataState();
+        return;
+      }
+      const intervalMs = settings.intervalMinutes * 60_000;
+      const perMinute = Math.max(1, Math.ceil(targets.length / settings.intervalMinutes));
+      const due = targets
+        .filter(target => Number(runtime.schedule[String(target.playerId)]) <= now)
+        .sort((left, right) => Number(runtime.schedule[String(left.playerId)]) - Number(runtime.schedule[String(right.playerId)]))
+        .slice(0, perMinute);
+      let processed = 0, apiFetched = 0, skipped = 0, lastError = '';
+      for (const target of due) {
+        const id = String(target.playerId);
+        try {
+          const result = await refreshPlayerIntelligence({
+            playerId:target.playerId,
+            maxAgeMs:intervalMs
+          });
+          processed += 1;
+          if (result.fetched) apiFetched += 1; else skipped += 1;
+          runtime.schedule[id] = result.reason === 'known-timer' || result.reason === 'fresh-cache'
+            ? Math.max(now + 30_000, Number(result.nextCheckAt) || now + intervalMs)
+            : now + intervalMs;
+        } catch (error) {
+          processed += 1;
+          lastError = errorMessage(error);
+          runtime.schedule[id] = now + 60_000;
+        }
+      }
+      runtime.lastRunAt = now;
+      runtime.lastPlanned = due.length;
+      runtime.lastProcessed = processed;
+      runtime.lastApiFetched = apiFetched;
+      runtime.lastSkipped = skipped;
+      runtime.lastError = lastError;
+      writeDataState();
+      if (moduleRoot('targetList')) renderTargetList();
+    } finally {
+      targetPollingBusy = false;
+    }
   }
 
   function addPdaTarget(input = {}) {
@@ -2059,6 +2175,9 @@
     const root = moduleRoot('targetList');
     if (!root) return;
     const state = moduleState.targetList, targets = pdaTargetListEntries();
+    const pollingSettings = targetPollingSettings(), pollingRuntime = targetPollingRuntime();
+    const pollingEligible = targetPollingEligible(pollingSettings);
+    const pollingEstimate = pollingEligible.length ? Math.ceil(pollingEligible.length / pollingSettings.intervalMinutes) : 0;
     const editing = targets.find(target => target.id === Number(state.editingId)) || null;
     const selectedTags = new Set(editing?.tags || ['Target']);
     const form = state.formOpen ? `<div class="target-list-form">
@@ -2067,6 +2186,13 @@
       <label class="wide">Notes<textarea maxlength="500" data-field="target-list-description" placeholder="Why are you tracking this player?">${escapeHtml(editing?.description || '')}</textarea></label>
       <div class="target-list-tags wide">${TARGET_LIST_DEFAULT_TAGS.map(tag => `<label class="check-row"><input type="checkbox" data-target-list-tag="${escapeHtml(tag)}" ${selectedTags.has(tag) ? 'checked' : ''}>${escapeHtml(tag)}</label>`).join('')}</div>
       <div class="target-list-form-actions wide"><button type="button" data-action="save-target-list">${editing ? 'Save changes' : 'Add target'}</button><button type="button" data-action="cancel-target-list">Cancel</button></div>
+    </div>` : '';
+    const pollingForm = state.pollingOpen ? `<div class="target-list-form">
+      <label class="check-row wide"><input type="checkbox" data-field="target-poll-enabled" ${pollingSettings.enabled ? 'checked' : ''}>Automatically check saved targets</label>
+      <label>Complete each rolling cycle every<input type="number" min="1" max="1440" step="1" data-field="target-poll-interval" value="${pollingSettings.intervalMinutes}"></label>
+      <label class="check-row"><input type="checkbox" data-field="target-poll-mug-only" ${pollingSettings.mugOnly ? 'checked' : ''}>Only auto-check targets tagged Mug</label>
+      <div class="module-message wide">${pollingEligible.length} eligible · up to ${pollingEstimate} scheduled checks/min before cache and timer skips${pollingRuntime.lastRunAt ? ` · last cycle ${escapeHtml(relativeTime(pollingRuntime.lastRunAt))}` : ''}${pollingRuntime.lastError ? ` · ${escapeHtml(pollingRuntime.lastError)}` : ''}</div>
+      <div class="target-list-form-actions wide"><button type="button" data-action="save-target-polling">Save polling</button></div>
     </div>` : '';
     const rows = targets.map(target => {
       const profile = `https://www.torn.com/profiles.php?XID=${target.id}`, attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
@@ -2078,9 +2204,9 @@
         <div class="target-list-sources">${target.sources.map(source => `<span>${escapeHtml(source.label || source.source)}</span>`).join('')}</div>
       </div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
     }).join('');
-    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button></div>
-      <div class="module-message">Other SLINK target feeds are not copied here automatically.</div>
-      ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}
+    root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><div class="target-actions"><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button><button type="button" data-action="toggle-target-polling">${state.pollingOpen ? 'Close polling' : 'Polling'}</button></div></div>
+      <div class="module-message">Other SLINK target feeds are not copied here automatically.${pollingSettings.enabled ? ` Rolling checks are spread across ${pollingSettings.intervalMinutes} minutes.` : ''}</div>
+      ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}${pollingForm}
       <div class="target-stack">${rows || moduleMessage('No saved targets yet. Use Add target to save one manually.')}</div>
     </article></div>`;
   }
@@ -4432,6 +4558,38 @@
         button.disabled = false;
       })();
     }
+    if (action === 'toggle-target-polling') {
+      moduleState.targetList.pollingOpen = !moduleState.targetList.pollingOpen;
+      moduleState.targetList.error = '';
+      moduleState.targetList.notice = '';
+      renderTargetList();
+    }
+    if (action === 'save-target-polling') {
+      const root = moduleRoot('targetList');
+      const previous = targetPollingSettings();
+      const next = {
+        enabled:root?.querySelector('[data-field="target-poll-enabled"]')?.checked === true,
+        intervalMinutes:root?.querySelector('[data-field="target-poll-interval"]')?.value,
+        mugOnly:root?.querySelector('[data-field="target-poll-mug-only"]')?.checked === true
+      };
+      const normalized = {
+        enabled:next.enabled,
+        intervalMinutes:Math.max(TARGET_POLL_MIN_MINUTES, Math.min(TARGET_POLL_MAX_MINUTES, Math.trunc(Number(next.intervalMinutes) || TARGET_POLL_DEFAULT_MINUTES))),
+        mugOnly:next.mugOnly,
+        revision:Date.now()
+      };
+      const changed = previous.enabled !== normalized.enabled || previous.intervalMinutes !== normalized.intervalMinutes || previous.mugOnly !== normalized.mugOnly;
+      if (!changed) normalized.revision = previous.revision;
+      dataState.settings.targetListPolling = normalized;
+      if (changed) dataState.caches.targetPolling = { revision:normalized.revision, schedule:{} };
+      moduleState.targetList.error = '';
+      moduleState.targetList.notice = normalized.enabled
+        ? `Rolling polling enabled across ${normalized.intervalMinutes} minutes.`
+        : 'Automatic Target List polling disabled.';
+      writeDataState();
+      renderTargetList();
+      void runTargetPolling();
+    }
     if (action === 'toggle-target-list-form') {
       moduleState.targetList.formOpen = !moduleState.targetList.formOpen;
       moduleState.targetList.editingId = 0;
@@ -4724,7 +4882,10 @@
     if (!document.hidden) void scanIntendedProfileDom();
   });
   global.addEventListener('focus', () => void scanIntendedProfileDom());
-  global.addEventListener('pagehide', unlockTornScroll, { once:true });
+  global.addEventListener('pagehide', () => {
+    unlockTornScroll();
+    clearInterval(targetPollingTimer);
+  }, { once:true });
 
   const guardian = new MutationObserver(() => {
     if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
@@ -4745,6 +4906,8 @@
   selectSubpage('efficiency', state.efficiencyTab, false);
   clampLauncher(false);
   renderAllModules();
+  targetPollingTimer = global.setInterval(() => void runTargetPolling(), TARGET_POLL_TICK_MS);
+  global.setTimeout(() => void runTargetPolling(), 2_000);
   if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
     reconcileAlertNotifications(moduleState.alerts.data);
     writeDataState();
@@ -4771,7 +4934,11 @@
       list:pdaTargetListEntries,
       add:addPdaTarget,
       update:updatePdaTarget,
-      remove:removePdaTarget
+      remove:removePdaTarget,
+      polling:Object.freeze({
+        settings:targetPollingSettings,
+        run:runTargetPolling
+      })
     }),
     playerIntelligence:Object.freeze({
       get:getPlayerIntelligence,

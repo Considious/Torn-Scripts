@@ -82,6 +82,19 @@ Rollback baseline: the completed PDA source-integration release before
 DOM-first collection is commit `862c101d6e2ec10f427eeff9cca4472d0d3d5560`,
 preserved on `backup/pre-dom-status-phase4-2026-10-05`.
 
+Version 0.4.18 adds configurable rolling Target List polling. Users can
+enable or disable automatic checks, select a 1–1440 minute cycle, and optionally
+limit automatic checks to targets tagged **Mug**. Checks are distributed across
+the interval rather than fired in one burst. Every scheduled check reuses fresh
+DOM/cache information, known timers, in-flight requests, and the shared Torn API
+limiter before considering a new API call. PDA polling operates only while Torn
+PDA keeps the userscript WebView alive; manual refresh remains available for all
+saved targets.
+
+Rollback baseline: the completed PDA DOM-first release before rolling polling
+is commit `a8140c3c97ff0906b2d1b77abd8166190cf3ef3d`, preserved on
+`backup/pre-target-polling-phase5-2026-10-05`.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
