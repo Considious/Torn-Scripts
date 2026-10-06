@@ -1,5 +1,20 @@
 # SLINK PDA Dashboard
 
+## 0.4.23 — Mugging Phase 10
+
+PDA contributor observations now synchronize into the shared Mugging R2
+intelligence pool. Results are deduplicated locally by player and uploaded no
+more than once every six hours in batches of up to 100. The PDA removes only
+report IDs acknowledged by the Worker; failed or unacknowledged observations
+remain queued for retry.
+
+The synchronized payload can improve shared status, bounty, battle-stat, and
+Fair Fight knowledge. Uploads require the live backend-managed `slink.mugging`
+permission and do not create per-target D1 rows.
+
+The pre-Phase-10 rollback point is branch
+`backup/pre-mugging-sync-phase10-2026-10-06`.
+
 ## 0.4.22 — Mugging Phase 9
 
 Mugging contributors now use the shared PDA Torn API ledger. The scheduler offers

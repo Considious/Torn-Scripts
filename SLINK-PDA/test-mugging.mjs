@@ -8,7 +8,7 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
 try { new Function(source); }
 catch (error) { throw new Error(`PDA userscript has a parse-time syntax error: ${error.message}`); }
 
-assert(source.includes('// @version      0.4.22'), 'Unexpected PDA Phase 9 version.');
+assert(source.includes('// @version      0.4.23'), 'Unexpected PDA Phase 10 version.');
 assert(source.includes('// @connect      slinkmuggingworker.richard-johnson554.workers.dev'), 'Mugging Worker is not allowlisted for PDA.');
 assert(source.includes("mugging:'https://slinkmuggingworker.richard-johnson554.workers.dev'"), 'Mugging Worker URL is missing.');
 assert(source.includes('data-combat-tab="mugging" hidden'), 'Unauthorized PDA sessions can see the Mugging tab.');
@@ -21,12 +21,15 @@ assert(source.includes('const MUGGING_ACTIVE_BUDGET = 10') && source.includes('c
 assert(source.includes('const MUGGING_INACTIVE_AFTER_MS = 5 * 60_000'), 'PDA does not reduce Mugging contribution after five minutes.');
 assert(source.includes("muggingRequest('/api/contributor/tasks'") && source.includes('runMuggingContribution'), 'PDA contributor task scheduling is missing.');
 assert(source.includes("priority:mode === 'active' ? 'normal' : 'low'") && source.includes('wait:false'), 'PDA inactive contribution does not yield to other shared Torn API work.');
-assert(source.includes('muggingPendingSync') && source.includes('pendingSync:true'), 'PDA does not retain observations for Phase 10 synchronization.');
+assert(source.includes('muggingPendingSync') && source.includes('pendingSync:true'), 'PDA does not retain contributor observations for synchronization.');
+assert(source.includes('const MUGGING_SYNC_INTERVAL_MS = 6 * 60 * 60_000') && source.includes('const MUGGING_SYNC_BATCH_SIZE = 100'), 'PDA Phase 10 synchronization is not batched on the six-hour schedule.');
+assert(source.includes("muggingRequest('/api/contributor/reports'") && source.includes('acknowledged_report_ids'), 'PDA Phase 10 does not use acknowledged contributor-report batches.');
+assert(source.includes('delete latest[playerId]'), 'PDA does not remove acknowledged observations from its pending queue.');
 assert(source.includes("mode === 'active'") && source.includes('MUGGING_ASSIGNMENT_REFRESH_MS'), 'Inactive PDA users can still request new personal Mugging assignments.');
 assert(source.includes('Inactive mode keeps this cached list visible') && source.includes('up to 5/min'), 'PDA does not explain cached inactive behavior.');
 assert(source.includes("muggingRequest('/api/assignments/rough'"), 'PDA does not request rough assignments from the Mugging Worker.');
-assert(source.includes('Rough FF') && source.includes('Phase 9 contribution uses the shared Torn limiter'), 'PDA does not distinguish rough assignments or explain contributor scheduling.');
+assert(source.includes('Rough FF') && source.includes('synchronized to shared SLINK intelligence'), 'PDA does not distinguish rough assignments or explain contributor scheduling.');
 assert(source.includes('data-action="refresh-mugging"'), 'PDA has no manual assignment refresh.');
 assert(source.includes('data-target-source="mugging"') && source.includes("tags = ['Mug']"), 'Mugging does not reuse the explicit Target List handoff.');
 assert(!/MUGGING_TEST_USER|MUGGING_FACTION_ID|MUGGING_SERVICE_TOKEN/.test(source), 'PDA contains a hard-coded Mugging override or backend secret.');
-console.log('PDA Mugging Phase 9 contributor scheduling checks passed.');
+console.log('PDA Mugging Phase 10 contributor synchronization checks passed.');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.22
+// @version      0.4.23
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.22-mugging-contributor-scheduling';
+  const BUILD = '0.4.23-mugging-contributor-sync';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.22';
+  const CLIENT_VERSION = '0.4.23';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -80,6 +80,9 @@
   const MUGGING_CONTRIBUTION_INTERVAL_MS = 60_000;
   const MUGGING_ASSIGNMENT_REFRESH_MS = 5 * 60_000;
   const MUGGING_OWN_STATS_TTL_MS = 6 * 60 * 60_000;
+  const MUGGING_SYNC_INTERVAL_MS = 6 * 60 * 60_000;
+  const MUGGING_SYNC_BATCH_SIZE = 100;
+  const MUGGING_SYNC_MAX_BATCHES = 5;
   const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
   const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
   const PLAYER_INTELLIGENCE_TIMED_STATES = new Set(['Hospital', 'Jail', 'Traveling']);
@@ -225,6 +228,7 @@
   let targetPollingBusy = false;
   let targetStakeoutBusy = false;
   let muggingContributionBusy = false;
+  let muggingSyncBusy = false;
   let marketObserver = null;
   let marketFormatTimer = null;
   let marketWakeTimer = null;
@@ -2451,6 +2455,95 @@
     dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [String(row.playerId), row]));
   }
 
+  function muggingContributorReport(row, client) {
+    const record = row?.record && typeof row.record === 'object' ? row.record : {};
+    const playerId = validPlayerIntelligenceId(row?.playerId ?? record.playerId ?? record.id) || 0;
+    const observedAt = Math.max(0, Number(row?.observedAt ?? record.observedAt) || Date.now());
+    return {
+      report_id:`${client}:${playerId}:${Math.trunc(observedAt)}`,
+      player_id:playerId,
+      name:String(record.name || '').slice(0, 80),
+      observed_at:observedAt,
+      state:String(record.state ?? record.status?.state ?? '').slice(0, 40),
+      description:String(record.description ?? record.status?.description ?? '').slice(0, 500),
+      until:Math.max(0, Math.trunc(Number(record.until ?? record.status?.until) || 0)),
+      level:Math.max(0, Number(record.level) || 0),
+      bountyCount:Math.max(0, Math.trunc(Number(record.bountyCount) || 0)),
+      bountyTotal:Math.max(0, Number(record.bountyTotal) || 0),
+      battleStatsEstimate:Number.isFinite(Number(record.battleStatsEstimate)) ? Number(record.battleStatsEstimate) : null,
+      fairFight:Number.isFinite(Number(record.fairFight)) ? Number(record.fairFight) : null
+    };
+  }
+
+  async function syncMuggingContributorReports(force = false) {
+    const now = Date.now();
+    const previous = dataState.caches.muggingSync || {};
+    if (!force && now - Number(previous.lastAttemptAt || 0) < MUGGING_SYNC_INTERVAL_MS) return previous;
+    if (!dataState.settings.mugging.enabled || !hasScope('slink.mugging')) return previous;
+    if (muggingSyncBusy) return previous;
+    muggingSyncBusy = true;
+    const client = muggingClientId();
+    let accepted = 0;
+    let batches = 0;
+    try {
+      while (batches < MUGGING_SYNC_MAX_BATCHES) {
+        const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object'
+          ? dataState.caches.muggingPendingSync
+          : {};
+        const rows = Object.values(pending).slice(0, MUGGING_SYNC_BATCH_SIZE);
+        if (!rows.length) break;
+        const reports = rows.map(row => muggingContributorReport(row, client)).filter(report => report.player_id > 0);
+        if (!reports.length) {
+          dataState.caches.muggingPendingSync = {};
+          writeDataState();
+          break;
+        }
+        const response = await muggingRequest('/api/contributor/reports', {
+          method:'POST',
+          body:{ client_id:client, reports }
+        });
+        batches++;
+        const acknowledged = new Set(Array.isArray(response?.acknowledged_report_ids) ? response.acknowledged_report_ids.map(String) : []);
+        if (!acknowledged.size) throw new Error('The Mugging Worker did not acknowledge the contributor batch.');
+        const latest = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object'
+          ? dataState.caches.muggingPendingSync
+          : {};
+        for (const [playerId, row] of Object.entries(latest)) {
+          if (acknowledged.has(muggingContributorReport(row, client).report_id)) delete latest[playerId];
+        }
+        dataState.caches.muggingPendingSync = latest;
+        accepted += acknowledged.size;
+        writeDataState();
+        if (rows.length < MUGGING_SYNC_BATCH_SIZE) break;
+      }
+      const status = {
+        lastAttemptAt:now,
+        lastSuccessAt:Date.now(),
+        accepted,
+        batches,
+        pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+        error:''
+      };
+      dataState.caches.muggingSync = status;
+      writeDataState();
+      return status;
+    } catch (error) {
+      const status = {
+        ...previous,
+        lastAttemptAt:now,
+        accepted:0,
+        batches,
+        pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+        error:errorMessage(error)
+      };
+      dataState.caches.muggingSync = status;
+      writeDataState();
+      return status;
+    } finally {
+      muggingSyncBusy = false;
+    }
+  }
+
   async function runMuggingContribution(force = false) {
     const now = Date.now();
     const settings = dataState.settings.mugging;
@@ -2494,10 +2587,14 @@
           assignmentsRefreshed = true;
         } catch {}
       }
+      const sync = await syncMuggingContributorReports(false);
       const status = {
         at:Date.now(), enabled:true, mode, apiBudgetPerMinute:budget,
         tasksOffered:tasks.length, fetched, skipped, errors, assignmentsRefreshed,
-        pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length
+        pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+        lastSyncAt:Math.max(0, Number(sync?.lastSuccessAt) || 0),
+        synced:Math.max(0, Number(sync?.accepted) || 0),
+        syncError:String(sync?.error || '')
       };
       dataState.caches.muggingContribution = status;
       writeDataState();
@@ -2597,7 +2694,10 @@
       mode:settings.enabled ? muggingContributionMode() : 'disabled',
       apiBudgetPerMinute:settings.enabled ? (muggingContributionMode() === 'active' ? 10 : 5) : 0,
       fetched:0,
-      pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length
+      pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+      lastSyncAt:Math.max(0, Number(dataState.caches.muggingSync?.lastSuccessAt) || 0),
+      synced:Math.max(0, Number(dataState.caches.muggingSync?.accepted) || 0),
+      syncError:String(dataState.caches.muggingSync?.error || '')
     };
     const rows = cache.targets.map(target => {
       const status = target?.status || {};
@@ -2625,7 +2725,7 @@
         <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
         <div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
       </div>
-      <div class="module-message">Phase 9 contribution uses the shared Torn limiter: up to 10 checks/min while Mugging was used in the last five minutes, then up to 5/min at low priority. Inactive mode keeps this cached list visible and does not assign new personal targets. Shared-result upload remains queued locally for Phase 10.</div>
+      <div class="module-message">Contributor checks use the shared Torn limiter: up to 10/min while Mugging was used in the last five minutes, then up to 5/min at low priority. Results are deduplicated locally and synchronized to shared SLINK intelligence in acknowledged batches every six hours. Pending: ${Number(contribution.pendingSync) || 0}${contribution.lastSyncAt ? ` · Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}` : ''}${contribution.syncError ? ` · Sync retry pending: ${escapeHtml(contribution.syncError)}` : ''}.</div>
       <div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
     </article></div>`;
   }
