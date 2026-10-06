@@ -64,7 +64,8 @@
   const TARGET_POLL_DEFAULT_MINUTES = 10;
   const TARGET_POLL_MIN_MINUTES = 1;
   const TARGET_POLL_MAX_MINUTES = 1440;
-  const TARGET_POLL_TICK_MS = 5_000;
+  const TARGET_POLL_TICK_MS = 60_000;
+  const TARGET_STAKEOUT_TICK_MS = 5_000;
   const TARGET_STAKEOUT_DEFAULT_SECONDS = 10;
   const TARGET_STAKEOUT_MIN_SECONDS = 10;
   const TARGET_STAKEOUT_MAX_SECONDS = 3600;
@@ -211,6 +212,7 @@
   const playerIntelligenceInFlight = new Map();
   let schedulerTimer = null;
   let targetPollingTimer = null;
+  let targetStakeoutTimer = null;
   let targetPollingBusy = false;
   let targetStakeoutBusy = false;
   let marketObserver = null;
@@ -5091,6 +5093,7 @@
   global.addEventListener('pagehide', () => {
     unlockTornScroll();
     clearInterval(targetPollingTimer);
+    clearInterval(targetStakeoutTimer);
   }, { once:true });
 
   const guardian = new MutationObserver(() => {
@@ -5112,12 +5115,10 @@
   selectSubpage('efficiency', state.efficiencyTab, false);
   clampLauncher(false);
   renderAllModules();
-  const runTargetSchedulers = () => {
-    void runTargetPolling();
-    void runTargetStakeouts();
-  };
-  targetPollingTimer = global.setInterval(runTargetSchedulers, TARGET_POLL_TICK_MS);
-  global.setTimeout(runTargetSchedulers, 2_000);
+  targetPollingTimer = global.setInterval(() => void runTargetPolling(), TARGET_POLL_TICK_MS);
+  targetStakeoutTimer = global.setInterval(() => void runTargetStakeouts(), TARGET_STAKEOUT_TICK_MS);
+  global.setTimeout(() => void runTargetPolling(), 2_000);
+  global.setTimeout(() => void runTargetStakeouts(), 2_000);
   if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
     reconcileAlertNotifications(moduleState.alerts.data);
     writeDataState();
