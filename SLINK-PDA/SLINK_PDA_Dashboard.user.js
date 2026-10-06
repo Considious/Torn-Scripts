@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.16
+// @version      0.4.17
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -25,7 +25,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.16-target-list-integrations';
+  const BUILD = '0.4.17-dom-first-intelligence';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,7 +35,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.16';
+  const CLIENT_VERSION = '0.4.17';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -66,7 +66,7 @@
   const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
   const PLAYER_INTELLIGENCE_TIMED_STATES = new Set(['Hospital', 'Jail', 'Traveling']);
   const TARGET_LIST_DEFAULT_TAGS = Object.freeze(['Level', 'Mug', 'War', 'Target']);
-  const BOUNTY_PROFILE_INTENT_KEY = 'slink-pda-dashboard:bounty-profile-intent:v1';
+  const PLAYER_PROFILE_INTENT_KEY = 'slink-pda-dashboard:player-profile-intent:v1';
   const BOUNTY_FF_CACHE_MS = 7 * 86_400_000;
   const BOUNTY_PAGE_LIMIT = 100;
   const BOUNTY_PAGES_PER_BATCH = 2;
@@ -197,7 +197,8 @@
   let swipe = null;
   let networkQueue = Promise.resolve();
   let bountyBudgetQueue = Promise.resolve();
-  let bountyLastDomObservation = '';
+  let playerDomLastSignature = '';
+  let playerDomObservationBusy = false;
   const playerIntelligenceInFlight = new Map();
   let schedulerTimer = null;
   let marketObserver = null;
@@ -430,6 +431,19 @@
       existing.description ?? existing.status?.description ?? ''
     ).slice(0, 500);
     const source = String(input.source || existing.source || 'unknown').slice(0, 80);
+    const observationKind = String(input.observationKind || '').toLowerCase();
+    const inferredDom = observationKind === 'dom' || source.startsWith('dom:');
+    const inferredApi = observationKind === 'api' || source === 'torn-api';
+    const lastDomObservedAt = Math.max(
+      0,
+      Number(input.lastDomObservedAt) || (inferredDom ? observedAt : 0),
+      Number(existing.lastDomObservedAt) || 0
+    );
+    const lastApiCheckAt = Math.max(
+      0,
+      Number(input.lastApiCheckAt) || (inferredApi ? observedAt : 0),
+      Number(existing.lastApiCheckAt) || 0
+    );
     const fairFightValue = input.fairFight ?? existing.fairFight;
     const battleStatsValue = input.battleStatsEstimate ?? input.bsEstimate ?? existing.battleStatsEstimate;
     return {
@@ -443,6 +457,8 @@
       source,
       observedAt,
       checkedAt:Math.max(0, Number(input.checkedAt) || observedAt),
+      lastDomObservedAt,
+      lastApiCheckAt,
       fairFight:Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
       battleStatsEstimate:Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
       bountyCount:Math.max(0, Math.trunc(Number(input.bountyCount ?? input.bounty_count ?? existing.bountyCount) || 0)),
@@ -477,6 +493,8 @@
       lastSeenMugged:Math.max(previous.lastSeenMugged, next.lastSeenMugged),
       checkedAt:Math.max(previous.checkedAt, next.checkedAt),
       observedAt:Math.max(previous.observedAt, next.observedAt),
+      lastDomObservedAt:Math.max(previous.lastDomObservedAt || 0, next.lastDomObservedAt || 0),
+      lastApiCheckAt:Math.max(previous.lastApiCheckAt || 0, next.lastApiCheckAt || 0),
       sources:[...new Set([...previous.sources, ...next.sources])].sort()
     };
     if (useIncomingStatus) {
@@ -564,6 +582,8 @@
       bountyCount:bounties.length,
       bountyTotal:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
       source:'torn-api',
+      observationKind:'api',
+      lastApiCheckAt:now,
       observedAt:now,
       checkedAt:now
     });
@@ -2054,9 +2074,9 @@
         <strong>${escapeHtml(target.name)} [${target.id}]</strong>
         <div class="target-list-tags">${target.tags.map(tag => `<span class="target-list-tag">${escapeHtml(tag)}</span>`).join('')}</div>
         ${target.description ? `<div class="target-list-description">${escapeHtml(target.description)}</div>` : ''}
-        <small>${escapeHtml(targetListStatusLabel(target))} · checked ${escapeHtml(relativeTime(target.lastChecked))}${target.lastSeenMugged ? ` · mugged ${escapeHtml(relativeTime(target.lastSeenMugged))}` : ''}${target.bountyCount ? ` · ${target.bountyCount} bounties / ${money(target.bountyTotal)}` : ''}</small>
+        <small>${escapeHtml(targetListStatusLabel(target))} · observed ${escapeHtml(relativeTime(target.lastChecked))}${target.intelligence?.lastDomObservedAt ? ` · DOM ${escapeHtml(relativeTime(target.intelligence.lastDomObservedAt))}` : ''}${target.intelligence?.lastApiCheckAt ? ` · API ${escapeHtml(relativeTime(target.intelligence.lastApiCheckAt))}` : ''}${target.lastSeenMugged ? ` · mugged ${escapeHtml(relativeTime(target.lastSeenMugged))}` : ''}${target.bountyCount ? ` · ${target.bountyCount} bounties / ${money(target.bountyTotal)}` : ''}</small>
         <div class="target-list-sources">${target.sources.map(source => `<span>${escapeHtml(source.label || source.source)}</span>`).join('')}</div>
-      </div><div class="target-actions"><a href="${profile}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
+      </div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
     }).join('');
     root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button></div>
       <div class="module-message">Other SLINK target feeds are not copied here automatically.</div>
@@ -2119,98 +2139,177 @@
     moduleState.bounties.error = ''; renderBounties(); void refreshBounties(false);
   }
 
-  function parseBountyTimer(text) {
+  function parseProfileTimer(text) {
     const lower = String(text || '').toLowerCase();
-    return [[/([0-9]+)\s*d(?:ay)?s?/,86400],[/([0-9]+)\s*h(?:our)?s?/,3600],[/([0-9]+)\s*m(?:in(?:ute)?)?s?/,60],[/([0-9]+)\s*s(?:ec(?:ond)?)?s?/,1]].reduce((sum,[pattern,unit]) => sum + Number(lower.match(pattern)?.[1] || 0) * unit, 0);
+    let total = [[/([0-9]+)\s*d(?:ay)?s?/,86400],[/([0-9]+)\s*h(?:our)?s?/,3600],[/([0-9]+)\s*m(?:in(?:ute)?)?s?/,60],[/([0-9]+)\s*s(?:ec(?:ond)?)?s?/,1]]
+      .reduce((sum,[pattern,unit]) => sum + Number(lower.match(pattern)?.[1] || 0) * unit, 0);
+    if (total) return total;
+    const clock = lower.match(/(?:(\d+)\s*d(?:ays?)?\s*)?(\d{1,2}):(\d{2}):(\d{2})/);
+    if (!clock) return 0;
+    return (Number(clock[1]) || 0) * 86400 + Number(clock[2]) * 3600 + Number(clock[3]) * 60 + Number(clock[4]);
   }
 
-  function detectBountyDomState(text) {
+  function detectProfileDomState(text) {
     const lower = String(text || '').toLowerCase();
     if (lower.includes('federal jail')) return 'Federal';
     if (lower.includes('hiding out')) return 'Hiding Out';
-    if (lower.includes('hospitalized') || lower.includes('in hospital')) return 'Hospital';
-    if (lower.includes('traveling') || lower.includes('flying')) return 'Traveling';
+    if (lower.includes('hospitalized') || lower.includes('in hospital') || lower.includes('hospital')) return 'Hospital';
+    if (lower.includes('in jail') || /\bjailed\b/.test(lower)) return 'Jail';
+    if (lower.includes('traveling') || lower.includes('travelling') || lower.includes('flying') || lower.includes('returning to torn')) return 'Traveling';
     if (lower.includes('abroad')) return 'Abroad';
-    if (lower.includes('okay')) return 'Okay';
+    if (/\bokay\b/.test(lower)) return 'Okay';
     return '';
   }
 
-  function rememberBountyProfileIntent(id) {
-    const targetId = Math.trunc(Number(id) || 0);
-    if (!targetId) return;
+  function rememberPlayerProfileIntent(id, source = 'profile') {
+    const playerId = validPlayerIntelligenceId(id);
+    if (!playerId) return false;
     try {
-      global.sessionStorage.setItem(BOUNTY_PROFILE_INTENT_KEY, JSON.stringify({
-        id:targetId,
+      global.sessionStorage.setItem(PLAYER_PROFILE_INTENT_KEY, JSON.stringify({
+        playerId,
+        source:String(source || 'profile').slice(0, 80),
         expiresAt:Date.now() + BOUNTY_ACTIVE_GRACE_MS
       }));
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  function readBountyProfileIntent() {
+  function rememberBountyProfileIntent(id) {
+    return rememberPlayerProfileIntent(id, 'bounties');
+  }
+
+  function readPlayerProfileIntent() {
     try {
-      const value = JSON.parse(global.sessionStorage.getItem(BOUNTY_PROFILE_INTENT_KEY) || 'null');
-      const id = Math.trunc(Number(value?.id) || 0);
-      if (!id || Number(value?.expiresAt) <= Date.now()) {
-        global.sessionStorage.removeItem(BOUNTY_PROFILE_INTENT_KEY);
+      const value = JSON.parse(global.sessionStorage.getItem(PLAYER_PROFILE_INTENT_KEY) || 'null');
+      const playerId = validPlayerIntelligenceId(value?.playerId);
+      if (!playerId || Number(value?.expiresAt) <= Date.now()) {
+        global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY);
         return null;
       }
-      return { id, expiresAt:Number(value.expiresAt) };
+      return { playerId, source:String(value.source || 'profile'), expiresAt:Number(value.expiresAt) };
     } catch {
-      try { global.sessionStorage.removeItem(BOUNTY_PROFILE_INTENT_KEY); } catch {}
+      try { global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY); } catch {}
       return null;
     }
   }
 
-  function clearBountyProfileIntent() {
-    try { global.sessionStorage.removeItem(BOUNTY_PROFILE_INTENT_KEY); } catch {}
+  function clearPlayerProfileIntent() {
+    try { global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY); } catch {}
   }
 
-  async function scanBountyPageStatus() {
-    if (!bountyActive()) return;
+  function activeProfilePage(expectedId = 0) {
+    if (document.visibilityState !== 'visible' || !document.hasFocus?.()) return null;
     let url;
-    try { url = new URL(global.location.href); } catch { return; }
-    if (!url.pathname.toLowerCase().includes('profiles.php')) return;
-    const id = Math.trunc(Number(url.searchParams.get('XID')) || 0);
-    const intent = readBountyProfileIntent();
-    if (!id || !intent || intent.id !== id) return;
+    try { url = new URL(global.location.href); } catch { return null; }
+    if (!url.pathname.toLowerCase().includes('profiles.php')) return null;
+    const playerId = validPlayerIntelligenceId(url.searchParams.get('XID'));
+    if (!playerId || (expectedId && Number(expectedId) !== playerId)) return null;
+    return { playerId, url };
+  }
+
+  function profileUntil(node, text) {
+    const values = [node, ...node.querySelectorAll?.('[data-until],[data-timestamp],[data-time],time[datetime]') || []];
+    for (const candidate of values) {
+      for (const attribute of ['data-until','data-timestamp','data-time','datetime']) {
+        const raw = candidate.getAttribute?.(attribute);
+        const numeric = Number(raw);
+        if (Number.isFinite(numeric) && numeric > 0) {
+          const seconds = numeric > 10_000_000_000 ? numeric / 1000 : numeric;
+          if (seconds > Date.now() / 1000 - 86400) return Math.trunc(seconds);
+        }
+        const parsed = Date.parse(String(raw || ''));
+        if (Number.isFinite(parsed) && parsed > Date.now() - 86_400_000) return Math.trunc(parsed / 1000);
+      }
+    }
+    const remaining = parseProfileTimer(text);
+    return remaining ? Math.floor(Date.now() / 1000 + remaining) : 0;
+  }
+
+  function visibleProfileName(playerId) {
+    for (const selector of ['h1 [class*="name"]','[class*="profile"] h1','[class*="user-information"] [class*="name"]','h1']) {
+      const text = String(document.querySelector(selector)?.textContent || '').trim();
+      if (!text) continue;
+      const cleaned = text.replace(new RegExp('\\s*\\[' + playerId + '\\].*$'), '').trim();
+      if (cleaned && cleaned.length <= 80) return cleaned;
+    }
+    return '';
+  }
+
+  function visibleProfileBounties() {
+    const text = [...document.querySelectorAll('[class*="bount"],[data-testid*="bount"]')]
+      .map(node => String(node.innerText || node.textContent || '')).join(' ');
+    const rewards = [...text.matchAll(/\$\s*([0-9][0-9,]*)/g)]
+      .map(match => Number(match[1].replaceAll(',', ''))).filter(Number.isFinite);
+    return rewards.length ? {
+      bountyCount:rewards.length,
+      bountyTotal:rewards.reduce((sum, reward) => sum + reward, 0)
+    } : {};
+  }
+
+  async function observeActiveProfileDom({ playerId = 0, source = 'profile', requireIntent = true } = {}) {
+    if (playerDomObservationBusy) return { observed:false, reason:'busy' };
+    const profile = activeProfilePage(playerId);
+    if (!profile) return { observed:false, reason:'inactive-or-different-page' };
+    const intent = readPlayerProfileIntent();
+    if (requireIntent && (!intent || intent.playerId !== profile.playerId)) return { observed:false, reason:'no-matching-intent' };
+
+    const candidates = [];
+    const seen = new Set();
+    for (const selector of ['[class*="profile"] [class*="status"]','[class*="basic-information"]','[data-testid*="status"]','[class*="status"]']) {
+      for (const node of document.querySelectorAll(selector)) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const text = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length > 1000) continue;
+        const state = detectProfileDomState(text);
+        if (state) candidates.push({ node, text, state });
+      }
+    }
+    candidates.sort((left, right) => left.text.length - right.text.length);
+    const match = candidates[0];
+    if (!match) return { observed:false, reason:'status-not-found' };
+    const until = profileUntil(match.node, match.text);
+    const signature = `${profile.playerId}:${match.state}:${until}:${match.text}`;
+    if (signature === playerDomLastSignature) {
+      if (requireIntent) clearPlayerProfileIntent();
+      return { observed:false, reason:'unchanged' };
+    }
+
+    playerDomObservationBusy = true;
+    try {
+      const now = Date.now();
+      const record = observePlayerIntelligence({
+        playerId:profile.playerId,
+        name:visibleProfileName(profile.playerId),
+        state:match.state,
+        until,
+        description:match.text.slice(0, 500),
+        ...visibleProfileBounties(),
+        source:`dom:${String(intent?.source || source).replace(/^dom:/, '').slice(0, 70)}`,
+        observationKind:'dom',
+        lastDomObservedAt:now,
+        observedAt:now,
+        checkedAt:now
+      });
+      playerDomLastSignature = signature;
+      if (requireIntent) clearPlayerProfileIntent();
+      return { observed:true, reason:'dom', record };
+    } finally {
+      playerDomObservationBusy = false;
+    }
+  }
+
+  async function scanIntendedProfileDom() {
+    const result = await observeActiveProfileDom({ requireIntent:true });
+    if (!result.observed) return result;
     const runtime = bountyRuntime();
-    if (!runtime.targets.some(target => Number(target.id) === id)) {
-      clearBountyProfileIntent();
-      return;
-    }
-    const selectors = ['[class*="status"]','[class*="basic-information"]','[data-testid*="status"]'];
-    for (const node of document.querySelectorAll(selectors.join(','))) {
-      const text = String(node.innerText || node.textContent || '').trim();
-      const state = detectBountyDomState(text);
-      if (!state) continue;
-      const remaining = parseBountyTimer(text);
-      const until = remaining ? Math.floor(Date.now() / 1000 + remaining) : 0;
-      const description = text.slice(0, 500);
-      const prior = playerIntelligenceRecord(id) || {};
-      const signature = `${id}:bounty-profile:${state}:${until}`;
-      if (signature === bountyLastDomObservation) {
-        clearBountyProfileIntent();
-        return;
-      }
-      bountyLastDomObservation = signature;
-      if (prior.state !== state || Number(prior.until) !== until) {
-        const record = observePlayerIntelligence({
-          playerId:id,
-          state,
-          until,
-          description,
-          source:'bounty-profile',
-          observedAt:Date.now(),
-          checkedAt:Date.now()
-        });
-        runtime.statuses = playerIntelligenceCache();
-        runtime.statuses[id] = record;
-        dataState.caches.bounties = runtime;
-        renderBounties();
-      }
-      clearBountyProfileIntent();
-      return;
-    }
+    runtime.statuses = playerIntelligenceCache();
+    dataState.caches.bounties = runtime;
+    if (moduleRoot('bounties')) renderBounties();
+    if (moduleRoot('targetList')) renderTargetList();
+    return result;
   }
 
   function warFactionEntries(factions) {
@@ -4186,6 +4285,8 @@
   overlay.addEventListener('click', event => {
     const bountyProfile = event.target.closest('[data-bounty-profile]');
     if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
+    const targetProfile = event.target.closest('[data-target-list-profile]');
+    if (targetProfile) rememberPlayerProfileIntent(targetProfile.dataset.targetListProfile, 'target-list');
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (action === 'close') closeDashboard();
     if (action === 'reset-layout') resetLayout();
@@ -4400,8 +4501,15 @@
         const state = moduleState.targetList;
         state.busyId = playerId; state.error = ''; state.notice = ''; renderTargetList();
         try {
+          const dom = await observeActiveProfileDom({ playerId, source:'target-list', requireIntent:false });
           const result = await refreshPlayerIntelligence({ playerId, priority:'high' });
-          state.notice = result.fetched ? 'Fresh Torn status loaded.' : result.reason === 'known-timer' ? 'Known status timer is still valid; no API call was needed.' : 'Recent cached status is still fresh; no API call was needed.';
+          state.notice = dom.observed
+            ? 'Fresh status read from the active Torn profile; no duplicate API call was needed.'
+            : result.fetched
+              ? 'Fresh Torn API status loaded.'
+              : result.reason === 'known-timer'
+                ? 'Known status timer is still valid; no API call was needed.'
+                : 'Recent cached status is still fresh; no API call was needed.';
         } catch (error) { state.error = errorMessage(error); }
         finally { state.busyId = 0; renderTargetList(); }
       })();
@@ -4611,14 +4719,18 @@
   global.addEventListener('popstate', scheduleMarketDomFormat);
   global.addEventListener('resize', syncMarketQuickBuyPositions);
   global.addEventListener('scroll', syncMarketQuickBuyPositions, true);
-  document.addEventListener('visibilitychange', () => { if (dashboardOpen && !document.hidden) void loadActiveModule(false); });
+  document.addEventListener('visibilitychange', () => {
+    if (dashboardOpen && !document.hidden) void loadActiveModule(false);
+    if (!document.hidden) void scanIntendedProfileDom();
+  });
+  global.addEventListener('focus', () => void scanIntendedProfileDom());
   global.addEventListener('pagehide', unlockTornScroll, { once:true });
 
   const guardian = new MutationObserver(() => {
     if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
   });
   guardian.observe(document, { childList:true, subtree:true });
-  marketObserver = new MutationObserver(() => { scheduleMarketDomFormat(); scanAttackMugResults(); void scanBountyPageStatus(); });
+  marketObserver = new MutationObserver(() => { scheduleMarketDomFormat(); scanAttackMugResults(); void scanIntendedProfileDom(); });
   marketObserver.observe(document.body, { childList:true, subtree:true });
 
   if (typeof GM_API.menu === 'function') {
@@ -4643,7 +4755,7 @@
   if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
   scheduleMarketDomFormat();
-  void scanBountyPageStatus();
+  void scanIntendedProfileDom();
   scanAttackMugResults();
 
   global.SLINK_PDA_DASHBOARD = Object.freeze({

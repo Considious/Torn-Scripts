@@ -70,6 +70,18 @@ Rollback baseline: the completed PDA Target List release before source
 integrations is commit `0d8547e8432e2731bde904dd71b7bd9c0f2632f7`, preserved
 on `backup/pre-target-list-integrations-phase3-2026-10-05`.
 
+Version 0.4.17 adds shared DOM-first player intelligence. When a
+Bounty or Target List profile link deliberately opens a visible, focused Torn
+profile, reliable status and Hospital/Jail/Travel timer information is merged
+into the shared cache. Target List refresh checks the matching active profile
+before using Torn's API, and known timers continue to suppress redundant calls.
+DOM and API observations now have separate timestamps. Attack-result pages and
+hidden/background pages are never used for this status collection.
+
+Rollback baseline: the completed PDA source-integration release before
+DOM-first collection is commit `862c101d6e2ec10f427eeff9cca4472d0d3d5560`,
+preserved on `backup/pre-dom-status-phase4-2026-10-05`.
+
 - **Combat / Leveling:** live, read-only SLINK recommendations. This combined
   dashboard does not claim contributor checks.
 - **Combat / War:** the complete ranked-war workspace with separate opponent,
