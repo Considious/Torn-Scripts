@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.23
+// @version      0.4.24
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.23-mugging-contributor-sync';
+  const BUILD = '0.4.24-adhd-market-dom';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.23';
+  const CLIENT_VERSION = '0.4.24';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -230,12 +230,24 @@
   let muggingContributionBusy = false;
   let muggingSyncBusy = false;
   let marketObserver = null;
-  let marketFormatTimer = null;
   let marketWakeTimer = null;
-  let marketQuickBuyLayer = null;
-  let marketPositionFrame = null;
   let keyboardFocusTimer = null;
-  const marketQuickBuys = new Map();
+  const QUICK_PURCHASE_TRANSITION_TIMEOUT_MS = 2_500;
+  const QUICK_PURCHASE_FLOW_TIMEOUT_MS = 10_000;
+  const marketPurchaseState = {
+    itemCatalog:{ fetchedAt:0, items:[] },
+    itemCatalogLoading:false,
+    settings:{ apiKey:'pda-managed', highlightedQuickBuyEnabled:true },
+    bazaarCatalogRequestedAt:0,
+    pendingBazaarPurchase:null,
+    quickPurchaseListingIds:new WeakMap(),
+    quickPurchaseListingIdCounter:0,
+    quickPurchaseFlow:null,
+    quickPurchaseOverlays:new Map(),
+    quickPurchaseControlSpecs:new WeakMap(),
+    bazaarOneDollarTimer:null,
+    quickPurchaseSyncTimer:null
+  };
   const reportedMugNodes = new WeakSet();
   const recentMugResults = new Map();
   const moduleState = {
@@ -1362,7 +1374,7 @@
     url.searchParams.set('userId', String(Math.trunc(Number(sellerId))));
     url.searchParams.set('itemId', String(Math.trunc(Number(itemId))));
     url.searchParams.set('price', String(Math.trunc(Number(price))));
-    url.searchParams.set('slinkHighlight', '1');
+    url.searchParams.set('highlight', '1');
     if (updatedAt > 0) url.searchParams.set('v', String(Math.trunc(updatedAt / 1000)));
     url.hash = '/';
     return url.toString();
@@ -1744,7 +1756,7 @@
       reconcileMarketNotifications(runtime);
       writeDataState();
     } catch (error) { current.error = errorMessage(error); runtime.lastError = current.error; current.data = dataState.caches.market = runtime; writeDataState(); }
-    finally { current.busy = false; renderMarketUnlessEditing(); scheduleMarketDomFormat(); scheduleMarketWake(current.data || runtime); }
+    finally { current.busy = false; syncMarketPurchaseCatalog(); renderMarketUnlessEditing(); schedulePurchaseOpportunityFormatting(); scheduleMarketWake(current.data || runtime); }
   }
 
   async function refreshMarketPermissions() {
@@ -4341,127 +4353,1042 @@
     writeDataState(); renderMarket(false); void refreshMarket(false);
   }
 
-  function marketPurchasePage() {
-    const url = new URL(location.href); const joined = `${url.search}&${url.hash}`;
-    const itemId = Number(joined.match(/(?:itemID|itemId)=(\d+)/i)?.[1] || url.searchParams.get('itemId')) || 0;
-    const price = Number(joined.match(/slinkPrice=(\d+)/i)?.[1] || url.searchParams.get('price')) || 0;
-    const bazaar = url.pathname.toLowerCase().endsWith('/bazaar.php');
-    const market = String(url.searchParams.get('sid') || '').toLowerCase() === 'itemmarket' || /itemmarket/i.test(url.pathname) || /(?:^|\/)itemmarket(?:\/|$)/i.test(url.hash.replace(/^#\/?/, ''));
-    return bazaar || market ? { itemId, price, bazaar, market, linked:itemId > 0 && price > 0 && (market || url.searchParams.get('slinkHighlight') === '1') } : null;
+  function focusedTornPage() {
+    return document.visibilityState === 'visible' && document.hasFocus();
   }
 
-  function marketNodePrice(node) {
-    const text = String(node.querySelector('[data-testid="price"],[class*="price___"]')?.textContent || node.textContent || '');
-    const match = text.match(/\$\s*([\d,]+(?:\.\d+)?)/) || text.match(/^\s*([\d,]+(?:\.\d+)?)/);
-    return match ? Number(match[1].replaceAll(',', '')) : 0;
+  function elementVisible(element) {
+    if (!element?.isConnected) return false;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
-  function marketNodeItemId(node) {
-    const declared = Number(node?.dataset?.itemId || node?.getAttribute?.('data-item-id')) || 0;
-    if (declared > 0) return Math.trunc(declared);
-    const image = node.querySelector('img[src*="/images/items/"],img[srcset*="/images/items/"]');
-    const imageId = Number(`${image?.getAttribute?.('src') || ''} ${image?.getAttribute?.('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i)?.[1]) || 0;
-    if (imageId > 0) return imageId;
-    const href = node.querySelector('a[href*="itemID=" i],a[href*="itemId=" i]')?.getAttribute('href') || '';
-    return Number(href.match(/(?:itemID|itemId)=(\d+)/i)?.[1]) || 0;
+  function syncMarketPurchaseCatalog() {
+    const runtime = moduleState.market.data || marketRuntime();
+    const catalog = runtime?.catalog && typeof runtime.catalog === 'object' ? runtime.catalog : { fetchedAt:0, items:[] };
+    marketPurchaseState.itemCatalog = {
+      fetchedAt:Number(catalog.fetchedAt) || 0,
+      items:(Array.isArray(catalog.items) ? catalog.items : []).map(item => ({
+        ...item,
+        id:Math.trunc(Number(item?.id) || 0),
+        name:String(item?.name || ''),
+        sellPrice:Math.max(0, Math.trunc(Number(item?.shopSellPrice ?? item?.sellPrice) || 0))
+      }))
+    };
+    marketPurchaseState.settings.highlightedQuickBuyEnabled = marketSettings().quickBuyEnabled !== false;
   }
 
-  function marketPageItemId(page) {
-    if (page.itemId > 0) return page.itemId;
-    const main = document.querySelector('#mainContainer,#main-container,[data-testid="main-content"],main[role="main"],main');
-    const ids = [...new Set([...(main?.querySelectorAll('img[src*="/images/items/"],img[srcset*="/images/items/"]') || [])].map(image => Number(`${image.getAttribute('src') || ''} ${image.getAttribute('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i)?.[1]) || 0).filter(Boolean))];
+  function itemCatalogFresh() {
+    return marketPurchaseState.itemCatalog.items.length > 0
+      && Date.now() - Number(marketPurchaseState.itemCatalog.fetchedAt || 0) < 24 * 60 * 60_000;
+  }
+
+  function catalogItemBySearch(search) {
+    const normalized = String(search || '').trim().toLocaleLowerCase();
+    if (!normalized) return null;
+    return marketPurchaseState.itemCatalog.items.find(item => item.name.toLocaleLowerCase() === normalized) || null;
+  }
+
+  function ownsDashboardNetworkLease() {
+    return true;
+  }
+
+  async function loadItemCatalog({ force = false } = {}) {
+    marketPurchaseState.itemCatalogLoading = true;
+    try {
+      const runtime = marketRuntime();
+      await marketEnsureCatalog(runtime, force);
+      dataState.caches.market = runtime;
+      moduleState.market.data = runtime;
+      writeDataState();
+      syncMarketPurchaseCatalog();
+      return marketPurchaseState.itemCatalog;
+    } finally {
+      marketPurchaseState.itemCatalogLoading = false;
+    }
+  }
+
+  function onBazaarPage() {
+    return /\/bazaar\.php$/i.test(location.pathname);
+  }
+
+  function onItemMarketPage() {
+    const url = new URL(location.href);
+    const sid = String(url.searchParams.get('sid') || '').toLowerCase();
+    return sid === 'itemmarket'
+      || /\/itemmarket\.php$/i.test(url.pathname)
+      || /(?:^|\/)itemmarket(?:\/|$)/i.test(url.hash.replace(/^#\/?/, ''));
+  }
+
+  function onPurchaseOpportunityPage() {
+    return marketWatchLimit() > 0 && (onBazaarPage() || onItemMarketPage());
+  }
+
+  function targetedBazaarListing() {
+    if (!onBazaarPage()) return null;
+    const params = new URL(location.href).searchParams;
+    if (params.get('highlight') !== '1' && params.get('slinkHighlight') !== '1') return null;
+    const sellerId = Math.trunc(Number(params.get('userId')) || 0);
+    const itemId = Math.trunc(Number(params.get('itemId')) || 0);
+    const price = Math.trunc(Number(params.get('price')) || 0);
+    return sellerId > 0 && itemId > 0 && price > 0 ? { sellerId, itemId, price } : null;
+  }
+
+  function ensurePurchaseHighlightStyles() {
+    if (document.getElementById('tdd-purchase-highlight-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'tdd-purchase-highlight-styles';
+    style.textContent = `
+      [data-tdd-bazaar-targeted],
+      [data-tdd-bazaar-one-dollar],
+      [data-tdd-item-market-one-dollar] {
+        outline: 4px solid #39ff14 !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 18px 5px rgba(57,255,20,.72), inset 0 0 0 2px rgba(57,255,20,.5) !important;
+      }
+      [data-tdd-bazaar-shop-profit],
+      [data-tdd-item-market-shop-profit] {
+        outline: 4px solid #ff4fbd !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 18px 5px rgba(255,79,189,.68), inset 0 0 0 2px rgba(255,79,189,.48) !important;
+      }
+      #tdd-quick-buy-layer {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483646;
+        pointer-events: none;
+      }
+      button[data-tdd-quick-buy] {
+        position: fixed;
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0 3px;
+        border: 1px solid rgba(255,255,255,.32);
+        border-radius: 4px;
+        color: #111;
+        background: linear-gradient(#b9ff68, #68c51d);
+        box-shadow: inset 0 1px rgba(255,255,255,.48), 0 0 7px rgba(112,255,40,.55);
+        font: 700 10px/1.1 Arial, sans-serif;
+        text-transform: uppercase;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      button[data-tdd-quick-buy][data-tdd-quick-buy-stage="confirm"] {
+        color: #fff;
+        background: linear-gradient(#ff4fbd, #be197d);
+        box-shadow: inset 0 1px rgba(255,255,255,.35), 0 0 8px rgba(255,79,189,.62);
+      }
+      button[data-tdd-quick-buy]:disabled {
+        opacity: .6;
+        cursor: wait;
+      }
+      button[data-tdd-quick-buy][data-tdd-quick-buy-passive="true"] {
+        opacity: .45;
+        pointer-events: none;
+      }
+    `;
+    document.head?.appendChild(style);
+  }
+
+  function bazaarCardPrice(card) {
+    const priceElement = card?.querySelector?.('[data-testid="price"]');
+    if (!priceElement) return null;
+    for (const node of priceElement.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE) continue;
+      const match = String(node.textContent || '').replaceAll(',', '').match(/\$?\s*(\d+(?:\.\d+)?)/);
+      if (match) return Number(match[1]);
+    }
+    const match = String(priceElement.textContent || '').match(/^\s*\$?\s*([\d,]+(?:\.\d+)?)/);
+    return match ? Number(match[1].replaceAll(',', '')) : null;
+  }
+
+  function bazaarCssColorLooksRed(value) {
+    const match = String(value || '').match(/rgba?\(\s*(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)(?:\D+(\d+(?:\.\d+)?))?/i);
+    if (!match || (match[4] != null && Number(match[4]) === 0)) return false;
+    const red = Number(match[1]);
+    const green = Number(match[2]);
+    const blue = Number(match[3]);
+    return red >= 90 && green <= red * 0.65 && blue <= red * 0.8;
+  }
+
+  function bazaarCardUnavailable(card) {
+    const priceElement = card.querySelector('[data-testid="price"]');
+    const blockedPurchaseSelector = '[class*="isBlockedForBuying"], #isBlockedForBuyingTooltip';
+    const unavailableSelector = '[aria-disabled="true"], [data-disabled="true"], [class*="disabled" i], [class*="unavailable" i], [class*="soldOut" i], [class*="cannotBuy" i]';
+    if (card.querySelector(blockedPurchaseSelector)) return true;
+    if (card.matches(unavailableSelector) || priceElement?.matches(unavailableSelector)) return true;
+    if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(card.textContent || ''))) return true;
+    const purchaseControls = Array.from(card.querySelectorAll('button, [role="button"]')).filter((control) => (
+      !control.matches?.('[data-tdd-quick-buy]')
+      && /\b(?:buy|purchase)\b/i.test(`${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('title') || ''}`)
+    ));
+    if (purchaseControls.length && !purchaseControls.some((control) => !control.disabled && control.getAttribute('aria-disabled') !== 'true')) return true;
+    const cardStyle = getComputedStyle(card);
+    const priceStyle = priceElement ? getComputedStyle(priceElement) : null;
+    return bazaarCssColorLooksRed(cardStyle.backgroundColor)
+      || bazaarCssColorLooksRed(cardStyle.borderColor)
+      || bazaarCssColorLooksRed(priceStyle?.color)
+      || bazaarCssColorLooksRed(priceStyle?.backgroundColor);
+  }
+
+  function bazaarListingCards() {
+    const container = document.querySelector('[data-testid="bazaar-items"]');
+    if (!container) return [];
+    const direct = Array.from(container.querySelectorAll('[data-testid="item"]'));
+    if (direct.length) return direct;
+    return [...new Set(Array.from(container.querySelectorAll('img[src*="/images/items/"], img[srcset*="/images/items/"]'))
+      .map((image) => image.closest('[class*="item___"]'))
+      .filter(Boolean))];
+  }
+
+  function bazaarCardItemId(card) {
+    const image = card?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+    const match = `${image?.getAttribute('src') || ''} ${image?.getAttribute('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
+    return match ? Math.trunc(Number(match[1])) : 0;
+  }
+
+  function bazaarCardMatchesTarget(card, target = targetedBazaarListing()) {
+    if (!target) return false;
+    return bazaarCardItemId(card) === target.itemId && bazaarCardPrice(card) === target.price;
+  }
+
+  function bazaarCardStock(card) {
+    const stockText = card?.querySelector?.('[data-testid="amount-value"]')?.textContent
+      || String(card?.textContent || '').match(/([\d,]+)\s+in stock/i)?.[1]
+      || '';
+    const stock = Number(String(stockText).replace(/[^\d]/g, ''));
+    return Number.isFinite(stock) && stock > 0 ? Math.trunc(stock) : 0;
+  }
+
+  function catalogItemById(itemId) {
+    const id = Math.trunc(Number(itemId));
+    return id > 0 ? marketPurchaseState.itemCatalog.items.find((item) => item.id === id) || null : null;
+  }
+
+  function bazaarCardItemName(card) {
+    return String(card?.querySelector?.('[data-testid="name"]')?.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function catalogItemForBazaarCard(card) {
+    return catalogItemById(bazaarCardItemId(card)) || catalogItemBySearch(bazaarCardItemName(card));
+  }
+
+  function itemCatalogHasSellPrices() {
+    return marketPurchaseState.itemCatalog.items.some((item) => Object.hasOwn(item, 'sellPrice'));
+  }
+
+  function requestPurchaseSellPriceCatalog() {
+    if ((itemCatalogFresh() && itemCatalogHasSellPrices()) || marketPurchaseState.itemCatalogLoading || !marketPurchaseState.settings.apiKey || !ownsDashboardNetworkLease()) return;
+    if (Date.now() - Number(marketPurchaseState.bazaarCatalogRequestedAt || 0) < 5 * 60_000) return;
+    marketPurchaseState.bazaarCatalogRequestedAt = Date.now();
+    void loadItemCatalog({ force: true }).then(() => schedulePurchaseOpportunityFormatting(0));
+  }
+
+  function bazaarPurchaseOpportunity(card) {
+    const price = bazaarCardPrice(card);
+    const available = !bazaarCardUnavailable(card);
+    const sellPrice = Number(catalogItemForBazaarCard(card)?.sellPrice) || 0;
+    const oneDollar = available && price === 1;
+    const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
+    return { oneDollar, shopProfit };
+  }
+
+  function formatBazaarOneDollarListings() {
+    if (!focusedTornPage() || !onBazaarPage()) return;
+    ensurePurchaseHighlightStyles();
+    requestPurchaseSellPriceCatalog();
+    const cards = new Set(bazaarListingCards());
+    const target = targetedBazaarListing();
+    document.querySelectorAll('[data-tdd-bazaar-targeted]').forEach((card) => {
+      if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-targeted');
+    });
+    document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => {
+      if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-one-dollar');
+    });
+    document.querySelectorAll('[data-tdd-bazaar-shop-profit]').forEach((card) => {
+      if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-shop-profit');
+    });
+    cards.forEach((card) => {
+      const { oneDollar, shopProfit } = bazaarPurchaseOpportunity(card);
+      card.toggleAttribute('data-tdd-bazaar-targeted', bazaarCardMatchesTarget(card, target));
+      card.toggleAttribute('data-tdd-bazaar-one-dollar', oneDollar);
+      card.toggleAttribute('data-tdd-bazaar-shop-profit', shopProfit);
+    });
+  }
+
+  function itemMarketSellerRows() {
+    return [...new Set(Array.from(document.querySelectorAll('ul[class*="sellerList___"]'))
+      .flatMap((list) => Array.from(list.querySelectorAll('li[class*="rowWrapper___"]')))
+      .filter((row) => row.querySelector('[class*="sellerRow___"]')))];
+  }
+
+  function itemMarketRowPrice(row) {
+    const text = String(row?.querySelector?.('[class*="price___"]')?.textContent || '');
+    const match = text.match(/\$\s*([\d,]+(?:\.\d+)?)/);
+    return match ? Number(match[1].replaceAll(',', '')) : null;
+  }
+
+  function itemImageId(image) {
+    const match = `${image?.getAttribute?.('src') || ''} ${image?.getAttribute?.('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
+    return match ? Math.trunc(Number(match[1])) : 0;
+  }
+
+  function itemMarketPageItemId() {
+    const locationMatch = `${location.search}&${location.hash}`.match(/(?:^|[?&#/])(?:itemid|item_id)=(\d+)/i);
+    if (locationMatch) return Math.trunc(Number(locationMatch[1]));
+    const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+    const ids = [...new Set(Array.from(main?.querySelectorAll?.('img[src*="/images/items/"], img[srcset*="/images/items/"]') || [])
+      .map(itemImageId)
+      .filter((itemId) => itemId > 0))];
     return ids.length === 1 ? ids[0] : 0;
   }
 
-  function marketPurchaseNodes(page) {
-    if (page.bazaar) {
-      const container = document.querySelector('[data-testid="bazaar-items"]'); if (!container) return [];
-      const direct = [...container.querySelectorAll('[data-testid="item"]')];
-      return direct.length ? direct : [...new Set([...container.querySelectorAll('img[src*="/images/items/"],img[srcset*="/images/items/"]')].map(image => image.closest('[class*="item___"],article,li')).filter(Boolean))];
-    }
-    const rows = [...document.querySelectorAll('ul[class*="sellerList___"] li[class*="rowWrapper___"],[data-testid="seller-row"],[data-testid="market-listing"]')].filter(node => node.querySelector('[class*="sellerRow___"],[class*="price___"],[data-testid="price"]'));
-    if (rows.length) return [...new Set(rows)];
-    return [...new Set([...document.querySelectorAll('button[class*="buyButton___"],button[aria-label^="Buy "]')].map(button => button.closest('li,article,[class*="rowWrapper___"]')).filter(Boolean))];
+  function itemMarketPageItemName(itemId = itemMarketPageItemId()) {
+    const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+    const matchingImage = itemId > 0
+      ? main?.querySelector?.(`img[src*="/images/items/${itemId}/"], img[srcset*="/images/items/${itemId}/"]`)
+      : null;
+    return String(matchingImage?.getAttribute('alt') || '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
-  function marketNodeUnavailable(node) {
-    if (node.matches('[aria-disabled="true"],[data-disabled="true"],[class*="disabled" i],[class*="unavailable" i],[class*="soldOut" i]') || node.querySelector('[class*="isBlockedForBuying"],#isBlockedForBuyingTooltip')) return true;
-    if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(node.textContent || ''))) return true;
-    const controls = [...node.querySelectorAll('button,[role="button"]')].filter(button => !button.matches('[data-slink-market-buy]') && (/\b(?:buy|purchase)\b/i.test(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''}`) || button.matches('[class*="buyButton___"],[class*="controlPanelButton___"]')));
-    return controls.length > 0 && !controls.some(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+  function itemMarketRowItemId(row) {
+    const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+    return itemImageId(image) || itemMarketPageItemId();
   }
 
-  function marketFillMaximum(node, price) {
-    const input = node.querySelector('input[data-testid="legacy-money-input"]:not([type="hidden"]),input.input-money:not([type="hidden"]),input[type="number"]');
-    if (!input || input.disabled || input.readOnly) return;
-    const stock = Number(String(input.dataset?.money || '').replace(/[^\d]/g, '')) || Number(String(node.textContent || '').match(/([\d,]+)\s+(?:available|in stock)/i)?.[1]?.replaceAll(',', '')) || Number(input.max) || 1;
-    const availableMoney = Number(String(document.querySelector('#user-money')?.dataset?.money || '').replace(/[^\d]/g, '')) || Number.POSITIVE_INFINITY;
-    const maximum = Math.max(1, Math.min(stock, Number.isFinite(availableMoney) && price > 0 ? Math.floor(availableMoney / price) : stock));
+  function itemMarketRowItemName(row) {
+    const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+    return String(image?.getAttribute('alt') || itemMarketPageItemName(itemImageId(image) || itemMarketPageItemId()))
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function itemMarketRowSellerId(row) {
+    const href = row?.querySelector?.('a[href*="profiles.php?XID="]')?.getAttribute('href') || '';
+    const match = href.match(/[?&]XID=(\d+)/i);
+    return match ? Math.trunc(Number(match[1])) : 0;
+  }
+
+  function itemMarketQuantityInput(row) {
+    return row?.querySelector?.('input[data-testid="legacy-money-input"]:not([type="hidden"]), input.input-money:not([type="hidden"])') || null;
+  }
+
+  function itemMarketRowStock(row) {
+    const input = itemMarketQuantityInput(row);
+    const declared = Number(String(input?.dataset?.money || '').replace(/[^\d]/g, ''));
+    if (Number.isFinite(declared) && declared > 0) return Math.trunc(declared);
+    const match = String(row?.querySelector?.('[class*="available___"]')?.textContent || row?.textContent || '').match(/([\d,]+)\s+available/i);
+    const stock = Number(String(match?.[1] || '').replaceAll(',', ''));
+    return Number.isFinite(stock) && stock > 0 ? Math.trunc(stock) : 0;
+  }
+
+  function itemMarketRowUnavailable(row) {
+    const input = itemMarketQuantityInput(row);
+    const buyButton = Array.from(row?.querySelectorAll?.('button[class*="buyButton___"], button[aria-label^="Buy "]') || [])
+      .find((button) => !button.matches('[data-tdd-quick-buy]')) || null;
+    const priceElement = row?.querySelector?.('[class*="price___"]');
+    if (!input || !buyButton || input.disabled || input.readOnly) return true;
+    if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(row.textContent || ''))) return true;
+    const rowStyle = getComputedStyle(row);
+    const priceStyle = priceElement ? getComputedStyle(priceElement) : null;
+    return bazaarCssColorLooksRed(rowStyle.backgroundColor)
+      || bazaarCssColorLooksRed(rowStyle.borderColor)
+      || bazaarCssColorLooksRed(priceStyle?.color)
+      || bazaarCssColorLooksRed(priceStyle?.backgroundColor);
+  }
+
+  function catalogItemForItemMarketRow(row) {
+    return catalogItemById(itemMarketRowItemId(row)) || catalogItemBySearch(itemMarketRowItemName(row));
+  }
+
+  function fillItemMarketPurchaseMaximum(row, price) {
+    if (!focusedTornPage()) return false;
+    const input = itemMarketQuantityInput(row);
+    if (!input || input.disabled || input.readOnly) return false;
+    const stock = itemMarketRowStock(row);
+    const fillSignature = `${Math.trunc(Number(price) || 0)}:${stock}`;
+    if (row.getAttribute('data-tdd-item-market-max-applied') === fillSignature) return true;
+    const declaredMax = Number(input.max || input.getAttribute('aria-valuemax') || input.dataset.max || input.dataset.money);
+    const moneyText = document.querySelector('#user-money')?.dataset?.money;
+    const normalizedMoney = String(moneyText ?? '').replace(/[^\d.-]/g, '');
+    const money = normalizedMoney ? Number(normalizedMoney) : null;
+    const affordable = Number(price) > 0 && Number.isFinite(money) ? Math.floor(money / Number(price)) : null;
+    if (affordable !== null && affordable < 1) return false;
+    const candidates = [stock, declaredMax, affordable, 10_000].filter((value) => Number.isFinite(value) && value > 0);
+    if (!candidates.length) return false;
+    const maximum = Math.max(1, Math.trunc(Math.min(...candidates)));
+    row.setAttribute('data-tdd-item-market-max-applied', fillSignature);
+    // Use Torn's own maximum control when present so its internal input state is
+    // updated, then apply the native setter/events as a fallback for layouts
+    // where that control is supplied by another script or reacts asynchronously.
+    const nativeMaximumControl = row.querySelector('.input-money-symbol input[type="button"], input.wai-btn[type="button"]');
+    if (nativeMaximumControl && !nativeMaximumControl.disabled) nativeMaximumControl.click();
+    if (Number(input.value) === maximum) return true;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    if (setter) setter.call(input, String(maximum)); else input.value = String(maximum);
-    input.dispatchEvent(new Event('input', { bubbles:true })); input.dispatchEvent(new Event('change', { bubbles:true }));
+    if (setter) setter.call(input, String(maximum));
+    else input.value = String(maximum);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
   }
 
-  function ensureMarketQuickBuyLayer() {
-    if (marketQuickBuyLayer?.isConnected) return marketQuickBuyLayer;
-    marketQuickBuyLayer = document.createElement('div'); marketQuickBuyLayer.dataset.slinkMarketBuyLayer = 'true';
-    marketQuickBuyLayer.style.cssText = 'position:fixed;inset:0;z-index:2147483645;pointer-events:none'; document.body.appendChild(marketQuickBuyLayer); return marketQuickBuyLayer;
+  function formatItemMarketPurchaseOpportunities() {
+    if (!focusedTornPage() || !onItemMarketPage()) return;
+    const rows = new Set(itemMarketSellerRows());
+    document.querySelectorAll('[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]').forEach((row) => {
+      if (!rows.has(row)) {
+        row.removeAttribute('data-tdd-item-market-one-dollar');
+        row.removeAttribute('data-tdd-item-market-shop-profit');
+      }
+    });
+    if (!rows.size) return;
+    ensurePurchaseHighlightStyles();
+    requestPurchaseSellPriceCatalog();
+    rows.forEach((row) => {
+      const price = itemMarketRowPrice(row);
+      const available = !itemMarketRowUnavailable(row);
+      const sellPrice = Number(catalogItemForItemMarketRow(row)?.sellPrice) || 0;
+      const oneDollar = available && price === 1;
+      const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
+      row.toggleAttribute('data-tdd-item-market-one-dollar', oneDollar);
+      row.toggleAttribute('data-tdd-item-market-shop-profit', shopProfit);
+      if (oneDollar || shopProfit) fillItemMarketPurchaseMaximum(row, price);
+      else row.removeAttribute('data-tdd-item-market-max-applied');
+    });
   }
 
-  function positionMarketQuickBuy(button, native) {
-    if (!button?.isConnected || !native?.isConnected) return;
-    const rect = native.getBoundingClientRect(); const hidden = rect.width <= 0 || rect.height <= 0 || rect.right < 0 || rect.bottom < 0 || rect.left > innerWidth || rect.top > innerHeight;
-    button.style.display = hidden ? 'none' : 'flex'; if (hidden) return;
-    button.style.left = `${Math.round(rect.left * 10) / 10}px`; button.style.top = `${Math.round(rect.top * 10) / 10}px`; button.style.width = `${Math.round(rect.width * 10) / 10}px`; button.style.height = `${Math.round(rect.height * 10) / 10}px`;
+  function bazaarPurchaseButton(control) {
+    if (!control) return false;
+    if (control.matches('[class*="controlPanelButton___"]')) return true;
+    const label = `${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('title') || ''}`.trim();
+    return /^(?:buy|purchase)\b/i.test(label);
   }
 
-  function syncMarketQuickBuyPositions() {
-    if (marketPositionFrame) return;
-    marketPositionFrame = global.requestAnimationFrame(() => { marketPositionFrame = null; marketQuickBuys.forEach((spec, native) => positionMarketQuickBuy(spec.button, native)); });
-  }
-
-  function removeMarketQuickBuy(native) {
-    marketQuickBuys.get(native)?.button?.remove(); native?.removeAttribute?.('data-slink-market-buy-native'); marketQuickBuys.delete(native);
-    if (!marketQuickBuys.size) { marketQuickBuyLayer?.remove(); marketQuickBuyLayer = null; }
-  }
-
-  function clearMarketQuickBuys() {
-    [...marketQuickBuys.keys()].forEach(removeMarketQuickBuy); document.querySelectorAll('[data-slink-market-buy]').forEach(button => button.remove()); marketQuickBuyLayer?.remove(); marketQuickBuyLayer = null;
-  }
-
-  function installMarketQuickBuy(node, price) {
-    if (!marketSettings().quickBuyEnabled) return null;
-    const native = [...node.querySelectorAll('button,[role="button"]')].find(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true' && !button.matches('[data-slink-market-buy]') && (/\b(?:buy|purchase)\b/i.test(`${button.textContent || ''} ${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`) || button.matches('[class*="buyButton___"],[class*="controlPanelButton___"]')));
-    if (!native) return null;
-    const existing = marketQuickBuys.get(native); if (existing) { existing.node = node; existing.price = price; positionMarketQuickBuy(existing.button, native); return native; }
-    const button = document.createElement('button'); button.type = 'button'; button.dataset.slinkMarketBuy = 'true'; button.textContent = 'SLINK Buy'; button.title = 'SLINK Buy maximum available quantity';
-    button.style.cssText = 'position:fixed;box-sizing:border-box;display:flex;align-items:center;justify-content:center;margin:0;padding:0 3px;border:1px solid rgba(255,255,255,.32);border-radius:4px;background:linear-gradient(#b9ff68,#68c51d);box-shadow:inset 0 1px rgba(255,255,255,.48),0 0 7px rgba(112,255,40,.55);color:#111;font:700 10px/1.1 Arial,sans-serif;text-align:center;text-transform:uppercase;overflow:hidden;cursor:pointer;pointer-events:auto';
-    button.addEventListener('click', event => { if (!event.isTrusted || document.visibilityState !== 'visible' || !document.hasFocus()) return; event.preventDefault(); event.stopImmediatePropagation(); const spec = marketQuickBuys.get(native); if (!spec || native.disabled) return; marketFillMaximum(spec.node, spec.price); native.click(); [40, 160, 450].forEach(delay => global.setTimeout(scheduleMarketDomFormat, delay)); });
-    native.dataset.slinkMarketBuyNative = 'true'; ensureMarketQuickBuyLayer().appendChild(button); marketQuickBuys.set(native, { button, node, price }); positionMarketQuickBuy(button, native); return native;
-  }
-
-  function formatMarketPurchasePage() {
-    const page = marketPurchasePage();
-    const cleanup = node => { ['data-slink-market-highlight','data-slink-market-targeted','data-slink-market-shop-profit','data-slink-market-one-dollar','data-slink-market-reason'].forEach(name => node.removeAttribute(name)); node.style.removeProperty('outline'); node.style.removeProperty('outline-offset'); node.style.removeProperty('box-shadow'); marketQuickBuys.forEach((spec, native) => { if (spec.node === node) removeMarketQuickBuy(native); }); };
-    if (!page || marketWatchLimit() <= 0) { document.querySelectorAll('[data-slink-market-highlight]').forEach(cleanup); clearMarketQuickBuys(); return; }
-    const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
-    const nodes = marketPurchaseNodes(page); const matched = new Set(); const activeBuys = new Set();
-    for (const node of nodes) {
-      const price = marketNodePrice(node); const itemId = marketNodeItemId(node) || marketPageItemId(page);
-      const image = node.querySelector('img[src*="/images/items/"],img[srcset*="/images/items/"]'); const name = String(node.querySelector('[data-testid="name"]')?.textContent || image?.getAttribute('alt') || '').replace(/\s+/g, ' ').trim().toLowerCase();
-      const item = catalog.find(row => row.id === itemId) || catalog.find(row => name && row.name.toLowerCase() === name);
-      const available = !marketNodeUnavailable(node); const targeted = page.linked && (page.itemId <= 0 || itemId <= 0 || itemId === page.itemId) && price === page.price; const oneDollar = available && price === 1; const shopProfit = available && price > 0 && Number(item?.shopSellPrice) > 0 && price < Number(item.shopSellPrice);
-      if (!targeted && !oneDollar && !shopProfit) { if (node.hasAttribute('data-slink-market-highlight')) cleanup(node); continue; }
-      matched.add(node); node.dataset.slinkMarketHighlight = targeted ? 'targeted' : shopProfit ? 'shop-profit' : 'one-dollar'; node.toggleAttribute('data-slink-market-targeted', targeted); node.toggleAttribute('data-slink-market-shop-profit', shopProfit); node.toggleAttribute('data-slink-market-one-dollar', oneDollar);
-      const color = targeted || oneDollar ? '#39ff14' : '#ff4fbd'; const glow = targeted || oneDollar ? 'rgba(57,255,20,.72)' : 'rgba(255,79,189,.68)'; node.style.setProperty('outline', `4px solid ${color}`, 'important'); node.style.setProperty('outline-offset', '2px', 'important'); node.style.setProperty('box-shadow', `0 0 18px 5px ${glow}`, 'important'); node.dataset.slinkMarketReason = targeted ? 'SLINK API-matched listing' : shopProfit ? `Below city shop sell price (${marketMoney(item.shopSellPrice)})` : '$1 purchase opportunity';
-      if (available) { const native = installMarketQuickBuy(node, price); if (native) activeBuys.add(native); }
+  function bazaarPurchaseQuantityInput(pending) {
+    const itemId = Number(pending?.itemId) || 0;
+    const currentCard = pending?.card?.isConnected
+      ? pending.card
+      : bazaarListingCards().find((card) => bazaarCardItemId(card) === itemId);
+    const roots = [currentCard];
+    document.querySelectorAll('[class*="buyMenu__"], [class*="buyForm___"], [role="dialog"], [aria-modal="true"], [class*="modal" i], [class*="dialog" i], [class*="confirm" i]').forEach((root) => {
+      if (elementVisible(root)) roots.push(root);
+    });
+    const active = document.activeElement;
+    if (active?.matches?.('[class*="buyAmountInput_"], input[type="number"], input[inputmode="numeric"]') && !active.disabled && !active.readOnly) return active;
+    for (const root of roots.filter(Boolean)) {
+      const inputs = Array.from(root.querySelectorAll('[class*="buyAmountInput_"], input[type="number"], input[inputmode="numeric"], input[pattern*="0-9"]'))
+        .filter((input) => !input.disabled && !input.readOnly && elementVisible(input));
+      const labelled = inputs.find((input) => /\b(?:amount|quantity|qty|buy)\b/i.test(`${input.name || ''} ${input.id || ''} ${input.placeholder || ''} ${input.getAttribute('aria-label') || ''}`));
+      if (labelled || inputs.length === 1) return labelled || inputs[0];
     }
-    document.querySelectorAll('[data-slink-market-highlight]').forEach(node => { if (!matched.has(node)) cleanup(node); }); marketQuickBuys.forEach((_spec, native) => { if (!activeBuys.has(native)) removeMarketQuickBuy(native); });
+    return null;
   }
 
-  function scheduleMarketDomFormat() {
-    if (marketFormatTimer) return;
-    marketFormatTimer = global.setTimeout(() => { marketFormatTimer = null; formatMarketPurchasePage(); }, 80);
+  function fillBazaarPurchaseMaximum(pending) {
+    if (!focusedTornPage() || !pending || marketPurchaseState.pendingBazaarPurchase !== pending || Date.now() - pending.clickedAt > 2_000) return false;
+    const input = bazaarPurchaseQuantityInput(pending);
+    if (!input) return false;
+    const declaredMax = Number(input.max || input.getAttribute('aria-valuemax') || input.dataset.max);
+    const moneyText = document.querySelector('#user-money')?.dataset?.money;
+    const normalizedMoney = String(moneyText ?? '').replace(/[^\d.-]/g, '');
+    const money = normalizedMoney ? Number(normalizedMoney) : null;
+    const affordable = Number(pending.price) > 0 && Number.isFinite(money) ? Math.floor(money / Number(pending.price)) : null;
+    if (affordable !== null && affordable < 1) return false;
+    const candidates = [Number(pending.stock), declaredMax, affordable, 10_000].filter((value) => Number.isFinite(value) && value > 0);
+    if (!candidates.length) return false;
+    const maximum = Math.max(1, Math.trunc(Math.min(...candidates)));
+    if (Number(input.value) !== maximum) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(input, String(maximum));
+      else input.value = String(maximum);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return true;
+  }
+
+  function normalizedPurchaseText(value) {
+    return String(value || '')
+      .toLocaleLowerCase()
+      .replace(/[’']/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function quickPurchaseListing(kind, element) {
+    if (kind === 'bazaar') {
+      return {
+        kind,
+        element,
+        itemId: bazaarCardItemId(element),
+        itemName: bazaarCardItemName(element),
+        price: bazaarCardPrice(element),
+        stock: bazaarCardStock(element),
+        sellerId: 0,
+      };
+    }
+    return {
+      kind,
+      element,
+      itemId: itemMarketRowItemId(element),
+      itemName: itemMarketRowItemName(element),
+      price: itemMarketRowPrice(element),
+      stock: itemMarketRowStock(element),
+      sellerId: itemMarketRowSellerId(element),
+    };
+  }
+
+  function sameQuickPurchaseListing(flow, listing) {
+    if (!flow || !listing || flow.kind !== listing.kind) return false;
+    if (flow.element?.isConnected) return listing.element === flow.element;
+    if (Number(flow.itemId) > 0 && Number(listing.itemId) > 0 && Number(flow.itemId) !== Number(listing.itemId)) return false;
+    if (Number(flow.price) !== Number(listing.price)) return false;
+    if (flow.sellerId > 0 && listing.sellerId > 0 && Number(flow.sellerId) !== Number(listing.sellerId)) return false;
+    return normalizedPurchaseText(flow.itemName) === normalizedPurchaseText(listing.itemName);
+  }
+
+  function sameBazaarQuickPurchaseIdentity(flow, listing) {
+    if (!flow || !listing || flow.kind !== 'bazaar' || listing.kind !== 'bazaar') return false;
+    let matched = false;
+    const flowItemId = Number(flow.itemId) || 0;
+    const listingItemId = Number(listing.itemId) || 0;
+    if (flowItemId > 0 && listingItemId > 0) {
+      if (flowItemId !== listingItemId) return false;
+      matched = true;
+    }
+    const flowName = normalizedPurchaseText(flow.itemName);
+    const listingName = normalizedPurchaseText(listing.itemName);
+    if (flowName && listingName) {
+      if (flowName !== listingName) return false;
+      matched = true;
+    }
+    const flowHasPrice = flow.price !== null && flow.price !== undefined && flow.price !== '';
+    const listingHasPrice = listing.price !== null && listing.price !== undefined && listing.price !== '';
+    const flowPrice = Number(flow.price);
+    const listingPrice = Number(listing.price);
+    if (flowHasPrice && listingHasPrice && Number.isFinite(flowPrice) && Number.isFinite(listingPrice)) {
+      if (flowPrice !== listingPrice) return false;
+      matched = true;
+    }
+    return matched;
+  }
+
+  function mergedBazaarQuickPurchaseListing(flow, listing) {
+    if (!listing) return flow || null;
+    const listingHasPrice = listing.price !== null && listing.price !== undefined && listing.price !== '';
+    return {
+      ...flow,
+      ...listing,
+      itemId: Number(listing.itemId) > 0 ? listing.itemId : flow?.itemId,
+      itemName: listing.itemName || flow?.itemName || '',
+      price: listingHasPrice && Number.isFinite(Number(listing.price)) ? listing.price : flow?.price,
+      stock: Number(listing.stock) > 0 ? listing.stock : flow?.stock,
+    };
+  }
+
+  function highlightedQuickPurchaseListing(kind, element) {
+    if (!marketPurchaseState.settings.highlightedQuickBuyEnabled || !element?.isConnected) return false;
+    if (kind === 'bazaar') {
+      return element.hasAttribute('data-tdd-bazaar-targeted')
+        || element.hasAttribute('data-tdd-bazaar-one-dollar')
+        || element.hasAttribute('data-tdd-bazaar-shop-profit');
+    }
+    return element.hasAttribute('data-tdd-item-market-one-dollar') || element.hasAttribute('data-tdd-item-market-shop-profit');
+  }
+
+  function quickPurchaseQuantity(listing) {
+    const input = listing.kind === 'bazaar'
+      ? bazaarPurchaseQuantityInput({ ...listing, card: listing.element })
+      : itemMarketQuantityInput(listing.element);
+    const quantity = Math.trunc(Number(String(input?.value || '').replace(/[^\d]/g, '')) || 0);
+    return quantity > 0 ? quantity : 0;
+  }
+
+  function quickPurchaseConfirmation(flow) {
+    if (!flow || Date.now() - Number(flow.startedAt || 0) > QUICK_PURCHASE_FLOW_TIMEOUT_MS) return null;
+    const selector = flow.kind === 'bazaar' ? '[data-testid="buy-confirmation"]' : '[class*="confirmWrapper___"]';
+    return Array.from(document.querySelectorAll(selector)).find((wrapper) => elementVisible(wrapper) && quickPurchaseConfirmationMatches(wrapper, flow)) || null;
+  }
+
+  function quickPurchaseConfirmationMatches(wrapper, flow) {
+    const text = normalizedPurchaseText(wrapper?.textContent);
+    const itemName = normalizedPurchaseText(flow?.itemName);
+    if (!text || !itemName || !text.includes(itemName)) return false;
+    const messageId = wrapper.querySelector('[id^="buy-confirmation-msg-"]')?.id || '';
+    const messageItemId = Number(messageId.match(/^buy-confirmation-msg-(\d+)-/i)?.[1]) || 0;
+    if (messageItemId > 0 && Number(flow.itemId) > 0 && messageItemId !== Number(flow.itemId)) return false;
+    const quantity = Math.max(1, Math.trunc(Number(flow.quantity) || 1));
+    const expectedTotal = Math.trunc(Number(flow.price) * quantity);
+    const displayedTotals = Array.from(String(wrapper.textContent || '').matchAll(/\$\s*([\d,]+)/g), (match) => Number(match[1].replaceAll(',', '')));
+    return expectedTotal <= 0 || !displayedTotals.length || displayedTotals.includes(expectedTotal);
+  }
+
+  function quickPurchaseYesButton(wrapper, kind) {
+    if (!wrapper) return null;
+    if (kind === 'bazaar') return wrapper.querySelector('button[aria-label="Yes"]');
+    return Array.from(wrapper.querySelectorAll('button')).find((button) => /^yes$/i.test(String(button.textContent || '').trim())) || null;
+  }
+
+  function nativeQuickPurchaseControl(element, selector) {
+    return Array.from(element?.querySelectorAll?.(selector) || []).find((control) => (
+      control.isConnected
+      && !control.matches('[data-tdd-quick-buy]')
+      && !control.disabled
+      && control.getAttribute('aria-disabled') !== 'true'
+    )) || null;
+  }
+
+  function measurableQuickPurchaseControl(control) {
+    if (!control || !elementVisible(control)) return false;
+    const rect = control.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0
+      && Number.isFinite(rect.left) && Number.isFinite(rect.top);
+  }
+
+  function highlightedQuickPurchaseElements(kind) {
+    const selector = kind === 'bazaar'
+      ? '[data-tdd-bazaar-targeted], [data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit]'
+      : '[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]';
+    return Array.from(document.querySelectorAll(selector));
+  }
+
+  function resolvedQuickPurchaseListing(flow) {
+    if (!flow) return null;
+    if (flow.kind === 'bazaar') {
+      const cards = [...new Set([
+        flow.element?.isConnected ? flow.element : null,
+        ...highlightedQuickPurchaseElements('bazaar'),
+        ...bazaarListingCards(),
+      ].filter(Boolean))];
+      const listing = cards
+        .map((element) => quickPurchaseListing('bazaar', element))
+        .find((candidate) => sameBazaarQuickPurchaseIdentity(flow, candidate));
+      return mergedBazaarQuickPurchaseListing(flow, listing);
+    }
+    return highlightedQuickPurchaseElements(flow.kind)
+      .map((element) => quickPurchaseListing(flow.kind, element))
+      .find((listing) => sameQuickPurchaseListing(flow, listing)) || null;
+  }
+
+  function quickPurchaseListingControlKey(listing) {
+    if (listing.kind === 'bazaar') {
+      const identity = Number(listing.itemId) > 0
+        ? `item-${Number(listing.itemId)}`
+        : `name-${normalizedPurchaseText(listing.itemName)}`;
+      return `bazaar:${identity}:price-${Number(listing.price) || 0}`;
+    }
+    let id = marketPurchaseState.quickPurchaseListingIds.get(listing.element);
+    if (!id) {
+      id = ++marketPurchaseState.quickPurchaseListingIdCounter;
+      marketPurchaseState.quickPurchaseListingIds.set(listing.element, id);
+    }
+    return `${listing.kind}:${id}`;
+  }
+
+  function quickPurchaseAnchor(native, listing) {
+    const controlRect = native.getBoundingClientRect();
+    const listingRect = listing.element.getBoundingClientRect();
+    return {
+      offsetLeft: controlRect.left - listingRect.left,
+      offsetTop: controlRect.top - listingRect.top,
+      viewportLeft: controlRect.left,
+      viewportTop: controlRect.top,
+      width: controlRect.width,
+      height: controlRect.height,
+    };
+  }
+
+  function desiredFlowStageControl(desired, native, spec, activeFlow) {
+    if (!native) return;
+    const transitionElapsed = Date.now() - Number(activeFlow.lastActionAt || 0);
+    const waitingForNativeTransition = activeFlow?.lastStage === spec.stage && transitionElapsed < 1_500;
+    if (waitingForNativeTransition) scheduleQuickPurchaseControlSync(1_500 - transitionElapsed + 20);
+    desired.set(activeFlow.controlKey, waitingForNativeTransition
+      ? { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey, label: 'Wait', disabled: true, passive: true }
+      : { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey });
+  }
+
+  function activeBazaarQuickPurchaseControl(flow, selector) {
+    const resolved = resolvedQuickPurchaseListing(flow);
+    let native = nativeQuickPurchaseControl(resolved?.element, selector);
+    if (native && !measurableQuickPurchaseControl(native)) native = null;
+    if (!native) {
+      const candidates = Array.from(document.querySelectorAll(selector)).filter((control) => (
+        control.isConnected
+        && !control.matches('[data-tdd-quick-buy]')
+        && !control.disabled
+        && control.getAttribute('aria-disabled') !== 'true'
+        && measurableQuickPurchaseControl(control)
+      ));
+      native = candidates.find((control) => {
+        const card = bazaarListingCards().find((candidate) => candidate.contains(control));
+        return card && sameBazaarQuickPurchaseIdentity(flow, quickPurchaseListing('bazaar', card));
+      }) || (candidates.length === 1 ? candidates[0] : null);
+    }
+    if (!native) return { native: null, listing: resolved || flow };
+    const card = bazaarListingCards().find((candidate) => candidate.contains(native))
+      || native.closest('[data-testid="item"]');
+    const listing = card
+      ? mergedBazaarQuickPurchaseListing(flow, quickPurchaseListing('bazaar', card))
+      : resolved || flow;
+    return { native, listing };
+  }
+
+  function desiredBazaarFlowWaitControl(desired, activeFlow, listing) {
+    if (!activeFlow?.lastNative) return;
+    const elapsed = Date.now() - Number(activeFlow.lastActionAt || activeFlow.startedAt || 0);
+    if (elapsed >= QUICK_PURCHASE_TRANSITION_TIMEOUT_MS) {
+      marketPurchaseState.quickPurchaseFlow = null;
+      return;
+    }
+    scheduleQuickPurchaseControlSync(QUICK_PURCHASE_TRANSITION_TIMEOUT_MS - elapsed + 20);
+    desired.set(activeFlow.controlKey, {
+      stage: 'waiting',
+      listing: listing || activeFlow,
+      native: activeFlow.lastNative,
+      anchor: activeFlow.anchor,
+      controlKey: activeFlow.controlKey,
+      label: 'Wait',
+      disabled: true,
+      passive: true,
+    });
+  }
+
+  function desiredQuickPurchaseControls() {
+    const desired = new Map();
+    if (!marketPurchaseState.settings.highlightedQuickBuyEnabled) return desired;
+    const flow = marketPurchaseState.quickPurchaseFlow;
+    if (flow && Date.now() - Number(flow.startedAt || 0) > QUICK_PURCHASE_FLOW_TIMEOUT_MS) marketPurchaseState.quickPurchaseFlow = null;
+    const activeFlow = marketPurchaseState.quickPurchaseFlow;
+    const confirmation = quickPurchaseConfirmation(activeFlow);
+    if (confirmation) {
+      const yes = quickPurchaseYesButton(confirmation, activeFlow.kind);
+      if (yes && !yes.disabled) {
+        const sending = Date.now() - Number(activeFlow.confirmationSentAt || 0) < 2_000;
+        desired.set(activeFlow.controlKey, {
+          stage: 'confirm',
+          listing: resolvedQuickPurchaseListing(activeFlow) || activeFlow,
+          native: yes,
+          anchor: activeFlow.anchor,
+          controlKey: activeFlow.controlKey,
+          label: sending ? 'Sending' : 'Yes',
+          disabled: sending,
+        });
+      } else if (activeFlow.kind === 'bazaar') {
+        desiredBazaarFlowWaitControl(desired, activeFlow, resolvedQuickPurchaseListing(activeFlow));
+      }
+      return desired;
+    }
+
+    if (activeFlow) {
+      if (activeFlow.kind === 'bazaar') {
+        const buyControl = activeBazaarQuickPurchaseControl(activeFlow, 'button[data-testid="buy-button"]');
+        const activateControl = activeBazaarQuickPurchaseControl(activeFlow, 'button[data-testid="activate-buy-button"]');
+        if (buyControl.native) desiredFlowStageControl(desired, buyControl.native, {
+          stage: 'buy',
+          listing: buyControl.listing,
+          native: buyControl.native,
+          label: 'Buy max',
+        }, activeFlow);
+        else if (activateControl.native) desiredFlowStageControl(desired, activateControl.native, {
+          stage: 'open',
+          listing: activateControl.listing,
+          native: activateControl.native,
+          label: 'Buy',
+        }, activeFlow);
+        else desiredBazaarFlowWaitControl(desired, activeFlow, resolvedQuickPurchaseListing(activeFlow));
+      } else {
+        const listing = resolvedQuickPurchaseListing(activeFlow);
+        if (!listing) return desired;
+        const buy = nativeQuickPurchaseControl(listing.element, 'button[class*="buyButton___"], button[aria-label^="Buy "]');
+        if (buy) desiredFlowStageControl(desired, buy, { stage: 'buy', listing, native: buy, label: 'Buy max' }, activeFlow);
+      }
+      return desired;
+    }
+
+    bazaarListingCards().forEach((element) => {
+      if (!highlightedQuickPurchaseListing('bazaar', element)) return;
+      const listing = quickPurchaseListing('bazaar', element);
+      const buyCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"]');
+      const activateCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="activate-buy-button"]');
+      const buy = measurableQuickPurchaseControl(buyCandidate) ? buyCandidate : null;
+      const activate = measurableQuickPurchaseControl(activateCandidate) ? activateCandidate : null;
+      const native = buy || activate;
+      const controlKey = quickPurchaseListingControlKey(listing);
+      const existingButton = marketPurchaseState.quickPurchaseOverlays.get(controlKey);
+      const existingSpec = existingButton ? marketPurchaseState.quickPurchaseControlSpecs.get(existingButton) : null;
+      if (!native && !existingSpec) return;
+      desired.set(controlKey, {
+        stage: buy ? 'buy' : activate ? 'open' : existingSpec.stage,
+        listing,
+        native: native || existingSpec.native,
+        anchor: native ? quickPurchaseAnchor(native, listing) : existingSpec.anchor,
+        controlKey,
+        label: buy ? 'Buy max' : activate ? 'Buy' : existingSpec.label,
+      });
+    });
+    highlightedQuickPurchaseElements('item-market').forEach((element) => {
+      const listing = quickPurchaseListing('item-market', element);
+      const native = nativeQuickPurchaseControl(element, 'button[class*="buyButton___"], button[aria-label^="Buy "]');
+      if (!native) return;
+      const controlKey = quickPurchaseListingControlKey(listing);
+      desired.set(controlKey, {
+        stage: 'buy',
+        listing,
+        native,
+        anchor: quickPurchaseAnchor(native, listing),
+        controlKey,
+        label: 'Buy max',
+      });
+    });
+    return desired;
+  }
+
+  function ensureQuickPurchaseLayer() {
+    let layer = document.getElementById('tdd-quick-buy-layer');
+    if (layer) return layer;
+    layer = document.createElement('div');
+    layer.id = 'tdd-quick-buy-layer';
+    layer.setAttribute('aria-label', 'Highlighted listing quick-buy controls');
+    document.body?.appendChild(layer);
+    document.querySelectorAll('[data-tdd-quick-buy-native]').forEach((native) => native.removeAttribute('data-tdd-quick-buy-native'));
+    return layer;
+  }
+
+  function setQuickPurchaseButtonStyle(button, property, value) {
+    if (button.style[property] !== value) button.style[property] = value;
+  }
+
+  function positionQuickPurchaseButton(button, spec) {
+    const listingElement = spec.listing.element;
+    const useListingPosition = listingElement?.isConnected
+      && (spec.listing.kind !== 'bazaar' || elementVisible(listingElement));
+    const listingRect = useListingPosition ? listingElement.getBoundingClientRect() : null;
+    const left = listingRect ? listingRect.left + Number(spec.anchor.offsetLeft || 0) : Number(spec.anchor.viewportLeft || 0);
+    const top = listingRect ? listingRect.top + Number(spec.anchor.offsetTop || 0) : Number(spec.anchor.viewportTop || 0);
+    const width = Math.max(1, Number(spec.anchor.width) || spec.native.getBoundingClientRect().width || 1);
+    const height = Math.max(1, Number(spec.anchor.height) || spec.native.getBoundingClientRect().height || 1);
+    const hidden = left + width < 0 || top + height < 0 || left > innerWidth || top > innerHeight;
+    setQuickPurchaseButtonStyle(button, 'display', hidden ? 'none' : 'block');
+    setQuickPurchaseButtonStyle(button, 'left', `${Math.round(left * 10) / 10}px`);
+    setQuickPurchaseButtonStyle(button, 'top', `${Math.round(top * 10) / 10}px`);
+    setQuickPurchaseButtonStyle(button, 'width', `${Math.round(width * 10) / 10}px`);
+    setQuickPurchaseButtonStyle(button, 'height', `${Math.round(height * 10) / 10}px`);
+  }
+
+  function clearQuickPurchaseControls({ resetFlow = true } = {}) {
+    if (marketPurchaseState.bazaarOneDollarTimer) window.clearTimeout(marketPurchaseState.bazaarOneDollarTimer);
+    marketPurchaseState.bazaarOneDollarTimer = null;
+    if (marketPurchaseState.quickPurchaseSyncTimer) window.clearTimeout(marketPurchaseState.quickPurchaseSyncTimer);
+    marketPurchaseState.quickPurchaseSyncTimer = null;
+    marketPurchaseState.quickPurchaseOverlays.forEach((button) => button.remove());
+    marketPurchaseState.quickPurchaseOverlays.clear();
+    document.getElementById('tdd-quick-buy-layer')?.remove();
+    if (resetFlow) marketPurchaseState.quickPurchaseFlow = null;
+  }
+
+  function syncHighlightedQuickPurchaseControls() {
+    if (!focusedTornPage()) return;
+    if (!onPurchaseOpportunityPage() && !marketPurchaseState.quickPurchaseFlow) {
+      clearQuickPurchaseControls();
+      return;
+    }
+    const desired = desiredQuickPurchaseControls();
+    const now = Date.now();
+    marketPurchaseState.quickPurchaseOverlays.forEach((button, controlKey) => {
+      if (desired.has(controlKey) && button.isConnected) return;
+      const previous = marketPurchaseState.quickPurchaseControlSpecs.get(button);
+      const lastSeenAt = Number(button.dataset.tddQuickBuySeenAt) || 0;
+      const bazaarGraceRemaining = previous?.listing?.kind === 'bazaar' ? 900 - (now - lastSeenAt) : 0;
+      if (bazaarGraceRemaining > 0 && button.isConnected) {
+        scheduleQuickPurchaseControlSync(Math.max(40, bazaarGraceRemaining));
+        return;
+      }
+      button.remove();
+      marketPurchaseState.quickPurchaseOverlays.delete(controlKey);
+    });
+    if (!desired.size && !marketPurchaseState.quickPurchaseOverlays.size) {
+      document.getElementById('tdd-quick-buy-layer')?.remove();
+      return;
+    }
+    const layer = desired.size ? ensureQuickPurchaseLayer() : document.getElementById('tdd-quick-buy-layer');
+    if (!layer) return;
+    desired.forEach((spec, controlKey) => {
+      let button = marketPurchaseState.quickPurchaseOverlays.get(controlKey);
+      if (!button?.isConnected) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('data-tdd-quick-buy', 'true');
+        layer.appendChild(button);
+        marketPurchaseState.quickPurchaseOverlays.set(controlKey, button);
+      }
+      const ariaLabel = `${spec.label}: ${spec.listing.itemName}`;
+      if (button.dataset.tddQuickBuyStage !== spec.stage) button.dataset.tddQuickBuyStage = spec.stage;
+      if (button.textContent !== spec.label) button.textContent = spec.label;
+      if (button.disabled !== (spec.disabled === true)) button.disabled = spec.disabled === true;
+      if (spec.passive === true) button.dataset.tddQuickBuyPassive = 'true';
+      else button.removeAttribute('data-tdd-quick-buy-passive');
+      if (button.getAttribute('aria-label') !== ariaLabel) button.setAttribute('aria-label', ariaLabel);
+      button.dataset.tddQuickBuySeenAt = String(now);
+      positionQuickPurchaseButton(button, spec);
+      marketPurchaseState.quickPurchaseControlSpecs.set(button, spec);
+    });
+  }
+
+  function scheduleQuickPurchaseControlSync(delay = 40) {
+    if (!focusedTornPage()) return;
+    if (!onPurchaseOpportunityPage() && !marketPurchaseState.quickPurchaseFlow && !marketPurchaseState.quickPurchaseOverlays.size) return;
+    if (marketPurchaseState.quickPurchaseSyncTimer) return;
+    marketPurchaseState.quickPurchaseSyncTimer = window.setTimeout(() => {
+      marketPurchaseState.quickPurchaseSyncTimer = null;
+      syncHighlightedQuickPurchaseControls();
+    }, delay);
+  }
+
+  function refreshPurchaseOpportunityFormattingAfterClick(delay) {
+    window.setTimeout(() => {
+      formatBazaarOneDollarListings();
+      formatItemMarketPurchaseOpportunities();
+      syncHighlightedQuickPurchaseControls();
+    }, delay);
+  }
+
+  function handleHighlightedQuickPurchaseClick(event) {
+    const button = event.target?.closest?.('button[data-tdd-quick-buy]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const spec = marketPurchaseState.quickPurchaseControlSpecs.get(button);
+    if (!event.isTrusted || !marketPurchaseState.settings.highlightedQuickBuyEnabled || !focusedTornPage()) return;
+    if (spec?.passive) return;
+    if (!spec?.native?.isConnected || spec.native.disabled || spec.native.getAttribute('aria-disabled') === 'true') return;
+    const listing = spec.listing;
+    if (spec.stage === 'confirm') {
+      const flow = marketPurchaseState.quickPurchaseFlow;
+      const wrapper = spec.native.closest('[data-testid="buy-confirmation"], [class*="confirmWrapper___"]');
+      const sameListing = flow?.kind === 'bazaar'
+        ? sameBazaarQuickPurchaseIdentity(flow, listing)
+        : sameQuickPurchaseListing(flow, listing);
+      if (!sameListing || !quickPurchaseConfirmationMatches(wrapper, flow)) return;
+      button.disabled = true;
+      button.textContent = 'Sending';
+      const sentAt = Date.now();
+      marketPurchaseState.quickPurchaseFlow = { ...flow, confirmationSentAt: sentAt };
+      spec.native.click();
+      refreshPurchaseOpportunityFormattingAfterClick(80);
+      refreshPurchaseOpportunityFormattingAfterClick(300);
+      window.setTimeout(() => {
+        if (marketPurchaseState.quickPurchaseFlow?.confirmationSentAt === sentAt) marketPurchaseState.quickPurchaseFlow = null;
+        refreshPurchaseOpportunityFormattingAfterClick(0);
+      }, 2_050);
+      return;
+    }
+    const continuingFlow = marketPurchaseState.quickPurchaseFlow?.controlKey === spec.controlKey;
+    if (!continuingFlow && !highlightedQuickPurchaseListing(listing.kind, listing.element)) return;
+    if (spec.stage === 'buy') {
+      if (listing.kind === 'bazaar') {
+        const currentCard = bazaarListingCards().find((candidate) => candidate.contains(spec.native))
+          || spec.native.closest('[data-testid="item"]')
+          || listing.element;
+        const currentListing = mergedBazaarQuickPurchaseListing(listing, quickPurchaseListing('bazaar', currentCard));
+        const pending = {
+          ...currentListing,
+          card: currentCard,
+          clickedAt: Date.now(),
+        };
+        marketPurchaseState.pendingBazaarPurchase = pending;
+        fillBazaarPurchaseMaximum(pending);
+        Object.assign(listing, currentListing);
+      } else {
+        fillItemMarketPurchaseMaximum(listing.element, listing.price);
+      }
+      listing.quantity = quickPurchaseQuantity(listing);
+      if (listing.quantity < 1) return;
+    }
+    const now = Date.now();
+    marketPurchaseState.quickPurchaseFlow = {
+      ...listing,
+      anchor: spec.anchor,
+      controlKey: spec.controlKey,
+      startedAt: Number(marketPurchaseState.quickPurchaseFlow?.startedAt) || now,
+      lastActionAt: now,
+      lastStage: spec.stage,
+      lastNative: spec.native,
+    };
+    button.disabled = true;
+    button.textContent = 'Opening';
+    spec.native.click();
+    refreshPurchaseOpportunityFormattingAfterClick(40);
+    refreshPurchaseOpportunityFormattingAfterClick(160);
+    refreshPurchaseOpportunityFormattingAfterClick(450);
+    window.setTimeout(() => {
+      const currentFlow = marketPurchaseState.quickPurchaseFlow;
+      if (currentFlow?.lastActionAt === now) {
+        const listingNow = resolvedQuickPurchaseListing(currentFlow);
+        const advancedToBuy = currentFlow.lastStage === 'open'
+          && (currentFlow.kind === 'bazaar'
+            ? activeBazaarQuickPurchaseControl(currentFlow, 'button[data-testid="buy-button"]').native
+            : nativeQuickPurchaseControl(listingNow?.element, 'button[data-testid="buy-button"]'));
+        if (!advancedToBuy && !quickPurchaseConfirmation(currentFlow)) marketPurchaseState.quickPurchaseFlow = null;
+      }
+      refreshPurchaseOpportunityFormattingAfterClick(0);
+    }, 1_650);
+  }
+
+  function handleBazaarPurchaseClick(event) {
+    if (!focusedTornPage() || !onBazaarPage()) return;
+    const control = event.target?.closest?.('button, [role="button"]');
+    if (control?.matches?.('[data-tdd-quick-buy]')) return;
+    if (!bazaarPurchaseButton(control)) return;
+    const card = bazaarListingCards().find((candidate) => candidate.contains(control));
+    if (!card || bazaarCardUnavailable(card)) return;
+    const pending = {
+      card,
+      itemId: bazaarCardItemId(card),
+      price: bazaarCardPrice(card),
+      stock: bazaarCardStock(card),
+      clickedAt: Date.now(),
+    };
+    marketPurchaseState.pendingBazaarPurchase = pending;
+    [0, 60, 180, 420, 900, 1_500].forEach((delay) => window.setTimeout(() => {
+      fillBazaarPurchaseMaximum(pending);
+      if (delay === 1_500 && marketPurchaseState.pendingBazaarPurchase === pending) marketPurchaseState.pendingBazaarPurchase = null;
+    }, delay));
+  }
+
+  function schedulePurchaseOpportunityFormatting(delay = 200) {
+    if (!focusedTornPage() || !onPurchaseOpportunityPage()) return;
+    if (marketPurchaseState.bazaarOneDollarTimer) return;
+    marketPurchaseState.bazaarOneDollarTimer = window.setTimeout(() => {
+      marketPurchaseState.bazaarOneDollarTimer = null;
+      formatBazaarOneDollarListings();
+      formatItemMarketPurchaseOpportunities();
+      syncHighlightedQuickPurchaseControls();
+    }, delay);
+  }
+
+  function clearMarketPurchaseFormatting() {
+    if (marketPurchaseState.bazaarOneDollarTimer) global.clearTimeout(marketPurchaseState.bazaarOneDollarTimer);
+    if (marketPurchaseState.quickPurchaseSyncTimer) global.clearTimeout(marketPurchaseState.quickPurchaseSyncTimer);
+    marketPurchaseState.bazaarOneDollarTimer = null;
+    marketPurchaseState.quickPurchaseSyncTimer = null;
+    clearQuickPurchaseControls();
+    marketPurchaseState.quickPurchaseFlow = null;
+    marketPurchaseState.pendingBazaarPurchase = null;
+    const attributes = [
+      'data-tdd-bazaar-targeted', 'data-tdd-bazaar-one-dollar', 'data-tdd-bazaar-shop-profit',
+      'data-tdd-item-market-one-dollar', 'data-tdd-item-market-shop-profit', 'data-tdd-item-market-max-applied',
+      'data-tdd-purchase-reason'
+    ];
+    for (const attribute of attributes) document.querySelectorAll(`[${attribute}]`).forEach(node => node.removeAttribute(attribute));
+    document.getElementById('tdd-purchase-highlight-styles')?.remove();
   }
 
   function renderDollarBazaars() {
@@ -5291,7 +6218,7 @@
     if (action === 'remove-market-watch') {
       const uid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
       const settings = marketSettings(); settings.watches = settings.watches.filter(watch => watch.uid !== uid); if (moduleState.market.editingUid === uid) moduleState.market.editingUid = '';
-      const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; writeDataState(); renderMarket(); scheduleMarketDomFormat();
+      const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; writeDataState(); renderMarket(); schedulePurchaseOpportunityFormatting();
     }
     const marketOption = event.target.closest('[data-market-item-option]');
     if (marketOption) selectMarketSuggestion(Number(marketOption.dataset.marketItemOption));
@@ -5403,7 +6330,7 @@
       marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; writeDataState(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
     }
     if (event.target.matches('[data-field="market-quick-buy"]')) {
-      marketSettings().quickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearMarketQuickBuys(); else scheduleMarketDomFormat();
+      marketSettings().quickBuyEnabled = event.target.checked; marketPurchaseState.settings.highlightedQuickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearQuickPurchaseControls(); else schedulePurchaseOpportunityFormatting(0);
     }
     if (event.target.matches('[data-field="market-type"]')) {
       captureMarketDraft();
@@ -5483,10 +6410,10 @@
   global.addEventListener('resize', () => { clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
   global.visualViewport?.addEventListener('resize', () => { syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
   global.addEventListener('orientationchange', () => global.setTimeout(() => clampLauncher(true), 180));
-  global.addEventListener('hashchange', scheduleMarketDomFormat);
-  global.addEventListener('popstate', scheduleMarketDomFormat);
-  global.addEventListener('resize', syncMarketQuickBuyPositions);
-  global.addEventListener('scroll', syncMarketQuickBuyPositions, true);
+  global.addEventListener('hashchange', schedulePurchaseOpportunityFormatting);
+  global.addEventListener('popstate', schedulePurchaseOpportunityFormatting);
+  global.addEventListener('resize', scheduleQuickPurchaseControlSync);
+  global.addEventListener('scroll', scheduleQuickPurchaseControlSync, true);
   document.addEventListener('visibilitychange', () => {
     if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     if (!document.hidden) void scanIntendedProfileDom();
@@ -5496,13 +6423,14 @@
     unlockTornScroll();
     clearInterval(targetPollingTimer);
     clearInterval(targetStakeoutTimer);
+    clearMarketPurchaseFormatting();
   }, { once:true });
 
   const guardian = new MutationObserver(() => {
     if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
   });
   guardian.observe(document, { childList:true, subtree:true });
-  marketObserver = new MutationObserver(() => { scheduleMarketDomFormat(); scanAttackMugResults(); void scanIntendedProfileDom(); });
+  marketObserver = new MutationObserver(() => { schedulePurchaseOpportunityFormatting(80); scanAttackMugResults(); void scanIntendedProfileDom(); });
   marketObserver.observe(document.body, { childList:true, subtree:true });
 
   if (typeof GM_API.menu === 'function') {
@@ -5531,7 +6459,10 @@
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
   if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
-  scheduleMarketDomFormat();
+  syncMarketPurchaseCatalog();
+  schedulePurchaseOpportunityFormatting(0);
+  document.addEventListener('click', handleHighlightedQuickPurchaseClick, true);
+  document.addEventListener('click', handleBazaarPurchaseClick, true);
   void scanIntendedProfileDom();
   scanAttackMugResults();
 
