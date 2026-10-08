@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.26
+// @version      0.4.27
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.26-permission-key-refresh';
+  const BUILD = '0.4.27-market-dom-activation';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.26';
+  const CLIENT_VERSION = '0.4.27';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -252,6 +252,7 @@
     quickPurchaseFlow:null,
     quickPurchaseOverlays:new Map(),
     quickPurchaseControlSpecs:new WeakMap(),
+    domTestEnabled:false,
     bazaarOneDollarTimer:null,
     quickPurchaseSyncTimer:null
   };
@@ -4342,7 +4343,7 @@
           <fieldset class="market-sources" ${form.marketType === 'points' ? 'disabled' : ''}><legend>Sources</legend><label><input type="checkbox" data-field="market-source" ${form.marketEnabled ? 'checked' : ''}> Item Market</label><label><input type="checkbox" data-field="bazaar-source" ${form.bazaarEnabled ? 'checked' : ''}> Weaver Bazaar</label></fieldset>
           <div class="market-form-actions"><button type="button" data-action="save-market-watch">${edit ? 'Update watch' : 'Save watch'}</button><button type="button" data-action="clear-market-form">Clear</button></div>
         </div>
-        <div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-listed-items" ${settings.listedItemsEnabled ? 'checked' : ''}> Listed SLINK watches</label><label><input type="checkbox" data-field="market-weaver-pricelist" ${settings.weaverPricelistEnabled ? 'checked' : ''}> My Weaver price list</label><label>Check first <select data-field="market-weaver-source-order"><option value="listed-first" ${settings.weaverSourceOrder === 'listed-first' ? 'selected' : ''}>Listed SLINK watches</option><option value="pricelist-first" ${settings.weaverSourceOrder === 'pricelist-first' ? 'selected' : ''}>Weaver price list</option></select></label><button type="button" data-action="sync-market-weaver-pricelist" ${current.busy ? 'disabled' : ''}>Sync Weaver price list</button><span class="muted">${escapeHtml(pricelistStatus)}</span><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label></div><p class="muted">One Weaver marketplace snapshot screens every active ID locally; seller details are requested only for items that can meet a SLINK or Weaver target.</p>
+        <div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-listed-items" ${settings.listedItemsEnabled ? 'checked' : ''}> Listed SLINK watches</label><label><input type="checkbox" data-field="market-weaver-pricelist" ${settings.weaverPricelistEnabled ? 'checked' : ''}> My Weaver price list</label><label>Check first <select data-field="market-weaver-source-order"><option value="listed-first" ${settings.weaverSourceOrder === 'listed-first' ? 'selected' : ''}>Listed SLINK watches</option><option value="pricelist-first" ${settings.weaverSourceOrder === 'pricelist-first' ? 'selected' : ''}>Weaver price list</option></select></label><button type="button" data-action="sync-market-weaver-pricelist" ${current.busy ? 'disabled' : ''}>Sync Weaver price list</button><span class="muted">${escapeHtml(pricelistStatus)}</span><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label>${hasScope('admin.*') ? `<button type="button" data-action="toggle-market-dom-test">${marketPurchaseState.domTestEnabled ? 'Stop Market DOM Test' : 'Market DOM Test'}</button><span class="muted">Admin diagnostic: forces the first compatible visible listing through the real highlight and SLINK Buy path.</span>` : ''}</div><p class="muted">One Weaver marketplace snapshot screens every active ID locally; seller details are requested only for items that can meet a SLINK or Weaver target.</p>
       </article>
       <article class="card full"><div class="card-head"><div><h2>Active deals</h2><span class="muted">Updated ${relativeTime(runtime.fetchedAt)} · Torn API ${usage.count}/${usage.limit} in the shared rolling minute</span></div><span class="badge ${deals.length ? 'ready' : ''}">${deals.length}</span></div>
         <div class="market-bulk-actions"><button type="button" data-action="copy-market-list" ${deals.length ? '' : 'disabled'}>Copy item list</button><button type="button" data-action="send-market-list" ${deals.length ? '' : 'disabled'}>Send list to Faction</button></div>
@@ -4387,7 +4388,9 @@
   }
 
   function focusedTornPage() {
-    return document.visibilityState === 'visible' && document.hasFocus();
+    // Torn PDA's WebView can report hasFocus() as false while the visible
+    // Torn page is still interactive.
+    return document.visibilityState !== 'hidden';
   }
 
   function elementVisible(element) {
@@ -4476,7 +4479,8 @@
     style.textContent = `
       [data-tdd-bazaar-targeted],
       [data-tdd-bazaar-one-dollar],
-      [data-tdd-item-market-one-dollar] {
+      [data-tdd-item-market-one-dollar],
+      [data-tdd-market-dom-test] {
         outline: 4px solid #39ff14 !important;
         outline-offset: 2px !important;
         box-shadow: 0 0 18px 5px rgba(57,255,20,.72), inset 0 0 0 2px rgba(57,255,20,.5) !important;
@@ -4630,11 +4634,38 @@
     return { oneDollar, shopProfit };
   }
 
+  function clearMarketDomTestMarks(kind = '') {
+    const selector = kind
+      ? `[data-tdd-market-dom-test="${kind}"]`
+      : '[data-tdd-market-dom-test]';
+    document.querySelectorAll(selector).forEach((element) => element.removeAttribute('data-tdd-market-dom-test'));
+  }
+
+  function marketDomTestTarget(kind, elements) {
+    const candidates = Array.from(elements || []);
+    const enabled = hasScope('admin.*') && marketPurchaseState.domTestEnabled;
+    const target = enabled ? candidates.find((element) => {
+      if (!element?.isConnected || !elementVisible(element)) return false;
+      if (kind === 'bazaar') {
+        if (bazaarCardUnavailable(element)) return false;
+        return Boolean(nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"], button[data-testid="activate-buy-button"]'));
+      }
+      if (itemMarketRowUnavailable(element)) return false;
+      return Boolean(nativeQuickPurchaseControl(element, 'button[class*="buyButton___"], button[aria-label^="Buy "]'));
+    }) || null : null;
+    document.querySelectorAll(`[data-tdd-market-dom-test="${kind}"]`).forEach((element) => {
+      if (element !== target) element.removeAttribute('data-tdd-market-dom-test');
+    });
+    if (target) target.setAttribute('data-tdd-market-dom-test', kind);
+    return target;
+  }
+
   function formatBazaarOneDollarListings() {
     if (!focusedTornPage() || !onBazaarPage()) return;
     ensurePurchaseHighlightStyles();
     requestPurchaseSellPriceCatalog();
     const cards = new Set(bazaarListingCards());
+    marketDomTestTarget('bazaar', cards);
     const target = targetedBazaarListing();
     document.querySelectorAll('[data-tdd-bazaar-targeted]').forEach((card) => {
       if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-targeted');
@@ -4774,6 +4805,7 @@
   function formatItemMarketPurchaseOpportunities() {
     if (!focusedTornPage() || !onItemMarketPage()) return;
     const rows = new Set(itemMarketSellerRows());
+    marketDomTestTarget('item-market', rows);
     document.querySelectorAll('[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]').forEach((row) => {
       if (!rows.has(row)) {
         row.removeAttribute('data-tdd-item-market-one-dollar');
@@ -4931,9 +4963,12 @@
     if (kind === 'bazaar') {
       return element.hasAttribute('data-tdd-bazaar-targeted')
         || element.hasAttribute('data-tdd-bazaar-one-dollar')
-        || element.hasAttribute('data-tdd-bazaar-shop-profit');
+        || element.hasAttribute('data-tdd-bazaar-shop-profit')
+        || element.getAttribute('data-tdd-market-dom-test') === 'bazaar';
     }
-    return element.hasAttribute('data-tdd-item-market-one-dollar') || element.hasAttribute('data-tdd-item-market-shop-profit');
+    return element.hasAttribute('data-tdd-item-market-one-dollar')
+      || element.hasAttribute('data-tdd-item-market-shop-profit')
+      || element.getAttribute('data-tdd-market-dom-test') === 'item-market';
   }
 
   function quickPurchaseQuantity(listing) {
@@ -4987,8 +5022,8 @@
 
   function highlightedQuickPurchaseElements(kind) {
     const selector = kind === 'bazaar'
-      ? '[data-tdd-bazaar-targeted], [data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit]'
-      : '[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]';
+      ? '[data-tdd-bazaar-targeted], [data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit], [data-tdd-market-dom-test="bazaar"]'
+      : '[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit], [data-tdd-market-dom-test="item-market"]';
     return Array.from(document.querySelectorAll(selector));
   }
 
@@ -5418,7 +5453,7 @@
     const attributes = [
       'data-tdd-bazaar-targeted', 'data-tdd-bazaar-one-dollar', 'data-tdd-bazaar-shop-profit',
       'data-tdd-item-market-one-dollar', 'data-tdd-item-market-shop-profit', 'data-tdd-item-market-max-applied',
-      'data-tdd-purchase-reason'
+      'data-tdd-purchase-reason', 'data-tdd-market-dom-test'
     ];
     for (const attribute of attributes) document.querySelectorAll(`[${attribute}]`).forEach(node => node.removeAttribute(attribute));
     document.getElementById('tdd-purchase-highlight-styles')?.remove();
@@ -6230,6 +6265,12 @@
       })();
     }
     if (action === 'refresh-market-permissions') void refreshMarketPermissions();
+    if (action === 'toggle-market-dom-test' && hasScope('admin.*')) {
+      marketPurchaseState.domTestEnabled = !marketPurchaseState.domTestEnabled;
+      clearMarketDomTestMarks();
+      schedulePurchaseOpportunityFormatting(0);
+      renderMarket();
+    }
     if (action === 'save-bounties') saveBountySettings();
     if (action === 'restart-bounties') {
       dataState.caches.bounties = freshBountyRuntime(bountyRuntime());

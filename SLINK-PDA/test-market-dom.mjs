@@ -28,4 +28,13 @@ assert(!source.includes('data-slink-market-highlight'), 'The duplicate PDA highl
 assert(source.includes("url.searchParams.set('highlight', '1')"), 'Bazaar alerts must use the ADHD highlight contract');
 assert(!source.includes('slink-armory-request-cell'), 'PDA must not restructure Torn Armory rows');
 assert(source.includes('function retrieveWarArmoryItem'), 'PDA Armory recall handling must remain available');
-console.log('PDA uses the original ADHD market highlighting/BUY flow without changing Torn Armory rows.');
+
+assert(source.includes("return document.visibilityState !== 'hidden';"), 'PDA Market DOM formatting must not depend on document.hasFocus().');
+assert(source.includes("action === 'toggle-market-dom-test' && hasScope('admin.*')"), 'PDA Market DOM Test action must require admin.*.');
+assert(source.includes("${hasScope('admin.*') ? \`<button type=\"button\" data-action=\"toggle-market-dom-test\""), 'PDA Market DOM Test control must be hidden from non-admin users.');
+assert(source.includes("data-tdd-market-dom-test"), 'PDA Market DOM Test must mark a real production listing.');
+assert(source.includes("[data-tdd-market-dom-test=\"bazaar\"]") && source.includes("[data-tdd-market-dom-test=\"item-market\"]"), 'PDA forced test listings must enter the production quick-buy selector path.');
+assert(source.includes("if (!event.isTrusted"), 'PDA SLINK Buy must remain user-initiated.');
+assert(source.includes("spec.native.click();"), 'PDA SLINK Buy must delegate to Torn native controls.');
+
+console.log('PDA ADHD market DOM flow, admin-only diagnostic, and WebView-safe activation are verified.');
