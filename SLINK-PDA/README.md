@@ -1,5 +1,14 @@
 # SLINK PDA Dashboard
 
+## 0.4.25 — Attack-frame safety
+
+Attack-result mug reporting is now one-shot per Torn result node and no longer
+recursively refreshes War state when no active war is returned. DOM scans are
+throttled while Torn animates or replaces the result dialog. Player status and
+Hospital/Jail/Travel timer scraping is hard-gated to the exact
+`/profiles.php` page; attack and log pages are never inspected for timers.
+
+
 ## 0.4.23 — Mugging Phase 10
 
 PDA contributor observations now synchronize into the shared Mugging R2

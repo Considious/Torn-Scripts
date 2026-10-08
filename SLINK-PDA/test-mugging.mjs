@@ -8,7 +8,7 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
 try { new Function(source); }
 catch (error) { throw new Error(`PDA userscript has a parse-time syntax error: ${error.message}`); }
 
-assert(source.includes('// @version      0.4.23'), 'Unexpected PDA Phase 10 version.');
+assert(source.includes('// @version      0.4.25'), 'Unexpected PDA Phase 10 version.');
 assert(source.includes('// @connect      slinkmuggingworker.richard-johnson554.workers.dev'), 'Mugging Worker is not allowlisted for PDA.');
 assert(source.includes("mugging:'https://slinkmuggingworker.richard-johnson554.workers.dev'"), 'Mugging Worker URL is missing.');
 assert(source.includes('data-combat-tab="mugging" hidden'), 'Unauthorized PDA sessions can see the Mugging tab.');
@@ -32,4 +32,8 @@ assert(source.includes('Rough FF') && source.includes('synchronized to shared SL
 assert(source.includes('data-action="refresh-mugging"'), 'PDA has no manual assignment refresh.');
 assert(source.includes('data-target-source="mugging"') && source.includes("tags = ['Mug']"), 'Mugging does not reuse the explicit Target List handoff.');
 assert(!/MUGGING_TEST_USER|MUGGING_FACTION_ID|MUGGING_SERVICE_TOKEN/.test(source), 'PDA contains a hard-coded Mugging override or backend secret.');
+assert(source.includes("if (!/^\\/profiles\\.php$/i.test(url.pathname)) return null;"), 'PDA status scraping is not hard-gated to profiles.php.');
+assert(source.includes('let attackMugScanTimer = null') && source.includes('}, 120);'), 'PDA attack-result scanning is not throttled.');
+assert(!source.includes('slinkMugPending') && !source.includes('recordMugResultNode(node); });'), 'PDA still contains the recursive attack-result refresh loop.');
+assert(source.includes('reportedMugNodes.add(node)') && source.includes('Refresh at most once'), 'PDA does not claim each attack-result node before its one optional refresh.');
 console.log('PDA Mugging Phase 10 contributor synchronization checks passed.');

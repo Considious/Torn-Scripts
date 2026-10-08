@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.24
+// @version      0.4.25
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -231,6 +231,7 @@
   let muggingSyncBusy = false;
   let marketObserver = null;
   let marketWakeTimer = null;
+  let attackMugScanTimer = null;
   let keyboardFocusTimer = null;
   const QUICK_PURCHASE_TRANSITION_TIMEOUT_MS = 2_500;
   const QUICK_PURCHASE_FLOW_TIMEOUT_MS = 10_000;
@@ -2912,7 +2913,7 @@
     if (document.visibilityState !== 'visible' || !document.hasFocus?.()) return null;
     let url;
     try { url = new URL(global.location.href); } catch { return null; }
-    if (!url.pathname.toLowerCase().includes('profiles.php')) return null;
+    if (!/^\/profiles\.php$/i.test(url.pathname)) return null;
     const playerId = validPlayerIntelligenceId(url.searchParams.get('XID'));
     if (!playerId || (expectedId && Number(expectedId) !== playerId)) return null;
     return { playerId, url };
@@ -3074,32 +3075,51 @@
     return { reports, count:amounts.length, total, min:amounts.length ? Math.min(...amounts) : 0, max:amounts.length ? Math.max(...amounts) : 0, average:amounts.length ? Math.round(total / amounts.length) : 0 };
   }
 
-  function recordMugResultNode(node) {
-    if (!node || reportedMugNodes.has(node)) return;
-    const result = parseMugResultText(node.textContent);
-    if (!result) return;
-    const active = moduleState.war.data?.activeWar;
-    if (!active && currentApiKey() && hasGrantedScope('slink.war') && node.dataset.slinkMugPending !== 'true') {
-      node.dataset.slinkMugPending = 'true';
-      void refreshWar(false).finally(() => { delete node.dataset.slinkMugPending; recordMugResultNode(node); });
-      return;
-    }
-    reportedMugNodes.add(node);
-    if (!active || active.phase !== 'active') return;
+  function saveMugResult(result, active) {
+    if (!active || active.phase !== 'active') return false;
     const victimId = attackPageTargetId();
     const fingerprint = `${active.warId}|${victimId}|${result.victimName.toLowerCase()}|${result.amount}`;
     const now = Date.now();
     for (const [key, at] of recentMugResults) if (now - at > MUG_RESULT_DEDUPE_MS) recentMugResults.delete(key);
-    if (recentMugResults.has(fingerprint) || pdaMugReports().some(report => report.fingerprint === fingerprint && now - Number(report.at || 0) <= MUG_RESULT_DEDUPE_MS)) return;
+    if (recentMugResults.has(fingerprint) || pdaMugReports().some(report => report.fingerprint === fingerprint && now - Number(report.at || 0) <= MUG_RESULT_DEDUPE_MS)) return false;
     recentMugResults.set(fingerprint, now);
     dataState.caches.warMugReports = [...pdaMugReports(), { warId:active.warId, victimId, victimName:result.victimName, amount:result.amount, at:now, fingerprint, source:'torn_attack_result_dom' }].slice(-1_000);
     writeDataState();
     if (dashboardOpen && state.page === 'combat' && state.combatTab === 'war') renderWar();
+    return true;
+  }
+
+  function recordMugResultNode(node) {
+    if (!node || reportedMugNodes.has(node)) return;
+    const result = parseMugResultText(node.textContent);
+    if (!result) return;
+
+    // Torn mutates the result dialog repeatedly. Claim the node before any
+    // asynchronous work so those mutations cannot start recursive refreshes.
+    reportedMugNodes.add(node);
+    const active = moduleState.war.data?.activeWar;
+    if (active?.phase === 'active') {
+      saveMugResult(result, active);
+      return;
+    }
+    if (!currentApiKey() || !hasGrantedScope('slink.war')) return;
+
+    // Refresh at most once. If there is still no active war, this mug simply
+    // remains unassigned instead of recursively refreshing the attack frame.
+    void refreshWar(false).then(() => {
+      saveMugResult(result, moduleState.war.data?.activeWar);
+    }).catch(error => {
+      console.debug('[SLINK PDA] Mug result report paused:', message(error));
+    });
   }
 
   function scanAttackMugResults() {
-    if (!attackPageUrl()) return;
-    document.querySelectorAll('div[class*="dialog___"] div[class*="title___"],div[class*="green___"] div[class*="title___"]').forEach(recordMugResultNode);
+    if (!attackPageUrl() || attackMugScanTimer) return;
+    attackMugScanTimer = global.setTimeout(() => {
+      attackMugScanTimer = null;
+      if (!attackPageUrl()) return;
+      document.querySelectorAll('div[class*="dialog___"] div[class*="title___"],div[class*="green___"] div[class*="title___"]').forEach(recordMugResultNode);
+    }, 120);
   }
 
   function warOfficer() {
@@ -6423,6 +6443,9 @@
     unlockTornScroll();
     clearInterval(targetPollingTimer);
     clearInterval(targetStakeoutTimer);
+    clearTimeout(attackMugScanTimer);
+    attackMugScanTimer = null;
+    marketObserver?.disconnect();
     clearMarketPurchaseFormatting();
   }, { once:true });
 
@@ -6430,7 +6453,11 @@
     if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
   });
   guardian.observe(document, { childList:true, subtree:true });
-  marketObserver = new MutationObserver(() => { schedulePurchaseOpportunityFormatting(80); scanAttackMugResults(); void scanIntendedProfileDom(); });
+  marketObserver = new MutationObserver(() => {
+    schedulePurchaseOpportunityFormatting(80);
+    scanAttackMugResults();
+    if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
+  });
   marketObserver.observe(document.body, { childList:true, subtree:true });
 
   if (typeof GM_API.menu === 'function') {
