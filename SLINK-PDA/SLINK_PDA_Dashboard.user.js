@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.27
-// @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
+// @version      0.4.28
+// @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
 // @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.27-market-dom-activation';
+  const BUILD = '0.4.28-racing-quality-of-life';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.27';
+  const CLIENT_VERSION = '0.4.28';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -48,6 +48,134 @@
     torn:'https://api.torn.com',
     weaver:'https://weav3r.dev'
   });
+  const RACING_MAX_NICKNAME_LENGTH = 22;
+  const RACING_TRACK_ABBREVIATIONS = Object.freeze({
+    'Underdog':'UndrDog',
+    'Commerce':'Commer',
+    'Sewage':'Sewage',
+    'Meltdown':'Meltdwn',
+    'Vector':'Vect',
+    'Industrial':'Industria',
+    'Withdrawal':'Withdraw',
+    'Speedway':'Speedwy',
+    'Uptown':'Uptow'
+  });
+  const RACING_RECOMMENDED_BUILDS = Object.freeze([
+    { id:'a-colina-mudpit', class:'A', car:'Colina Tanprice', tracks:['Mudpit'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Rally', tires:'Dirt' } },
+    { id:'a-echo-stone-park', class:'A', car:'Echo R8', tracks:['Stone Park'], build:{ turbo:'Stage 3', transmission:'Short Ratio', gearbox:'Rally', tires:'Dirt' } },
+    { id:'a-edmondo-parkland', class:'A', car:'Edmondo NSX', tracks:['Parkland'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Rally', tires:'Dirt' } },
+    { id:'a-edmondo-meltdown-vector-industrial', class:'A', car:'Edmondo NSX', tracks:['Meltdown','Vector','Industrial'], build:{ turbo:'Stage 3', transmission:'Short Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+    { id:'a-edmondo-two-islands', class:'A', car:'Edmondo NSX', tracks:['Two Islands'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Rally', tires:'Dirt' } },
+    { id:'a-edmondo-hammerhead', class:'A', car:'Edmondo NSX', tracks:['Hammerhead'], build:{ turbo:'Stage 2', transmission:'Short Ratio', gearbox:'Rally', tires:'Dirt' } },
+    { id:'a-edmondo-underdog-commerce-sewage', class:'A', car:'Edmondo NSX', tracks:['Underdog','Commerce','Sewage'], build:{ turbo:'Stage 2', transmission:'Short Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+    { id:'a-mercia-convict', class:'A', car:'Mercia SLR', tracks:['Convict'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+    { id:'a-veloria-withdrawal-speedway-uptown', class:'A', car:'Veloria LFA', tracks:['Withdrawal','Speedway','Uptown'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+    { id:'a-volt-docks', class:'A', car:'Volt GT', tracks:['Docks'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Paddleshift', tires:'Tarmac' } }
+  ].map(entry => Object.freeze({ ...entry, tracks:Object.freeze([...entry.tracks]), build:Object.freeze({ ...entry.build }) })));
+  
+  const RACING_DOM = Object.freeze({
+    OFFICIAL_RACE_TRACK_SELECTOR:'.enlisted-btn-wrap',
+    OFFICIAL_RACE_CAR_NAME_SELECTOR:'[class^="model-car-name-"],[class*=" model-car-name-"]',
+    OFFICIAL_RACE_LABEL:'Official race'
+  });
+  
+  const normalizeKey = value => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const trackNames = Object.freeze([...new Set(RACING_RECOMMENDED_BUILDS.flatMap(entry => entry.tracks))]);
+  const tracksByKey = new Map(trackNames.map(name => [normalizeKey(name), name]));
+  
+  function normalizeRacingTrackName(value) {
+    const candidate = String(value || '').trim().replace(/\s+/g, ' ');
+    return tracksByKey.get(normalizeKey(candidate)) || null;
+  }
+  
+  function racingNicknameComponent(track) {
+    const canonical = normalizeRacingTrackName(track) || String(track || '').trim().replace(/\s+/g, ' ');
+    if (!canonical) return '';
+    if (RACING_TRACK_ABBREVIATIONS[canonical]) return RACING_TRACK_ABBREVIATIONS[canonical];
+    const joined = canonical.replace(/[^a-z0-9]/gi, '');
+    return joined.length <= 10 ? joined : joined.slice(0, 10);
+  }
+  
+  function suggestRacingNickname(tracks, maxLength = RACING_MAX_NICKNAME_LENGTH) {
+    const components = (Array.isArray(tracks) ? tracks : []).map(racingNicknameComponent).filter(Boolean);
+    if (!components.length) return { value:'', length:0, maxLength, valid:false, shortened:false };
+    let value = components.join('|');
+    let shortened = false;
+    while (value.length > maxLength) {
+      let index = -1;
+      for (let position = 0; position < components.length; position += 1) {
+        if (components[position].length > 3 && (index < 0 || components[position].length > components[index].length)) index = position;
+      }
+      if (index < 0) break;
+      components[index] = components[index].slice(0, -1);
+      shortened = true;
+      value = components.join('|');
+    }
+    return { value, length:value.length, maxLength, valid:Boolean(value) && value.length <= maxLength, shortened };
+  }
+  
+  function validateRacingNickname(value) {
+    const name = String(value ?? '');
+    return {
+      value:name,
+      length:name.length,
+      maxLength:RACING_MAX_NICKNAME_LENGTH,
+      valid:Boolean(name.trim()) && name.length <= RACING_MAX_NICKNAME_LENGTH,
+      overBy:Math.max(0, name.length - RACING_MAX_NICKNAME_LENGTH)
+    };
+  }
+  
+  function normalizeRacingState(value) {
+    const input = value && typeof value === 'object' ? value : {};
+    const builds = input.builds && typeof input.builds === 'object' ? input.builds : {};
+    const normalized = {};
+    for (const definition of RACING_RECOMMENDED_BUILDS) {
+      const source = builds[definition.id] && typeof builds[definition.id] === 'object' ? builds[definition.id] : {};
+      normalized[definition.id] = {
+        completed:source.completed === true,
+        customName:String(source.customName || '').slice(0, 100)
+      };
+    }
+    return { view:['needed','completed','all'].includes(input.view) ? input.view : 'needed', builds:normalized };
+  }
+  
+  function effectiveRacingNickname(definition, userState) {
+    const custom = String(userState?.builds?.[definition.id]?.customName || '').trim();
+    return custom || suggestRacingNickname(definition.tracks).value;
+  }
+  
+  function racingBuildsForView(view, userState) {
+    const normalized = normalizeRacingState(userState);
+    return RACING_RECOMMENDED_BUILDS.filter(definition => {
+      const complete = normalized.builds[definition.id].completed;
+      return view === 'completed' ? complete : view === 'all' ? true : !complete;
+    });
+  }
+  
+  function racingRecommendationForTrack(track, userState) {
+    const canonical = normalizeRacingTrackName(track);
+    if (!canonical) return { status:'unknown-track', track:null, definition:null, nickname:'' };
+    const definition = RACING_RECOMMENDED_BUILDS.find(entry => entry.tracks.includes(canonical)) || null;
+    if (!definition) return { status:'no-build', track:canonical, definition:null, nickname:'' };
+    const normalized = normalizeRacingState(userState);
+    const nickname = effectiveRacingNickname(definition, normalized);
+    if (!normalized.builds[definition.id].completed) return { status:'not-completed', track:canonical, definition, nickname };
+    if (!validateRacingNickname(nickname).valid) return { status:'invalid-nickname', track:canonical, definition, nickname };
+    return { status:'ready', track:canonical, definition, nickname };
+  }
+  
+  function matchVisibleRacingCar(expectedNickname, candidates) {
+    const expected = normalizeKey(expectedNickname);
+    if (!expected) return null;
+    return (Array.isArray(candidates) ? candidates : []).find(candidate => normalizeKey(candidate?.name ?? candidate?.textContent ?? candidate) === expected) || null;
+  }
+  
+  function parseOfficialRacingTrack(text) {
+    const match = String(text || '').trim().match(/^(.+?)\s*-\s*Official race\s*$/i);
+    return match ? normalizeRacingTrackName(match[1]) : null;
+  }
+  
+
   const MARKET_PRIORITIES = Object.freeze({ high:0, normal:1, low:2 });
   const TORN_PRIORITY_LIMITS = Object.freeze({ high:60, normal:50, low:40 });
   const WEAVER_REFRESH_MS = Object.freeze({ high:35_000, normal:70_000, low:140_000 });
@@ -114,6 +242,7 @@
     page: 'combat',
     combatTab: 'leveling',
     efficiencyTab: 'alerts',
+    qualityOfLifeTab: 'racing',
     theme: 'slink-dark',
     bubblePosition: null
   });
@@ -133,6 +262,7 @@
         page: state.page,
         combatTab: state.combatTab,
         efficiencyTab: state.efficiencyTab,
+        qualityOfLifeTab: state.qualityOfLifeTab,
         theme: state.theme,
         bubblePosition: state.bubblePosition
       }));
@@ -193,7 +323,8 @@
         },
         alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}) },
         market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
-        merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) }
+        merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) },
+        racing:normalizeRacingState(value.settings?.racing)
       }
     };
   }
@@ -2038,6 +2169,119 @@
     if (!validSession('permission')) return moduleMessage('Authenticate under Access so SLINK can load your feature permissions.', 'locked');
     return moduleMessage(`${label} requires ${scope}. Ask a SLINK administrator to grant that scope.`, 'locked');
   }
+
+  let racingAssistant = { status:'waiting', track:null, nickname:'', message:'Open an official race to receive a recommendation.' };
+    let racingScanTimer = null;
+    const RACING_HIGHLIGHT_STYLE_ID = 'slink-pda-racing-highlight-style';
+    const RACING_HIGHLIGHT_CLASS = 'slink-pda-racing-recommended-car';
+    const RACING_LABEL_ATTRIBUTE = 'data-slink-pda-racing-label';
+  
+    function racingSettings() {
+      dataState.settings.racing = normalizeRacingState(dataState.settings.racing);
+      return dataState.settings.racing;
+    }
+  
+    function ensureRacingHighlightStyle() {
+      let style = document.getElementById(RACING_HIGHLIGHT_STYLE_ID);
+      if (style) return style;
+      style = document.createElement('style');
+      style.id = RACING_HIGHLIGHT_STYLE_ID;
+      style.textContent = `
+        .${RACING_HIGHLIGHT_CLASS}{display:inline-block!important;padding:3px 6px!important;border:3px solid #ff39bb!important;border-radius:6px!important;background:#152317!important;color:#fff!important;box-shadow:0 0 0 2px #111,0 0 12px #ff39bb!important;font-weight:900!important}
+        [${RACING_LABEL_ATTRIBUTE}]{display:inline-block;margin-left:6px;padding:2px 6px;border:1px solid #111;border-radius:999px;background:#ff39bb;color:#fff;font:bold 10px/1.4 Arial,sans-serif;vertical-align:middle}
+      `;
+      (document.head || document.documentElement).append(style);
+      return style;
+    }
+  
+    function clearRacingHighlight() {
+      document.querySelectorAll(`.${RACING_HIGHLIGHT_CLASS}`).forEach(node => node.classList.remove(RACING_HIGHLIGHT_CLASS));
+      document.querySelectorAll(`[${RACING_LABEL_ATTRIBUTE}]`).forEach(node => node.remove());
+    }
+  
+    function renderRacingAssistant() {
+      const root = moduleRoot('racing')?.querySelector('[data-racing-assistant]');
+      if (!root) return;
+      const value = racingAssistant;
+      const tone = value.status === 'ready' ? 'ready' : ['not-completed','not-found','invalid-nickname'].includes(value.status) ? 'warn' : 'normal';
+      root.dataset.tone = tone;
+      root.innerHTML = `<strong>${escapeHtml(value.track ? `${value.track}: ${value.message}` : value.message)}</strong>${value.nickname ? `<span>Expected car: ${escapeHtml(value.nickname)}</span>` : '<span>Uses Torn page text only; no API calls.</span>'}`;
+    }
+  
+    function setRacingAssistant(next) {
+      racingAssistant = next;
+      renderRacingAssistant();
+    }
+  
+    function scanOfficialRaceDom() {
+      clearRacingHighlight();
+      const trackNode = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_TRACK_SELECTOR)]
+        .find(node => /-\s*Official race\s*$/i.test(String(node.textContent || '').trim()));
+      const track = parseOfficialRacingTrack(trackNode?.textContent);
+      if (!track) {
+        setRacingAssistant({ status:'waiting', track:null, nickname:'', message:'Open an official race to receive a recommendation.' });
+        return;
+      }
+      const recommendation = racingRecommendationForTrack(track, racingSettings());
+      if (recommendation.status === 'not-completed') {
+        setRacingAssistant({ ...recommendation, message:'Recommended build is not marked complete.' });
+        return;
+      }
+      if (recommendation.status === 'invalid-nickname') {
+        setRacingAssistant({ ...recommendation, message:'Saved nickname is invalid. Fix it in the Racing guide.' });
+        return;
+      }
+      if (recommendation.status !== 'ready') {
+        setRacingAssistant({ ...recommendation, message:'No saved Racing build is configured for this track.' });
+        return;
+      }
+      const nodes = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_CAR_NAME_SELECTOR)];
+      const match = matchVisibleRacingCar(recommendation.nickname, nodes.map(node => ({ name:node.textContent, node })));
+      if (!match?.node) {
+        setRacingAssistant({ ...recommendation, status:'not-found', message:"Recommended car not found in Torn's visible car list." });
+        return;
+      }
+      ensureRacingHighlightStyle();
+      match.node.classList.add(RACING_HIGHLIGHT_CLASS);
+      const label = document.createElement('span');
+      label.setAttribute(RACING_LABEL_ATTRIBUTE, 'true');
+      label.textContent = 'SLINK Recommended';
+      match.node.after(label);
+      try { match.node.scrollIntoView({ block:'nearest', behavior:'smooth' }); } catch {}
+      setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
+    }
+  
+    function scheduleRacingScan(delay = 80) {
+      if (racingScanTimer) return;
+      racingScanTimer = global.setTimeout(() => {
+        racingScanTimer = null;
+        scanOfficialRaceDom();
+      }, delay);
+    }
+  
+    function renderRacing() {
+      const root = moduleRoot('racing');
+      if (!root) return;
+      const settings = racingSettings();
+      const definitions = racingBuildsForView(settings.view, settings);
+      const completed = RACING_RECOMMENDED_BUILDS.filter(definition => settings.builds[definition.id].completed).length;
+      root.innerHTML = `<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Class A Racing Build Guide</h2><span class="muted">Build progress and nicknames stay on this device.</span></div><span class="badge ${completed === RACING_RECOMMENDED_BUILDS.length ? 'ready' : ''}">${completed}/${RACING_RECOMMENDED_BUILDS.length}</span></div>
+        <div class="racing-toolbar"><div class="racing-filters" role="tablist" aria-label="Racing build status">${['needed','completed','all'].map(view => `<button type="button" data-racing-view="${view}" aria-selected="${String(settings.view === view)}">${view[0].toUpperCase() + view.slice(1)}</button>`).join('')}</div><span class="muted">${completed} builds complete</span></div>
+        <div class="racing-assistant" data-racing-assistant></div>
+        <div class="racing-list">${definitions.length ? definitions.map(definition => {
+          const buildState = settings.builds[definition.id];
+          const suggested = suggestRacingNickname(definition.tracks).value;
+          const effective = effectiveRacingNickname(definition, settings);
+          const validation = validateRacingNickname(effective);
+          return `<article class="racing-card" data-racing-build="${escapeHtml(definition.id)}" data-completed="${String(buildState.completed)}">
+            <header><div><h3>${escapeHtml(definition.car)}</h3><span>Class ${escapeHtml(definition.class)} · ${escapeHtml(definition.tracks.join(', '))}</span></div><span class="badge ${buildState.completed ? 'ready' : ''}">${buildState.completed ? 'COMPLETE' : 'NEEDED'}</span></header>
+            <div class="racing-specs"><div><small>Turbo</small><strong>${escapeHtml(definition.build.turbo)}</strong></div><div><small>Transmission</small><strong>${escapeHtml(definition.build.transmission)}</strong></div><div><small>Gearbox</small><strong>${escapeHtml(definition.build.gearbox)}</strong></div><div><small>Tires</small><strong>${escapeHtml(definition.build.tires)}</strong></div></div>
+            <div class="racing-name"><label>Expected Torn nickname<input type="text" maxlength="100" data-racing-name value="${escapeHtml(effective)}" placeholder="${escapeHtml(suggested)}" aria-invalid="${String(!validation.valid)}"></label><span class="racing-count" data-racing-count data-invalid="${String(!validation.valid)}">${validation.length}/${validation.maxLength}</span></div>
+            <footer><small>${buildState.customName ? 'Custom nickname' : 'Suggested nickname'} · 22 characters maximum</small><div><button type="button" data-racing-reset-name>Use suggestion</button> <button type="button" data-racing-toggle>${buildState.completed ? 'Move to Needed' : 'Mark Complete'}</button></div></footer>
+          </article>`;
+        }).join('') : '<div class="module-message">No builds in this view.</div>'}</div></article></div>`;
+      renderRacingAssistant();
+    }
 
   function renderAccess() {
     const root = moduleRoot('access');
@@ -5625,6 +5869,7 @@
   function activeModuleName() {
     if (state.page === 'combat') return state.combatTab;
     if (state.page === 'efficiency') return state.efficiencyTab;
+    if (state.page === 'quality-of-life') return state.qualityOfLifeTab;
     return 'access';
   }
 
@@ -5635,13 +5880,14 @@
     if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
+    if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
     if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -5728,12 +5974,14 @@
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
     .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
     .war-armory-controls{grid-template-columns:1fr}
+    .racing-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:10px 0}.racing-filters{display:flex;gap:6px}.racing-filters button{padding:5px 9px}.racing-filters button[aria-selected="true"]{border-color:var(--s-accent);background:var(--s-accent);color:#fff}.racing-assistant{margin:8px 0;padding:9px;border:1px solid var(--s-soft);border-left:4px solid var(--s-accent);border-radius:8px;background:var(--s-bg)}.racing-assistant[data-tone="ready"]{border-left-color:var(--s-ready)}.racing-assistant[data-tone="warn"]{border-left-color:var(--s-warning)}.racing-assistant strong,.racing-assistant span{display:block}.racing-assistant span{color:var(--s-muted);font-size:10px}.racing-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.racing-card{padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.racing-card[data-completed="true"]{border-left:4px solid var(--s-ready)}.racing-card header,.racing-card footer{display:flex;align-items:start;justify-content:space-between;gap:8px}.racing-card h3{margin:0}.racing-card header span,.racing-card footer small{color:var(--s-muted)}.racing-specs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:8px 0}.racing-specs div{padding:6px;border-radius:6px;background:var(--s-panel)}.racing-specs small,.racing-specs strong{display:block}.racing-specs small{color:var(--s-muted);font-size:9px}.racing-name{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:end}.racing-name label{display:grid;gap:4px;color:var(--s-muted)}.racing-name input{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-panel);color:var(--s-text)}.racing-name input[aria-invalid="true"]{border-color:var(--s-error)}.racing-count{min-width:44px;color:var(--s-muted);text-align:right}.racing-count[data-invalid="true"]{color:var(--s-error);font-weight:900}.racing-card footer{align-items:center;margin-top:8px}.racing-card footer div{display:flex;gap:5px}.racing-card footer button{padding:5px 8px}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav{visibility:hidden;pointer-events:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:700px){
+      .racing-list{grid-template-columns:1fr}
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
-      .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="access"]::before{content:"⚙"}
+      .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="quality-of-life"]::before{content:"🏁"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
       .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form,.target-list-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide,.target-list-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
@@ -5764,6 +6012,7 @@
     <nav class="primary-nav" aria-label="Dashboard sections">
       <button type="button" data-page="combat">Combat</button>
       <button type="button" data-page="efficiency">Efficiency</button>
+      <button type="button" data-page="quality-of-life">Quality of Life</button>
       <button type="button" data-page="access">Access</button>
     </nav>
     <main class="scroll">
@@ -5784,6 +6033,11 @@
         <div class="subpage" data-efficiency-panel="market" hidden><div data-module-root="market"></div></div>
         <div class="subpage" data-efficiency-panel="merits" hidden><div data-module-root="merits"></div></div>
         <div class="subpage" data-efficiency-panel="dollarBazaars" hidden><div data-module-root="dollarBazaars"></div></div>
+      </section>
+      <section class="page" data-page-panel="quality-of-life" hidden>
+        <div class="page-head"><div><h1>Quality of Life</h1><p>Convenience tools that work with Torn's visible page data.</p></div></div>
+        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button></nav>
+        <div class="subpage" data-quality-of-life-panel="racing"><div data-module-root="racing"></div></div>
       </section>
       <section class="page" data-page-panel="access" hidden>
         <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
@@ -5861,7 +6115,7 @@
   }
 
   function selectPage(page, persist = true) {
-    if (!['combat', 'efficiency', 'access'].includes(page)) page = 'combat';
+    if (!['combat', 'efficiency', 'quality-of-life', 'access'].includes(page)) page = 'combat';
     state.page = page;
     shadow.querySelectorAll('[data-page-panel]').forEach(panel => { panel.hidden = panel.dataset.pagePanel !== page; });
     shadow.querySelectorAll('[data-page]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.page === page)));
@@ -5871,13 +6125,20 @@
   }
 
   function selectSubpage(group, tab, persist = true) {
-    const allowed = group === 'combat' ? ['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'] : ['alerts', 'market', 'merits', 'dollarBazaars'];
+    const allowedByGroup = {
+      combat:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'],
+      efficiency:['alerts', 'market', 'merits', 'dollarBazaars'],
+      qualityOfLife:['racing']
+    };
+    const allowed = allowedByGroup[group] || allowedByGroup.combat;
     if (!allowed.includes(tab)) tab = allowed[0];
     if (group === 'combat' && tab === 'mugging' && !hasScope('slink.mugging')) tab = 'targetList';
-    state[group === 'combat' ? 'combatTab' : 'efficiencyTab'] = tab;
+    const stateKey = group === 'combat' ? 'combatTab' : group === 'efficiency' ? 'efficiencyTab' : 'qualityOfLifeTab';
+    state[stateKey] = tab;
     if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
-    shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
-    shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[`${group}Tab`] === tab)));
+    const attributeGroup = group === 'qualityOfLife' ? 'quality-of-life' : group;
+    shadow.querySelectorAll(`[data-${attributeGroup}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
+    shadow.querySelectorAll(`[data-${attributeGroup}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[`${group}Tab`] === tab)));
     if (persist) writeState();
     if (dashboardOpen) void loadActiveModule(false);
   }
@@ -5938,12 +6199,14 @@
     state.page = defaults.page;
     state.combatTab = defaults.combatTab;
     state.efficiencyTab = defaults.efficiencyTab;
+    state.qualityOfLifeTab = defaults.qualityOfLifeTab;
     state.theme = defaults.theme;
     state.bubblePosition = null;
     setTheme(state.theme, false);
     selectPage(state.page, false);
     selectSubpage('combat', state.combatTab, false);
     selectSubpage('efficiency', state.efficiencyTab, false);
+    selectSubpage('qualityOfLife', state.qualityOfLifeTab, false);
     clampLauncher(false);
     writeState();
   }
@@ -5988,6 +6251,25 @@
     const targetProfile = event.target.closest('[data-target-list-profile]');
     if (targetProfile) rememberPlayerProfileIntent(targetProfile.dataset.targetListProfile, 'target-list');
     const action = event.target.closest('[data-action]')?.dataset.action;
+    const racingView = event.target.closest('[data-racing-view]')?.dataset.racingView;
+    if (racingView) {
+      racingSettings().view = racingView;
+      writeDataState();
+      renderRacing();
+    }
+    const racingCard = event.target.closest('[data-racing-build]');
+    const racingBuildState = racingCard ? racingSettings().builds[racingCard.dataset.racingBuild] : null;
+    if (racingBuildState && event.target.closest('[data-racing-toggle]')) {
+      racingBuildState.completed = !racingBuildState.completed;
+      writeDataState();
+      renderRacing();
+      scheduleRacingScan(0);
+    } else if (racingBuildState && event.target.closest('[data-racing-reset-name]')) {
+      racingBuildState.customName = '';
+      writeDataState();
+      renderRacing();
+      scheduleRacingScan(0);
+    }
     if (action === 'close') closeDashboard();
     if (action === 'reset-layout') resetLayout();
     if (action === 'refresh-active') void loadActiveModule(true);
@@ -6332,6 +6614,8 @@
     if (combatTab) selectSubpage('combat', combatTab);
     const efficiencyTab = event.target.closest('[data-efficiency-tab]')?.dataset.efficiencyTab;
     if (efficiencyTab) selectSubpage('efficiency', efficiencyTab);
+    const qualityOfLifeTab = event.target.closest('[data-quality-of-life-tab]')?.dataset.qualityOfLifeTab;
+    if (qualityOfLifeTab) selectSubpage('qualityOfLife', qualityOfLifeTab);
     const theme = event.target.closest('[data-theme-choice]')?.dataset.themeChoice;
     if (theme) {
       const required = themeCatalog().find(item => item.id === theme)?.scope || null;
@@ -6340,6 +6624,26 @@
         renderAccess();
       } else setTheme(theme);
     }
+  });
+
+  overlay.addEventListener('input', event => {
+    if (!event.target.matches('[data-racing-name]')) return;
+    const card = event.target.closest('[data-racing-build]');
+    const buildState = card ? racingSettings().builds[card.dataset.racingBuild] : null;
+    const definition = card ? RACING_RECOMMENDED_BUILDS.find(entry => entry.id === card.dataset.racingBuild) : null;
+    if (!buildState || !definition) return;
+    const value = event.target.value;
+    const suggestion = suggestRacingNickname(definition.tracks).value;
+    buildState.customName = value.trim() === suggestion ? '' : value;
+    const validation = validateRacingNickname(value);
+    event.target.setAttribute('aria-invalid', String(!validation.valid));
+    const counter = card.querySelector('[data-racing-count]');
+    if (counter) {
+      counter.textContent = `${validation.length}/${validation.maxLength}`;
+      counter.dataset.invalid = String(!validation.valid);
+    }
+    writeDataState();
+    scheduleRacingScan(0);
   });
 
   overlay.addEventListener('change', event => {
@@ -6485,7 +6789,9 @@
   global.visualViewport?.addEventListener('resize', () => { syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
   global.addEventListener('orientationchange', () => global.setTimeout(() => clampLauncher(true), 180));
   global.addEventListener('hashchange', schedulePurchaseOpportunityFormatting);
+  global.addEventListener('hashchange', scheduleRacingScan);
   global.addEventListener('popstate', schedulePurchaseOpportunityFormatting);
+  global.addEventListener('popstate', scheduleRacingScan);
   global.addEventListener('resize', scheduleQuickPurchaseControlSync);
   global.addEventListener('scroll', scheduleQuickPurchaseControlSync, true);
   document.addEventListener('visibilitychange', () => {
@@ -6500,6 +6806,9 @@
     clearTimeout(attackMugScanTimer);
     attackMugScanTimer = null;
     marketObserver?.disconnect();
+    if (racingScanTimer) global.clearTimeout(racingScanTimer);
+    clearRacingHighlight();
+    document.getElementById(RACING_HIGHLIGHT_STYLE_ID)?.remove();
     clearMarketPurchaseFormatting();
   }, { once:true });
 
@@ -6511,6 +6820,7 @@
     schedulePurchaseOpportunityFormatting(80);
     scanAttackMugResults();
     if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
+    scheduleRacingScan();
   });
   marketObserver.observe(document.body, { childList:true, subtree:true });
 
@@ -6524,6 +6834,7 @@
   selectPage(state.page, false);
   selectSubpage('combat', state.combatTab, false);
   selectSubpage('efficiency', state.efficiencyTab, false);
+  selectSubpage('qualityOfLife', state.qualityOfLifeTab, false);
   clampLauncher(false);
   renderAllModules();
   targetPollingTimer = global.setInterval(() => void runTargetPolling(), TARGET_POLL_TICK_MS);
@@ -6542,6 +6853,8 @@
   if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
   syncMarketPurchaseCatalog();
   schedulePurchaseOpportunityFormatting(0);
+  ensureRacingHighlightStyle();
+  scheduleRacingScan(0);
   document.addEventListener('click', handleHighlightedQuickPurchaseClick, true);
   document.addEventListener('click', handleBazaarPurchaseClick, true);
   void scanIntendedProfileDom();
