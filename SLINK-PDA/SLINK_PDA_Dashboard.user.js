@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.25
+// @version      0.4.26
 // @description  Mobile-first SLINK dashboard for Torn PDA with shared permissions and module sessions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.24-adhd-market-dom';
+  const BUILD = '0.4.26-permission-key-refresh';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,7 +36,7 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.24';
+  const CLIENT_VERSION = '0.4.26';
   const WEEK_MS = 7 * 86_400_000;
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -205,6 +205,12 @@
   function currentApiKey() {
     if (PDA_API_KEY_AVAILABLE && dataState.usePdaApiKey) return PDA_API_KEY;
     return String(dataState.apiKey || '').trim();
+  }
+
+  async function apiKeyFingerprint(apiKey) {
+    const bytes = new TextEncoder().encode(`SLINK permission key\u0000${String(apiKey || '').trim()}`);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
   }
 
   function currentFfKey() {
@@ -1869,14 +1875,20 @@
       userName:String(response?.user_name || `Player ${response?.user_id || ''}`).trim(),
       factionId:Number(response?.faction_id) || 0,
       roles:Array.isArray(response?.roles) ? response.roles.map(String) : [],
-      scopes:Array.isArray(response?.scopes) ? response.scopes.map(String) : []
+      scopes:Array.isArray(response?.scopes) ? response.scopes.map(String) : [],
+      scopeSources:response?.scope_sources && typeof response.scope_sources === 'object' ? { ...response.scope_sources } : {}
     };
   }
 
   async function ensurePermissionSession(force = false) {
-    if (!force && validSession('permission')) return dataState.sessions.permission;
     const key = currentApiKey();
     if (!key) throw new Error('Save a Torn API key first.');
+    const currentKeyFingerprint = await apiKeyFingerprint(key);
+    if (
+      !force &&
+      validSession('permission') &&
+      dataState.sessions.permission?.apiKeyFingerprint === currentKeyFingerprint
+    ) return dataState.sessions.permission;
     await fetchAllTerms(false);
     if (!termsAccepted('permission')) throw new Error('Accept the current SLINK terms before authenticating.');
     await reserveTornApi('/v2/user/basic');
@@ -1893,6 +1905,7 @@
     });
     const session = normalizeSession(response);
     if (!session.token || !session.scopes.length) throw new Error('SLINK returned no active feature permissions for this account.');
+    session.apiKeyFingerprint = currentKeyFingerprint;
     dataState.sessions.permission = session;
     writeDataState();
     return session;
