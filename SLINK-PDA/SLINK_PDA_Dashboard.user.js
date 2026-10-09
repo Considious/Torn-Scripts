@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.28
+// @version      0.4.29
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.28-racing-quality-of-life';
+  const BUILD = '0.4.29-alert-preferences';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -36,8 +36,34 @@
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.28';
+  const CLIENT_VERSION = '0.4.29';
   const WEEK_MS = 7 * 86_400_000;
+  const PDA_ALERT_TYPES = Object.freeze([
+    { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
+    { id:'medicalCooldown', label:'Medical cooldown clear', group:'Cooldowns' },
+    { id:'boosterCooldown', label:'Booster cooldown clear', group:'Cooldowns' },
+    { id:'energyFull', label:'Energy full', group:'Bars & refills' },
+    { id:'nerveFull', label:'Nerve full', group:'Bars & refills' },
+    { id:'energyRefill', label:'Energy refill unused', group:'Bars & refills' },
+    { id:'nerveRefill', label:'Nerve refill unused', group:'Bars & refills' },
+    { id:'raceOrFly', label:'Start a race or take a flight', group:'Travel & racing' },
+    { id:'landing', label:'Landing soon', group:'Travel & racing' },
+    { id:'missions', label:'Unfinished missions', group:'Daily activity' },
+    { id:'cityItems', label:'Buy 100 city items', group:'Daily activity' },
+    { id:'organizedCrime', label:'Join an organized crime', group:'Daily activity' },
+    { id:'education', label:'Start an education course', group:'Daily activity' },
+    { id:'casinoTokens', label:'Spend casino tokens', group:'Daily activity' },
+    { id:'stockBenefits', label:'Stock benefit ready', group:'Benefits' },
+    { id:'playerAddiction', label:'Player addiction', group:'Benefits' },
+    { id:'googlePlayPoints', label:'Weekly Google Play Points', group:'Reminders' },
+    { id:'timer24', label:'24-hour timer finished', group:'Reminders' }
+  ]);
+
+  function normalizePdaAlertTypes(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    return Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, source[definition.id] !== false]));
+  }
+
   const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
   const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
   const URLS = Object.freeze({
@@ -321,7 +347,7 @@
           armoryMode:'ranked-all', armoryWhitelist:[],
           ...(value.settings?.war || {})
         },
-        alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}) },
+        alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}), enabledTypes:normalizePdaAlertTypes(value.settings?.alerts?.enabledTypes) },
         market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) },
         racing:normalizeRacingState(value.settings?.racing)
@@ -4165,6 +4191,7 @@
     const snoozed = dataState.settings.alerts.snoozedUntil || {};
     const rows = [];
     const add = (id, active, title, detail, links = []) => {
+      if (dataState.settings.alerts.enabledTypes?.[id] === false) return;
       if (Number(dataState.settings.alerts.stackModeSince) > 0 && ['energyFull', 'energyRefill'].includes(id)) return;
       if (active && Number(snoozed[id] || 0) <= Date.now()) rows.push({ id, title, detail, links });
     };
@@ -4285,6 +4312,18 @@
     return !end ? '24-hour timer: not started' : remaining ? `24-hour timer: ${duration(remaining)} remaining` : '24-hour timer finished';
   }
 
+  function alertSettingsHtml() {
+    const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+    dataState.settings.alerts.enabledTypes = enabled;
+    const enabledCount = PDA_ALERT_TYPES.filter(definition => enabled[definition.id]).length;
+    const groups = [...new Set(PDA_ALERT_TYPES.map(definition => definition.group))];
+    return `<details class="alert-settings"><summary>Alert settings · ${enabledCount}/${PDA_ALERT_TYPES.length} enabled</summary>
+      <p>Disabled alerts are removed from both the PDA alert list and phone notification flow.</p>
+      <div class="alert-settings-actions"><button type="button" data-action="alerts-enable-all">Enable all</button><button type="button" data-action="alerts-disable-all">Disable all</button></div>
+      <div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${PDA_ALERT_TYPES.filter(definition => definition.group === group).map(definition => `<label><input type="checkbox" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label)}</span></label>`).join('')}</fieldset>`).join('')}</div>
+    </details>`;
+  }
+
   function renderAlerts() {
     const root = moduleRoot('alerts');
     if (!root) return;
@@ -4305,6 +4344,7 @@
       <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
       <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
       <div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
+      ${alertSettingsHtml()}
       <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
     </article></div>`;
   }
@@ -5974,12 +6014,13 @@
     .market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
     .war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
     .war-armory-controls{grid-template-columns:1fr}
+    .alert-settings{margin:10px 0;padding:8px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.alert-settings summary{min-height:38px;padding:7px;cursor:pointer;font-weight:800}.alert-settings>p{margin:5px 7px 9px;color:var(--s-muted)}.alert-settings-actions{display:flex;gap:7px;margin:0 7px 9px}.alert-settings-actions button{padding:5px 9px}.alert-settings-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.alert-settings fieldset{display:grid;align-content:start;gap:5px;min-width:0;padding:8px;border:1px solid var(--s-soft);border-radius:7px}.alert-settings legend{padding:0 4px;color:var(--s-muted);font-size:10px}.alert-settings label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;min-height:34px}.alert-settings input{width:20px;height:20px}.alert-settings span{overflow-wrap:anywhere}
     .racing-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:10px 0}.racing-filters{display:flex;gap:6px}.racing-filters button{padding:5px 9px}.racing-filters button[aria-selected="true"]{border-color:var(--s-accent);background:var(--s-accent);color:#fff}.racing-assistant{margin:8px 0;padding:9px;border:1px solid var(--s-soft);border-left:4px solid var(--s-accent);border-radius:8px;background:var(--s-bg)}.racing-assistant[data-tone="ready"]{border-left-color:var(--s-ready)}.racing-assistant[data-tone="warn"]{border-left-color:var(--s-warning)}.racing-assistant strong,.racing-assistant span{display:block}.racing-assistant span{color:var(--s-muted);font-size:10px}.racing-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.racing-card{padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.racing-card[data-completed="true"]{border-left:4px solid var(--s-ready)}.racing-card header,.racing-card footer{display:flex;align-items:start;justify-content:space-between;gap:8px}.racing-card h3{margin:0}.racing-card header span,.racing-card footer small{color:var(--s-muted)}.racing-specs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:8px 0}.racing-specs div{padding:6px;border-radius:6px;background:var(--s-panel)}.racing-specs small,.racing-specs strong{display:block}.racing-specs small{color:var(--s-muted);font-size:9px}.racing-name{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:end}.racing-name label{display:grid;gap:4px;color:var(--s-muted)}.racing-name input{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-panel);color:var(--s-text)}.racing-name input[aria-invalid="true"]{border-color:var(--s-error)}.racing-count{min-width:44px;color:var(--s-muted);text-align:right}.racing-count[data-invalid="true"]{color:var(--s-error);font-weight:900}.racing-card footer{align-items:center;margin-top:8px}.racing-card footer div{display:flex;gap:5px}.racing-card footer button{padding:5px 8px}
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav{visibility:hidden;pointer-events:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:700px){
-      .racing-list{grid-template-columns:1fr}
+      .alert-settings-groups{grid-template-columns:1fr}.racing-list{grid-template-columns:1fr}
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="quality-of-life"]::before{content:"🏁"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
@@ -6288,6 +6329,13 @@
       moduleState.access.error = '';
       setTheme('slink-dark');
       renderAllModules();
+    }
+    if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
+      const enabled = action === 'alerts-enable-all';
+      dataState.settings.alerts.enabledTypes = Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, enabled]));
+      reconcileAlertNotifications(moduleState.alerts.data);
+      writeDataState();
+      renderAlerts();
     }
     if (action === 'toggle-stack' || action === 'timer24-start' || action === 'timer24-cancel') {
       const settings = dataState.settings.alerts;
@@ -6647,6 +6695,17 @@
   });
 
   overlay.addEventListener('change', event => {
+    if (event.target.matches('[data-alert-type]')) {
+      const id = String(event.target.dataset.alertType || '');
+      if (PDA_ALERT_TYPES.some(definition => definition.id === id)) {
+        dataState.settings.alerts.enabledTypes = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+        dataState.settings.alerts.enabledTypes[id] = event.target.checked === true;
+        reconcileAlertNotifications(moduleState.alerts.data);
+        writeDataState();
+        renderAlerts();
+      }
+      return;
+    }
     if (event.target.matches('[data-field="mugging-enabled"],[data-field="mugging-min-ff"],[data-field="mugging-max-ff"],[data-field="mugging-limit"]')) {
       if (!hasScope('slink.mugging')) return;
       const root = moduleRoot('mugging');
