@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.29
+// @version      0.4.30
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.29-alert-preferences';
+  const BUILD = '0.4.30-module-activity';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -35,8 +35,11 @@
   const ROOT_OVERFLOW_KEY = 'slinkPdaPreviousOverflow';
   const API_WINDOW_MS = 60_000;
   const API_LIMIT = 60;
+  const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
+  const CONTRIBUTION_CEILING = 40;
+  const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.29';
+  const CLIENT_VERSION = '0.4.30';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -228,9 +231,7 @@
   const TARGET_STAKEOUT_ALERT_LIFETIME_MS = 24 * 60 * 60_000;
   const TARGET_STAKEOUT_MAX_DUE_PER_TICK = 20;
   const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
-  const MUGGING_INACTIVE_AFTER_MS = 5 * 60_000;
-  const MUGGING_ACTIVE_BUDGET = 10;
-  const MUGGING_INACTIVE_BUDGET = 5;
+  const MUGGING_INACTIVE_AFTER_MS = MODULE_INACTIVE_AFTER_MS;
   const MUGGING_CONTRIBUTION_INTERVAL_MS = 60_000;
   const MUGGING_ASSIGNMENT_REFRESH_MS = 5 * 60_000;
   const MUGGING_OWN_STATS_TTL_MS = 6 * 60 * 60_000;
@@ -377,6 +378,37 @@
 
   const state = readState();
   const dataState = readDataState();
+
+  function moduleActivityMap() {
+    const value = dataState.caches.moduleActivity;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) dataState.caches.moduleActivity = {};
+    return dataState.caches.moduleActivity;
+  }
+
+  function moduleLastActiveAt(name) {
+    const activity = moduleActivityMap();
+    const migrated = name === 'leveling'
+      ? Number(dataState.caches.levelingActivityAt) || 0
+      : name === 'mugging'
+        ? Number(dataState.caches.muggingActivityAt) || 0
+        : 0;
+    return Math.max(0, Number(activity[name]) || migrated);
+  }
+
+  function moduleIsActive(name, now = Date.now()) {
+    const lastActiveAt = moduleLastActiveAt(name);
+    return lastActiveAt > 0 && now - lastActiveAt <= MODULE_INACTIVE_AFTER_MS;
+  }
+
+  function touchModuleActivity(name, now = Date.now()) {
+    if (!['leveling', 'war', 'mugging', 'market'].includes(name)) return 0;
+    moduleActivityMap()[name] = now;
+    if (name === 'leveling') dataState.caches.levelingActivityAt = now;
+    if (name === 'mugging') dataState.caches.muggingActivityAt = now;
+    writeDataState();
+    return now;
+  }
+
   let dashboardOpen = false;
   let drag = null;
   let swipe = null;
@@ -540,23 +572,41 @@
     return task();
   }
 
+  function contributionCapacity(ledger = readApiLedger()) {
+    const contributionCount = ledger.events.filter(event => event.priority === 'contribution').length;
+    return {
+      available:Math.min(
+        Math.max(0, API_LIMIT - CONTRIBUTION_INTERACTIVE_RESERVE - ledger.events.length),
+        Math.max(0, CONTRIBUTION_CEILING - contributionCount)
+      ),
+      count:ledger.events.length,
+      contributionCount,
+      limit:API_LIMIT,
+      ceiling:CONTRIBUTION_CEILING,
+      interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE
+    };
+  }
+
   async function reserveTornApi(endpoint = 'unknown', options = {}) {
     const limit = Math.max(1, Math.min(API_LIMIT, Number(options.limit) || API_LIMIT));
     const wait = options.wait !== false;
-    const priority = ['high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
+    const contribution = options.contribution === true || String(options.priority) === 'contribution';
+    const priority = contribution ? 'contribution' : ['high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
     return serializeNetwork(async () => {
       while (true) {
         const reservation = await withApiLock(() => {
           const now = Date.now();
           const ledger = readApiLedger(now);
-          if (ledger.cooldownUntil > now || ledger.events.length >= limit) return { waitUntil:Math.max(ledger.cooldownUntil, Number(ledger.events[0]?.at || now) + API_WINDOW_MS + 25) };
+          const spare = contributionCapacity(ledger);
+          const full = contribution ? spare.available <= 0 : ledger.events.length >= limit;
+          if (ledger.cooldownUntil > now || full) return { waitUntil:Math.max(ledger.cooldownUntil, Number(ledger.events[0]?.at || now) + API_WINDOW_MS + 25) };
           ledger.events.push({
             at:now,
             id:`slink-pda:${global.crypto?.randomUUID?.() || `${now}:${Math.random().toString(36).slice(2)}`}`,
             script:'SLINK PDA Dashboard', priority, method:'GET', endpoint:String(endpoint).slice(0, 180), tabId:'pda-dashboard'
           });
           writeApiLedger(ledger);
-          return { reservedAt:now };
+          return { reservedAt:now, contribution };
         });
         if (reservation.reservedAt) return reservation;
         if (!wait) {
@@ -824,7 +874,11 @@
     }
     if (playerIntelligenceInFlight.has(playerId)) return playerIntelligenceInFlight.get(playerId);
     const pending = (async () => {
-      const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence', { wait:input.wait !== false, priority:input.priority || 'normal' });
+      const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence', {
+        wait:input.contribution === true ? input.wait === true : input.wait !== false,
+        priority:input.contribution === true ? 'contribution' : input.priority || 'normal',
+        contribution:input.contribution === true
+      });
       const record = observePlayerIntelligence(playerIntelligenceFromTornResponse(playerId, response, Date.now()));
       return {
         record:{ ...record, status:effectivePlayerIntelligenceStatus(record) },
@@ -1838,7 +1892,7 @@
   function scheduleMarketWake(runtime = marketRuntime()) {
     if (marketWakeTimer) global.clearTimeout(marketWakeTimer);
     marketWakeTimer = null;
-    if (!marketSettings().enabled || marketWatchLimit() <= 0) return;
+    if (!moduleIsActive('market') || !marketSettings().enabled || marketWatchLimit() <= 0) return;
     const settings = marketSettings();
     const activeWatches = settings.listedItemsEnabled ? settings.watches.slice(0, marketWatchLimit()) : [];
     const times = activeWatches.filter(watch => watch.enabled && watch.maxPrice > 0).flatMap(watch => {
@@ -1858,6 +1912,14 @@
 
   async function refreshMarket(force = false) {
     const current = moduleState.market;
+    if (force) touchModuleActivity('market');
+    if (!force && !moduleIsActive('market')) {
+      if (marketWakeTimer) global.clearTimeout(marketWakeTimer);
+      marketWakeTimer = null;
+      current.data = dataState.caches.market || current.data;
+      renderMarketUnlessEditing();
+      return;
+    }
     if (current.busy) return;
     current.busy = true; current.error = ''; current.lastAttemptAt = Date.now();
     if (dashboardOpen) renderMarketUnlessEditing();
@@ -2477,10 +2539,11 @@
     try {
       await ensurePermissionSession(false);
       await ensureLevelingSession(false);
-      const lastActivity = Number(dataState.caches.levelingActivityAt) || 0;
-      if (Date.now() - lastActivity >= 5 * 60_000) {
-        await productRequest('leveling', '/api/user/activity', { method:'POST', body:{ last_interaction_at:Date.now() } });
-        dataState.caches.levelingActivityAt = Date.now();
+      const lastActivity = moduleLastActiveAt('leveling');
+      const reportedActivity = Math.max(0, Number(dataState.caches.levelingActivityReportedAt) || 0);
+      if (lastActivity > reportedActivity) {
+        await productRequest('leveling', '/api/user/activity', { method:'POST', body:{ last_interaction_at:lastActivity } });
+        dataState.caches.levelingActivityReportedAt = lastActivity;
       }
       const settings = dataState.settings.leveling;
       const query = new URLSearchParams({ limit:'20', poll_seconds:'300', min_ff:String(Math.min(settings.minFF, settings.maxFF)), max_ff:String(Math.max(settings.minFF, settings.maxFF)) });
@@ -2715,14 +2778,11 @@
   }
 
   function muggingContributionMode(now = Date.now()) {
-    const lastActiveAt = Math.max(0, Number(dataState.caches.muggingActivityAt) || 0);
-    return lastActiveAt > 0 && now - lastActiveAt <= MUGGING_INACTIVE_AFTER_MS ? 'active' : 'inactive';
+    return moduleIsActive('mugging', now) ? 'active' : 'inactive';
   }
 
   function touchMuggingActivity() {
-    dataState.caches.muggingActivityAt = Date.now();
-    writeDataState();
-    return dataState.caches.muggingActivityAt;
+    return touchModuleActivity('mugging');
   }
 
   function muggingClientId() {
@@ -2851,20 +2911,23 @@
     muggingContributionBusy = true;
     try {
       const mode = muggingContributionMode(now);
-      const budget = mode === 'active' ? MUGGING_ACTIVE_BUDGET : MUGGING_INACTIVE_BUDGET;
-      const response = await muggingRequest('/api/contributor/tasks', {
-        method:'POST',
-        body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(40, budget * 4) }
-      });
+      const capacity = contributionCapacity(readApiLedger(now));
+      const response = capacity.available > 0
+        ? await muggingRequest('/api/contributor/tasks', {
+            method:'POST',
+            body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(100, capacity.available * 4) }
+          })
+        : { tasks:[] };
       let fetched = 0, skipped = 0, errors = 0;
       const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
       for (const task of tasks) {
-        if (fetched >= budget) break;
+        if (fetched >= capacity.available) break;
         try {
           const result = await refreshPlayerIntelligence({
             playerId:task.player_id,
-            maxAgeMs:mode === 'active' ? 5 * 60_000 : 15 * 60_000,
-            priority:mode === 'active' ? 'normal' : 'low',
+            maxAgeMs:15 * 60_000,
+            priority:'contribution',
+            contribution:true,
             wait:false
           });
           if (!result?.fetched) { skipped++; continue; }
@@ -2886,7 +2949,10 @@
       }
       const sync = await syncMuggingContributorReports(false);
       const status = {
-        at:Date.now(), enabled:true, mode, apiBudgetPerMinute:budget,
+        at:Date.now(), enabled:true, mode, apiBudgetPerMinute:capacity.available,
+        contributionCeiling:CONTRIBUTION_CEILING,
+        interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE,
+        sharedUsageAtStart:capacity.count,
         tasksOffered:tasks.length, fetched, skipped, errors, assignmentsRefreshed,
         pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
         lastSyncAt:Math.max(0, Number(sync?.lastSuccessAt) || 0),
@@ -3022,7 +3088,7 @@
         <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
         <div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
       </div>
-      <div class="module-message">Contributor checks use the shared Torn limiter: up to 10/min while Mugging was used in the last five minutes, then up to 5/min at low priority. Results are deduplicated locally and synchronized to shared SLINK intelligence in acknowledged batches every six hours. Pending: ${Number(contribution.pendingSync) || 0}${contribution.lastSyncAt ? ` · Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}` : ''}${contribution.syncError ? ` · Sync retry pending: ${escapeHtml(contribution.syncError)}` : ''}.</div>
+      <div class="module-message">Contributor checks use only spare shared Torn capacity, keep 10 calls/min reserved for interactive work, and never exceed 40 contribution calls/min. Mugging assignments stop after five minutes away, while low-priority contribution may continue independently. Results are deduplicated locally and synchronized to shared SLINK intelligence in acknowledged batches every six hours. Pending: ${Number(contribution.pendingSync) || 0}${contribution.lastSyncAt ? ` · Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}` : ''}${contribution.syncError ? ` · Sync retry pending: ${escapeHtml(contribution.syncError)}` : ''}.</div>
       <div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
     </article></div>`;
   }
@@ -3959,6 +4025,46 @@
       writeDataState();
     } catch (error) { current.error = errorMessage(error); }
     finally { current.busy = false; renderWar(); }
+  }
+
+  async function refreshWarAlerts() {
+    const current = moduleState.war;
+    const cached = dataState.caches.war;
+    const activeWar = cached?.activeWar;
+    if (current.busy || !activeWar?.warId || activeWar.phase !== 'active') return;
+    if (Date.now() - Number(cached?.alertsAt || 0) < 9_000) return;
+    try {
+      await ensureWarSession(false);
+      const query = new URLSearchParams({
+        opponent_faction_id:String(activeWar.opponentId),
+        mode:String(dataState.settings.war.mode || 'war'),
+        idle_minutes:String(dataState.settings.war.idleMinutes || 5)
+      });
+      const fresh = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/snapshot?${query}`);
+      const previousSnapshot = cached?.snapshot && typeof cached.snapshot === 'object' ? cached.snapshot : {};
+      const previousRetals = new Map((Array.isArray(previousSnapshot.retals) ? previousSnapshot.retals : []).map(retal => [
+        String(retal.attackId || retal.attackerId || ''),
+        retal
+      ]));
+      const retals = (Array.isArray(fresh?.retals) ? fresh.retals : []).map(retal => ({
+        ...(previousRetals.get(String(retal.attackId || retal.attackerId || '')) || {}),
+        ...retal
+      }));
+      current.data = dataState.caches.war = {
+        ...cached,
+        alertsAt:Date.now(),
+        snapshot:{
+          ...previousSnapshot,
+          ...fresh,
+          members:Array.isArray(previousSnapshot.members) ? previousSnapshot.members : (fresh?.members || []),
+          retals
+        }
+      };
+      writeDataState();
+      renderWar();
+    } catch (error) {
+      console.debug('[SLINK PDA] War alert refresh paused:', errorMessage(error));
+    }
   }
 
   async function refreshWarOutside() {
@@ -5916,8 +6022,8 @@
   async function loadActiveModule(force = false) {
     if (!dashboardOpen || document.hidden) return;
     const name = activeModuleName();
+    if (['leveling', 'war', 'mugging', 'market'].includes(name)) touchModuleActivity(name);
     if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
-    if (name === 'leveling') { dataState.caches.levelingActivityAt = Date.now(); writeDataState(); }
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
     if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
@@ -5942,13 +6048,16 @@
         if (clock) clock.textContent = timer24Label();
       }
       if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
-      const canRefreshMarket = Boolean(currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
-      if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= 15_000) void refreshMarket(false);
+      const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
+      if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= WEAVER_SUMMARY_REFRESH_MS) void refreshMarket(false);
       const canRefreshDollarBazaars = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
       if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
       const canRefreshWar = Boolean(currentApiKey() && hasGrantedScope('slink.war') && (validSession('war') || termsAccepted('war')));
-      if (canRefreshWar && !moduleState.war.busy && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
-      if (Date.now() - Number(dataState.caches.levelingActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS && !moduleState.leveling.busy) void refreshLeveling(false);
+      if (canRefreshWar && !moduleState.war.busy) {
+        if (moduleIsActive('war') && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
+        else void refreshWarAlerts();
+      }
+      if (moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
       if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
       if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
@@ -6284,7 +6393,19 @@
     clampLauncher(true);
   });
 
+  function trackModuleInteraction(target) {
+    if (!target?.closest) return;
+    if (target.closest('[data-combat-panel="leveling"]')) touchModuleActivity('leveling');
+    else if (target.closest('[data-combat-panel="war"]')) touchModuleActivity('war');
+    else if (target.closest('[data-combat-panel="mugging"]')) touchModuleActivity('mugging');
+    else if (target.closest('[data-efficiency-panel="market"]')) touchModuleActivity('market');
+  }
+
+  overlay.addEventListener('input', event => trackModuleInteraction(event.target), true);
+  overlay.addEventListener('change', event => trackModuleInteraction(event.target), true);
+
   overlay.addEventListener('click', event => {
+    trackModuleInteraction(event.target);
     const bountyProfile = event.target.closest('[data-bounty-profile]');
     if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
     const muggingProfile = event.target.closest('[data-mugging-profile]');
