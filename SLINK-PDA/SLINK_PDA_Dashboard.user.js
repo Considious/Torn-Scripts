@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.30
+// @version      0.4.31
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.30-module-activity';
+  const BUILD = '0.4.31-navigation-memory';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -39,7 +39,7 @@
   const CONTRIBUTION_CEILING = 40;
   const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.30';
+  const CLIENT_VERSION = '0.4.31';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -274,26 +274,43 @@
     bubblePosition: null
   });
 
+  function normalizeUiState(value) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return {
+      page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
+      combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
+      efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
+      qualityOfLifeTab:source.qualityOfLifeTab === 'racing' ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+      theme:String(source.theme || defaults.theme),
+      bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
+    };
+  }
+
   function readState() {
+    let persistent = {};
+    try {
+      const value = typeof GM_API.get === 'function' ? GM_API.get(STORAGE_KEY, {}) : {};
+      if (value && typeof value === 'object' && !(value && typeof value.then === 'function')) persistent = value;
+    } catch {}
+    let local = {};
     try {
       const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
-      return { ...defaults, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
-    } catch {
-      return { ...defaults };
-    }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) local = parsed;
+    } catch {}
+    return normalizeUiState({ ...persistent, ...local });
   }
 
   function writeState() {
-    try {
-      global.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        page: state.page,
-        combatTab: state.combatTab,
-        efficiencyTab: state.efficiencyTab,
-        qualityOfLifeTab: state.qualityOfLifeTab,
-        theme: state.theme,
-        bubblePosition: state.bubblePosition
-      }));
-    } catch {}
+    const snapshot = {
+      page:state.page,
+      combatTab:state.combatTab,
+      efficiencyTab:state.efficiencyTab,
+      qualityOfLifeTab:state.qualityOfLifeTab,
+      theme:state.theme,
+      bubblePosition:state.bubblePosition
+    };
+    try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
+    try { if (typeof GM_API.set === 'function') GM_API.set(STORAGE_KEY, snapshot); } catch {}
   }
 
   function storageRead(key, fallback) {
