@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.31
+// @version      0.4.32
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -26,7 +26,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.31-navigation-memory';
+  const BUILD = '0.4.32-admin-mugging';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -39,7 +39,7 @@
   const CONTRIBUTION_CEILING = 40;
   const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.31';
+  const CLIENT_VERSION = '0.4.32';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -1439,7 +1439,7 @@
 
   function hasScope(required) {
     const session = dataState.sessions.permission;
-    return Boolean(session?.token && Number(session.expiresAt) > Date.now() && hasGrantedScope(required));
+    return Boolean(session?.token && Number(session.expiresAt) > Date.now() && (hasAdminScope() || hasGrantedScope(required)));
   }
 
   function hasAdminScope() {

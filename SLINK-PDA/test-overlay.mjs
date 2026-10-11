@@ -4,7 +4,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
-assert.match(source, /@version\s+0\.4\.31/);
+assert.match(source, /@version\s+0\.4\.32/);
 assert.match(source, /@grant\s+GM_xmlhttpRequest/);
 assert.match(source, /@grant\s+GM_notification/);
 assert.match(source, /@connect\s+api\.torn\.com/);
@@ -41,6 +41,7 @@ assert.match(source, /slink\.war\.officer/);
 assert.match(source, /slink\.adhd\.alerts/);
 assert.match(source, /slink\.adhd\.marketwatch\.\(\\d\+\)|slink\\\.adhd\\\.marketwatch/);
 assert.match(source, /admin\.\*/);
+assert.match(source, /hasAdminScope\(\) \|\| hasGrantedScope\(required\)/);
 assert.match(source, /\/api\/themes/);
 assert.match(source, /validateThemeCatalog/);
 assert.match(source, /slink\.theme\.dragons-breath|themeCatalog\(\)/);
