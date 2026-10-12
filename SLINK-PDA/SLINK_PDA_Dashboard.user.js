@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.36
+// @version      0.4.37
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -43,7 +43,7 @@
   const CONTRIBUTION_CEILING = 40;
   const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.35';
+  const CLIENT_VERSION = '0.4.37';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -84,6 +84,118 @@
   const TRAVEL_SAFETY_SCOPE = 'slink.qol.travel-safety';
   const TRAVEL_SAFETY_BUFFER_RATIO = 0.10;
   const TRAVEL_SAFETY_CACHE_MS = 2 * 60_000;
+
+
+  const COMPANY_SCOPE = 'slink.qol.company';
+  const COMPANY_CACHE_MS = 15 * 60_000;
+
+  function companySettings() {
+    const value = dataState.settings.company || {};
+    dataState.settings.company = {
+      enabled:value.enabled !== false,
+      addictionThreshold:Math.min(100, Math.max(1, Number(value.addictionThreshold) || 10)),
+      directorThreshold:Math.min(100, Math.max(1, Number(value.directorThreshold) || 10)),
+      refreshMinutes:Math.min(60, Math.max(5, Number(value.refreshMinutes) || 15))
+    };
+    return dataState.settings.company;
+  }
+
+  function companyFinite(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function companyAddictionPenalty(employee = {}) {
+    const value = companyFinite(employee?.effectiveness?.addiction);
+    return value === null ? null : Math.abs(Math.min(0, value));
+  }
+
+  function normalizeCompanyEmployee(employee = {}) {
+    const id = Math.trunc(Number(employee.id ?? employee.user_id ?? employee.userId) || 0);
+    const effectiveness = employee.effectiveness && typeof employee.effectiveness === 'object' ? { ...employee.effectiveness } : null;
+    const stats = employee.stats && typeof employee.stats === 'object' ? { ...employee.stats } : null;
+    const workingStats = companyFinite(effectiveness?.working_stats ?? effectiveness?.workingStats);
+    return {
+      id,
+      name:String(employee.name || employee.player_name || `User ${id || '?'}`),
+      position:String(employee.position || employee.position_name || ''),
+      daysInCompany:Math.max(0, Math.trunc(Number(employee.days_in_company ?? employee.daysInCompany) || 0)),
+      effectiveness,
+      stats,
+      addictionPenalty:companyAddictionPenalty(employee),
+      totalEffectiveness:companyFinite(effectiveness?.total),
+      workingStatsEffectiveness:workingStats,
+      trainHeadroom:workingStats === null ? null : Math.max(0, 50 - workingStats),
+      totalStats:stats ? Object.values(stats).reduce((sum, value) => sum + (companyFinite(value) || 0), 0) : null
+    };
+  }
+
+  function normalizeCompanySnapshot(userResponse = {}, companyResponse = {}, userId = 0) {
+    const job = userResponse.job || userResponse;
+    const jobpoints = userResponse.jobpoints || userResponse.job_points || {};
+    const profile = companyResponse.profile || companyResponse.company || {};
+    const rawEmployees = Array.isArray(companyResponse.employees) ? companyResponse.employees : Object.values(companyResponse.employees || {});
+    const employees = rawEmployees.map(normalizeCompanyEmployee).filter(employee => employee.id > 0);
+    const currentUserId = Math.trunc(Number(userId) || 0);
+    const directorId = Math.trunc(Number(profile?.director?.id ?? profile?.director_id) || 0);
+    const companyId = Math.trunc(Number(job?.company_id ?? job?.company?.id ?? profile?.id) || 0);
+    const companyPoints = Array.isArray(jobpoints?.companies)
+      ? jobpoints.companies.find(entry => Number(entry?.company?.id ?? entry?.company_id) === companyId)
+      : null;
+    return {
+      fetchedAt:Date.now(),
+      userId:currentUserId,
+      director:directorId > 0 && directorId === currentUserId,
+      directorId,
+      company:{
+        id:companyId,
+        name:String(job?.company_name ?? job?.company?.name ?? profile?.name ?? ''),
+        typeId:Math.trunc(Number(job?.company_type ?? job?.type_id ?? job?.company?.type_id) || 0),
+        rating:Math.trunc(Number(job?.company_rating ?? job?.rating ?? profile?.rating) || 0),
+        position:String(job?.position || ''),
+        daysInCompany:Math.max(0, Math.trunc(Number(job?.days_in_company) || 0)),
+        jobPoints:companyFinite(companyPoints?.points ?? jobpoints?.jobs?.points ?? jobpoints?.points)
+      },
+      self:employees.find(employee => employee.id === currentUserId) || null,
+      employees
+    };
+  }
+
+  function rankCompanyTrainCandidates(employees = []) {
+    return [...employees].filter(employee => employee.trainHeadroom !== null).sort((left, right) =>
+      Number(right.trainHeadroom) - Number(left.trainHeadroom)
+      || Number(left.totalStats ?? Number.MAX_SAFE_INTEGER) - Number(right.totalStats ?? Number.MAX_SAFE_INTEGER)
+      || left.name.localeCompare(right.name)
+    );
+  }
+
+  function companyReminderText(employee) {
+    return `Your addiction penalty is currently ${employee?.addictionPenalty === null ? 'unknown' : '-' + employee.addictionPenalty}. Please rehab as soon as possible.`;
+  }
+
+  function companyAlertRows() {
+    const snapshot = dataState.caches.company?.snapshot;
+    const settings = companySettings();
+    const snoozed = dataState.settings.alerts.snoozedUntil || {};
+    if (!snapshot || !settings.enabled || !hasScope(COMPANY_SCOPE)) return [];
+    const rows = [];
+    const add = row => { if (Number(snoozed[row.id] || 0) <= Date.now()) rows.push(row); };
+    if (snapshot.self?.addictionPenalty !== null && snapshot.self.addictionPenalty >= settings.addictionThreshold) {
+      add({ id:'company:addiction:self', title:'Company addiction reminder', detail:`Your company effectiveness addiction penalty is -${snapshot.self.addictionPenalty}. Please rehab as soon as possible.`, links:[['Company','https://www.torn.com/joblist.php']] });
+    }
+    if (snapshot.director) {
+      for (const employee of snapshot.employees || []) {
+        if (employee.id === snapshot.userId || employee.addictionPenalty === null || employee.addictionPenalty < settings.directorThreshold) continue;
+        add({
+          id:`company:addiction:${employee.id}`,
+          title:`${employee.name} needs rehab`,
+          detail:`Company effectiveness addiction penalty: -${employee.addictionPenalty}.`,
+          links:[['Profile',`https://www.torn.com/profiles.php?XID=${employee.id}`],['Message',`https://www.torn.com/messages.php#/p=compose&XID=${employee.id}`]]
+        });
+      }
+    }
+    return rows;
+  }
 
   function travelSafetyTimestampMs(value) {
     const numberValue = Number(value);
@@ -567,7 +679,7 @@
       page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
       combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
       efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
-      qualityOfLifeTab:['racing','abroadStocks','travelSafety'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+      qualityOfLifeTab:['racing','abroadStocks','travelSafety','company'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
       theme:String(source.theme || defaults.theme),
       bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
     };
@@ -656,7 +768,8 @@
         market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) },
         racing:normalizeRacingState(value.settings?.racing),
-        abroadStocks:{ ...(value.settings?.abroadStocks || {}) }
+        abroadStocks:{ ...(value.settings?.abroadStocks || {}) },
+        company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinutes:15, ...(value.settings?.company || {}) }
       }
     };
   }
@@ -765,7 +878,8 @@
     dollarBazaars:{ busy:false, error:'', data:dataState.caches.dollarBazaars || null, lastAttemptAt:0 },
     merits:{ busy:false, error:'', data:dataState.caches.merits || null },
     abroadStocks:{ busy:false, error:'', data:dataState.caches.abroadStocks || null, mode:'item', query:'' },
-    travelSafety:{ busy:false, error:'', crime:dataState.caches.travelSafety?.crime || null, fetchedAt:Number(dataState.caches.travelSafety?.fetchedAt) || 0 }
+    travelSafety:{ busy:false, error:'', crime:dataState.caches.travelSafety?.crime || null, fetchedAt:Number(dataState.caches.travelSafety?.fetchedAt) || 0 },
+    company:{ busy:false, error:'', notice:'', data:dataState.caches.company || null }
   };
 
   function serializeNetwork(task) {
@@ -2704,6 +2818,108 @@
     return travelSafetyParseDurationMs(time.getAttribute('datetime') || time.querySelector('[class*="srOnly"]')?.textContent || time.textContent);
   }
 
+
+  function renderCompany() {
+    const root = moduleRoot('company');
+    if (!root) return;
+    if (!hasScope(COMPANY_SCOPE)) {
+      root.innerHTML = lockedModule(COMPANY_SCOPE, 'Company & Job Points');
+      return;
+    }
+    const current = moduleState.company;
+    const snapshot = current.data?.snapshot || dataState.caches.company?.snapshot;
+    const settings = companySettings();
+    if (!snapshot) {
+      root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Company &amp; Job Points</h2><span class="muted">Employee alerts and director tools.</span></div></div>' +
+        (current.error ? moduleMessage(current.error, 'error') : '') +
+        '<p>No company information is cached yet.</p><button type="button" data-action="refresh-company" ' + (current.busy ? 'disabled' : '') + '>' + (current.busy ? 'Checking…' : 'Refresh company') + '</button></article></div>';
+      return;
+    }
+    const selfPenalty = snapshot.self?.addictionPenalty;
+    const ranked = snapshot.director ? rankCompanyTrainCandidates(snapshot.employees) : [];
+    root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>' + escapeHtml(snapshot.company.name || 'Current company') + '</h2><span class="muted">' + escapeHtml(snapshot.company.position || 'Employee') + ' · ' + (snapshot.company.rating ? snapshot.company.rating + '★' : 'rating unavailable') + '</span></div><button type="button" data-action="refresh-company" ' + (current.busy ? 'disabled' : '') + '>' + (current.busy ? 'Checking…' : 'Refresh') + '</button></div>' +
+      (current.error ? moduleMessage(current.error, 'error') : '') + (current.notice ? moduleMessage(current.notice, 'ready') : '') +
+      '<div class="stats"><div><strong>' + number(snapshot.company.jobPoints) + '</strong><span>Job points</span></div><div><strong>' + number(snapshot.company.daysInCompany) + '</strong><span>Days in company</span></div><div><strong>' + (selfPenalty === null ? 'Unavailable' : '-' + number(selfPenalty)) + '</strong><span>Your addiction penalty</span></div><div><strong>' + relativeTime(current.data?.fetchedAt) + '</strong><span>Updated</span></div></div>' +
+      '<div class="form-grid"><label>Your addiction alert threshold<input type="number" min="1" max="100" step="1" data-company-own-threshold value="' + escapeHtml(settings.addictionThreshold) + '"></label>' +
+      (snapshot.director ? '<label>Employee alert threshold<input type="number" min="1" max="100" step="1" data-company-director-threshold value="' + escapeHtml(settings.directorThreshold) + '"></label>' : '') +
+      '<button type="button" data-action="save-company-settings">Save alert settings</button></div></article>' +
+      (snapshot.director ? '<article class="card full"><div class="card-head"><div><h2>Director view</h2><span class="muted">Train priority is estimated from working-stat effectiveness headroom, not promised stat gain.</span></div><span class="badge ready">' + ranked.length + ' ranked</span></div><div class="target-list">' +
+        (ranked.map((employee, index) => '<article class="target"><div><strong>#' + (index + 1) + ' ' + escapeHtml(employee.name) + '</strong><span>' + escapeHtml(employee.position || 'Employee') + ' · addiction ' + (employee.addictionPenalty === null ? 'unavailable' : '-' + employee.addictionPenalty) + ' · effectiveness ' + (employee.totalEffectiveness === null ? 'unavailable' : employee.totalEffectiveness) + ' · train headroom ' + employee.trainHeadroom + '</span></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/messages.php#/p=compose&amp;XID=' + employee.id + '">Message</a><a class="action-link" href="https://www.torn.com/profiles.php?XID=' + employee.id + '">Open profile/chat</a><button type="button" data-action="copy-company-reminder" data-company-employee="' + employee.id + '">Copy reminder</button><button type="button" data-action="fill-company-chat" data-company-employee="' + employee.id + '">Fill open chat</button><button type="button" data-action="send-company-chat" data-company-employee="' + employee.id + '">Send open chat</button></div></article>').join('') || moduleMessage('No extended employee effectiveness data is available.')) +
+      '</div></article>' : '') + '</div>';
+  }
+
+  async function refreshCompany(force = false) {
+    const current = moduleState.company;
+    if (current.busy) return current.data;
+    const cached = dataState.caches.company;
+    const ttl = companySettings().refreshMinutes * 60_000;
+    if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < ttl) {
+      current.data = cached;
+      renderCompany();
+      return cached;
+    }
+    current.busy = true;
+    current.error = '';
+    current.notice = '';
+    renderCompany();
+    try {
+      await ensurePermissionSession(false);
+      if (!hasScope(COMPANY_SCOPE)) throw new Error('Your SLINK account does not have ' + COMPANY_SCOPE + ' permission.');
+      const [user, company] = await Promise.all([
+        tornJson('/v2/user?selections=job,jobpoints', 'SLINK PDA company assistant'),
+        tornJson('/v2/company?selections=profile,employees', 'SLINK PDA company assistant')
+      ]);
+      const userId = Number(dataState.sessions.permission?.userId) || 0;
+      const snapshot = normalizeCompanySnapshot(user, company, userId);
+      current.data = dataState.caches.company = { fetchedAt:Date.now(), snapshot };
+      writeDataState();
+      reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+      return current.data;
+    } catch (error) {
+      current.error = errorMessage(error);
+      throw error;
+    } finally {
+      current.busy = false;
+      renderCompany();
+      renderAlerts();
+    }
+  }
+
+  function companyEmployeeFromAction(target) {
+    const id = Number(target?.dataset?.companyEmployee) || 0;
+    return moduleState.company.data?.snapshot?.employees?.find(employee => employee.id === id)
+      || dataState.caches.company?.snapshot?.employees?.find(employee => employee.id === id)
+      || null;
+  }
+
+  function companyPrivateChatPanel(employeeName) {
+    const wanted = String(employeeName || '').trim().toLowerCase();
+    if (!wanted) return null;
+    return [...document.querySelectorAll('[id^="private-"]')].find(panel => [...panel.querySelectorAll('[class*="title"],[class*="name"],header span')]
+      .some(node => {
+        const label = String(node.textContent || '').trim().toLowerCase();
+        return label === wanted || label.startsWith(wanted + ' ');
+      })) || null;
+  }
+
+  function fillCompanyPrivateChat(employee, send = false) {
+    if (!employee) throw new Error('Employee information is unavailable.');
+    const panel = companyPrivateChatPanel(employee.name);
+    if (!panel) throw new Error('Open ' + employee.name + '\'s private chat first.');
+    const textarea = panel.querySelector('textarea[placeholder="Type your message here..."]');
+    if (!textarea) throw new Error('The open private chat text box was not found.');
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    descriptor?.set?.call(textarea, companyReminderText(employee));
+    textarea.dispatchEvent(new Event('input', { bubbles:true }));
+    textarea.dispatchEvent(new Event('change', { bubbles:true }));
+    textarea.focus();
+    if (!send) return;
+    const button = [...panel.querySelectorAll('button[type="button"]')].find(candidate => !candidate.disabled && candidate.querySelector('svg[viewBox="0 0 18 18"]'));
+    if (!button) throw new Error('The private chat Send button is not ready.');
+    button.click();
+  }
+
+
   function renderTravelSafety() {
     const root = moduleRoot('travelSafety');
     if (!root) return;
@@ -3162,6 +3378,7 @@
       ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
       ['[data-efficiency-tab="dollarBazaars"]', 'slink.adhd.alerts'],
       ['[data-quality-of-life-tab="travelSafety"]', TRAVEL_SAFETY_SCOPE],
+      ['[data-quality-of-life-tab="company"]', COMPANY_SCOPE],
       ['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
       ['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
     ];
@@ -5063,7 +5280,7 @@
     const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Array.isArray(body?.battlestats?.[name]?.modifiers) ? body.battlestats[name].modifiers : []).filter(row => /addiction/i.test(`${row?.effect || ''} ${row?.type || ''}`));
     const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
     add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
-    return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...rows];
+    return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...rows];
   }
 
   function updateAlertIndicator(count) {
@@ -5155,9 +5372,10 @@
     const permitted = hasScope('slink.adhd.alerts');
     const stakeoutAlerts = stakeoutAlertRows();
     const abroadAlerts = PDA_ABROAD.alerts();
-    if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+    const companyAlerts = companyAlertRows();
+    if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
     const current = moduleState.alerts;
-    const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts];
+    const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts];
     const cityBought = finite(current.data?.cityBought);
     const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
     const cityStatus = cityHidden
@@ -6748,6 +6966,7 @@
     if (name === 'targetList') { renderTargetList(); return; }
     if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
     if (name === 'travelSafety') { renderTravelSafety(); if (force) await refreshTravelSafety(true); return; }
+    if (name === 'company') { renderCompany(); await refreshCompany(force).catch(() => undefined); return; }
     if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
     if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
@@ -6755,7 +6974,7 @@
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderTravelSafety(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderTravelSafety(); renderCompany(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -6783,6 +7002,7 @@
       if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
       if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
       void PDA_ABROAD.refresh(false);
+      if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -7019,10 +7239,11 @@
       </section>
       <section class="page" data-page-panel="quality-of-life" hidden>
         <div class="page-head"><div><h1>Quality of Life</h1><p>Convenience tools that work with Torn's visible page data.</p></div></div>
-        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button><button type="button" data-quality-of-life-tab="travelSafety">Travel Safety</button></nav>
+        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button><button type="button" data-quality-of-life-tab="travelSafety">Travel Safety</button><button type="button" data-quality-of-life-tab="company">Company</button></nav>
         <div class="subpage" data-quality-of-life-panel="racing"><div data-module-root="racing"></div></div>
         <div class="subpage" data-quality-of-life-panel="abroadStocks" hidden><div data-module-root="abroadStocks"></div></div>
         <div class="subpage" data-quality-of-life-panel="travelSafety" hidden><div data-module-root="travelSafety"></div></div>
+        <div class="subpage" data-quality-of-life-panel="company" hidden><div data-module-root="company"></div></div>
       </section>
       <section class="page" data-page-panel="access" hidden>
         <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
@@ -7276,6 +7497,20 @@
     if (action === 'refresh-active') void loadActiveModule(true);
     if (action === 'refresh-mugging') void refreshMugging(true);
     if (action === 'refresh-travel-safety') void refreshTravelSafety(true).catch(() => undefined);
+    if (action === 'refresh-company') void refreshCompany(true).catch(() => undefined);
+    if (action === 'save-company-settings') {
+      const root = moduleRoot('company');
+      dataState.settings.company = { ...companySettings(), addictionThreshold:Number(root?.querySelector('[data-company-own-threshold]')?.value) || 10, directorThreshold:Number(root?.querySelector('[data-company-director-threshold]')?.value) || companySettings().directorThreshold };
+      dataState.settings.company = companySettings();
+      moduleState.company.notice = 'Company alert settings saved.';
+      writeDataState(); renderCompany(); renderAlerts();
+    }
+    if (['copy-company-reminder','fill-company-chat','send-company-chat'].includes(action)) {
+      const control = event.target.closest('[data-company-employee]');
+      const employee = companyEmployeeFromAction(control);
+      if (action === 'copy-company-reminder') void copyText(companyReminderText(employee)).then(copied => { moduleState.company.notice = copied ? 'Reminder copied.' : 'Could not copy the reminder.'; renderCompany(); });
+      else { try { fillCompanyPrivateChat(employee, action === 'send-company-chat'); moduleState.company.notice = action === 'send-company-chat' ? 'Reminder sent.' : 'Reminder placed in the open chat.'; } catch (error) { moduleState.company.error = errorMessage(error); } renderCompany(); }
+    }
     if (action === 'load-terms') void loadTerms(true);
     if (action === 'refresh-themes') void loadThemeCatalog(true);
     if (action === 'save-access') void saveAccess();
