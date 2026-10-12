@@ -30,16 +30,16 @@ jobs:
       - run: npm --prefix SLINK-PDA test
       - name: Require committed build in pull requests
         if: github.event_name == 'pull_request'
-        run: git diff --exit-code -- SLINK-PDA/SLINK_PDA_Dashboard.user.js
-      - name: Publish generated userscript
+        run: git diff --exit-code -- SLINK-PDA/SLINK_PDA_Dashboard.user.js SLINK-PDA/SLINK_PDA_Runtime.js
+      - name: Publish generated PDA loader and runtime
         if: github.event_name == 'push'
         shell: bash
         run: |
-          if git diff --quiet -- SLINK-PDA/SLINK_PDA_Dashboard.user.js; then
+          git add SLINK-PDA/SLINK_PDA_Dashboard.user.js SLINK-PDA/SLINK_PDA_Runtime.js
+          if git diff --cached --quiet; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add SLINK-PDA/SLINK_PDA_Dashboard.user.js
-          git commit -m "Build PDA userscript 0.4.42 [skip ci]"
+          git commit -m "Build PDA external runtime 0.4.43 [skip ci]"
           git push
