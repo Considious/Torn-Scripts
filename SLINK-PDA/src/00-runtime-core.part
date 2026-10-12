@@ -1,0 +1,1839 @@
+// ==UserScript==
+// @name         SLINK PDA Dashboard
+// @namespace    Considious [3853023]
+// @version      0.4.41
+// @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
+// @author       Considious [3853023]
+// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
+// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
+// @match        https://www.torn.com/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @grant        GM_notification
+// @connect      api.torn.com
+// @connect      ffscouter.com
+// @connect      weav3r.dev
+// @connect      yata.yt
+// @connect      prombot.co.uk
+// @connect      torn-intel.com
+// @connect      droqsdb.com
+// @connect      slinkyleveling.richard-johnson554.workers.dev
+// @connect      slinkcontributionworker.richard-johnson554.workers.dev
+// @connect      slinkwarworker.richard-johnson554.workers.dev
+// @connect      slinkmuggingworker.richard-johnson554.workers.dev
+// @run-at       document-end
+// ==/UserScript==
+(function installSlinkPdaDashboard(global) {
+'use strict';
+const BUILD = '0.4.41-permission-sweep';
+const HOST_ID = 'slink-pda-dashboard-host';
+const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
+const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
+const SHARED_API_LEDGER_KEY = 'considious:torn-api-ledger:v1';
+const SHARED_API_LOCK = 'considious-torn-api-limiter-v1';
+const ROOT_OVERFLOW_KEY = 'slinkPdaPreviousOverflow';
+const API_WINDOW_MS = 60_000;
+const API_LIMIT = 60;
+const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
+const CONTRIBUTION_CEILING = 40;
+const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
+const CLIENT_NAME = 'SLINK PDA Dashboard';
+const CLIENT_VERSION = '0.4.41';
+const WEEK_MS = 7 * 86_400_000;
+const PDA_ALERT_TYPES = Object.freeze([
+{ id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
+{ id:'medicalCooldown', label:'Medical cooldown clear', group:'Cooldowns' },
+{ id:'boosterCooldown', label:'Booster cooldown clear', group:'Cooldowns' },
+{ id:'energyFull', label:'Energy full', group:'Bars & refills' },
+{ id:'nerveFull', label:'Nerve full', group:'Bars & refills' },
+{ id:'energyRefill', label:'Energy refill unused', group:'Bars & refills' },
+{ id:'nerveRefill', label:'Nerve refill unused', group:'Bars & refills' },
+{ id:'raceOrFly', label:'Start a race or take a flight', group:'Travel & racing' },
+{ id:'landing', label:'Landing soon', group:'Travel & racing' },
+{ id:'missions', label:'Unfinished missions', group:'Daily activity' },
+{ id:'cityItems', label:'Buy 100 city items', group:'Daily activity' },
+{ id:'organizedCrime', label:'Join an organized crime', group:'Daily activity' },
+{ id:'education', label:'Start an education course', group:'Daily activity' },
+{ id:'casinoTokens', label:'Spend casino tokens', group:'Daily activity' },
+{ id:'stockBenefits', label:'Stock benefit ready', group:'Benefits' },
+{ id:'playerAddiction', label:'Player addiction', group:'Benefits' },
+{ id:'googlePlayPoints', label:'Weekly Google Play Points', group:'Reminders' },
+{ id:'timer24', label:'24-hour timer finished', group:'Reminders' }
+]);
+function normalizePdaAlertTypes(value) {
+const source = value && typeof value === 'object' ? value : {};
+return Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, source[definition.id] !== false]));
+}
+const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
+const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
+const URLS = Object.freeze({
+permission:'https://slinkcontributionworker.richard-johnson554.workers.dev',
+leveling:'https://slinkyleveling.richard-johnson554.workers.dev',
+war:'https://slinkwarworker.richard-johnson554.workers.dev',
+mugging:'https://slinkmuggingworker.richard-johnson554.workers.dev',
+torn:'https://api.torn.com',
+weaver:'https://weav3r.dev'
+});
+const BOUNTY_SCOPE = 'slink.combat.bounties';
+const PLAYER_STATS_SCOPE = 'slink.combat.player-stats';
+const TARGET_LIST_SCOPE = 'slink.combat.target-list';
+const MERITS_SCOPE = 'slink.efficiency.merits';
+const DOLLAR_BAZAARS_SCOPE = 'slink.efficiency.dollar-bazaars';
+const RACING_SCOPE = 'slink.qol.racing';
+const ABROAD_STOCKS_SCOPE = 'slink.qol.abroad-stocks';
+const TRAVEL_SAFETY_BUFFER_RATIO = 0.10;
+const TRAVEL_SAFETY_CACHE_MS = 2 * 60_000;
+const COMPANY_SCOPE = 'slink.qol.company';
+const COMPANY_CACHE_MS = 15 * 60_000;
+
+const MUSEUM_SCOPE='slink.qol.museum',MUSEUM_CACHE_MS=3600000,MUSEUM_CATALOG_MS=604800000;
+const museumItem=(name,amount=1)=>({name,amount});
+const MUSEUM_SETS=[
+{id:'plushies',name:'Plushie Set',points:10,travel:true,items:['Jaguar Plushie','Lion Plushie','Panda Plushie','Monkey Plushie','Chamois Plushie','Wolverine Plushie','Nessie Plushie','Red Fox Plushie','Camel Plushie','Kitten Plushie','Teddy Bear Plushie','Sheep Plushie','Stingray Plushie'].map(museumItem)},
+{id:'flowers',name:'Exotic Flower Set',points:10,travel:true,items:['Dahlia','Orchid','African Violet','Cherry Blossom','Peony','Ceibo Flower','Edelweiss','Crocus','Heather','Tribulus Omanense','Banana Orchid'].map(museumItem)},
+{id:'meteorite',name:'Meteorite Fragment',points:15,items:[museumItem('Meteorite Fragment')]},
+{id:'fossil',name:'Patagonian Fossil',points:20,items:[museumItem('Patagonian Fossil')]},
+{id:'arrowheads',name:'Arrowhead Set',points:25,items:['Obsidian Point','Quartz Point','Basalt Point','Chert Point','Chalcedony Point','Quartzite Point'].map(museumItem)},
+{id:'medieval-coins',name:'Medieval Coin Set',points:100,items:['Leopard Coin','Florin Coin','Gold Noble Coin'].map(museumItem)},
+{id:'vairocana',name:'Vairocana Buddha',points:100,items:[museumItem('Vairocana Buddha Sculpture')]},
+{id:'ganesha',name:'Ganesha Sculpture',points:250,items:[museumItem('Ganesha Sculpture')]},
+{id:'shabti',name:'Shabti Sculpture',points:500,items:[museumItem('Shabti Sculpture')]},
+{id:'companion-scripts',name:'Companion Scripts',points:1000,items:['Companion Script : Abdullah','Companion Script : Ali','Companion Script : Ubay'].map(museumItem)},
+{id:'senet',name:'Senet Game Set',points:2000,items:[museumItem('Senet board'),museumItem('White Senet pawn',5),museumItem('Black Senet pawn',5)]},
+{id:'amulet',name:'Egyptian Amulet',points:10000,items:[museumItem('Egyptian Amulet')]}
+];
+const MUSEUM_ALIASES={'quran script : ibn masud':'Companion Script : Abdullah','quran script : ali':'Companion Script : Ali',"quran script : ubay ibn ka'b":'Companion Script : Ubay','script from the quran: ibn masud':'Companion Script : Abdullah','script from the quran: ali':'Companion Script : Ali',"script from the quran: ubay ibn ka'b":'Companion Script : Ubay'};
+function museumKey(value){return String(value||'').trim().replace(/\s+/g,' ').toLowerCase()}
+function museumName(value){const text=String(value||'').trim().replace(/\s+/g,' ');return MUSEUM_ALIASES[museumKey(text)]||text}
+function museumBuildStatus(inventoryRows=[],catalogRows=[]){
+const owned=new Map(),catalog=new Map();
+for(const row of inventoryRows){const name=museumName(row?.name);if(!name)continue;const key=museumKey(name),prior=owned.get(key)||{id:Number(row?.id)||0,amount:0};prior.amount+=Math.max(0,Math.trunc(Number(row?.amount)||0));owned.set(key,prior)}
+for(const row of catalogRows){const name=museumName(row?.name);if(name)catalog.set(museumKey(name),row)}
+const sets=MUSEUM_SETS.map(definition=>{const items=definition.items.map(required=>{const inventory=owned.get(museumKey(required.name)),entry=catalog.get(museumKey(required.name)),amount=Number(inventory?.amount)||0,needed=Math.max(0,required.amount-amount);return{name:required.name,required:required.amount,owned:amount,needed,complete:needed===0,itemId:Number(entry?.id||inventory?.id)||0,marketPrice:Math.max(0,Number(entry?.marketPrice)||0)}});const completeSets=Math.min(...items.map(item=>Math.floor(item.owned/item.required)));return{...definition,complete:items.every(item=>item.complete),completeSets:Number.isFinite(completeSets)?completeSets:0,items}});
+return{sets,summary:{completed:sets.filter(set=>set.complete).length,total:sets.length,redeemablePoints:sets.reduce((sum,set)=>sum+set.completeSets*set.points,0)}}
+}
+
+function companySettings() {
+const value = dataState.settings.company || {};
+dataState.settings.company = {
+enabled:value.enabled !== false,
+addictionThreshold:Math.min(100, Math.max(1, Number(value.addictionThreshold) || 10)),
+directorThreshold:Math.min(100, Math.max(1, Number(value.directorThreshold) || 10)),
+refreshMinutes:Math.min(60, Math.max(5, Number(value.refreshMinutes) || 15))
+};
+return dataState.settings.company;
+}
+function companyFinite(value) {
+const parsed = Number(value);
+return Number.isFinite(parsed) ? parsed : null;
+}
+function companyAddictionPenalty(employee = {}) {
+const value = companyFinite(employee?.effectiveness?.addiction);
+return value === null ? null : Math.abs(Math.min(0, value));
+}
+function normalizeCompanyEmployee(employee = {}) {
+const id = Math.trunc(Number(employee.id ?? employee.user_id ?? employee.userId) || 0);
+const effectiveness = employee.effectiveness && typeof employee.effectiveness === 'object' ? { ...employee.effectiveness } : null;
+const stats = employee.stats && typeof employee.stats === 'object' ? { ...employee.stats } : null;
+const workingStats = companyFinite(effectiveness?.working_stats ?? effectiveness?.workingStats);
+return {
+id,
+name:String(employee.name || employee.player_name || `User ${id || '?'}`),
+position:String(employee.position || employee.position_name || ''),
+daysInCompany:Math.max(0, Math.trunc(Number(employee.days_in_company ?? employee.daysInCompany) || 0)),
+effectiveness,
+stats,
+addictionPenalty:companyAddictionPenalty(employee),
+totalEffectiveness:companyFinite(effectiveness?.total),
+workingStatsEffectiveness:workingStats,
+trainHeadroom:workingStats === null ? null : Math.max(0, 50 - workingStats),
+totalStats:stats ? Object.values(stats).reduce((sum, value) => sum + (companyFinite(value) || 0), 0) : null
+};
+}
+function normalizeCompanySnapshot(userResponse = {}, companyResponse = {}, userId = 0) {
+const job = userResponse.job || userResponse;
+const jobpoints = userResponse.jobpoints || userResponse.job_points || {};
+const profile = companyResponse.profile || companyResponse.company || {};
+const rawEmployees = Array.isArray(companyResponse.employees) ? companyResponse.employees : Object.values(companyResponse.employees || {});
+const employees = rawEmployees.map(normalizeCompanyEmployee).filter(employee => employee.id > 0);
+const currentUserId = Math.trunc(Number(userId) || 0);
+const directorId = Math.trunc(Number(profile?.director?.id ?? profile?.director_id) || 0);
+const companyId = Math.trunc(Number(job?.company_id ?? job?.company?.id ?? profile?.id) || 0);
+const companyPoints = Array.isArray(jobpoints?.companies)
+? jobpoints.companies.find(entry => Number(entry?.company?.id ?? entry?.company_id) === companyId)
+: null;
+return {
+fetchedAt:Date.now(),
+userId:currentUserId,
+director:directorId > 0 && directorId === currentUserId,
+directorId,
+company:{
+id:companyId,
+name:String(job?.company_name ?? job?.company?.name ?? profile?.name ?? ''),
+typeId:Math.trunc(Number(job?.company_type ?? job?.type_id ?? job?.company?.type_id) || 0),
+rating:Math.trunc(Number(job?.company_rating ?? job?.rating ?? profile?.rating) || 0),
+position:String(job?.position || ''),
+daysInCompany:Math.max(0, Math.trunc(Number(job?.days_in_company) || 0)),
+jobPoints:companyFinite(companyPoints?.points ?? jobpoints?.jobs?.points ?? jobpoints?.points)
+},
+self:employees.find(employee => employee.id === currentUserId) || null,
+employees
+};
+}
+function rankCompanyTrainCandidates(employees = []) {
+return [...employees].filter(employee => employee.trainHeadroom !== null).sort((left, right) =>
+Number(right.trainHeadroom) - Number(left.trainHeadroom)
+|| Number(left.totalStats ?? Number.MAX_SAFE_INTEGER) - Number(right.totalStats ?? Number.MAX_SAFE_INTEGER)
+|| left.name.localeCompare(right.name)
+);
+}
+function companyReminderText(employee) {
+return `Your addiction penalty is currently ${employee?.addictionPenalty === null ? 'unknown' : '-' + employee.addictionPenalty}. Please rehab as soon as possible.`;
+}
+function companyAlertRows() {
+const snapshot = dataState.caches.company?.snapshot;
+const settings = companySettings();
+const snoozed = dataState.settings.alerts.snoozedUntil || {};
+if (!snapshot || !settings.enabled || !hasScope(COMPANY_SCOPE)) return [];
+const rows = [];
+const add = row => { if (Number(snoozed[row.id] || 0) <= Date.now()) rows.push(row); };
+if (snapshot.self?.addictionPenalty !== null && snapshot.self.addictionPenalty >= settings.addictionThreshold) {
+add({ id:'company:addiction:self', title:'Company addiction reminder', detail:`Your company effectiveness addiction penalty is -${snapshot.self.addictionPenalty}. Please rehab as soon as possible.`, links:[['Company','https://www.torn.com/joblist.php']] });
+}
+if (snapshot.director) {
+for (const employee of snapshot.employees || []) {
+if (employee.id === snapshot.userId || employee.addictionPenalty === null || employee.addictionPenalty < settings.directorThreshold) continue;
+add({
+id:`company:addiction:${employee.id}`,
+title:`${employee.name} needs rehab`,
+detail:`Company effectiveness addiction penalty: -${employee.addictionPenalty}.`,
+links:[['Profile',`https://www.torn.com/profiles.php?XID=${employee.id}`],['Message',`https://www.torn.com/messages.php#/p=compose&XID=${employee.id}`]]
+});
+}
+}
+return rows;
+}
+function travelSafetyTimestampMs(value) {
+const numberValue = Number(value);
+if (!Number.isFinite(numberValue) || numberValue <= 0) return 0;
+return numberValue < 10_000_000_000 ? Math.trunc(numberValue * 1000) : Math.trunc(numberValue);
+}
+function travelSafetyParseDurationMs(value) {
+const text = String(value || '').trim();
+if (!text) return 0;
+let seconds = 0;
+let matched = false;
+const units = /(\d+(?:\.\d+)?)\s*(?:d(?:ays?)?|h(?:ours?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)(?![a-z])/gi;
+for (const match of text.matchAll(units)) {
+matched = true;
+const amount = Number(match[1]);
+const unit = match[0].replace(match[1], '').trim().toLowerCase()[0];
+seconds += amount * (unit === 'd' ? 86_400 : unit === 'h' ? 3_600 : unit === 'm' ? 60 : 1);
+}
+if (matched) return Math.round(seconds * 1000);
+const fullClock = text.match(/^(\d+):(\d{1,2}):(\d{2})$/);
+if (fullClock) return (Number(fullClock[1]) * 3_600 + Number(fullClock[2]) * 60 + Number(fullClock[3])) * 1000;
+const hourMinute = text.match(/^(\d{1,2}):(\d{2})$/);
+return hourMinute ? (Number(hourMinute[1]) * 3_600 + Number(hourMinute[2]) * 60) * 1000 : 0;
+}
+function travelSafetyNormalizeCrime(response) {
+const crime = response?.organizedcrime ?? response?.organizedCrime ?? response?.crime ?? response;
+if (!crime || typeof crime !== 'object' || Array.isArray(crime)) return null;
+const readyAt = travelSafetyTimestampMs(crime.ready_at ?? crime.readyAt);
+if (!readyAt) return null;
+return {
+id:String(crime.id ?? crime.crime_id ?? crime.crimeId ?? ''),
+name:String(crime.name ?? crime.title ?? 'Organized crime'),
+readyAt,
+executedAt:travelSafetyTimestampMs(crime.executed_at ?? crime.executedAt)
+};
+}
+function travelSafetyRoundTripMs(oneWayMs) {
+return Math.ceil(Math.max(0, Number(oneWayMs) || 0) * 2 * (1 + TRAVEL_SAFETY_BUFFER_RATIO));
+}
+function travelSafetyAssessment(oneWayMs, crime, now = Date.now()) {
+const roundTripMs = travelSafetyRoundTripMs(oneWayMs);
+const readyAt = travelSafetyTimestampMs(crime?.readyAt ?? crime?.ready_at);
+const returnAt = now + roundTripMs;
+return {
+blocked:Boolean(roundTripMs && readyAt > now && !travelSafetyTimestampMs(crime?.executedAt ?? crime?.executed_at) && returnAt > readyAt),
+roundTripMs,
+returnAt,
+readyAt
+};
+}
+function travelSafetyFormatTct(timestamp) {
+const value = travelSafetyTimestampMs(timestamp);
+if (!value) return 'unknown';
+return new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false }).format(value) + ' TCT';
+}
+const ABROAD_STOCKS = (() => {
+const PROVIDERS = Object.freeze({
+yata:Object.freeze({ id:'yata', label:'YATA', url:'https://yata.yt/api/v1/travel/export/' }),
+prometheus:Object.freeze({ id:'prometheus', label:'Prometheus', url:'https://prombot.co.uk:8443/api/travel' }),
+tornIntel:Object.freeze({ id:'tornIntel', label:'Torn Intel', url:'https://torn-intel.com/api/v1/foreign-stock/travel-table' }),
+droqs:Object.freeze({ id:'droqs', label:'DroqsDB', url:'https://droqsdb.com/api/public/v1/export', enrichment:true })
+});
+const COUNTRIES = Object.freeze([
+['arg','Argentina',158], ['can','Canada',39], ['cay','Cayman Islands',33],
+['chi','China',229], ['haw','Hawaii',127], ['jap','Japan',213],
+['mex','Mexico',24], ['sou','South Africa',282], ['swi','Switzerland',175],
+['uae','UAE',271], ['uni','United Kingdom',159]
+].map(([code,name,minutes]) => Object.freeze({ code, name, minutes })));
+const TRAVEL_MULTIPLIERS = Object.freeze({ standard:1, airstrip:0.7, private:0.5, business:0.3 });
+const countryByCode = new Map(COUNTRIES.map(country => [country.code, country]));
+const countryByName = new Map(COUNTRIES.map(country => [key(country.name), country]));
+function key(value) {
+return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+function finite(value) {
+if (value === null || value === undefined || value === '') return null;
+const number = Number(value);
+return Number.isFinite(number) ? number : null;
+}
+function timestamp(value, fallback = 0) {
+if (value === null || value === undefined || value === '') return Math.max(0, Number(fallback) || 0);
+if (typeof value === 'string' && !/^\d+(?:\.\d+)?$/.test(value.trim())) {
+const parsed = Date.parse(value);
+return Number.isFinite(parsed) ? parsed : Math.max(0, Number(fallback) || 0);
+}
+const number = finite(value);
+if (number === null || number <= 0) return Math.max(0, Number(fallback) || 0);
+return number < 10_000_000_000 ? Math.round(number * 1000) : Math.round(number);
+}
+function countryRecord(value) {
+const normalized = key(value);
+if (!normalized) return null;
+const compact = normalized.replace(/[^a-z]/g, '');
+return countryByCode.get(compact.slice(0, 3))
+|| countryByName.get(normalized)
+|| COUNTRIES.find(country => key(country.name).startsWith(normalized) || normalized.startsWith(key(country.name)))
+|| null;
+}
+function rows(value) {
+if (Array.isArray(value)) return value;
+if (value && typeof value === 'object') return Object.values(value);
+return [];
+}
+function sourceCountries(payload) {
+const stocks = payload?.stocks || payload?.data?.stocks || payload?.result?.stocks;
+if (stocks && typeof stocks === 'object' && !Array.isArray(stocks)) {
+return Object.entries(stocks).map(([country, record]) => ({ country, ...(record || {}) }));
+}
+for (const candidate of [payload?.countries, payload?.data?.countries, payload?.result?.countries, payload?.data]) {
+if (Array.isArray(candidate)) return candidate;
+}
+return [];
+}
+function itemTimestamp(item, names, fallback = 0) {
+for (const name of names) {
+if (item?.[name] !== undefined && item?.[name] !== null) {
+const direct = timestamp(item[name]);
+if (direct) return direct;
+}
+}
+return timestamp(fallback);
+}
+function normalizeProvider(providerId, payload, fetchedAt = Date.now()) {
+const provider = PROVIDERS[providerId];
+if (!provider) throw new Error('Unknown abroad-stock provider.');
+const normalized = [];
+for (const countryInput of sourceCountries(payload || {})) {
+const country = countryRecord(countryInput?.country || countryInput?.code || countryInput?.iata || countryInput?.yataCode || countryInput?.name);
+if (!country) continue;
+const updatedAt = timestamp(
+countryInput?.update ?? countryInput?.updatedAt ?? countryInput?.lastUpdated ?? countryInput?.timestamp,
+payload?.timestamp ?? payload?.generatedAt ?? fetchedAt
+);
+const itemRows = rows(countryInput?.stocks || countryInput?.items || countryInput?.inventory || countryInput?.data);
+for (const item of itemRows) {
+const name = String(item?.name || item?.itemName || item?.item || '').trim();
+const id = Math.max(0, Math.trunc(finite(item?.id ?? item?.itemId ?? item?.item_id) || 0));
+if (!id && !name) continue;
+const quantity = finite(item?.quantity ?? item?.stock ?? item?.current ?? item?.amount);
+const cost = finite(item?.cost ?? item?.buyPrice ?? item?.price ?? item?.foreignPrice);
+let nextRestockAt = itemTimestamp(item, ['nextRestock','next_restock','nextRestockAt','estimatedRestockAt','restockAt']);
+if (!nextRestockAt && finite(item?.estimatedRestockMinutes) !== null) nextRestockAt = fetchedAt + Number(item.estimatedRestockMinutes) * 60_000;
+normalized.push({
+provider:providerId,
+countryCode:country.code,
+countryName:country.name,
+itemId:id || null,
+itemName:name || ('Item ' + id),
+quantity:quantity === null ? null : Math.max(0, Math.trunc(quantity)),
+cost:cost === null ? null : Math.max(0, Math.round(cost)),
+updatedAt,
+lastRestockAt:itemTimestamp(item, ['lastRestock','last_restock','lastRestockAt','previousRestockAt']),
+nextRestockAt,
+predictionSource:nextRestockAt ? provider.label : ''
+});
+}
+}
+return normalized;
+}
+function itemKey(row) {
+return String(row.countryCode) + ':' + (row.itemId || key(row.itemName));
+}
+function median(values) {
+const sorted = values.filter(Number.isFinite).sort((a,b) => a-b);
+if (!sorted.length) return 0;
+const middle = Math.floor(sorted.length / 2);
+return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+function historyPrediction(historyEntry) {
+const events = [...new Set(rows(historyEntry?.restocks).map(Number).filter(value => Number.isFinite(value) && value > 0))].sort((a,b) => a-b);
+if (!events.length) return { lastRestockAt:0, nextRestockAt:0, samples:0 };
+const intervals = events.slice(1).map((value,index) => value - events[index]).filter(value => value >= 10 * 60_000 && value <= 14 * 24 * 60 * 60_000);
+const interval = median(intervals.slice(-6));
+return {
+lastRestockAt:events.at(-1),
+nextRestockAt:interval ? events.at(-1) + interval : 0,
+samples:intervals.length
+};
+}
+function mergeSnapshots(snapshots = {}, history = {}) {
+const merged = new Map();
+for (const [providerId, providerRows] of Object.entries(snapshots || {})) {
+if (!PROVIDERS[providerId]) continue;
+for (const source of rows(providerRows)) {
+const mapKey = itemKey(source);
+const current = merged.get(mapKey) || {
+key:mapKey,
+countryCode:source.countryCode,
+countryName:source.countryName,
+itemId:source.itemId,
+itemName:source.itemName,
+sources:{},
+lastRestockAt:0,
+nextRestockAt:0,
+predictionSource:'',
+predictionSamples:0
+};
+current.sources[providerId] = {
+quantity:source.quantity,
+cost:source.cost,
+updatedAt:source.updatedAt
+};
+if (Number(source.lastRestockAt) > Number(current.lastRestockAt)) current.lastRestockAt = Number(source.lastRestockAt);
+if (Number(source.nextRestockAt) > Date.now() && (!current.nextRestockAt || Number(source.nextRestockAt) < current.nextRestockAt)) {
+current.nextRestockAt = Number(source.nextRestockAt);
+current.predictionSource = source.predictionSource || PROVIDERS[providerId].label;
+}
+merged.set(mapKey, current);
+}
+}
+for (const row of merged.values()) {
+const prediction = historyPrediction(history[row.key]);
+if (prediction.lastRestockAt > row.lastRestockAt) row.lastRestockAt = prediction.lastRestockAt;
+if (!row.nextRestockAt && prediction.samples >= 2 && prediction.nextRestockAt > Date.now()) {
+row.nextRestockAt = prediction.nextRestockAt;
+row.predictionSource = 'SLINK observed history';
+row.predictionSamples = prediction.samples;
+}
+}
+return [...merged.values()].sort((left,right) => left.countryName.localeCompare(right.countryName) || left.itemName.localeCompare(right.itemName));
+}
+function travelMinutes(countryCode, method = 'private', bufferMinutes = 0) {
+const country = countryByCode.get(String(countryCode || '').toLowerCase());
+if (!country) return null;
+const multiplier = TRAVEL_MULTIPLIERS[method] ?? TRAVEL_MULTIPLIERS.private;
+return Math.ceil(country.minutes * multiplier) + Math.max(0, Number(bufferMinutes) || 0);
+}
+function departureAt(row, settings = {}) {
+const next = Number(row?.nextRestockAt) || 0;
+const minutes = travelMinutes(row?.countryCode, settings.travelMethod, settings.arrivalBufferMinutes);
+return next && minutes !== null ? next - minutes * 60_000 : 0;
+}
+function formatTct(value) {
+const time = Number(value);
+if (!time) return '';
+return new Intl.DateTimeFormat('en-GB', {
+timeZone:'UTC', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+}).format(new Date(time)) + ' TCT';
+}
+return Object.freeze({
+COUNTRIES,
+PROVIDERS,
+TRAVEL_MULTIPLIERS,
+countryRecord,
+departureAt,
+formatTct,
+historyPrediction,
+itemKey,
+mergeSnapshots,
+normalizeProvider,
+timestamp,
+travelMinutes
+});
+})();
+const RACING_MAX_NICKNAME_LENGTH = 22;
+const RACING_TRACK_ABBREVIATIONS = Object.freeze({
+'Underdog':'UndrDog',
+'Commerce':'Commer',
+'Sewage':'Sewage',
+'Meltdown':'Meltdwn',
+'Vector':'Vect',
+'Industrial':'Industria',
+'Withdrawal':'Withdraw',
+'Speedway':'Speedwy',
+'Uptown':'Uptow'
+});
+const RACING_RECOMMENDED_BUILDS = Object.freeze([
+{ id:'a-colina-mudpit', class:'A', car:'Colina Tanprice', tracks:['Mudpit'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Rally', tires:'Dirt' } },
+{ id:'a-echo-stone-park', class:'A', car:'Echo R8', tracks:['Stone Park'], build:{ turbo:'Stage 3', transmission:'Short Ratio', gearbox:'Rally', tires:'Dirt' } },
+{ id:'a-edmondo-parkland', class:'A', car:'Edmondo NSX', tracks:['Parkland'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Rally', tires:'Dirt' } },
+{ id:'a-edmondo-meltdown-vector-industrial', class:'A', car:'Edmondo NSX', tracks:['Meltdown','Vector','Industrial'], build:{ turbo:'Stage 3', transmission:'Short Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+{ id:'a-edmondo-two-islands', class:'A', car:'Edmondo NSX', tracks:['Two Islands'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Rally', tires:'Dirt' } },
+{ id:'a-edmondo-hammerhead', class:'A', car:'Edmondo NSX', tracks:['Hammerhead'], build:{ turbo:'Stage 2', transmission:'Short Ratio', gearbox:'Rally', tires:'Dirt' } },
+{ id:'a-edmondo-underdog-commerce-sewage', class:'A', car:'Edmondo NSX', tracks:['Underdog','Commerce','Sewage'], build:{ turbo:'Stage 2', transmission:'Short Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+{ id:'a-mercia-convict', class:'A', car:'Mercia SLR', tracks:['Convict'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+{ id:'a-veloria-withdrawal-speedway-uptown', class:'A', car:'Veloria LFA', tracks:['Withdrawal','Speedway','Uptown'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Paddleshift', tires:'Tarmac' } },
+{ id:'a-volt-docks', class:'A', car:'Volt GT', tracks:['Docks'], build:{ turbo:'Stage 3', transmission:'Long Ratio', gearbox:'Paddleshift', tires:'Tarmac' } }
+].map(entry => Object.freeze({ ...entry, tracks:Object.freeze([...entry.tracks]), build:Object.freeze({ ...entry.build }) })));
+const RACING_DOM = Object.freeze({
+OFFICIAL_RACE_TRACK_SELECTOR:'.enlisted-btn-wrap',
+OFFICIAL_RACE_CAR_NAME_SELECTOR:'[class^="model-car-name-"],[class*=" model-car-name-"]',
+OFFICIAL_RACE_LABEL:'Official race'
+});
+const normalizeKey = value => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+const trackNames = Object.freeze([...new Set(RACING_RECOMMENDED_BUILDS.flatMap(entry => entry.tracks))]);
+const tracksByKey = new Map(trackNames.map(name => [normalizeKey(name), name]));
+function normalizeRacingTrackName(value) {
+const candidate = String(value || '').trim().replace(/\s+/g, ' ');
+return tracksByKey.get(normalizeKey(candidate)) || null;
+}
+function racingNicknameComponent(track) {
+const canonical = normalizeRacingTrackName(track) || String(track || '').trim().replace(/\s+/g, ' ');
+if (!canonical) return '';
+if (RACING_TRACK_ABBREVIATIONS[canonical]) return RACING_TRACK_ABBREVIATIONS[canonical];
+const joined = canonical.replace(/[^a-z0-9]/gi, '');
+return joined.length <= 10 ? joined : joined.slice(0, 10);
+}
+function suggestRacingNickname(tracks, maxLength = RACING_MAX_NICKNAME_LENGTH) {
+const components = (Array.isArray(tracks) ? tracks : []).map(racingNicknameComponent).filter(Boolean);
+if (!components.length) return { value:'', length:0, maxLength, valid:false, shortened:false };
+let value = components.join('|');
+let shortened = false;
+while (value.length > maxLength) {
+let index = -1;
+for (let position = 0; position < components.length; position += 1) {
+if (components[position].length > 3 && (index < 0 || components[position].length > components[index].length)) index = position;
+}
+if (index < 0) break;
+components[index] = components[index].slice(0, -1);
+shortened = true;
+value = components.join('|');
+}
+return { value, length:value.length, maxLength, valid:Boolean(value) && value.length <= maxLength, shortened };
+}
+function validateRacingNickname(value) {
+const name = String(value ?? '');
+return {
+value:name,
+length:name.length,
+maxLength:RACING_MAX_NICKNAME_LENGTH,
+valid:Boolean(name.trim()) && name.length <= RACING_MAX_NICKNAME_LENGTH,
+overBy:Math.max(0, name.length - RACING_MAX_NICKNAME_LENGTH)
+};
+}
+function normalizeRacingState(value) {
+const input = value && typeof value === 'object' ? value : {};
+const builds = input.builds && typeof input.builds === 'object' ? input.builds : {};
+const normalized = {};
+for (const definition of RACING_RECOMMENDED_BUILDS) {
+const source = builds[definition.id] && typeof builds[definition.id] === 'object' ? builds[definition.id] : {};
+normalized[definition.id] = {
+completed:source.completed === true,
+customName:String(source.customName || '').slice(0, 100)
+};
+}
+return { view:['needed','completed','all'].includes(input.view) ? input.view : 'needed', builds:normalized };
+}
+function effectiveRacingNickname(definition, userState) {
+const custom = String(userState?.builds?.[definition.id]?.customName || '').trim();
+return custom || suggestRacingNickname(definition.tracks).value;
+}
+function racingBuildsForView(view, userState) {
+const normalized = normalizeRacingState(userState);
+return RACING_RECOMMENDED_BUILDS.filter(definition => {
+const complete = normalized.builds[definition.id].completed;
+return view === 'completed' ? complete : view === 'all' ? true : !complete;
+});
+}
+function racingRecommendationForTrack(track, userState) {
+const canonical = normalizeRacingTrackName(track);
+if (!canonical) return { status:'unknown-track', track:null, definition:null, nickname:'' };
+const definition = RACING_RECOMMENDED_BUILDS.find(entry => entry.tracks.includes(canonical)) || null;
+if (!definition) return { status:'no-build', track:canonical, definition:null, nickname:'' };
+const normalized = normalizeRacingState(userState);
+const nickname = effectiveRacingNickname(definition, normalized);
+if (!normalized.builds[definition.id].completed) return { status:'not-completed', track:canonical, definition, nickname };
+if (!validateRacingNickname(nickname).valid) return { status:'invalid-nickname', track:canonical, definition, nickname };
+return { status:'ready', track:canonical, definition, nickname };
+}
+function matchVisibleRacingCar(expectedNickname, candidates) {
+const expected = normalizeKey(expectedNickname);
+if (!expected) return null;
+return (Array.isArray(candidates) ? candidates : []).find(candidate => normalizeKey(candidate?.name ?? candidate?.textContent ?? candidate) === expected) || null;
+}
+function parseOfficialRacingTrack(text) {
+const match = String(text || '').trim().match(/^(.+?)\s*-\s*Official race\s*$/i);
+return match ? normalizeRacingTrackName(match[1]) : null;
+}
+const MARKET_PRIORITIES = Object.freeze({ high:0, normal:1, low:2 });
+const TORN_PRIORITY_LIMITS = Object.freeze({ high:60, normal:50, low:40 });
+const WEAVER_REFRESH_MS = Object.freeze({ high:35_000, normal:70_000, low:140_000 });
+const WEAVER_SUMMARY_REFRESH_MS = 5_000;
+const MARKET_TIERS = Object.freeze([5, 10, 15, 20, 25, 30, 35, 40]);
+const MARKET_SUGGESTION_LIMIT = 10;
+const MUG_RESULT_DEDUPE_MS = 5 * 60_000;
+const ITEM_MARKET_FALLBACK_MS = 30_000;
+const POINTS_MARKET_REFRESH_MS = 30_000;
+const WEAVER_RATE_LIMIT = 80;
+const WEAVER_RATE_WINDOW_MS = 60_000;
+const WEAVER_MIN_REQUEST_SPACING_MS = Math.ceil(WEAVER_RATE_WINDOW_MS / WEAVER_RATE_LIMIT);
+const WEAVER_PRICELIST_REFRESH_MS = 3 * 60_000;
+const DOLLAR_BAZAAR_REFRESH_MS = 60 * 60_000;
+const DOLLAR_BAZAAR_LIMIT = 100;
+const TARGET_POLL_DEFAULT_MINUTES = 10;
+const TARGET_POLL_MIN_MINUTES = 1;
+const TARGET_POLL_MAX_MINUTES = 1440;
+const TARGET_POLL_TICK_MS = 60_000;
+const TARGET_STAKEOUT_TICK_MS = 5_000;
+const TARGET_STAKEOUT_DEFAULT_SECONDS = 10;
+const TARGET_STAKEOUT_MIN_SECONDS = 10;
+const TARGET_STAKEOUT_MAX_SECONDS = 3600;
+const TARGET_STAKEOUT_ALERT_LIFETIME_MS = 24 * 60 * 60_000;
+const TARGET_STAKEOUT_MAX_DUE_PER_TICK = 20;
+const BOUNTY_ACTIVE_GRACE_MS = 5 * 60_000;
+const MUGGING_INACTIVE_AFTER_MS = MODULE_INACTIVE_AFTER_MS;
+const MUGGING_CONTRIBUTION_INTERVAL_MS = 60_000;
+const MUGGING_ASSIGNMENT_REFRESH_MS = 5 * 60_000;
+const MUGGING_OWN_STATS_TTL_MS = 6 * 60 * 60_000;
+const MUGGING_SYNC_INTERVAL_MS = 6 * 60 * 60_000;
+const MUGGING_SYNC_BATCH_SIZE = 100;
+const MUGGING_SYNC_MAX_BATCHES = 5;
+const PLAYER_INTELLIGENCE_FRESH_MS = 60_000;
+const PLAYER_INTELLIGENCE_TIMER_BUFFER_MS = 15_000;
+const PLAYER_INTELLIGENCE_TIMED_STATES = new Set(['Hospital', 'Jail', 'Traveling']);
+const TARGET_LIST_DEFAULT_TAGS = Object.freeze(['Level', 'Mug', 'War', 'Target']);
+const PLAYER_PROFILE_INTENT_KEY = 'slink-pda-dashboard:player-profile-intent:v1';
+const BOUNTY_FF_CACHE_MS = 7 * 86_400_000;
+const BOUNTY_PAGE_LIMIT = 100;
+const BOUNTY_PAGES_PER_BATCH = 2;
+const BOUNTY_FF_BATCH_SIZE = 205;
+const PDA_KEY_TOKEN = ['###', 'PDA-APIKEY', '###'].join('');
+const PDA_API_KEY = String('###PDA-APIKEY###').trim();
+const PDA_API_KEY_AVAILABLE = Boolean(PDA_API_KEY && PDA_API_KEY !== PDA_KEY_TOKEN);
+const GM_API = Object.freeze({
+get:typeof GM_getValue === 'function' ? GM_getValue : global.GM_getValue,
+set:typeof GM_setValue === 'function' ? GM_setValue : global.GM_setValue,
+remove:typeof GM_deleteValue === 'function' ? GM_deleteValue : global.GM_deleteValue,
+menu:typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : global.GM_registerMenuCommand,
+request:typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : global.GM_xmlhttpRequest,
+notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notification
+});
+const existingDashboard = global.SLINK_PDA_DASHBOARD;
+const existingHost = document.getElementById(HOST_ID);
+if (existingDashboard?.build === BUILD && existingHost?.isConnected) {
+existingDashboard.open();
+return;
+}
+// A PDA userscript update can leave the old global object alive after its
+// Shadow DOM host was detached. Never reuse that dead instance.
+existingHost?.remove();
+if (existingDashboard) {
+try { delete global.SLINK_PDA_DASHBOARD; } catch { global.SLINK_PDA_DASHBOARD = null; }
+}
+const defaults = Object.freeze({
+page: 'combat',
+combatTab: 'leveling',
+efficiencyTab: 'alerts',
+qualityOfLifeTab: 'racing',
+theme: 'slink-dark',
+bubblePosition: null
+});
+function normalizeUiState(value) {
+const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+return {
+page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
+combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
+efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
+qualityOfLifeTab:['racing','abroadStocks','company','museums'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+theme:String(source.theme || defaults.theme),
+bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
+};
+}
+function readState() {
+let persistent = {};
+try {
+const value = typeof GM_API.get === 'function' ? GM_API.get(STORAGE_KEY, {}) : {};
+if (value && typeof value === 'object' && !(value && typeof value.then === 'function')) persistent = value;
+} catch {}
+let local = {};
+try {
+const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
+if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) local = parsed;
+} catch {}
+return normalizeUiState({ ...persistent, ...local });
+}
+function writeState() {
+const snapshot = {
+page:state.page,
+combatTab:state.combatTab,
+efficiencyTab:state.efficiencyTab,
+qualityOfLifeTab:state.qualityOfLifeTab,
+theme:state.theme,
+bubblePosition:state.bubblePosition
+};
+try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
+try { if (typeof GM_API.set === 'function') GM_API.set(STORAGE_KEY, snapshot); } catch {}
+}
+function storageRead(key, fallback) {
+try {
+if (typeof GM_API.get === 'function') {
+const value = GM_API.get(key, fallback);
+if (!(value && typeof value.then === 'function')) return value;
+}
+} catch {}
+try {
+const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
+return parsed === null ? fallback : parsed;
+} catch {
+return fallback;
+}
+}
+function storageWrite(key, value) {
+try {
+if (typeof GM_API.set === 'function') GM_API.set(key, value);
+else global.localStorage.setItem(key, JSON.stringify(value));
+} catch {}
+}
+function storageDelete(key) {
+try {
+if (typeof GM_API.remove === 'function') GM_API.remove(key);
+else global.localStorage.removeItem(key);
+} catch {}
+}
+function readDataState() {
+const saved = storageRead(DATA_STORAGE_KEY, {});
+const value = saved && typeof saved === 'object' ? saved : {};
+return {
+apiKey:String(value.apiKey || ''),
+ffKey:String(value.ffKey || ''),
+usePdaApiKey:value.usePdaApiKey ?? value.usePdaKey ?? true,
+usePdaFfKey:value.usePdaFfKey ?? false,
+accepted:value.accepted && typeof value.accepted === 'object' ? value.accepted : {},
+terms:value.terms && typeof value.terms === 'object' ? value.terms : {},
+sessions:value.sessions && typeof value.sessions === 'object' ? value.sessions : {},
+caches:value.caches && typeof value.caches === 'object' ? value.caches : {},
+settings:{
+leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
+bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(value.settings?.bounties || {}) },
+mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(value.settings?.mugging || {}) },
+war:{
+mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
+targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetAbroad:'all', targetLocation:'all', targetSort:'availability',
+outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt:0, lastAttackEnded:0,
+armoryMode:'ranked-all', armoryWhitelist:[],
+...(value.settings?.war || {})
+},
+alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}), enabledTypes:normalizePdaAlertTypes(value.settings?.alerts?.enabledTypes) },
+market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
+merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) },
+racing:normalizeRacingState(value.settings?.racing),
+abroadStocks:{ ...(value.settings?.abroadStocks || {}) },
+company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinutes:15, ...(value.settings?.company || {}) }
+}
+};
+}
+function writeDataState() {
+storageWrite(DATA_STORAGE_KEY, dataState);
+}
+function currentApiKey() {
+if (PDA_API_KEY_AVAILABLE && dataState.usePdaApiKey) return PDA_API_KEY;
+return String(dataState.apiKey || '').trim();
+}
+async function apiKeyFingerprint(apiKey) {
+const bytes = new TextEncoder().encode(`SLINK permission key\u0000${String(apiKey || '').trim()}`);
+const digest = await crypto.subtle.digest('SHA-256', bytes);
+return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+function currentFfKey() {
+if (PDA_API_KEY_AVAILABLE && dataState.usePdaFfKey) return PDA_API_KEY;
+return String(dataState.ffKey || '').trim();
+}
+const state = readState();
+const dataState = readDataState();
+function moduleActivityMap() {
+const value = dataState.caches.moduleActivity;
+if (!value || typeof value !== 'object' || Array.isArray(value)) dataState.caches.moduleActivity = {};
+return dataState.caches.moduleActivity;
+}
+function moduleLastActiveAt(name) {
+const activity = moduleActivityMap();
+const migrated = name === 'leveling'
+? Number(dataState.caches.levelingActivityAt) || 0
+: name === 'mugging'
+? Number(dataState.caches.muggingActivityAt) || 0
+: 0;
+return Math.max(0, Number(activity[name]) || migrated);
+}
+function moduleIsActive(name, now = Date.now()) {
+const lastActiveAt = moduleLastActiveAt(name);
+return lastActiveAt > 0 && now - lastActiveAt <= MODULE_INACTIVE_AFTER_MS;
+}
+function touchModuleActivity(name, now = Date.now()) {
+if (!['leveling', 'war', 'mugging', 'market'].includes(name)) return 0;
+moduleActivityMap()[name] = now;
+if (name === 'leveling') dataState.caches.levelingActivityAt = now;
+if (name === 'mugging') dataState.caches.muggingActivityAt = now;
+writeDataState();
+return now;
+}
+let dashboardOpen = false;
+let drag = null;
+let swipe = null;
+let networkQueue = Promise.resolve();
+let bountyBudgetQueue = Promise.resolve();
+let playerDomLastSignature = '';
+let playerDomObservationBusy = false;
+const playerIntelligenceInFlight = new Map();
+let schedulerTimer = null;
+let targetPollingTimer = null;
+let targetStakeoutTimer = null;
+let targetPollingBusy = false;
+let targetStakeoutBusy = false;
+let muggingContributionBusy = false;
+let muggingSyncBusy = false;
+let marketObserver = null;
+let marketWakeTimer = null;
+let attackMugScanTimer = null;
+let keyboardFocusTimer = null;
+const QUICK_PURCHASE_TRANSITION_TIMEOUT_MS = 2_500;
+const QUICK_PURCHASE_FLOW_TIMEOUT_MS = 10_000;
+const marketPurchaseState = {
+itemCatalog:{ fetchedAt:0, items:[] },
+itemCatalogLoading:false,
+settings:{ apiKey:'pda-managed', highlightedQuickBuyEnabled:true },
+bazaarCatalogRequestedAt:0,
+pendingBazaarPurchase:null,
+quickPurchaseListingIds:new WeakMap(),
+quickPurchaseListingIdCounter:0,
+quickPurchaseFlow:null,
+quickPurchaseOverlays:new Map(),
+quickPurchaseControlSpecs:new WeakMap(),
+domTestEnabled:false,
+bazaarOneDollarTimer:null,
+quickPurchaseSyncTimer:null
+};
+const reportedMugNodes = new WeakSet();
+const recentMugResults = new Map();
+const moduleState = {
+access:{ busy:false, error:'' },
+leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
+bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
+mugging:{ busy:false, error:'', notice:'' },
+targetList:{ busyId:0, error:'', notice:'', editingId:0, formOpen:Object.keys(dataState.caches.targetList || {}).length === 0, pollingOpen:false },
+war:{ busy:false, error:'', outsideBusy:false, outsideError:'', renderPending:false, data:dataState.caches.war || null },
+stats:{ busy:false, error:'', data:dataState.caches.stats || null },
+alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
+market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0, refreshPermissions:true, draft:null, renderPending:false },
+dollarBazaars:{ busy:false, error:'', data:dataState.caches.dollarBazaars || null, lastAttemptAt:0 },
+merits:{ busy:false, error:'', data:dataState.caches.merits || null },
+abroadStocks:{ busy:false, error:'', data:dataState.caches.abroadStocks || null, mode:'item', query:'' },
+travelSafety:{ busy:false, error:'', crime:dataState.caches.travelSafety?.crime || null, fetchedAt:Number(dataState.caches.travelSafety?.fetchedAt) || 0 },
+company:{ busy:false, error:'', notice:'', data:dataState.caches.company || null },
+museums:{ busy:false,error:'',notice:'',data:dataState.caches.museums||null }
+};
+function serializeNetwork(task) {
+const result = networkQueue.then(task, task);
+networkQueue = result.catch(() => undefined);
+return result;
+}
+function errorMessage(error) {
+return String(error?.message || error || 'Unknown error').replace(/^Error:\s*/i, '').trim();
+}
+function pdaHttpHandler(method) {
+if (method === 'GET') return typeof PDA_httpGet === 'function' ? PDA_httpGet : global.PDA_httpGet;
+if (method === 'POST') return typeof PDA_httpPost === 'function' ? PDA_httpPost : global.PDA_httpPost;
+return null;
+}
+async function pdaHttpRequest(method, url, headers, body) {
+const handlerName = `PDA_http${method[0]}${method.slice(1).toLowerCase()}`;
+const direct = pdaHttpHandler(method);
+const response = typeof direct === 'function'
+? await direct(url, headers, ...(body === undefined ? [] : [body]))
+: await global.flutter_inappwebview.callHandler(handlerName, url, headers, ...(body === undefined ? [] : [body]));
+const status = Number(response?.status ?? response?.statusCode) || 0;
+const responseText = typeof response === 'string' ? response : String(response?.responseText ?? response?.body ?? response?.data ?? '');
+let parsed = null;
+try { parsed = JSON.parse(responseText || 'null'); } catch {}
+if (status && (status < 200 || status >= 300)) {
+const error = new Error(parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
+error.status = status;
+error.body = parsed;
+throw error;
+}
+return parsed ?? {};
+}
+async function requestJson(url, options = {}) {
+const method = String(options.method || 'GET').toUpperCase();
+const headers = { Accept:'application/json', ...(options.headers || {}) };
+const body = options.body === undefined
+? undefined
+: typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+if (body !== undefined && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+const pdaDirect = pdaHttpHandler(method);
+if (typeof pdaDirect === 'function' || typeof global.flutter_inappwebview?.callHandler === 'function') {
+try {
+return await pdaHttpRequest(method, url, headers, body);
+} catch (error) {
+const missingOrigin = /No HTTP origin is configured for\s+\w+/i.test(errorMessage(error));
+if (!missingOrigin || typeof GM_API.request !== 'function') throw error;
+}
+}
+if (typeof GM_API.request === 'function') {
+return new Promise((resolve, reject) => {
+GM_API.request({
+method, url, headers, data:body, timeout:Number(options.timeout) || 30_000,
+onload(response) {
+let parsed = null;
+try { parsed = JSON.parse(String(response.responseText || 'null')); } catch {}
+if (Number(response.status) < 200 || Number(response.status) >= 300) {
+const error = new Error(parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
+error.status = Number(response.status) || 0;
+error.body = parsed;
+reject(error);
+return;
+}
+resolve(parsed ?? {});
+},
+ontimeout() { reject(new Error('The request timed out.')); },
+onerror(response) { reject(new Error(response?.error || response?.statusText || 'The request failed.')); }
+});
+});
+}
+return global.fetch(url, { method, headers, body, cache:'no-store', credentials:'omit' }).then(async response => {
+let parsed = null;
+try { parsed = await response.json(); } catch {}
+if (!response.ok) {
+const error = new Error(parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
+error.status = response.status;
+error.body = parsed;
+throw error;
+}
+return parsed ?? {};
+});
+}
+function readApiLedger(now = Date.now()) {
+let source = {};
+try { source = JSON.parse(global.localStorage.getItem(SHARED_API_LEDGER_KEY) || '{}'); } catch {}
+if (Array.isArray(source)) source = { events:source };
+const seen = new Set();
+const events = (Array.isArray(source?.events) ? source.events : [])
+.map((event, index) => Number.isFinite(Number(event))
+? { at:Number(event), id:`legacy:${event}:${index}` }
+: event && Number.isFinite(Number(event.at)) ? { ...event, at:Number(event.at) } : null)
+.filter(event => event && event.at > now - API_WINDOW_MS && event.at <= now + 5_000)
+.filter(event => {
+const id = String(event.id || `${event.at}:${event.script || ''}:${event.endpoint || ''}`);
+if (seen.has(id)) return false;
+seen.add(id);
+event.id = id;
+return true;
+})
+.sort((left, right) => left.at - right.at);
+const cooldownUntil = Number(source?.cooldownUntil) > now ? Number(source.cooldownUntil) : 0;
+return { events, cooldownUntil };
+}
+function writeApiLedger(ledger) {
+try { global.localStorage.setItem(SHARED_API_LEDGER_KEY, JSON.stringify(ledger)); } catch {}
+}
+async function withApiLock(task) {
+if (global.navigator?.locks?.request) return global.navigator.locks.request(SHARED_API_LOCK, task);
+return task();
+}
+function contributionCapacity(ledger = readApiLedger()) {
+const contributionCount = ledger.events.filter(event => event.priority === 'contribution').length;
+return {
+available:Math.min(
+Math.max(0, API_LIMIT - CONTRIBUTION_INTERACTIVE_RESERVE - ledger.events.length),
+Math.max(0, CONTRIBUTION_CEILING - contributionCount)
+),
+count:ledger.events.length,
+contributionCount,
+limit:API_LIMIT,
+ceiling:CONTRIBUTION_CEILING,
+interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE
+};
+}
+async function reserveTornApi(endpoint = 'unknown', options = {}) {
+const limit = Math.max(1, Math.min(API_LIMIT, Number(options.limit) || API_LIMIT));
+const wait = options.wait !== false;
+const contribution = options.contribution === true || String(options.priority) === 'contribution';
+const priority = contribution ? 'contribution' : ['high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
+return serializeNetwork(async () => {
+while (true) {
+const reservation = await withApiLock(() => {
+const now = Date.now();
+const ledger = readApiLedger(now);
+const spare = contributionCapacity(ledger);
+const full = contribution ? spare.available <= 0 : ledger.events.length >= limit;
+if (ledger.cooldownUntil > now || full) return { waitUntil:Math.max(ledger.cooldownUntil, Number(ledger.events[0]?.at || now) + API_WINDOW_MS + 25) };
+ledger.events.push({
+at:now,
+id:`slink-pda:${global.crypto?.randomUUID?.() || `${now}:${Math.random().toString(36).slice(2)}`}`,
+script:'SLINK PDA Dashboard', priority, method:'GET', endpoint:String(endpoint).slice(0, 180), tabId:'pda-dashboard'
+});
+writeApiLedger(ledger);
+return { reservedAt:now, contribution };
+});
+if (reservation.reservedAt) return reservation;
+if (!wait) {
+const error = new Error('Waiting for shared Torn API capacity.');
+error.code = 'SLINK_TORN_API_LIMIT';
+error.retryAfterMs = Math.max(250, reservation.waitUntil - Date.now());
+throw error;
+}
+await new Promise(resolve => global.setTimeout(resolve, Math.max(50, Math.min(5_000, reservation.waitUntil - Date.now()))));
+}
+});
+}
+function apiUsage() {
+const ledger = readApiLedger();
+return { count:ledger.events.length, limit:API_LIMIT, remaining:Math.max(0, API_LIMIT - ledger.events.length) };
+}
+async function tornJson(path, comment = 'SLINK PDA Dashboard', options = {}) {
+const key = currentApiKey();
+if (!key) throw new Error('Save a Torn API key under Access first.');
+const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
+if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
+await reserveTornApi(url.pathname, options);
+const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
+if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
+return result;
+}
+function validPlayerIntelligenceId(value) {
+const parsed = Number(value);
+return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+function normalizePlayerIntelligenceState(value) {
+const text = String(value || '').trim();
+const lower = text.toLowerCase();
+if (!lower) return 'Unknown';
+if (lower.includes('federal')) return 'Federal';
+if (lower.includes('hospital')) return 'Hospital';
+if (lower.includes('jail')) return 'Jail';
+if (lower.includes('travel') || lower.includes('flying')) return 'Traveling';
+if (lower.includes('hiding')) return 'Hiding Out';
+if (lower.includes('abroad')) return 'Abroad';
+if (lower === 'okay' || lower === 'ok') return 'Okay';
+if (lower.includes('fallen')) return 'Fallen';
+return text.slice(0, 40);
+}
+function normalizePlayerIntelligenceUntil(value) {
+const parsed = Number(value);
+if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+return Math.trunc(parsed > 10_000_000_000 ? parsed / 1000 : parsed);
+}
+function playerIntelligenceUntilMilliseconds(record = {}) {
+const seconds = normalizePlayerIntelligenceUntil(record.until ?? record.statusUntil);
+return seconds > 0 ? seconds * 1000 : 0;
+}
+function normalizePlayerIntelligenceRecord(input = {}, existing = {}) {
+const playerId = validPlayerIntelligenceId(
+input.playerId ?? input.player_id ?? input.targetId ?? input.id ??
+existing.playerId ?? existing.id
+);
+if (!playerId) throw new Error('A valid Torn player ID is required.');
+const observedAt = Math.max(0, Number(input.observedAt ?? input.checkedAt ?? input.updatedAt) || Date.now());
+const state = normalizePlayerIntelligenceState(
+input.state ?? input.status?.state ?? existing.state ?? existing.status?.state
+);
+const until = normalizePlayerIntelligenceUntil(
+input.until ?? input.statusUntil ?? input.status?.until ??
+existing.until ?? existing.status?.until
+);
+const description = String(
+input.description ?? input.status?.description ??
+existing.description ?? existing.status?.description ?? ''
+).slice(0, 500);
+const source = String(input.source || existing.source || 'unknown').slice(0, 80);
+const observationKind = String(input.observationKind || '').toLowerCase();
+const inferredDom = observationKind === 'dom' || source.startsWith('dom:');
+const inferredApi = observationKind === 'api' || source === 'torn-api';
+const lastDomObservedAt = Math.max(
+0,
+Number(input.lastDomObservedAt) || (inferredDom ? observedAt : 0),
+Number(existing.lastDomObservedAt) || 0
+);
+const lastApiCheckAt = Math.max(
+0,
+Number(input.lastApiCheckAt) || (inferredApi ? observedAt : 0),
+Number(existing.lastApiCheckAt) || 0
+);
+const fairFightValue = input.fairFight ?? existing.fairFight;
+const battleStatsValue = input.battleStatsEstimate ?? input.bsEstimate ?? existing.battleStatsEstimate;
+return {
+playerId,
+id:playerId,
+name:String(input.name ?? existing.name ?? `Player ${playerId}`).slice(0, 80),
+level:Math.max(0, Number(input.level ?? existing.level) || 0),
+state,
+until,
+description,
+source,
+observedAt,
+checkedAt:Math.max(0, Number(input.checkedAt) || observedAt),
+lastDomObservedAt,
+lastApiCheckAt,
+fairFight:Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
+battleStatsEstimate:Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
+bountyCount:Math.max(0, Math.trunc(Number(input.bountyCount ?? input.bounty_count ?? existing.bountyCount) || 0)),
+bountyTotal:Math.max(0, Number(input.bountyTotal ?? input.bounty_total ?? existing.bountyTotal) || 0),
+lastSeenMugged:Math.max(0, Number(input.lastSeenMugged ?? existing.lastSeenMugged) || 0),
+sources:[...new Set([
+...(Array.isArray(existing.sources) ? existing.sources : []),
+...(Array.isArray(input.sources) ? input.sources : []),
+source
+].map(String).filter(Boolean))].sort()
+};
+}
+function mergePlayerIntelligenceRecord(existing = null, incoming = {}) {
+const previous = existing && typeof existing === 'object'
+? normalizePlayerIntelligenceRecord(existing)
+: null;
+const next = normalizePlayerIntelligenceRecord(incoming, previous || {});
+if (!previous) return next;
+const useIncomingStatus = next.observedAt >= previous.observedAt;
+const hasOwn = key => Object.prototype.hasOwnProperty.call(incoming, key);
+const merged = {
+...previous,
+playerId:next.playerId,
+id:next.playerId,
+name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
+level:next.level || previous.level,
+fairFight:next.fairFight ?? previous.fairFight,
+battleStatsEstimate:next.battleStatsEstimate ?? previous.battleStatsEstimate,
+bountyCount:hasOwn('bountyCount') || hasOwn('bounty_count') ? next.bountyCount : previous.bountyCount,
+bountyTotal:hasOwn('bountyTotal') || hasOwn('bounty_total') ? next.bountyTotal : previous.bountyTotal,
+lastSeenMugged:Math.max(previous.lastSeenMugged, next.lastSeenMugged),
+checkedAt:Math.max(previous.checkedAt, next.checkedAt),
+observedAt:Math.max(previous.observedAt, next.observedAt),
+lastDomObservedAt:Math.max(previous.lastDomObservedAt || 0, next.lastDomObservedAt || 0),
+lastApiCheckAt:Math.max(previous.lastApiCheckAt || 0, next.lastApiCheckAt || 0),
+sources:[...new Set([...previous.sources, ...next.sources])].sort()
+};
+if (useIncomingStatus) {
+merged.state = next.state;
+merged.until = next.until;
+merged.description = next.description;
+merged.source = next.source;
+}
+return merged;
+}
+function effectivePlayerIntelligenceStatus(record = {}, now = Date.now()) {
+const normalized = normalizePlayerIntelligenceRecord(record);
+const untilMs = playerIntelligenceUntilMilliseconds(normalized);
+if (PLAYER_INTELLIGENCE_TIMED_STATES.has(normalized.state) && untilMs > 0 && untilMs <= now) {
+return {
+state:'Okay',
+until:0,
+description:'Known timer expired; presumed Okay until refreshed.',
+presumed:true,
+source:normalized.source
+};
+}
+return {
+state:normalized.state,
+until:normalized.until,
+description:normalized.description,
+presumed:false,
+source:normalized.source
+};
+}
+function playerIntelligenceRequestDecision(record, options = {}) {
+const now = Number(options.now) || Date.now();
+const maxAgeMs = Math.max(0, Number(options.maxAgeMs) || PLAYER_INTELLIGENCE_FRESH_MS);
+const timerBufferMs = Math.max(0, Number(options.timerBufferMs) || PLAYER_INTELLIGENCE_TIMER_BUFFER_MS);
+if (options.forceApi) return { required:true, reason:'forced', nextCheckAt:now };
+if (!record) return { required:true, reason:'missing', nextCheckAt:now };
+const normalized = normalizePlayerIntelligenceRecord(record);
+const untilMs = playerIntelligenceUntilMilliseconds(normalized);
+if (PLAYER_INTELLIGENCE_TIMED_STATES.has(normalized.state) && untilMs > now + timerBufferMs) {
+return { required:false, reason:'known-timer', nextCheckAt:untilMs + timerBufferMs };
+}
+if (normalized.observedAt > 0 && now - normalized.observedAt < maxAgeMs) {
+return { required:false, reason:'fresh-cache', nextCheckAt:normalized.observedAt + maxAgeMs };
+}
+return { required:true, reason:'stale', nextCheckAt:now };
+}
+function playerIntelligenceCache() {
+const stored = dataState.caches.playerIntelligence;
+if (stored && typeof stored === 'object' && !Array.isArray(stored)) return stored;
+dataState.caches.playerIntelligence = {};
+return dataState.caches.playerIntelligence;
+}
+function playerIntelligenceRecord(playerId) {
+const id = validPlayerIntelligenceId(playerId);
+return id ? playerIntelligenceCache()[String(id)] || null : null;
+}
+function observePlayerIntelligence(input = {}, persist = true) {
+const playerId = validPlayerIntelligenceId(
+input.playerId ?? input.player_id ?? input.targetId ?? input.id
+);
+if (!playerId) throw new Error('A valid Torn player ID is required.');
+const cache = playerIntelligenceCache();
+const record = mergePlayerIntelligenceRecord(cache[String(playerId)], { ...input, playerId });
+cache[String(playerId)] = record;
+if (persist) writeDataState();
+return record;
+}
+function playerIntelligenceFromTornResponse(playerId, response = {}, now = Date.now()) {
+const profile = response?.profile || response?.basic || response?.user || response;
+const status = profile?.status || {};
+const bounties = Array.isArray(profile?.bounties) ? profile.bounties : [];
+return normalizePlayerIntelligenceRecord({
+playerId,
+name:profile?.name,
+level:profile?.level,
+state:status?.state,
+until:status?.until,
+description:status?.description,
+bountyCount:bounties.length,
+bountyTotal:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
+source:'torn-api',
+observationKind:'api',
+lastApiCheckAt:now,
+observedAt:now,
+checkedAt:now
+});
+}
+function getPlayerIntelligence(input = {}) {
+const playerId = validPlayerIntelligenceId(
+input.playerId ?? input.player_id ?? input.targetId ?? input.id
+);
+if (!playerId) throw new Error('A valid Torn player ID is required.');
+const record = playerIntelligenceRecord(playerId);
+return {
+record:record ? { ...record, status:effectivePlayerIntelligenceStatus(record) } : null,
+decision:playerIntelligenceRequestDecision(record, input)
+};
+}
+async function refreshPlayerIntelligence(input = {}) {
+const playerId = validPlayerIntelligenceId(
+input.playerId ?? input.player_id ?? input.targetId ?? input.id
+);
+if (!playerId) throw new Error('A valid Torn player ID is required.');
+const current = playerIntelligenceRecord(playerId);
+const decision = playerIntelligenceRequestDecision(current, input);
+if (!decision.required) {
+return {
+record:current ? { ...current, status:effectivePlayerIntelligenceStatus(current) } : null,
+fetched:false,
+reason:decision.reason,
+nextCheckAt:decision.nextCheckAt
+};
+}
+if (playerIntelligenceInFlight.has(playerId)) return playerIntelligenceInFlight.get(playerId);
+const pending = (async () => {
+const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence', {
+wait:input.contribution === true ? input.wait === true : input.wait !== false,
+priority:input.contribution === true ? 'contribution' : input.priority || 'normal',
+contribution:input.contribution === true
+});
+const record = observePlayerIntelligence(playerIntelligenceFromTornResponse(playerId, response, Date.now()));
+return {
+record:{ ...record, status:effectivePlayerIntelligenceStatus(record) },
+fetched:true,
+reason:'api',
+nextCheckAt:playerIntelligenceRequestDecision(record, input).nextCheckAt
+};
+})().finally(() => playerIntelligenceInFlight.delete(playerId));
+playerIntelligenceInFlight.set(playerId, pending);
+return pending;
+}
+function normalizeTargetListTag(value) {
+const text = String(value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+if (!text) return '';
+return TARGET_LIST_DEFAULT_TAGS.find(tag => tag.toLowerCase() === text.toLowerCase()) || text;
+}
+function normalizeTargetListTags(values) {
+const tags = [], seen = new Set();
+for (const value of Array.isArray(values) ? values : [values]) {
+const tag = normalizeTargetListTag(value), key = tag.toLowerCase();
+if (!tag || seen.has(key)) continue;
+seen.add(key); tags.push(tag);
+if (tags.length >= 16) break;
+}
+return tags;
+}
+function targetListSafeContext(value) {
+if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+const result = {};
+for (const [key, item] of Object.entries(value)) {
+if (!/^[a-z0-9_.-]{1,40}$/i.test(key)) continue;
+if (['string', 'number', 'boolean'].includes(typeof item) || item === null) result[key] = typeof item === 'string' ? item.slice(0, 200) : item;
+}
+return result;
+}
+function normalizeTargetListSource(input = {}, now = Date.now()) {
+const source = String(input.source || input.id || 'manual').trim().slice(0, 40) || 'manual';
+return {
+source,
+label:String(input.label || source).trim().slice(0, 60) || source,
+addedAt:Math.max(0, Number(input.addedAt) || now),
+updatedAt:Math.max(0, Number(input.updatedAt) || now),
+context:targetListSafeContext(input.context)
+};
+}
+function mergeTargetListSources(existing = [], incoming = [], now = Date.now()) {
+const bySource = new Map();
+for (const value of Array.isArray(existing) ? existing : []) {
+const source = normalizeTargetListSource(value, now);
+bySource.set(source.source.toLowerCase(), source);
+}
+for (const value of Array.isArray(incoming) ? incoming : []) {
+const source = normalizeTargetListSource(value, now), key = source.source.toLowerCase(), previous = bySource.get(key);
+bySource.set(key, previous ? {
+...previous, ...source,
+addedAt:Math.min(previous.addedAt, source.addedAt),
+updatedAt:Math.max(previous.updatedAt, source.updatedAt),
+context:{ ...previous.context, ...source.context }
+} : source);
+}
+return [...bySource.values()].sort((a, b) => a.addedAt - b.addedAt || a.source.localeCompare(b.source));
+}
+function normalizePdaTarget(input = {}, existing = {}) {
+const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id ?? existing.playerId ?? existing.id);
+if (!playerId) throw new Error('Enter a valid Torn player ID.');
+const now = Math.max(0, Number(input.updatedAt) || Date.now());
+const sourceRows = Array.isArray(input.sources) ? [...input.sources] : [];
+if (input.source || !sourceRows.length) sourceRows.push({
+source:input.source || 'manual',
+label:input.sourceLabel || input.source || 'Manual',
+context:input.sourceContext || input.context,
+addedAt:input.sourceAddedAt || now,
+updatedAt:now
+});
+const createdAt = Math.max(0, Number(input.createdAt ?? existing.createdAt) || now);
+return {
+playerId, id:playerId,
+name:String(input.name ?? existing.name ?? `Player ${playerId}`).trim().slice(0, 80) || `Player ${playerId}`,
+tags:normalizeTargetListTags(input.tags ?? existing.tags ?? ['Target']),
+description:String(input.description ?? input.notes ?? existing.description ?? '').trim().slice(0, 500),
+stakeout:Object.hasOwn(input, 'stakeout') ? input.stakeout === true : existing.stakeout === true,
+stakeoutIntervalSeconds:Math.max(
+TARGET_STAKEOUT_MIN_SECONDS,
+Math.min(TARGET_STAKEOUT_MAX_SECONDS, Math.trunc(Number(input.stakeoutIntervalSeconds ?? existing.stakeoutIntervalSeconds) || TARGET_STAKEOUT_DEFAULT_SECONDS))
+),
+createdAt,
+updatedAt:Math.max(createdAt, now),
+sources:mergeTargetListSources(existing.sources, sourceRows, now)
+};
+}
+function mergePdaTarget(existing = null, incoming = {}) {
+if (!existing) return normalizePdaTarget(incoming);
+const previous = normalizePdaTarget(existing), next = normalizePdaTarget(incoming, previous);
+const hasOwn = key => Object.prototype.hasOwnProperty.call(incoming, key);
+return {
+...previous,
+playerId:next.playerId, id:next.playerId,
+name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
+tags:normalizeTargetListTags([...previous.tags, ...next.tags]),
+description:hasOwn('description') || hasOwn('notes') ? next.description : previous.description,
+stakeout:next.stakeout,
+stakeoutIntervalSeconds:next.stakeoutIntervalSeconds,
+createdAt:Math.min(previous.createdAt, next.createdAt),
+updatedAt:Math.max(previous.updatedAt, next.updatedAt),
+sources:mergeTargetListSources(previous.sources, next.sources, next.updatedAt)
+};
+}
+function pdaTargetListMap() {
+const stored = dataState.caches.targetList;
+if (stored && typeof stored === 'object' && !Array.isArray(stored)) return stored;
+dataState.caches.targetList = {};
+return dataState.caches.targetList;
+}
+function pdaTargetListEntries() {
+return Object.values(pdaTargetListMap()).map(target => {
+const normalized = normalizePdaTarget(target);
+const intelligence = playerIntelligenceRecord(normalized.playerId);
+return {
+...normalized,
+intelligence,
+status:intelligence ? effectivePlayerIntelligenceStatus(intelligence) : null,
+lastChecked:Math.max(0, Number(intelligence?.checkedAt || intelligence?.observedAt) || 0),
+lastSeenMugged:Math.max(0, Number(intelligence?.lastSeenMugged) || 0),
+bountyCount:Math.max(0, Math.trunc(Number(intelligence?.bountyCount) || 0)),
+bountyTotal:Math.max(0, Number(intelligence?.bountyTotal) || 0)
+};
+}).sort((a, b) => Number(b.stakeout) - Number(a.stakeout) || b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+}
+function targetPollingSettings() {
+const value = dataState.settings.targetListPolling && typeof dataState.settings.targetListPolling === 'object'
+? dataState.settings.targetListPolling
+: {};
+const settings = {
+enabled:value.enabled === true,
+intervalMinutes:Math.max(TARGET_POLL_MIN_MINUTES, Math.min(TARGET_POLL_MAX_MINUTES, Math.trunc(Number(value.intervalMinutes) || TARGET_POLL_DEFAULT_MINUTES))),
+mugOnly:value.mugOnly === true,
+revision:Math.max(0, Number(value.revision) || 0)
+};
+dataState.settings.targetListPolling = settings;
+return settings;
+}
+function targetPollingRuntime() {
+const value = dataState.caches.targetPolling && typeof dataState.caches.targetPolling === 'object'
+? dataState.caches.targetPolling
+: {};
+const runtime = {
+revision:Math.max(0, Number(value.revision) || 0),
+schedule:value.schedule && typeof value.schedule === 'object' && !Array.isArray(value.schedule) ? value.schedule : {},
+lastRunAt:Math.max(0, Number(value.lastRunAt) || 0),
+lastPlanned:Math.max(0, Math.trunc(Number(value.lastPlanned) || 0)),
+lastProcessed:Math.max(0, Math.trunc(Number(value.lastProcessed) || 0)),
+lastApiFetched:Math.max(0, Math.trunc(Number(value.lastApiFetched) || 0)),
+lastSkipped:Math.max(0, Math.trunc(Number(value.lastSkipped) || 0)),
+lastError:String(value.lastError || '').slice(0, 500)
+};
+dataState.caches.targetPolling = runtime;
+return runtime;
+}
+function targetPollingEligible(settings = targetPollingSettings()) {
+return pdaTargetListEntries()
+.filter(target => !target.stakeout)
+.filter(target => !settings.mugOnly || target.tags.some(tag => String(tag).toLowerCase() === 'mug'))
+.sort((left, right) => left.playerId - right.playerId);
+}
+function seedTargetPolling(runtime, targets, settings, now = Date.now()) {
+const ids = new Set(targets.map(target => String(target.playerId)));
+for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) delete runtime.schedule[id];
+if (runtime.revision !== settings.revision) {
+runtime.schedule = {};
+runtime.revision = settings.revision;
+}
+const intervalMs = settings.intervalMinutes * 60_000;
+const spacingMs = targets.length ? intervalMs / targets.length : intervalMs;
+targets.forEach((target, index) => {
+const id = String(target.playerId);
+if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id]) <= 0) runtime.schedule[id] = Math.floor(now + index * spacingMs);
+});
+return runtime;
+}
+async function runTargetPolling(now = Date.now()) {
+if (!hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
+targetPollingBusy = true;
+const settings = targetPollingSettings();
+const runtime = targetPollingRuntime();
+const targets = targetPollingEligible(settings);
+seedTargetPolling(runtime, targets, settings, now);
+try {
+if (!settings.enabled || !targets.length) {
+runtime.lastRunAt = now;
+runtime.lastPlanned = 0;
+runtime.lastProcessed = 0;
+runtime.lastApiFetched = 0;
+runtime.lastSkipped = 0;
+runtime.lastError = '';
+writeDataState();
+return;
+}
+const intervalMs = settings.intervalMinutes * 60_000;
+const perMinute = Math.max(1, Math.ceil(targets.length / settings.intervalMinutes));
+const due = targets
+.filter(target => Number(runtime.schedule[String(target.playerId)]) <= now)
+.sort((left, right) => Number(runtime.schedule[String(left.playerId)]) - Number(runtime.schedule[String(right.playerId)]))
+.slice(0, perMinute);
+let processed = 0, apiFetched = 0, skipped = 0, lastError = '';
+for (const target of due) {
+const id = String(target.playerId);
+try {
+const result = await refreshPlayerIntelligence({
+playerId:target.playerId,
+maxAgeMs:intervalMs
+});
+processed += 1;
+if (result.fetched) apiFetched += 1; else skipped += 1;
+runtime.schedule[id] = result.reason === 'known-timer' || result.reason === 'fresh-cache'
+? Math.max(now + 30_000, Number(result.nextCheckAt) || now + intervalMs)
+: now + intervalMs;
+} catch (error) {
+processed += 1;
+lastError = errorMessage(error);
+runtime.schedule[id] = now + 60_000;
+}
+}
+runtime.lastRunAt = now;
+runtime.lastPlanned = due.length;
+runtime.lastProcessed = processed;
+runtime.lastApiFetched = apiFetched;
+runtime.lastSkipped = skipped;
+runtime.lastError = lastError;
+writeDataState();
+if (moduleRoot('targetList')) renderTargetList();
+} finally {
+targetPollingBusy = false;
+}
+}
+function targetStakeoutRuntime() {
+const value = dataState.caches.targetStakeout && typeof dataState.caches.targetStakeout === 'object'
+? dataState.caches.targetStakeout
+: {};
+const runtime = {
+schedule:value.schedule && typeof value.schedule === 'object' && !Array.isArray(value.schedule) ? value.schedule : {},
+observed:value.observed && typeof value.observed === 'object' && !Array.isArray(value.observed) ? value.observed : {},
+lastRunAt:Math.max(0, Number(value.lastRunAt) || 0),
+lastProcessed:Math.max(0, Math.trunc(Number(value.lastProcessed) || 0)),
+lastApiFetched:Math.max(0, Math.trunc(Number(value.lastApiFetched) || 0)),
+lastSkipped:Math.max(0, Math.trunc(Number(value.lastSkipped) || 0)),
+lastError:String(value.lastError || '').slice(0, 500)
+};
+dataState.caches.targetStakeout = runtime;
+return runtime;
+}
+function targetStakeoutTargets() {
+return pdaTargetListEntries()
+.filter(target => target.stakeout)
+.sort((left, right) => left.stakeoutIntervalSeconds - right.stakeoutIntervalSeconds || left.name.localeCompare(right.name));
+}
+function targetStakeoutAlertCache() {
+const value = dataState.caches.targetStakeoutAlerts && typeof dataState.caches.targetStakeoutAlerts === 'object'
+? dataState.caches.targetStakeoutAlerts
+: {};
+dataState.caches.targetStakeoutAlerts = value;
+return value;
+}
+function stakeoutAlertRows(now = Date.now()) {
+const cache = targetStakeoutAlertCache();
+const snoozed = dataState.settings.alerts.snoozedUntil || {};
+const rows = [];
+for (const [id, alert] of Object.entries(cache)) {
+if (Number(alert?.expiresAt) <= now) {
+delete cache[id];
+continue;
+}
+if (Number(snoozed[id] || 0) > now) continue;
+rows.push(alert);
+}
+return rows.sort((left, right) => Number(right.createdAt) - Number(left.createdAt));
+}
+function targetStakeoutObservation(record, now = Date.now()) {
+if (!record) return null;
+const status = effectivePlayerIntelligenceStatus(record, now);
+return {
+state:String(status?.state || 'Unknown'),
+bountyCount:Math.max(0, Math.trunc(Number(record.bountyCount) || 0)),
+bountyTotal:Math.max(0, Number(record.bountyTotal) || 0),
+observedAt:Math.max(0, Number(record.observedAt || record.checkedAt) || now)
+};
+}
+function collectTargetStakeoutChanges(target, runtime, record, now = Date.now()) {
+const id = String(target.playerId);
+const current = targetStakeoutObservation(record, now);
+if (!current) return [];
+const previous = runtime.observed[id] || null;
+runtime.observed[id] = current;
+if (!previous) return [];
+const profile = `https://www.torn.com/profiles.php?XID=${target.playerId}`;
+const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.playerId}`;
+const links = [['Profile', profile], ['Attack', attack]];
+const alerts = [];
+if (previous.state !== current.state && current.state !== 'Unknown') {
+const attackable = current.state === 'Okay';
+const event = attackable ? 'attackable' : `state-${current.state.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+alerts.push({
+id:`stakeout:${target.playerId}:${event}`,
+title:attackable ? `${target.name} is attackable` : `${target.name} changed status`,
+detail:`${previous.state || 'Unknown'} → ${current.state}`,
+links,
+createdAt:now,
+expiresAt:now + TARGET_STAKEOUT_ALERT_LIFETIME_MS,
+source:'stakeout',
+playerId:target.playerId
+});
+}
+if (current.bountyCount > previous.bountyCount || current.bountyTotal > previous.bountyTotal) {
+alerts.push({
+id:`stakeout:${target.playerId}:bounty`,
+title:`Bounty appeared on ${target.name}`,
+detail:`${current.bountyCount} active · ${current.bountyTotal.toLocaleString()}`,
+links,
+createdAt:now,
+expiresAt:now + TARGET_STAKEOUT_ALERT_LIFETIME_MS,
+source:'stakeout',
+playerId:target.playerId
+});
+}
+return alerts;
+}
+function targetStakeoutStatus() {
+const targets = targetStakeoutTargets();
+const runtime = targetStakeoutRuntime();
+const estimate = targets.reduce((total, target) => total + 60 / target.stakeoutIntervalSeconds, 0);
+return {
+targetCount:targets.length,
+estimatedChecksPerMinute:Number(estimate.toFixed(1)),
+activeAlerts:stakeoutAlertRows(),
+runtime
+};
+}
+async function runTargetStakeouts(now = Date.now()) {
+if (!hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
+targetStakeoutBusy = true;
+const runtime = targetStakeoutRuntime();
+const targets = targetStakeoutTargets();
+const ids = new Set(targets.map(target => String(target.playerId)));
+for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) delete runtime.schedule[id];
+for (const id of Object.keys(runtime.observed)) if (!ids.has(id)) delete runtime.observed[id];
+targets.forEach((target, index) => {
+const id = String(target.playerId);
+if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id]) <= 0) {
+runtime.schedule[id] = now + Math.min(index * 1_000, target.stakeoutIntervalSeconds * 1_000);
+}
+});
+const due = targets
+.filter(target => Number(runtime.schedule[String(target.playerId)]) <= now)
+.sort((left, right) => Number(runtime.schedule[String(left.playerId)]) - Number(runtime.schedule[String(right.playerId)]))
+.slice(0, TARGET_STAKEOUT_MAX_DUE_PER_TICK);
+let processed = 0, apiFetched = 0, skipped = 0, lastError = '';
+const generated = [];
+try {
+for (const target of due) {
+const id = String(target.playerId);
+const intervalMs = target.stakeoutIntervalSeconds * 1_000;
+generated.push(...collectTargetStakeoutChanges(target, runtime, playerIntelligenceRecord(target.playerId), now));
+try {
+const result = await refreshPlayerIntelligence({
+playerId:target.playerId,
+maxAgeMs:intervalMs,
+timerBufferMs:1_000
+});
+processed += 1;
+if (result.fetched) apiFetched += 1; else skipped += 1;
+generated.push(...collectTargetStakeoutChanges(target, runtime, result.record, now));
+runtime.schedule[id] = result.reason === 'known-timer' || result.reason === 'fresh-cache'
+? Math.max(now + 1_000, Number(result.nextCheckAt) || now + intervalMs)
+: now + intervalMs;
+} catch (error) {
+processed += 1;
+lastError = errorMessage(error);
+runtime.schedule[id] = now + Math.max(10_000, intervalMs);
+}
+}
+const cache = targetStakeoutAlertCache();
+generated.forEach(alert => { cache[alert.id] = alert; });
+runtime.lastRunAt = now;
+runtime.lastProcessed = processed;
+runtime.lastApiFetched = apiFetched;
+runtime.lastSkipped = skipped;
+runtime.lastError = lastError;
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+if (moduleRoot('targetList')) renderTargetList();
+if (moduleRoot('alerts')) renderAlerts();
+} finally {
+targetStakeoutBusy = false;
+}
+}
+function addPdaTarget(input = {}) {
+const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
+if (!playerId) throw new Error('Enter a valid Torn player ID.');
+const entries = pdaTargetListMap();
+entries[String(playerId)] = mergePdaTarget(entries[String(playerId)], { ...input, playerId, source:input.source || 'manual', sourceLabel:input.sourceLabel || 'Manual' });
+if (input.status && typeof input.status === 'object') observePlayerIntelligence({ ...input.status, playerId, name:input.name, source:input.status.source || input.source || 'target-list' }, false);
+writeDataState();
+return entries[String(playerId)];
+}
+function savePdaSourceTarget(source, playerId) {
+const id = validPlayerIntelligenceId(playerId);
+if (!id) throw new Error('The target could not be identified.');
+let row = null;
+let tags = ['Target'];
+let sourceLabel = 'Target';
+let sourceContext = '';
+if (source === 'leveling') {
+row = levelingRows(moduleState.leveling.data?.payload || {}).find(entry => validPlayerIntelligenceId(entry?.id ?? entry?.target_id) === id);
+tags = ['Level'];
+sourceLabel = 'Leveling';
+sourceContext = row ? `Level ${Number(row?.level) || 0} · FF ${finite(row?.fair_fight ?? row?.fairFight) ?? '?'}` : '';
+} else if (source === 'bounties') {
+row = bountyCandidates(bountyRuntime()).find(entry => validPlayerIntelligenceId(entry?.id) === id);
+sourceLabel = 'Bounties';
+sourceContext = row ? `Highest bounty ${money(row.highestReward)}${Number(row.highestQuantity) > 1 ? ` ×${row.highestQuantity}` : ''}` : '';
+} else if (source === 'mugging') {
+row = (Array.isArray(dataState.caches.mugging?.targets) ? dataState.caches.mugging.targets : [])
+.find(entry => validPlayerIntelligenceId(entry?.id ?? entry?.playerId) === id);
+tags = ['Mug'];
+sourceLabel = 'Mugging';
+sourceContext = row ? String(row.context || row.reason || 'Cached Mugging assignment') : '';
+} else if (source === 'war') {
+const snapshot = moduleState.war.data?.snapshot || {};
+const rows = Array.isArray(snapshot.members) ? snapshot.members : Array.isArray(snapshot.targets) ? snapshot.targets : [];
+row = rows.find(entry => warMemberId(entry) === id);
+tags = ['War'];
+sourceLabel = 'War Panel';
+sourceContext = moduleState.war.data?.activeWar?.opponentName || '';
+} else if (source === 'outside-targets') {
+row = (moduleState.war.data?.outsideTargets || []).find(entry => warMemberId(entry) === id);
+sourceLabel = 'Outside Targets';
+sourceContext = 'War Panel outside target';
+}
+if (!row) throw new Error('That target is no longer present in the current list.');
+const isBounty = source === 'bounties';
+const isMugging = source === 'mugging';
+const isWar = source === 'war' || source === 'outside-targets';
+const rawStatus = isBounty || isMugging ? row.status : null;
+const state = isBounty || isMugging
+? String(rawStatus?.state || rawStatus?.label || 'Unknown')
+: isWar
+? warMemberStatus(row)
+: String(row?.status ?? row?.previous_status ?? row?.statusState ?? 'Unknown');
+const until = Number(
+isBounty || isMugging ? rawStatus?.until :
+isWar ? (row?.statusUntil ?? row?.status?.until) :
+(row?.statusUntil ?? row?.status_until ?? row?.status?.until)
+) || 0;
+const name = String(row?.name || row?.target_name || `Player ${id}`);
+const fairFight = finite(row?.fairFight ?? row?.fair_fight);
+const battleStatsEstimate = finite(row?.battleStats ?? row?.battleStatsEstimate ?? row?.battle_stats_estimate ?? row?.bs_estimate);
+const observedAt = Date.now();
+return addPdaTarget({
+playerId:id,
+name,
+tags,
+source,
+sourceLabel,
+sourceContext,
+status:{
+playerId:id,
+name,
+level:Number(row?.level) || 0,
+state,
+until,
+description:String(
+isBounty || isMugging ? rawStatus?.description || '' :
+row?.statusDescription ?? row?.status_description ?? row?.status?.description ?? ''
+),
+fairFight,
+battleStatsEstimate,
+bountyCount:isBounty || isMugging ? Math.max(0, Number(row?.bountyCount ?? row?.highestQuantity) || 0) : undefined,
+bountyTotal:isBounty || isMugging ? Math.max(0, Number(row?.bountyTotal ?? row?.totalReward ?? row?.highestReward) || 0) : undefined,
+source,
+observedAt,
+checkedAt:observedAt
+}
+});
+}
+function updatePdaTarget(input = {}) {
+const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
+const entries = pdaTargetListMap(), existing = playerId ? entries[String(playerId)] : null;
+if (!playerId || !existing) throw new Error('The saved target was not found.');
+const updated = mergePdaTarget(existing, { ...input, playerId });
+if (Object.prototype.hasOwnProperty.call(input, 'tags')) updated.tags = normalizeTargetListTags(input.tags);
+if (!updated.tags.length) updated.tags = ['Target'];
+entries[String(playerId)] = updated;
+writeDataState();
+return updated;
+}
+function removePdaTarget(playerId) {
+const id = validPlayerIntelligenceId(playerId);
+if (!id) return false;
+const entries = pdaTargetListMap(), existed = Boolean(entries[String(id)]);
+delete entries[String(id)];
+writeDataState();
+return existed;
+}
+function scopeMatches(granted, required) {
+const left = String(granted || '');
+const right = String(required || '');
+return left === '*' || left === right || (left.endsWith('.*') && right.startsWith(left.slice(0, -1)));
+}
+function hasGrantedScope(required) {
+return (dataState.sessions.permission?.scopes || []).some(scope => scopeMatches(scope, required));
+}
+function hasScope(required) {
+const session = dataState.sessions.permission;
+return Boolean(session?.token && Number(session.expiresAt) > Date.now() && (hasAdminScope() || hasGrantedScope(required)));
+}
+function hasAdminScope() {
+const session = dataState.sessions.permission;
+return Boolean(session?.token && Number(session.expiresAt) > Date.now() && (session.scopes || []).some(scope => String(scope) === 'admin.*' || String(scope) === '*'));
+}
+function hasThemeScope(required) {
+return hasAdminScope() || hasScope(required);
+}
+const THEME_TOKEN_MAP = Object.freeze({
+'--slink-bg':'--s-bg', '--slink-panel-bg':'--s-panel', '--slink-surface':'--s-panel', '--slink-card':'--s-card',
+'--slink-bg-control':'--s-control', '--slink-control':'--s-control', '--slink-border':'--s-border', '--slink-border-soft':'--s-soft',
+'--slink-text':'--s-text', '--slink-muted':'--s-muted', '--slink-accent':'--s-accent', '--slink-accent-alt':'--s-alt',
+'--slink-ready':'--s-ready', '--slink-warning':'--s-warning', '--slink-error':'--s-error', '--slink-shadow':'--s-shadow', '--slink-page-bg':'--s-page'
+});
+function bundledThemes() {
+return [
+{ id:'slink-dark', label:'Dark', description:'The standard free SLINK interface.', scope:null, swatch:['#162331','#2f74ad','#8fc9ff'], tokens:{} },
+{ id:'slinky-pursuit', label:'Pursuit', description:'Chrome coils with red and blue pursuit lighting.', scope:'slink.theme.pursuit', swatch:['#05080d','#ee2525','#167ee7'], tokens:{} },
+{ id:'slinky-underglow', label:'Underglow', description:'Glossy black with purple and green tuner-style underglow.', scope:'slink.theme.underglow', swatch:['#030405','#a53dff','#7bff45'], tokens:{} }
+];
+}
+function themeCatalog() {
+const themes = dataState.caches.themeCatalog?.catalog?.themes;
+return Array.isArray(themes) && themes.length ? themes : bundledThemes();
+}
+function validateThemeCatalog(value) {
+if (!value || Number(value.schemaVersion) !== 1 || !Array.isArray(value.themes) || !value.themes.length || value.themes.length > 32) throw new Error('Unsupported SLINK theme catalog.');
+const seen = new Set();
+const themes = value.themes.map(entry => {
+const id = String(entry?.id || ''); const label = String(entry?.label || ''); const description = String(entry?.description || ''); const scope = entry?.scope == null ? null : String(entry.scope);
+if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(id) || seen.has(id) || !label || label.length > 80 || description.length > 180) throw new Error('Theme catalog contains invalid display metadata.');
+if (scope !== null && !/^slink\.theme\.[a-z0-9][a-z0-9-]{0,63}$/.test(scope)) throw new Error(`Theme ${id} has an invalid permission scope.`);
+if (!entry.tokens || typeof entry.tokens !== 'object' || Array.isArray(entry.tokens)) throw new Error(`Theme ${id} has invalid tokens.`);
+const tokens = {};
+for (const [name, raw] of Object.entries(entry.tokens)) {
+if (!Object.hasOwn(THEME_TOKEN_MAP, name)) continue;
+const token = String(raw || '').trim();
+if (!token || token.length > 320 || !/^[a-zA-Z0-9#(),.%+\-\s]+$/.test(token) || /url\s*\(|expression\s*\(/i.test(token)) throw new Error(`Theme ${id} contains a disallowed token.`);
+tokens[name] = token;
+}
+const swatch = Array.isArray(entry.swatch) ? entry.swatch.slice(0, 3).map(String) : [];
+if (swatch.length !== 3 || !swatch.every(color => /^#[0-9a-fA-F]{6}$/.test(color))) throw new Error(`Theme ${id} has invalid swatches.`);
+seen.add(id); return { id, label, description, scope, swatch, tokens };
+});
+if (!themes.some(theme => theme.id === 'slink-dark' && !theme.scope)) throw new Error('Theme catalog is missing the free fallback.');
+return { schemaVersion:1, revision:String(value.revision || ''), updatedAt:String(value.updatedAt || ''), themes };
+}
+async function loadThemeCatalog(force = false) {
+const cached = dataState.caches.themeCatalog;
+if (!force && cached?.catalog && Date.now() - Number(cached.fetchedAt) < 12 * 60 * 60_000) { renderThemeChoices(); return cached.catalog; }
+try {
+const response = await requestJson(`${URLS.war}/api/themes`);
+const catalog = validateThemeCatalog(response?.catalog);
+dataState.caches.themeCatalog = { catalog, fetchedAt:Date.now(), source:String(response?.source || 'worker') }; writeDataState(); renderThemeChoices(); setTheme(state.theme, false); return catalog;
+} catch (error) {
+if (!cached?.catalog) moduleState.access.error = `Theme catalog: ${errorMessage(error)}`;
+renderThemeChoices(); return cached?.catalog || null;
+}
+}
+function renderThemeChoices() {
+const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
+row.innerHTML = themeCatalog().map(theme => {
+const unlocked = !theme.scope || hasThemeScope(theme.scope);
+const colors = Array.isArray(theme.swatch) && theme.swatch.length === 3 ? theme.swatch : ['#111827','#3b82f6','#dbeafe'];
+return `<button type="button" data-theme-choice="${escapeHtml(theme.id)}" title="${escapeHtml(unlocked ? theme.description : `Requires ${theme.scope}`)}" class="${unlocked ? '' : 'permission-lock'}"><i class="theme-swatch" style="--c1:${escapeHtml(colors[0])};--c2:${escapeHtml(colors[1])};--c3:${escapeHtml(colors[2])}"></i>${escapeHtml(theme.label)}${unlocked ? '' : ' 🔒'}</button>`;
+}).join('');
+row.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === state.theme)));
+}
+function marketWatchLimit() {
+const session = validSession('permission');
+if (!session) return 0;
+const scopes = Array.isArray(session.scopes) ? session.scopes.map(String) : [];
+if (scopes.some(scope => scope === '*' || scope === 'admin.*' || scope === 'slink.adhd.*' || scope === 'slink.adhd.marketwatch.*')) return MARKET_TIERS.at(-1);
+return scopes.reduce((maximum, scope) => {
+const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
+return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
+}, 0);
+}

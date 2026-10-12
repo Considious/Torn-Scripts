@@ -1,0 +1,21 @@
+name: Check SLINK PDA
+
+on:
+  push:
+    paths:
+      - 'SLINK-PDA/**'
+      - '.github/workflows/check-slink-pda.yml'
+  pull_request:
+    paths:
+      - 'SLINK-PDA/**'
+      - '.github/workflows/check-slink-pda.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm --prefix SLINK-PDA test

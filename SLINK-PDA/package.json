@@ -1,0 +1,11 @@
+{
+  "name": "slink-pda-dashboard",
+  "version": "0.4.41",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check",
+    "test": "node build.mjs --check && node test-permissions.mjs && node test-alert-settings.mjs && node test-armory.mjs && node test-form-state.mjs && node test-market-dom.mjs && node test-module-activity.mjs && node test-mugging.mjs && node test-overlay.mjs && node test-racing.mjs && node test-reminders.mjs && node test-timestamps.mjs && node test-travel-safety.mjs"
+  }
+}

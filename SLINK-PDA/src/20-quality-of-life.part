@@ -1,0 +1,577 @@
+function renderRacingAssistant() {
+const root = moduleRoot('racing')?.querySelector('[data-racing-assistant]');
+if (!root) return;
+const value = racingAssistant;
+const tone = value.status === 'ready' ? 'ready' : ['not-completed','not-found','invalid-nickname'].includes(value.status) ? 'warn' : 'normal';
+root.dataset.tone = tone;
+root.innerHTML = `<strong>${escapeHtml(value.track ? `${value.track}: ${value.message}` : value.message)}</strong>${value.nickname ? `<span>Expected car: ${escapeHtml(value.nickname)}</span>` : '<span>Uses Torn page text only; no API calls.</span>'}`;
+}
+function setRacingAssistant(next) {
+racingAssistant = next;
+renderRacingAssistant();
+}
+function scanOfficialRaceDom() {
+clearRacingHighlight();
+const trackNode = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_TRACK_SELECTOR)]
+.find(node => /-\s*Official race\s*$/i.test(String(node.textContent || '').trim()));
+const track = parseOfficialRacingTrack(trackNode?.textContent);
+if (!track) {
+setRacingAssistant({ status:'waiting', track:null, nickname:'', message:'Open an official race to receive a recommendation.' });
+return;
+}
+const recommendation = racingRecommendationForTrack(track, racingSettings());
+if (recommendation.status === 'not-completed') {
+setRacingAssistant({ ...recommendation, message:'Recommended build is not marked complete.' });
+return;
+}
+if (recommendation.status === 'invalid-nickname') {
+setRacingAssistant({ ...recommendation, message:'Saved nickname is invalid. Fix it in the Racing guide.' });
+return;
+}
+if (recommendation.status !== 'ready') {
+setRacingAssistant({ ...recommendation, message:'No saved Racing build is configured for this track.' });
+return;
+}
+const nodes = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_CAR_NAME_SELECTOR)];
+const match = matchVisibleRacingCar(recommendation.nickname, nodes.map(node => ({ name:node.textContent, node })));
+if (!match?.node) {
+setRacingAssistant({ ...recommendation, status:'not-found', message:"Recommended car not found in Torn's visible car list." });
+return;
+}
+ensureRacingHighlightStyle();
+match.node.classList.add(RACING_HIGHLIGHT_CLASS);
+const label = document.createElement('span');
+label.setAttribute(RACING_LABEL_ATTRIBUTE, 'true');
+label.textContent = 'SLINK Recommended';
+match.node.after(label);
+try { match.node.scrollIntoView({ block:'nearest', behavior:'smooth' }); } catch {}
+setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
+}
+function scheduleRacingScan(delay = 80) {
+if (!hasScope(RACING_SCOPE) || racingScanTimer) return;
+racingScanTimer = global.setTimeout(() => {
+racingScanTimer = null;
+scanOfficialRaceDom();
+}, delay);
+}
+function renderRacing() {
+const root = moduleRoot('racing');
+if (!root) return;
+const settings = racingSettings();
+const definitions = racingBuildsForView(settings.view, settings);
+const completed = RACING_RECOMMENDED_BUILDS.filter(definition => settings.builds[definition.id].completed).length;
+root.innerHTML = `<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Class A Racing Build Guide</h2><span class="muted">Build progress and nicknames stay on this device.</span></div><span class="badge ${completed === RACING_RECOMMENDED_BUILDS.length ? 'ready' : ''}">${completed}/${RACING_RECOMMENDED_BUILDS.length}</span></div>
+<div class="racing-toolbar"><div class="racing-filters" role="tablist" aria-label="Racing build status">${['needed','completed','all'].map(view => `<button type="button" data-racing-view="${view}" aria-selected="${String(settings.view === view)}">${view[0].toUpperCase() + view.slice(1)}</button>`).join('')}</div><span class="muted">${completed} builds complete</span></div>
+<div class="racing-assistant" data-racing-assistant></div>
+<div class="racing-list">${definitions.length ? definitions.map(definition => {
+const buildState = settings.builds[definition.id];
+const suggested = suggestRacingNickname(definition.tracks).value;
+const effective = effectiveRacingNickname(definition, settings);
+const validation = validateRacingNickname(effective);
+return `<article class="racing-card" data-racing-build="${escapeHtml(definition.id)}" data-completed="${String(buildState.completed)}">
+<header><div><h3>${escapeHtml(definition.car)}</h3><span>Class ${escapeHtml(definition.class)} · ${escapeHtml(definition.tracks.join(', '))}</span></div><span class="badge ${buildState.completed ? 'ready' : ''}">${buildState.completed ? 'COMPLETE' : 'NEEDED'}</span></header>
+<div class="racing-specs"><div><small>Turbo</small><strong>${escapeHtml(definition.build.turbo)}</strong></div><div><small>Transmission</small><strong>${escapeHtml(definition.build.transmission)}</strong></div><div><small>Gearbox</small><strong>${escapeHtml(definition.build.gearbox)}</strong></div><div><small>Tires</small><strong>${escapeHtml(definition.build.tires)}</strong></div></div>
+<div class="racing-name"><label>Expected Torn nickname<input type="text" maxlength="100" data-racing-name value="${escapeHtml(effective)}" placeholder="${escapeHtml(suggested)}" aria-invalid="${String(!validation.valid)}"></label><span class="racing-count" data-racing-count data-invalid="${String(!validation.valid)}">${validation.length}/${validation.maxLength}</span></div>
+<footer><small>${buildState.customName ? 'Custom nickname' : 'Suggested nickname'} · 22 characters maximum</small><div><button type="button" data-racing-reset-name>Use suggestion</button> <button type="button" data-racing-toggle>${buildState.completed ? 'Move to Needed' : 'Mark Complete'}</button></div></footer>
+</article>`;
+}).join('') : '<div class="module-message">No builds in this view.</div>'}</div></article></div>`;
+renderRacingAssistant();
+}
+const travelSafetyBypass = new WeakSet();
+const travelSafetyPending = new WeakSet();
+let travelSafetyModal = null;
+function travelSafetyFindTime(button) {
+let node = button?.parentElement || null;
+for (let depth = 0; node && depth < 9; depth += 1, node = node.parentElement) {
+const buttons = [...node.querySelectorAll('button[aria-label^="Travel to "]')];
+if (buttons.length !== 1 || buttons[0] !== button) continue;
+const times = [...node.querySelectorAll('time')].filter(time => travelSafetyParseDurationMs(time.getAttribute('datetime') || time.textContent) > 0);
+if (times.length) return times[0];
+}
+return null;
+}
+function travelSafetyOneWayMs(button) {
+const time = travelSafetyFindTime(button);
+if (!time) return 0;
+return travelSafetyParseDurationMs(time.getAttribute('datetime') || time.querySelector('[class*="srOnly"]')?.textContent || time.textContent);
+}
+function renderCompany() {
+const root = moduleRoot('company');
+if (!root) return;
+if (!hasScope(COMPANY_SCOPE)) {
+root.innerHTML = lockedModule(COMPANY_SCOPE, 'Company & Job Points');
+return;
+}
+const current = moduleState.company;
+const snapshot = current.data?.snapshot || dataState.caches.company?.snapshot;
+const settings = companySettings();
+if (!snapshot) {
+root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Company &amp; Job Points</h2><span class="muted">Employee alerts and director tools.</span></div></div>' +
+(current.error ? moduleMessage(current.error, 'error') : '') +
+'<p>No company information is cached yet.</p><button type="button" data-action="refresh-company" ' + (current.busy ? 'disabled' : '') + '>' + (current.busy ? 'Checking…' : 'Refresh company') + '</button></article></div>';
+return;
+}
+const selfPenalty = snapshot.self?.addictionPenalty;
+const ranked = snapshot.director ? rankCompanyTrainCandidates(snapshot.employees) : [];
+root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>' + escapeHtml(snapshot.company.name || 'Current company') + '</h2><span class="muted">' + escapeHtml(snapshot.company.position || 'Employee') + ' · ' + (snapshot.company.rating ? snapshot.company.rating + '★' : 'rating unavailable') + '</span></div><button type="button" data-action="refresh-company" ' + (current.busy ? 'disabled' : '') + '>' + (current.busy ? 'Checking…' : 'Refresh') + '</button></div>' +
+(current.error ? moduleMessage(current.error, 'error') : '') + (current.notice ? moduleMessage(current.notice, 'ready') : '') +
+'<div class="stats"><div><strong>' + number(snapshot.company.jobPoints) + '</strong><span>Job points</span></div><div><strong>' + number(snapshot.company.daysInCompany) + '</strong><span>Days in company</span></div><div><strong>' + (selfPenalty === null ? 'Unavailable' : '-' + number(selfPenalty)) + '</strong><span>Your addiction penalty</span></div><div><strong>' + relativeTime(current.data?.fetchedAt) + '</strong><span>Updated</span></div></div>' +
+'<div class="form-grid"><label>Your addiction alert threshold<input type="number" min="1" max="100" step="1" data-company-own-threshold value="' + escapeHtml(settings.addictionThreshold) + '"></label>' +
+(snapshot.director ? '<label>Employee alert threshold<input type="number" min="1" max="100" step="1" data-company-director-threshold value="' + escapeHtml(settings.directorThreshold) + '"></label>' : '') +
+'<button type="button" data-action="save-company-settings">Save alert settings</button></div></article>' +
+(snapshot.director ? '<article class="card full"><div class="card-head"><div><h2>Director view</h2><span class="muted">Train priority is estimated from working-stat effectiveness headroom, not promised stat gain.</span></div><span class="badge ready">' + ranked.length + ' ranked</span></div><div class="target-list">' +
+(ranked.map((employee, index) => '<article class="target"><div><strong>#' + (index + 1) + ' ' + escapeHtml(employee.name) + '</strong><span>' + escapeHtml(employee.position || 'Employee') + ' · addiction ' + (employee.addictionPenalty === null ? 'unavailable' : '-' + employee.addictionPenalty) + ' · effectiveness ' + (employee.totalEffectiveness === null ? 'unavailable' : employee.totalEffectiveness) + ' · train headroom ' + employee.trainHeadroom + '</span></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/messages.php#/p=compose&amp;XID=' + employee.id + '">Message</a><a class="action-link" href="https://www.torn.com/profiles.php?XID=' + employee.id + '">Open profile/chat</a><button type="button" data-action="copy-company-reminder" data-company-employee="' + employee.id + '">Copy reminder</button><button type="button" data-action="fill-company-chat" data-company-employee="' + employee.id + '">Fill open chat</button><button type="button" data-action="send-company-chat" data-company-employee="' + employee.id + '">Send open chat</button></div></article>').join('') || moduleMessage('No extended employee effectiveness data is available.')) +
+'</div></article>' : '') + '</div>';
+}
+async function refreshCompany(force = false) {
+const current = moduleState.company;
+if (current.busy) return current.data;
+const cached = dataState.caches.company;
+const ttl = companySettings().refreshMinutes * 60_000;
+if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < ttl) {
+current.data = cached;
+renderCompany();
+return cached;
+}
+current.busy = true;
+current.error = '';
+current.notice = '';
+renderCompany();
+try {
+await ensurePermissionSession(false);
+if (!hasScope(COMPANY_SCOPE)) throw new Error('Your SLINK account does not have ' + COMPANY_SCOPE + ' permission.');
+const [user, company] = await Promise.all([
+tornJson('/v2/user?selections=job,jobpoints', 'SLINK PDA company assistant'),
+tornJson('/v2/company?selections=profile,employees', 'SLINK PDA company assistant')
+]);
+const userId = Number(dataState.sessions.permission?.userId) || 0;
+const snapshot = normalizeCompanySnapshot(user, company, userId);
+current.data = dataState.caches.company = { fetchedAt:Date.now(), snapshot };
+writeDataState();
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+return current.data;
+} catch (error) {
+current.error = errorMessage(error);
+throw error;
+} finally {
+current.busy = false;
+renderCompany();
+renderAlerts();
+}
+}
+function companyEmployeeFromAction(target) {
+const id = Number(target?.dataset?.companyEmployee) || 0;
+return moduleState.company.data?.snapshot?.employees?.find(employee => employee.id === id)
+|| dataState.caches.company?.snapshot?.employees?.find(employee => employee.id === id)
+|| null;
+}
+function companyPrivateChatPanel(employeeName) {
+const wanted = String(employeeName || '').trim().toLowerCase();
+if (!wanted) return null;
+return [...document.querySelectorAll('[id^="private-"]')].find(panel => [...panel.querySelectorAll('[class*="title"],[class*="name"],header span')]
+.some(node => {
+const label = String(node.textContent || '').trim().toLowerCase();
+return label === wanted || label.startsWith(wanted + ' ');
+})) || null;
+}
+function fillCompanyPrivateChat(employee, send = false) {
+if (!employee) throw new Error('Employee information is unavailable.');
+const panel = companyPrivateChatPanel(employee.name);
+if (!panel) throw new Error('Open ' + employee.name + '\'s private chat first.');
+const textarea = panel.querySelector('textarea[placeholder="Type your message here..."]');
+if (!textarea) throw new Error('The open private chat text box was not found.');
+const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+descriptor?.set?.call(textarea, companyReminderText(employee));
+textarea.dispatchEvent(new Event('input', { bubbles:true }));
+textarea.dispatchEvent(new Event('change', { bubbles:true }));
+textarea.focus();
+if (!send) return;
+const button = [...panel.querySelectorAll('button[type="button"]')].find(candidate => !candidate.disabled && candidate.querySelector('svg[viewBox="0 0 18 18"]'));
+if (!button) throw new Error('The private chat Send button is not ready.');
+button.click();
+}
+function renderMuseums(){
+const root=moduleRoot('museums');if(!root)return;
+if(!hasScope(MUSEUM_SCOPE)){root.innerHTML=lockedModule(MUSEUM_SCOPE,'Museums');return}
+const current=moduleState.museums,status=current.data;
+if(!status?.sets?.length){root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">Compare your inventory with every Museum exchange set.</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh inventory')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+'<p>Refresh to load your inventory and Torn item catalog.</p></article></div>';return}
+root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">'+status.summary.completed+'/'+status.summary.total+' complete · '+number(status.summary.redeemablePoints)+' redeemable points</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+(current.notice?moduleMessage(current.notice,'ready'):'')+'<p>Updated '+relativeTime(status.fetchedAt)+'. Torn inventory data is cached for one hour.</p></article>'+status.sets.map(set=>'<article class="card full"><details '+(set.complete?'':'open')+'><summary><strong>'+(set.complete?'Complete':'Needs items')+' · '+escapeHtml(set.name)+'</strong> · '+number(set.points)+' points</summary><div class="card-head"><span class="muted">'+number(set.completeSets)+' complete set'+(set.completeSets===1?'':'s')+' in inventory</span>'+(set.travel?'<button type="button" data-action="museum-track-abroad" data-museum-set="'+escapeHtml(set.id)+'">Track in Abroad Stocks</button>':'')+'</div><div class="target-list">'+set.items.map(item=>'<article class="target"><div><strong>'+escapeHtml(item.name)+'</strong><span>Owned '+number(item.owned)+' / '+number(item.required)+(item.needed?' · need '+number(item.needed):'')+(item.marketPrice?' · market USD '+number(item.marketPrice):'')+'</span></div>'+(item.needed&&item.itemId?'<div class="target-actions"><input type="number" min="1" step="1" data-museum-price="'+item.itemId+'" value="'+Math.max(1,item.marketPrice)+'"><button type="button" data-action="museum-add-market" data-museum-item="'+item.itemId+'">Add to Market Watch</button></div>':'')+'</article>').join('')+'</div></details></article>').join('')+'</div>'
+}
+async function refreshMuseums(force=false){
+const current=moduleState.museums;if(current.busy)return current.data;
+const cached=dataState.caches.museums;
+if(!force&&cached?.fetchedAt&&Date.now()-Number(cached.fetchedAt)<MUSEUM_CACHE_MS){current.data=cached;renderMuseums();return cached}
+current.busy=true;current.error='';current.notice='';renderMuseums();
+try{
+await ensurePermissionSession(false);if(!hasScope(MUSEUM_SCOPE))throw new Error('Your SLINK account does not have '+MUSEUM_SCOPE+' permission.');
+const runtime=marketRuntime(),catalog=await marketEnsureCatalog(runtime,false),inventoryRows=[];let offset=0;
+for(let page=0;page<20;page++){const body=await tornJson('/v2/user/inventory?limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&inventoryRows.length>=total))break;offset+=rows.length}
+const status=museumBuildStatus(inventoryRows,catalog.items||[]);current.data=dataState.caches.museums={fetchedAt:Date.now(),...status};dataState.caches.market=runtime;writeDataState();return current.data
+}catch(error){current.error=errorMessage(error);throw error}finally{current.busy=false;renderMuseums()}
+}
+function renderTravelSafety() {
+const root = moduleRoot('travelSafety');
+if (!root) return;
+const current = moduleState.travelSafety;
+const allowed = hasScope(TRAVEL_SAFETY_SCOPE);
+root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Organized Crime Travel Safety</h2><span class="muted">Uses Torn’s displayed flight time and your current OC ready time.</span></div><span class="badge ' + (allowed ? 'ready' : '') + '">' + (allowed ? 'ACTIVE' : 'LOCKED') + '</span></div>' +
+(current.error ? '<div class="error">' + escapeHtml(current.error) + '</div>' : '') +
+'<p>Round trips use the displayed one-way duration twice, plus a 10% return buffer. Unsafe Travel clicks open a warning but can still be deliberately overridden.</p>' +
+(current.crime ? '<p><strong>Current organized crime ready:</strong> ' + escapeHtml(travelSafetyFormatTct(current.crime.readyAt)) + '</p>' : '<p class="muted">No upcoming organized crime is currently cached.</p>') +
+'<button type="button" data-action="refresh-travel-safety" ' + (!allowed || current.busy ? 'disabled' : '') + '>' + (current.busy ? 'Checking…' : 'Refresh crime time') + '</button></article></div>';
+}
+async function refreshTravelSafety(force = false) {
+const current = moduleState.travelSafety;
+if (current.busy) return dataState.caches.travelSafety || null;
+current.busy = true;
+current.error = '';
+if (dashboardOpen) renderTravelSafety();
+try {
+await ensurePermissionSession(false);
+const cached = dataState.caches.travelSafety;
+if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < TRAVEL_SAFETY_CACHE_MS) {
+current.crime = cached.crime || null;
+current.fetchedAt = Number(cached.fetchedAt) || 0;
+return cached;
+}
+const response = await tornJson('/v2/user/organizedcrime', 'SLINK PDA travel safety');
+const next = { fetchedAt:Date.now(), crime:travelSafetyNormalizeCrime(response) };
+dataState.caches.travelSafety = next;
+current.crime = next.crime;
+current.fetchedAt = next.fetchedAt;
+writeDataState();
+return next;
+} catch (error) {
+current.error = errorMessage(error);
+throw error;
+} finally {
+current.busy = false;
+if (dashboardOpen) renderTravelSafety();
+}
+}
+function closeTravelSafetyModal() {
+travelSafetyModal?.remove();
+travelSafetyModal = null;
+}
+function showTravelSafetyConflict(button, destination, assessment) {
+closeTravelSafetyModal();
+travelSafetyModal = document.createElement('div');
+travelSafetyModal.dataset.slinkTravelGuard = 'true';
+travelSafetyModal.innerHTML = '<style>[data-slink-travel-guard]{position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.72);font:14px/1.45 Arial,sans-serif}[data-slink-travel-dialog]{width:min(440px,100%);padding:16px;border:2px solid #d86a22;border-radius:10px;background:#15191f;color:#f4f6f8;box-shadow:0 18px 50px #000}[data-slink-travel-dialog] h2{margin:0 0 8px;font-size:19px}[data-slink-travel-dialog] p{margin:7px 0}[data-slink-travel-times]{padding:9px;border-radius:7px;background:#0b0e12;color:#ccd3dc}[data-slink-travel-actions]{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}[data-slink-travel-actions] button{min-height:40px;padding:7px 11px;border:1px solid #65717e;border-radius:7px;background:#252c35;color:#fff}[data-slink-travel-actions] [data-leave]{border-color:#d86a22;background:#6b2b16}</style>' +
+'<section data-slink-travel-dialog role="alertdialog" aria-modal="true" aria-labelledby="slink-pda-travel-title"><h2 id="slink-pda-travel-title">Organized crime conflict</h2><p>This trip is unlikely to return you to Torn before your organized crime is ready. Leaving may delay your faction teammates. Consider choosing a shorter destination or waiting until the crime is complete.</p><p data-slink-travel-times>' +
+escapeHtml(destination) + ' estimated return: <strong>' + escapeHtml(travelSafetyFormatTct(assessment.returnAt)) + '</strong><br>Organized crime ready: <strong>' + escapeHtml(travelSafetyFormatTct(assessment.readyAt)) + '</strong></p><div data-slink-travel-actions><button type="button" data-cancel>Cancel — choose another destination</button><button type="button" data-leave>Leave anyway</button></div></section>';
+travelSafetyModal.querySelector('[data-cancel]').addEventListener('click', closeTravelSafetyModal, { once:true });
+travelSafetyModal.querySelector('[data-leave]').addEventListener('click', () => {
+closeTravelSafetyModal();
+travelSafetyBypass.add(button);
+button.click();
+}, { once:true });
+travelSafetyModal.addEventListener('click', event => { if (event.target === travelSafetyModal) closeTravelSafetyModal(); });
+document.documentElement.append(travelSafetyModal);
+travelSafetyModal.querySelector('[data-cancel]').focus({ preventScroll:true });
+}
+async function handleTravelSafetyClick(event) {
+if (event.defaultPrevented || !/^\/travelagency\.php$/i.test(global.location.pathname)) return;
+const button = event.target?.closest?.('button[aria-label^="Travel to "]');
+if (!button || button.disabled) return;
+if (travelSafetyBypass.has(button)) {
+travelSafetyBypass.delete(button);
+return;
+}
+if (travelSafetyPending.has(button)) {
+event.preventDefault();
+event.stopImmediatePropagation();
+return;
+}
+const oneWayMs = travelSafetyOneWayMs(button);
+if (!oneWayMs) return;
+event.preventDefault();
+event.stopImmediatePropagation();
+travelSafetyPending.add(button);
+try {
+const status = await refreshTravelSafety(false);
+const assessment = travelSafetyAssessment(oneWayMs, status?.crime);
+if (assessment.blocked) {
+const destination = String(button.getAttribute('aria-label') || '').replace(/^Travel\s+to\s+/i, '') || 'This destination';
+showTravelSafetyConflict(button, destination, assessment);
+return;
+}
+travelSafetyBypass.add(button);
+button.click();
+} catch (error) {
+moduleState.travelSafety.error = 'Travel safety could not verify the crime time, so the flight was not blocked: ' + errorMessage(error);
+travelSafetyBypass.add(button);
+button.click();
+} finally {
+travelSafetyPending.delete(button);
+}
+}
+const PDA_ABROAD = (function pdaAbroadFactory() {
+const CACHE_MS = 60_000;
+const ACTIVITY_MS = 5 * 60_000;
+const PROVIDER_ORDER = ['yata','prometheus','tornIntel'];
+function settings() {
+const input = dataState.settings.abroadStocks || {};
+const normalized = {
+travelMethod:Object.hasOwn(ABROAD_STOCKS.TRAVEL_MULTIPLIERS, input.travelMethod) ? input.travelMethod : 'private',
+arrivalBufferMinutes:Math.min(30, Math.max(0, Number(input.arrivalBufferMinutes) || 3)),
+alertLeadMinutes:Math.min(180, Math.max(0, Number(input.alertLeadMinutes) || 10)),
+alertsEnabled:input.alertsEnabled !== false,
+soundEnabled:input.soundEnabled === true,
+tornIntelKey:String(input.tornIntelKey || '').trim().slice(0, 256),
+useDroqs:input.useDroqs !== false
+};
+dataState.settings.abroadStocks = normalized;
+return normalized;
+}
+function runtime() {
+const value = dataState.caches.abroadStocks;
+if (!value || typeof value !== 'object' || Array.isArray(value)) {
+dataState.caches.abroadStocks = { fetchedAt:0, activeUntil:0, snapshots:{}, providers:{}, rows:[], history:{}, watches:[], snoozes:{} };
+}
+const current = dataState.caches.abroadStocks;
+if (!current.snapshots || typeof current.snapshots !== 'object') current.snapshots = {};
+if (!current.providers || typeof current.providers !== 'object') current.providers = {};
+if (!current.history || typeof current.history !== 'object') current.history = {};
+if (!Array.isArray(current.rows)) current.rows = [];
+if (!Array.isArray(current.watches)) current.watches = [];
+if (!current.snoozes || typeof current.snoozes !== 'object') current.snoozes = {};
+return current;
+}
+function visible() {
+return dashboardOpen && state.page === 'quality-of-life' && state.qualityOfLifeTab === 'abroadStocks' && !document.hidden;
+}
+function touch() {
+runtime().activeUntil = Date.now() + ACTIVITY_MS;
+writeDataState();
+}
+function requestProvider(providerId, currentSettings) {
+const definition = ABROAD_STOCKS.PROVIDERS[providerId];
+const headers = {};
+if (providerId === 'tornIntel' && currentSettings.tornIntelKey) headers['X-Torn-Intel-Key'] = currentSettings.tornIntelKey;
+return requestJson(definition.url, { headers }).then(payload => ABROAD_STOCKS.normalizeProvider(providerId, payload, Date.now()));
+}
+function updateHistory(currentHistory, snapshots) {
+const history = currentHistory && typeof currentHistory === 'object' ? { ...currentHistory } : {};
+for (const [providerId, providerRows] of Object.entries(snapshots || {})) {
+if (ABROAD_STOCKS.PROVIDERS[providerId]?.enrichment) continue;
+for (const row of Array.isArray(providerRows) ? providerRows : []) {
+const mapKey = ABROAD_STOCKS.itemKey(row);
+const entry = history[mapKey] && typeof history[mapKey] === 'object'
+? { ...history[mapKey], providers:{ ...(history[mapKey].providers || {}) }, restocks:[...(history[mapKey].restocks || [])] }
+: { providers:{}, restocks:[] };
+const previous = entry.providers[providerId];
+const updatedAt = Number(row.updatedAt) || Date.now();
+const quantity = Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : null;
+if (previous && quantity !== null && previous.quantity !== null && updatedAt > Number(previous.updatedAt || 0) && quantity > Number(previous.quantity)) {
+if (!entry.restocks.some(value => Math.abs(Number(value) - updatedAt) < 5 * 60_000)) entry.restocks.push(updatedAt);
+}
+if (Number(row.lastRestockAt) > 0 && !entry.restocks.some(value => Math.abs(Number(value) - Number(row.lastRestockAt)) < 5 * 60_000)) entry.restocks.push(Number(row.lastRestockAt));
+entry.restocks = [...new Set(entry.restocks.map(Number).filter(Number.isFinite))].sort((a,b) => a-b).slice(-8);
+entry.providers[providerId] = { quantity, updatedAt };
+entry.updatedAt = Date.now();
+history[mapKey] = entry;
+}
+}
+return Object.fromEntries(Object.entries(history)
+.sort((left,right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0))
+.slice(0, 750));
+}
+function status() {
+const current = runtime();
+const currentSettings = settings();
+const watched = new Set(current.watches.map(entry => entry.key));
+return {
+fetchedAt:Number(current.fetchedAt) || 0,
+providers:current.providers,
+settings:currentSettings,
+rows:current.rows.map(row => ({ ...row, watched:watched.has(row.key), departureAt:ABROAD_STOCKS.departureAt(row, currentSettings) })),
+activeAlerts:alerts()
+};
+}
+async function refresh(force = false) {
+const current = runtime();
+const now = Date.now();
+if (moduleState.abroadStocks.busy) return status();
+if (!force && Number(current.fetchedAt) + CACHE_MS > now) { render(); return status(); }
+if (!force && Number(current.activeUntil) <= now && !current.watches.length) return status();
+moduleState.abroadStocks.busy = true;
+moduleState.abroadStocks.error = '';
+render();
+try {
+const currentSettings = settings();
+const providerIds = ['yata','prometheus','tornIntel', ...(currentSettings.useDroqs ? ['droqs'] : [])];
+const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, currentSettings)));
+const snapshots = { ...current.snapshots };
+const providers = { ...current.providers };
+settled.forEach((result,index) => {
+const providerId = providerIds[index];
+if (result.status === 'fulfilled') {
+snapshots[providerId] = result.value;
+providers[providerId] = { ok:true, fetchedAt:now, rows:result.value.length, error:'', needsKey:false };
+} else {
+const error = result.reason;
+const code = Number(error?.status || 0);
+providers[providerId] = {
+ok:false,
+fetchedAt:Number(providers[providerId]?.fetchedAt || 0),
+rows:Array.isArray(snapshots[providerId]) ? snapshots[providerId].length : 0,
+error:ABROAD_STOCKS.PROVIDERS[providerId]?.enrichment ? '' : errorMessage(error),
+needsKey:providerId === 'tornIntel' && [401,403].includes(code)
+};
+}
+});
+current.snapshots = snapshots;
+current.providers = providers;
+current.history = updateHistory(current.history, snapshots);
+current.rows = ABROAD_STOCKS.mergeSnapshots(snapshots, current.history);
+current.fetchedAt = now;
+moduleState.abroadStocks.data = status();
+if (!current.rows.length && settled.every(result => result.status === 'rejected')) {
+moduleState.abroadStocks.error = 'Every abroad-stock provider failed. Check the provider status below.';
+}
+writeDataState();
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+renderAlerts();
+return status();
+} finally {
+moduleState.abroadStocks.busy = false;
+render();
+}
+}
+function alerts(now = Date.now()) {
+const current = runtime();
+const currentSettings = settings();
+if (!currentSettings.alertsEnabled) return [];
+const byKey = new Map(current.rows.map(row => [row.key, row]));
+return current.watches.flatMap(watch => {
+const row = byKey.get(watch.key);
+const nextRestockAt = Number(row?.nextRestockAt) || 0;
+const leaveAt = ABROAD_STOCKS.departureAt(row, currentSettings);
+if (!row || !nextRestockAt || !leaveAt) return [];
+const alertAt = leaveAt - currentSettings.alertLeadMinutes * 60_000;
+if (now < alertAt || now > nextRestockAt + 30 * 60_000) return [];
+const id = `abroad:${row.countryCode}:${row.itemId || row.itemName}:${nextRestockAt}`;
+if (Number(current.snoozes[id] || 0) > now) return [];
+return [{
+id,
+title:`Leave for ${row.countryName} — ${row.itemName}`,
+detail:`Leave at ${ABROAD_STOCKS.formatTct(leaveAt)} to arrive near the estimated ${ABROAD_STOCKS.formatTct(nextRestockAt)} restock.`,
+links:[['Travel Agency','https://www.torn.com/travelagency.php']]
+}];
+});
+}
+function filteredRows() {
+const current = status();
+const query = String(moduleState.abroadStocks.query || '').trim().toLocaleLowerCase();
+if (!query) return current.rows;
+return current.rows.filter(row => {
+const primary = moduleState.abroadStocks.mode === 'country' ? row.countryName : `${row.itemName} ${row.itemId || ''}`;
+return String(primary).toLocaleLowerCase().includes(query);
+});
+}
+function sourceCell(row, providerId) {
+const source = row.sources?.[providerId];
+if (!source) return '<span class="abroad-source missing">Not reported</span>';
+const stock = source.quantity === null ? 'Stock unavailable' : `${Number(source.quantity).toLocaleString()} in stock`;
+const cost = source.cost === null ? '' : ` · ${Number(source.cost).toLocaleString()}`;
+return `<span class="abroad-source"><strong>${stock}${cost}</strong><small>${escapeHtml(relativeTime(source.updatedAt))}</small></span>`;
+}
+function render() {
+const root = moduleRoot('abroadStocks');
+if (!root) return;
+const current = status();
+const rows = filteredRows();
+const watchedCount = runtime().watches.length;
+const providerStatus = PROVIDER_ORDER.map(id => {
+const provider = current.providers[id] || {};
+const label = ABROAD_STOCKS.PROVIDERS[id].label;
+return `<span class="badge ${provider.ok ? 'ready' : provider.error ? 'warn' : ''}">${escapeHtml(label)}: ${provider.ok ? `${Number(provider.rows || 0).toLocaleString()} rows` : provider.error ? 'unavailable' : 'waiting'}</span>`;
+}).join('');
+const needsTornIntelKey = Boolean(current.providers.tornIntel?.needsKey || current.settings.tornIntelKey);
+root.innerHTML = `<div class="grid"><article class="card full">
+<div class="card-head"><div><h2>Abroad Stocks</h2><span class="muted">Compare public reports from YATA, Prometheus, and Torn Intel.</span></div><button type="button" data-action="refresh-abroad-stocks" ${moduleState.abroadStocks.busy ? 'disabled' : ''}>${moduleState.abroadStocks.busy ? 'Refreshing…' : 'Refresh'}</button></div>
+${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error, 'error') : ''}
+<div class="module-toolbar"><span>${current.fetchedAt ? `Updated ${escapeHtml(relativeTime(current.fetchedAt))}` : 'Not loaded yet'} · ${watchedCount} departure watch${watchedCount === 1 ? '' : 'es'}</span><div class="target-actions">${providerStatus}</div></div>
+<div class="abroad-search"><div class="racing-filters"><button type="button" data-abroad-mode="item" aria-selected="${String(moduleState.abroadStocks.mode === 'item')}">Search item</button><button type="button" data-abroad-mode="country" aria-selected="${String(moduleState.abroadStocks.mode === 'country')}">Search country</button></div><input type="search" data-abroad-query value="${escapeHtml(moduleState.abroadStocks.query)}" placeholder="${moduleState.abroadStocks.mode === 'item' ? 'Xanax, plushie, flower…' : 'Mexico, China, UAE…'}"></div>
+<details class="alert-settings"><summary>Travel and reminder settings</summary>
+<div class="abroad-settings">
+<label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${method[0].toUpperCase()+method.slice(1)}</option>`).join('')}</select></label>
+<label>Arrive early (minutes)<input type="number" min="0" max="30" data-field="abroad-arrival-buffer" value="${current.settings.arrivalBufferMinutes}"></label>
+<label>Alert before leave time (minutes)<input type="number" min="0" max="180" data-field="abroad-alert-lead" value="${current.settings.alertLeadMinutes}"></label>
+<label class="check-row"><input type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
+<label class="check-row"><input type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
+<label class="check-row"><input type="checkbox" data-field="abroad-use-droqs" ${current.settings.useDroqs ? 'checked' : ''}>Use optional DroqsDB enrichment</label>
+<button type="button" data-action="save-abroad-settings">Save settings</button>
+</div>
+</details>
+${needsTornIntelKey ? `<details class="alert-settings" open><summary>Torn Intel access</summary><p>Torn Intel requested a client key. Register or contact Torn Intel, then save the key here. YATA and Prometheus continue working without it.</p><div class="abroad-provider-key"><a href="https://torn-intel.com/contact" target="_blank" rel="noopener">Open Torn Intel</a><input type="password" data-field="abroad-torn-intel-key" value="${escapeHtml(current.settings.tornIntelKey)}" placeholder="Torn Intel client key"><button type="button" data-action="save-abroad-settings">Save key</button></div></details>` : ''}
+<div class="abroad-list">${rows.length ? rows.map(row => {
+const prediction = row.nextRestockAt
+? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span>Leave: ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))} · ${escapeHtml(row.predictionSource || 'reported estimate')}</span>`
+: '<strong>Restock estimate unavailable</strong><span>History is still learning; no reminder will fire yet.</span>';
+return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" data-action="toggle-abroad-watch">${row.watched ? 'Stop alert' : 'Alert me when to leave'}</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
+}).join('') : moduleMessage(current.fetchedAt ? 'No abroad stocks match this search.' : 'Press Refresh to load abroad stock reports.')}</div>
+</article></div>`;
+}
+function toggleWatch(key) {
+const current = runtime();
+const index = current.watches.findIndex(entry => entry.key === key);
+if (index >= 0) current.watches.splice(index,1);
+else {
+const row = current.rows.find(entry => entry.key === key);
+if (!row) return;
+current.watches.push({ key:row.key, countryCode:row.countryCode, countryName:row.countryName, itemId:row.itemId, itemName:row.itemName });
+current.activeUntil = Date.now() + ACTIVITY_MS;
+}
+writeDataState();
+render();
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+renderAlerts();
+}
+function addItemWatches(names=[]){
+const current=runtime(),wanted=new Set(names.map(museumKey)),known=new Set(current.watches.map(entry=>entry.key));
+let added=0;
+for(const row of current.rows){if(!wanted.has(museumKey(row.itemName))||known.has(row.key))continue;current.watches.push({key:row.key,countryCode:row.countryCode,countryName:row.countryName,itemId:row.itemId,itemName:row.itemName});known.add(row.key);added++}
+if(added){current.activeUntil=Date.now()+ACTIVITY_MS;writeDataState();render();reconcileAlertNotifications(moduleState.alerts.data||dataState.caches.alerts);renderAlerts()}
+return added
+}
+function saveFromRoot() {
+const root = moduleRoot('abroadStocks');
+if (!root) return;
+const current = settings();
+current.travelMethod = String(root.querySelector('[data-field="abroad-travel-method"]')?.value || current.travelMethod);
+current.arrivalBufferMinutes = Math.min(30, Math.max(0, Number(root.querySelector('[data-field="abroad-arrival-buffer"]')?.value) || 0));
+current.alertLeadMinutes = Math.min(180, Math.max(0, Number(root.querySelector('[data-field="abroad-alert-lead"]')?.value) || 0));
+current.alertsEnabled = root.querySelector('[data-field="abroad-alerts-enabled"]')?.checked !== false;
+current.soundEnabled = root.querySelector('[data-field="abroad-sound-enabled"]')?.checked === true;
+current.useDroqs = root.querySelector('[data-field="abroad-use-droqs"]')?.checked !== false;
+const keyField = root.querySelector('[data-field="abroad-torn-intel-key"]');
+if (keyField) current.tornIntelKey = String(keyField.value || '').trim().slice(0,256);
+dataState.settings.abroadStocks = current;
+writeDataState();
+moduleState.abroadStocks.error = '';
+render();
+void refresh(true);
+}
+function setMode(mode) {
+moduleState.abroadStocks.mode = mode === 'country' ? 'country' : 'item';
+render();
+}
+function setQuery(value) {
+moduleState.abroadStocks.query = String(value || '').slice(0,100);
+render();
+const input = moduleRoot('abroadStocks')?.querySelector('[data-abroad-query]');
+if (input) {
+input.focus({ preventScroll:true });
+input.setSelectionRange(input.value.length,input.value.length);
+}
+}
+function snooze(id, minutes) {
+runtime().snoozes[String(id)] = Date.now() + Math.max(1, Number(minutes) || 60) * 60_000;
+writeDataState();
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+renderAlerts();
+}
+return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
+})();

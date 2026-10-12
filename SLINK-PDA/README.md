@@ -1,5 +1,18 @@
 # SLINK PDA Dashboard
 
+## 0.4.41 — Modular source and permission sweep
+
+The installable userscript remains one self-contained PDA file. Its maintainable
+source is now split into ordered build-time fragments under `src/`; PDA never
+loads those fragments over the network. Run `npm run build` after editing the
+fragments and `npm test` before publishing. The build rejects stale output,
+syntax errors, and output above the 500,000-byte safety ceiling.
+
+This release also fixes the Company and Museums tabs silently returning to
+Racing, applies explicit feature permissions throughout PDA, and preserves
+`admin.*` as a universal feature override. Organized Crime Travel Safety is a
+built-in background safeguard and has no visible tab or permission gate.
+
 ## 0.4.25 — Attack-frame safety
 
 Attack-result mug reporting is now one-shot per Torn result node and no longer

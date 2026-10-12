@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.40
+// @version      0.4.41
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -28,7 +28,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.40-museums';
+const BUILD = '0.4.41-permission-sweep';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -41,7 +41,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.40';
+const CLIENT_VERSION = '0.4.41';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -77,7 +77,13 @@ mugging:'https://slinkmuggingworker.richard-johnson554.workers.dev',
 torn:'https://api.torn.com',
 weaver:'https://weav3r.dev'
 });
-const TRAVEL_SAFETY_SCOPE = 'slink.qol.travel-safety';
+const BOUNTY_SCOPE = 'slink.combat.bounties';
+const PLAYER_STATS_SCOPE = 'slink.combat.player-stats';
+const TARGET_LIST_SCOPE = 'slink.combat.target-list';
+const MERITS_SCOPE = 'slink.efficiency.merits';
+const DOLLAR_BAZAARS_SCOPE = 'slink.efficiency.dollar-bazaars';
+const RACING_SCOPE = 'slink.qol.racing';
+const ABROAD_STOCKS_SCOPE = 'slink.qol.abroad-stocks';
 const TRAVEL_SAFETY_BUFFER_RATIO = 0.10;
 const TRAVEL_SAFETY_CACHE_MS = 2 * 60_000;
 const COMPANY_SCOPE = 'slink.qol.company';
@@ -1420,7 +1426,7 @@ if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id
 return runtime;
 }
 async function runTargetPolling(now = Date.now()) {
-if (targetPollingBusy) return;
+if (!hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
 targetPollingBusy = true;
 const settings = targetPollingSettings();
 const runtime = targetPollingRuntime();
@@ -1577,7 +1583,7 @@ runtime
 };
 }
 async function runTargetStakeouts(now = Date.now()) {
-if (targetStakeoutBusy) return;
+if (!hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
 targetStakeoutBusy = true;
 const runtime = targetStakeoutRuntime();
 const targets = targetStakeoutTargets();
@@ -2596,7 +2602,7 @@ try { match.node.scrollIntoView({ block:'nearest', behavior:'smooth' }); } catch
 setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
 }
 function scheduleRacingScan(delay = 80) {
-if (racingScanTimer) return;
+if (!hasScope(RACING_SCOPE) || racingScanTimer) return;
 racingScanTimer = global.setTimeout(() => {
 racingScanTimer = null;
 scanOfficialRaceDom();
@@ -3184,37 +3190,64 @@ moduleState.access.error = errorMessage(error);
 writeDataState();
 renderAllModules();
 }
+const MODULE_SCOPES = Object.freeze({
+leveling:'slink.level',
+bounties:BOUNTY_SCOPE,
+mugging:'slink.mugging',
+targetList:TARGET_LIST_SCOPE,
+war:'slink.war',
+stats:PLAYER_STATS_SCOPE,
+alerts:'slink.adhd.alerts',
+merits:MERITS_SCOPE,
+dollarBazaars:DOLLAR_BAZAARS_SCOPE,
+racing:RACING_SCOPE,
+abroadStocks:ABROAD_STOCKS_SCOPE,
+company:COMPANY_SCOPE,
+museums:MUSEUM_SCOPE
+});
+function canAccessModule(name) {
+if (name === 'market') return marketWatchLimit() > 0;
+const required = MODULE_SCOPES[name];
+return !required || hasScope(required);
+}
 function applyPermissionGates() {
 const gates = [
-['[data-combat-tab="leveling"]', 'slink.level'],
-['[data-combat-tab="war"]', 'slink.war'],
-['[data-combat-tab="mugging"]', 'slink.mugging'],
-['[data-efficiency-tab="alerts"]', 'slink.adhd.alerts'],
-['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch tier'],
-['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
-['[data-efficiency-tab="dollarBazaars"]', 'slink.adhd.alerts'],
-['[data-quality-of-life-tab="company"]', COMPANY_SCOPE],
-['[data-quality-of-life-tab="museums"]', MUSEUM_SCOPE],
-['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
-['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
+['combat','leveling'],['combat','bounties'],['combat','mugging'],['combat','targetList'],['combat','war'],['combat','stats'],
+['efficiency','alerts'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],
+['quality-of-life','racing'],['quality-of-life','abroadStocks'],['quality-of-life','company'],['quality-of-life','museums']
 ];
-for (const [selector, scope] of gates) {
+for (const [group, moduleName] of gates) {
+const tab = shadow?.querySelector?.(`[data-${group}-tab="${moduleName}"]`);
+const panel = shadow?.querySelector?.(`[data-${group}-panel="${moduleName}"]`);
+const allowed = canAccessModule(moduleName);
+if (tab) {
+tab.hidden = !allowed;
+tab.classList.toggle('permission-lock', !allowed);
+tab.title = allowed ? '' : `Requires ${MODULE_SCOPES[moduleName] || 'a Market Watch tier'}`;
+}
+if (panel && !allowed) panel.hidden = true;
+}
+for (const [selector, scope] of [
+['[data-theme-choice="slinky-pursuit"]','slink.theme.pursuit'],
+['[data-theme-choice="slinky-underglow"]','slink.theme.underglow']
+]) {
 const control = shadow?.querySelector?.(selector);
 if (!control) continue;
-const allowed = scope.startsWith('slink.theme.') ? hasThemeScope(scope) : scope === 'slink.adhd.marketwatch tier' ? marketWatchLimit() > 0 : hasScope(scope);
+const allowed = hasThemeScope(scope);
 control.classList.toggle('permission-lock', !allowed);
 control.title = allowed ? '' : `Requires ${scope}`;
 }
-const muggingAllowed = hasScope('slink.mugging');
-const muggingTab = shadow?.querySelector?.('[data-combat-tab="mugging"]');
-const muggingPanel = shadow?.querySelector?.('[data-combat-panel="mugging"]');
-if (muggingTab) muggingTab.hidden = !muggingAllowed;
-if (muggingPanel && !muggingAllowed) muggingPanel.hidden = true;
-if (!muggingAllowed && state.combatTab === 'mugging') {
-state.combatTab = 'targetList';
-shadow.querySelectorAll('[data-combat-panel]').forEach(panel => { panel.hidden = panel.dataset.combatPanel !== 'targetList'; });
-shadow.querySelectorAll('[data-combat-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.combatTab === 'targetList')));
-writeState();
+const groups = [
+['combat','combatTab','combatPanel','combatTab'],
+['efficiency','efficiencyTab','efficiencyPanel','efficiencyTab'],
+['quality-of-life','qualityOfLifeTab','qualityOfLifePanel','qualityOfLifeTab']
+];
+for (const [group,stateKey,panelKey,tabKey] of groups) {
+const allowed = gates.filter(entry => entry[0] === group).map(entry => entry[1]).filter(canAccessModule);
+if (!allowed.length) continue;
+if (!allowed.includes(state[stateKey])) state[stateKey] = allowed[0];
+shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[panelKey] !== state[stateKey]; });
+shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[tabKey] === state[stateKey])));
 }
 }
 function levelingRows(payload) {
@@ -3860,6 +3893,7 @@ ${stakeout.activeAlerts.length ? `<div class="alert-list">${stakeout.activeAlert
 }
 async function refreshBounties(force = false) {
 const current = moduleState.bounties, settings = bountySettings();
+if (!hasScope(BOUNTY_SCOPE)) { renderBounties(); return; }
 if (!settings.enabled || !bountyActive()) { renderBounties(); return; }
 if (current.busy) return;
 current.busy = true; current.error = ''; renderBounties();
@@ -4139,7 +4173,7 @@ if (active?.phase === 'active') {
 saveMugResult(result, active);
 return;
 }
-if (!currentApiKey() || !hasGrantedScope('slink.war')) return;
+if (!currentApiKey() || !hasScope('slink.war')) return;
 // Refresh at most once. If there is still no active war, this mug simply
 // remains unassigned instead of recursively refreshing the attack frame.
 void refreshWar(false).then(() => {
@@ -4610,7 +4644,7 @@ await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/st
 dataState.settings.war.lastStatusAt = Date.now();
 }
 }
-if (heartbeat?.collectAttacks && hasGrantedScope('slink.war.faction') && Date.now() - Number(dataState.settings.war.lastAttackAt || 0) >= 30_000) {
+if (heartbeat?.collectAttacks && hasScope('slink.war.faction') && Date.now() - Number(dataState.settings.war.lastAttackAt || 0) >= 30_000) {
 const now = Math.floor(Date.now() / 1000);
 const from = Math.max(now - 600, Number(dataState.settings.war.lastAttackEnded || 0) - 60);
 const response = await tornJson(`/v2/faction/attacks?from=${from}&to=${now}&limit=100&sort=desc`, 'SLINK PDA War attack collection');
@@ -4802,6 +4836,7 @@ ${table('Combat', [['Attacks','attacks'],['Respect','respect'],['Retals','retals
 }
 async function refreshStats(force = false) {
 const current = moduleState.stats;
+if (!hasScope(PLAYER_STATS_SCOPE)) { renderStats(); return; }
 const cached = dataState.caches.stats;
 const today = Math.floor(Date.now() / 86_400_000);
 if (!force && cached?.day === today) { current.data = cached; renderStats(); return; }
@@ -6369,7 +6404,7 @@ document.getElementById('tdd-purchase-highlight-styles')?.remove();
 function renderDollarBazaars() {
 const root = moduleRoot('dollarBazaars');
 if (!root) return;
-if (!hasScope('slink.adhd.alerts')) { root.innerHTML = lockedModule('slink.adhd.alerts', 'Weaver $1 Bazaars'); return; }
+if (!hasScope(DOLLAR_BAZAARS_SCOPE)) { root.innerHTML = lockedModule(DOLLAR_BAZAARS_SCOPE, 'Weaver $1 Bazaars'); return; }
 const current = moduleState.dollarBazaars;
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Weaver $1 Bazaar listings through its JSON API…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
@@ -6393,7 +6428,7 @@ current.error = '';
 renderDollarBazaars();
 try {
 await ensurePermissionSession(false);
-if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
+if (!hasScope(DOLLAR_BAZAARS_SCOPE)) throw new Error(`Your SLINK account does not have ${DOLLAR_BAZAARS_SCOPE} permission.`);
 const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
 const fetchedAt = Date.now();
 current.data = dataState.caches.dollarBazaars = {
@@ -6483,7 +6518,7 @@ return goals.sort((a, b) => Number(b.pinned) - Number(a.pinned)
 function renderMerits() {
 const root = moduleRoot('merits');
 if (!root) return;
-if (!hasScope('slink.adhd.alerts')) { root.innerHTML = lockedModule('slink.adhd.alerts', 'Merit tracking'); return; }
+if (!hasScope(MERITS_SCOPE)) { root.innerHTML = lockedModule(MERITS_SCOPE, 'Merit tracking'); return; }
 const current = moduleState.merits;
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading award catalog and progress…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
@@ -6509,7 +6544,7 @@ if (!force && cached?.at && Date.now() - cached.at < ttl) { current.data = cache
 current.busy = true; current.error = ''; renderMerits();
 try {
 await ensurePermissionSession(false);
-if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
+if (!hasScope(MERITS_SCOPE)) throw new Error(`Your SLINK account does not have ${MERITS_SCOPE} permission.`);
 const [player, personalStats, catalog] = await Promise.all([
 tornJson('/v2/user?selections=profile,faction,medals,honors,merits', 'SLINK PDA Merit farm'),
 tornJson('/v2/user/personalstats?cat=all', 'SLINK PDA Merit progress'),
@@ -6529,6 +6564,7 @@ return 'access';
 async function loadActiveModule(force = false) {
 if (!dashboardOpen || document.hidden) return;
 const name = activeModuleName();
+if (!canAccessModule(name)) { applyPermissionGates(); return; }
 if (['leveling', 'war', 'mugging', 'market'].includes(name)) touchModuleActivity(name);
 if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
 if (name === 'bounties') touchBounties();
@@ -6547,7 +6583,7 @@ renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTarge
 function startScheduler() {
 if (schedulerTimer) return;
 schedulerTimer = global.setInterval(() => {
-const canRefreshAlerts = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
+const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
 if (canRefreshAlerts) {
 const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
@@ -6558,9 +6594,9 @@ if (clock) clock.textContent = timer24Label();
 if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
 const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
 if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= WEAVER_SUMMARY_REFRESH_MS) void refreshMarket(false);
-const canRefreshDollarBazaars = Boolean(currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
+const canRefreshDollarBazaars = Boolean(currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE));
 if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
-const canRefreshWar = Boolean(currentApiKey() && hasGrantedScope('slink.war') && (validSession('war') || termsAccepted('war')));
+const canRefreshWar = Boolean(currentApiKey() && hasScope('slink.war') && (validSession('war') || termsAccepted('war')));
 if (canRefreshWar && !moduleState.war.busy) {
 if (moduleIsActive('war') && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
 else void refreshWarAlerts();
@@ -6568,7 +6604,7 @@ else void refreshWarAlerts();
 if (moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
 if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
-void PDA_ABROAD.refresh(false);
+if (hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
 if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
 if (dashboardOpen && !document.hidden) void loadActiveModule(false);
 }, 30_000);
@@ -6885,13 +6921,13 @@ if (dashboardOpen) void loadActiveModule(false);
 }
 function selectSubpage(group, tab, persist = true) {
 const allowedByGroup = {
-combat:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'],
-efficiency:['alerts', 'market', 'merits', 'dollarBazaars'],
-qualityOfLife:['racing','abroadStocks','travelSafety']
+combat:['leveling','bounties','mugging','targetList','war','stats'],
+efficiency:['alerts','market','merits','dollarBazaars'],
+qualityOfLife:['racing','abroadStocks','company','museums']
 };
 const allowed = allowedByGroup[group] || allowedByGroup.combat;
-if (!allowed.includes(tab)) tab = allowed[0];
-if (group === 'combat' && tab === 'mugging' && !hasScope('slink.mugging')) tab = 'targetList';
+const permitted = allowed.filter(canAccessModule);
+if (!allowed.includes(tab) || !canAccessModule(tab)) tab = permitted[0] || allowed[0];
 const stateKey = group === 'combat' ? 'combatTab' : group === 'efficiency' ? 'efficiencyTab' : 'qualityOfLifeTab';
 state[stateKey] = tab;
 if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
@@ -7656,9 +7692,9 @@ writeDataState();
 startScheduler();
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) global.setTimeout(() => void runMuggingContribution(true), 3_000);
 global.setTimeout(() => void loadThemeCatalog(false), 2_000);
-if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
+if (currentApiKey() && hasScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
 if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
-if (currentApiKey() && hasGrantedScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
+if (currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE)) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
 syncMarketPurchaseCatalog();
 schedulePurchaseOpportunityFormatting(0);
 ensureRacingHighlightStyle();

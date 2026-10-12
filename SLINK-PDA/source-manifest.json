@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "output": "SLINK_PDA_Dashboard.user.js",
+  "maxBytes": 500000,
+  "fragments": [
+    "src/00-runtime-core.part",
+    "src/10-market-runtime.part",
+    "src/20-quality-of-life.part",
+    "src/30-dashboard-combat.part",
+    "src/40-war.part",
+    "src/50-market-dom.part",
+    "src/90-shell-bootstrap.part"
+  ]
+}
