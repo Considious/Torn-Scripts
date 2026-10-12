@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.43
+// @version      0.4.44
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.43";
+  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.44";
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
 
@@ -40,7 +40,7 @@
     const button = document.createElement('button');
     button.id = ERROR_ID;
     button.type = 'button';
-    button.textContent = 'SLINK failed to load — tap to retry';
+    button.textContent = 'SLINK failed: ' + message.slice(0, 120) + ' — tap to retry';
     button.title = message;
     button.style.cssText = 'position:fixed;right:10px;bottom:76px;z-index:2147483647;padding:10px 12px;border:2px solid #111;border-radius:8px;background:#b91c1c;color:#fff;font:bold 12px Arial,sans-serif';
     button.addEventListener('click', () => {
@@ -80,16 +80,25 @@
 
   async function loadRuntime() {
     try {
-      if (globalThis.SLINK_PDA_DASHBOARD?.build === '0.4.43-external-runtime') {
-        globalThis.SLINK_PDA_DASHBOARD.open?.();
+      const currentHost = document.getElementById('slink-pda-dashboard-host');
+      if (currentHost?.dataset?.slinkReady === 'true') {
+        document.getElementById(ERROR_ID)?.remove();
         return;
       }
       const downloaded = await fetchRuntime();
       if (downloaded.length < 1000) throw new Error('Downloaded runtime was empty or incomplete.');
       const hydrated = downloaded.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Runtime.js';
       await executeRuntime(hydrated);
-      if (!globalThis.SLINK_PDA_DASHBOARD) throw new Error('Runtime executed without initializing SLINK.');
-      document.getElementById(ERROR_ID)?.remove();
+      const readyDeadline = Date.now() + 15_000;
+      while (Date.now() < readyDeadline) {
+        const readyHost = document.getElementById('slink-pda-dashboard-host');
+        if (readyHost?.dataset?.slinkReady === 'true') {
+          document.getElementById(ERROR_ID)?.remove();
+          return;
+        }
+        await new Promise(resolve => globalThis.setTimeout(resolve, 100));
+      }
+      throw new Error('Runtime did not signal readiness within 15 seconds.');
     } catch (error) {
       showFailure(error);
     }
