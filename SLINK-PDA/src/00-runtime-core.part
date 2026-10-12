@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.44
+// @version      0.4.45
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,10 +29,11 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.44-external-runtime';
+const BUILD = '0.4.45-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
+const SETTINGS_STORAGE_KEY = 'slink-pda-dashboard:settings:v1';
 const SHARED_API_LEDGER_KEY = 'considious:torn-api-ledger:v1';
 const SHARED_API_LOCK = 'considious-torn-api-limiter-v1';
 const ROOT_OVERFLOW_KEY = 'slinkPdaPreviousOverflow';
@@ -42,7 +43,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.44';
+const CLIENT_VERSION = '0.4.45';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -637,6 +638,9 @@ menu:typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : glo
 request:typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : global.GM_xmlhttpRequest,
 notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notification
 });
+const PDA_BOOTSTRAP_KEY = '__SLINK_PDA_BOOTSTRAP__';
+const PDA_BOOTSTRAP = global[PDA_BOOTSTRAP_KEY] && typeof global[PDA_BOOTSTRAP_KEY] === 'object' ? global[PDA_BOOTSTRAP_KEY] : {};
+try { delete global[PDA_BOOTSTRAP_KEY]; } catch { global[PDA_BOOTSTRAP_KEY] = null; }
 const existingDashboard = global.SLINK_PDA_DASHBOARD;
 const existingHost = document.getElementById(HOST_ID);
 if (existingDashboard?.build === BUILD && existingHost?.isConnected) {
@@ -700,28 +704,40 @@ const value = GM_API.get(key, fallback);
 if (!(value && typeof value.then === 'function')) return value;
 }
 } catch {}
+if (key !== DATA_STORAGE_KEY) {
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
 return parsed === null ? fallback : parsed;
-} catch {
+} catch {}
+}
 return fallback;
 }
-}
 function storageWrite(key, value) {
-try {
-if (typeof GM_API.set === 'function') GM_API.set(key, value);
-else global.localStorage.setItem(key, JSON.stringify(value));
-} catch {}
+try { if (typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
+if (key !== DATA_STORAGE_KEY) {
+try { global.localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
 }
 function storageDelete(key) {
-try {
-if (typeof GM_API.remove === 'function') GM_API.remove(key);
-else global.localStorage.removeItem(key);
-} catch {}
+try { if (typeof GM_API.remove === 'function') GM_API.remove(key); } catch {}
+try { global.localStorage.removeItem(key); } catch {}
 }
 function readDataState() {
 const saved = storageRead(DATA_STORAGE_KEY, {});
 const value = saved && typeof saved === 'object' ? saved : {};
+let locallyPreservedSettings = {};
+try {
+const safe = JSON.parse(global.localStorage.getItem(SETTINGS_STORAGE_KEY) || 'null');
+const legacy = JSON.parse(global.localStorage.getItem(DATA_STORAGE_KEY) || 'null');
+if (legacy?.settings && typeof legacy.settings === 'object') locallyPreservedSettings = legacy.settings;
+if (safe && typeof safe === 'object' && !Array.isArray(safe)) locallyPreservedSettings = { ...locallyPreservedSettings, ...safe };
+} catch {}
+const migratedSettings = PDA_BOOTSTRAP[DATA_STORAGE_KEY]?.settings;
+const settingsSource = {
+...(value.settings && typeof value.settings === 'object' ? value.settings : {}),
+...locallyPreservedSettings,
+...(migratedSettings && typeof migratedSettings === 'object' ? migratedSettings : {})
+};
 return {
 apiKey:String(value.apiKey || ''),
 ffKey:String(value.ffKey || ''),
@@ -732,26 +748,27 @@ terms:value.terms && typeof value.terms === 'object' ? value.terms : {},
 sessions:value.sessions && typeof value.sessions === 'object' ? value.sessions : {},
 caches:value.caches && typeof value.caches === 'object' ? value.caches : {},
 settings:{
-leveling:{ minFF:1, maxFF:3, ...(value.settings?.leveling || {}) },
-bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(value.settings?.bounties || {}) },
-mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(value.settings?.mugging || {}) },
+leveling:{ minFF:1, maxFF:3, ...(settingsSource?.leveling || {}) },
+bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(settingsSource?.bounties || {}) },
+mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(settingsSource?.mugging || {}) },
 war:{
 mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
 targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetAbroad:'all', targetLocation:'all', targetSort:'availability',
 outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt:0, lastAttackEnded:0,
 armoryMode:'ranked-all', armoryWhitelist:[],
-...(value.settings?.war || {})
+...(settingsSource?.war || {})
 },
-alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}), enabledTypes:normalizePdaAlertTypes(value.settings?.alerts?.enabledTypes) },
-market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
-merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) },
-racing:normalizeRacingState(value.settings?.racing),
-abroadStocks:{ ...(value.settings?.abroadStocks || {}) },
-company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinutes:15, ...(value.settings?.company || {}) }
+alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes) },
+market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(settingsSource?.market || {}) },
+merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(settingsSource?.merits || {}) },
+racing:normalizeRacingState(settingsSource?.racing),
+abroadStocks:{ ...(settingsSource?.abroadStocks || {}) },
+company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinutes:15, ...(settingsSource?.company || {}) }
 }
 };
 }
 function writeDataState() {
+try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(dataState.settings)); } catch {}
 storageWrite(DATA_STORAGE_KEY, dataState);
 }
 function currentApiKey() {
@@ -769,6 +786,10 @@ return String(dataState.ffKey || '').trim();
 }
 const state = readState();
 const dataState = readDataState();
+try {
+global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(dataState.settings));
+global.localStorage.removeItem(DATA_STORAGE_KEY);
+} catch {}
 function moduleActivityMap() {
 const value = dataState.caches.moduleActivity;
 if (!value || typeof value !== 'object' || Array.isArray(value)) dataState.caches.moduleActivity = {};
