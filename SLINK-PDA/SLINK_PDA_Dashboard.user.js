@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.34
+// @version      0.4.35
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -30,7 +30,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.34-abroad-stocks';
+  const BUILD = '0.4.35-travel-safety';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -43,7 +43,7 @@
   const CONTRIBUTION_CEILING = 40;
   const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.34';
+  const CLIENT_VERSION = '0.4.35';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -81,6 +81,70 @@
     torn:'https://api.torn.com',
     weaver:'https://weav3r.dev'
   });
+  const TRAVEL_SAFETY_SCOPE = 'slink.qol.travel-safety';
+  const TRAVEL_SAFETY_BUFFER_RATIO = 0.10;
+  const TRAVEL_SAFETY_CACHE_MS = 2 * 60_000;
+
+  function travelSafetyTimestampMs(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue) || numberValue <= 0) return 0;
+    return numberValue < 10_000_000_000 ? Math.trunc(numberValue * 1000) : Math.trunc(numberValue);
+  }
+
+  function travelSafetyParseDurationMs(value) {
+    const text = String(value || '').trim();
+    if (!text) return 0;
+    let seconds = 0;
+    let matched = false;
+    const units = /(\d+(?:\.\d+)?)\s*(?:d(?:ays?)?|h(?:ours?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)(?![a-z])/gi;
+    for (const match of text.matchAll(units)) {
+      matched = true;
+      const amount = Number(match[1]);
+      const unit = match[0].replace(match[1], '').trim().toLowerCase()[0];
+      seconds += amount * (unit === 'd' ? 86_400 : unit === 'h' ? 3_600 : unit === 'm' ? 60 : 1);
+    }
+    if (matched) return Math.round(seconds * 1000);
+    const fullClock = text.match(/^(\d+):(\d{1,2}):(\d{2})$/);
+    if (fullClock) return (Number(fullClock[1]) * 3_600 + Number(fullClock[2]) * 60 + Number(fullClock[3])) * 1000;
+    const hourMinute = text.match(/^(\d{1,2}):(\d{2})$/);
+    return hourMinute ? (Number(hourMinute[1]) * 3_600 + Number(hourMinute[2]) * 60) * 1000 : 0;
+  }
+
+  function travelSafetyNormalizeCrime(response) {
+    const crime = response?.organizedcrime ?? response?.organizedCrime ?? response?.crime ?? response;
+    if (!crime || typeof crime !== 'object' || Array.isArray(crime)) return null;
+    const readyAt = travelSafetyTimestampMs(crime.ready_at ?? crime.readyAt);
+    if (!readyAt) return null;
+    return {
+      id:String(crime.id ?? crime.crime_id ?? crime.crimeId ?? ''),
+      name:String(crime.name ?? crime.title ?? 'Organized crime'),
+      readyAt,
+      executedAt:travelSafetyTimestampMs(crime.executed_at ?? crime.executedAt)
+    };
+  }
+
+  function travelSafetyRoundTripMs(oneWayMs) {
+    return Math.ceil(Math.max(0, Number(oneWayMs) || 0) * 2 * (1 + TRAVEL_SAFETY_BUFFER_RATIO));
+  }
+
+  function travelSafetyAssessment(oneWayMs, crime, now = Date.now()) {
+    const roundTripMs = travelSafetyRoundTripMs(oneWayMs);
+    const readyAt = travelSafetyTimestampMs(crime?.readyAt ?? crime?.ready_at);
+    const returnAt = now + roundTripMs;
+    return {
+      blocked:Boolean(roundTripMs && readyAt > now && !travelSafetyTimestampMs(crime?.executedAt ?? crime?.executed_at) && returnAt > readyAt),
+      roundTripMs,
+      returnAt,
+      readyAt
+    };
+  }
+
+  function travelSafetyFormatTct(timestamp) {
+    const value = travelSafetyTimestampMs(timestamp);
+    if (!value) return 'unknown';
+    return new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false }).format(value) + ' TCT';
+  }
+
   const ABROAD_STOCKS = (() => {
   const PROVIDERS = Object.freeze({
     yata:Object.freeze({ id:'yata', label:'YATA', url:'https://yata.yt/api/v1/travel/export/' }),
@@ -503,7 +567,7 @@
       page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
       combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
       efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
-      qualityOfLifeTab:['racing','abroadStocks'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+      qualityOfLifeTab:['racing','abroadStocks','travelSafety'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
       theme:String(source.theme || defaults.theme),
       bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
     };
@@ -700,7 +764,8 @@
     market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0, refreshPermissions:true, draft:null, renderPending:false },
     dollarBazaars:{ busy:false, error:'', data:dataState.caches.dollarBazaars || null, lastAttemptAt:0 },
     merits:{ busy:false, error:'', data:dataState.caches.merits || null },
-    abroadStocks:{ busy:false, error:'', data:dataState.caches.abroadStocks || null, mode:'item', query:'' }
+    abroadStocks:{ busy:false, error:'', data:dataState.caches.abroadStocks || null, mode:'item', query:'' },
+    travelSafety:{ busy:false, error:'', crime:dataState.caches.travelSafety?.crime || null, fetchedAt:Number(dataState.caches.travelSafety?.fetchedAt) || 0 }
   };
 
   function serializeNetwork(task) {
@@ -2618,6 +2683,130 @@
       renderRacingAssistant();
     }
 
+  const travelSafetyBypass = new WeakSet();
+  const travelSafetyPending = new WeakSet();
+  let travelSafetyModal = null;
+
+  function travelSafetyFindTime(button) {
+    let node = button?.parentElement || null;
+    for (let depth = 0; node && depth < 9; depth += 1, node = node.parentElement) {
+      const buttons = [...node.querySelectorAll('button[aria-label^="Travel to "]')];
+      if (buttons.length !== 1 || buttons[0] !== button) continue;
+      const times = [...node.querySelectorAll('time')].filter(time => travelSafetyParseDurationMs(time.getAttribute('datetime') || time.textContent) > 0);
+      if (times.length) return times[0];
+    }
+    return null;
+  }
+
+  function travelSafetyOneWayMs(button) {
+    const time = travelSafetyFindTime(button);
+    if (!time) return 0;
+    return travelSafetyParseDurationMs(time.getAttribute('datetime') || time.querySelector('[class*="srOnly"]')?.textContent || time.textContent);
+  }
+
+  function renderTravelSafety() {
+    const root = moduleRoot('travelSafety');
+    if (!root) return;
+    const current = moduleState.travelSafety;
+    const allowed = hasScope(TRAVEL_SAFETY_SCOPE);
+    root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Organized Crime Travel Safety</h2><span class="muted">Uses Torn’s displayed flight time and your current OC ready time.</span></div><span class="badge ' + (allowed ? 'ready' : '') + '">' + (allowed ? 'ACTIVE' : 'LOCKED') + '</span></div>' +
+      (current.error ? '<div class="error">' + escapeHtml(current.error) + '</div>' : '') +
+      '<p>Round trips use the displayed one-way duration twice, plus a 10% return buffer. Unsafe Travel clicks open a warning but can still be deliberately overridden.</p>' +
+      (current.crime ? '<p><strong>Current organized crime ready:</strong> ' + escapeHtml(travelSafetyFormatTct(current.crime.readyAt)) + '</p>' : '<p class="muted">No upcoming organized crime is currently cached.</p>') +
+      '<button type="button" data-action="refresh-travel-safety" ' + (!allowed || current.busy ? 'disabled' : '') + '>' + (current.busy ? 'Checking…' : 'Refresh crime time') + '</button></article></div>';
+  }
+
+  async function refreshTravelSafety(force = false) {
+    const current = moduleState.travelSafety;
+    if (current.busy) return dataState.caches.travelSafety || null;
+    current.busy = true;
+    current.error = '';
+    if (dashboardOpen) renderTravelSafety();
+    try {
+      await ensurePermissionSession(false);
+      if (!hasScope(TRAVEL_SAFETY_SCOPE)) throw new Error('Your SLINK account does not have ' + TRAVEL_SAFETY_SCOPE + ' permission.');
+      const cached = dataState.caches.travelSafety;
+      if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < TRAVEL_SAFETY_CACHE_MS) {
+        current.crime = cached.crime || null;
+        current.fetchedAt = Number(cached.fetchedAt) || 0;
+        return cached;
+      }
+      const response = await tornJson('/v2/user/organizedcrime', 'SLINK PDA travel safety');
+      const next = { fetchedAt:Date.now(), crime:travelSafetyNormalizeCrime(response) };
+      dataState.caches.travelSafety = next;
+      current.crime = next.crime;
+      current.fetchedAt = next.fetchedAt;
+      writeDataState();
+      return next;
+    } catch (error) {
+      current.error = errorMessage(error);
+      throw error;
+    } finally {
+      current.busy = false;
+      if (dashboardOpen) renderTravelSafety();
+    }
+  }
+
+  function closeTravelSafetyModal() {
+    travelSafetyModal?.remove();
+    travelSafetyModal = null;
+  }
+
+  function showTravelSafetyConflict(button, destination, assessment) {
+    closeTravelSafetyModal();
+    travelSafetyModal = document.createElement('div');
+    travelSafetyModal.dataset.slinkTravelGuard = 'true';
+    travelSafetyModal.innerHTML = '<style>[data-slink-travel-guard]{position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.72);font:14px/1.45 Arial,sans-serif}[data-slink-travel-dialog]{width:min(440px,100%);padding:16px;border:2px solid #d86a22;border-radius:10px;background:#15191f;color:#f4f6f8;box-shadow:0 18px 50px #000}[data-slink-travel-dialog] h2{margin:0 0 8px;font-size:19px}[data-slink-travel-dialog] p{margin:7px 0}[data-slink-travel-times]{padding:9px;border-radius:7px;background:#0b0e12;color:#ccd3dc}[data-slink-travel-actions]{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}[data-slink-travel-actions] button{min-height:40px;padding:7px 11px;border:1px solid #65717e;border-radius:7px;background:#252c35;color:#fff}[data-slink-travel-actions] [data-leave]{border-color:#d86a22;background:#6b2b16}</style>' +
+      '<section data-slink-travel-dialog role="alertdialog" aria-modal="true" aria-labelledby="slink-pda-travel-title"><h2 id="slink-pda-travel-title">Organized crime conflict</h2><p>This trip is unlikely to return you to Torn before your organized crime is ready. Leaving may delay your faction teammates. Consider choosing a shorter destination or waiting until the crime is complete.</p><p data-slink-travel-times>' +
+      escapeHtml(destination) + ' estimated return: <strong>' + escapeHtml(travelSafetyFormatTct(assessment.returnAt)) + '</strong><br>Organized crime ready: <strong>' + escapeHtml(travelSafetyFormatTct(assessment.readyAt)) + '</strong></p><div data-slink-travel-actions><button type="button" data-cancel>Cancel — choose another destination</button><button type="button" data-leave>Leave anyway</button></div></section>';
+    travelSafetyModal.querySelector('[data-cancel]').addEventListener('click', closeTravelSafetyModal, { once:true });
+    travelSafetyModal.querySelector('[data-leave]').addEventListener('click', () => {
+      closeTravelSafetyModal();
+      travelSafetyBypass.add(button);
+      button.click();
+    }, { once:true });
+    travelSafetyModal.addEventListener('click', event => { if (event.target === travelSafetyModal) closeTravelSafetyModal(); });
+    document.documentElement.append(travelSafetyModal);
+    travelSafetyModal.querySelector('[data-cancel]').focus({ preventScroll:true });
+  }
+
+  async function handleTravelSafetyClick(event) {
+    if (event.defaultPrevented || !hasScope(TRAVEL_SAFETY_SCOPE) || !/^\/travelagency\.php$/i.test(global.location.pathname)) return;
+    const button = event.target?.closest?.('button[aria-label^="Travel to "]');
+    if (!button || button.disabled) return;
+    if (travelSafetyBypass.has(button)) {
+      travelSafetyBypass.delete(button);
+      return;
+    }
+    if (travelSafetyPending.has(button)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    const oneWayMs = travelSafetyOneWayMs(button);
+    if (!oneWayMs) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    travelSafetyPending.add(button);
+    try {
+      const status = await refreshTravelSafety(false);
+      const assessment = travelSafetyAssessment(oneWayMs, status?.crime);
+      if (assessment.blocked) {
+        const destination = String(button.getAttribute('aria-label') || '').replace(/^Travel\s+to\s+/i, '') || 'This destination';
+        showTravelSafetyConflict(button, destination, assessment);
+        return;
+      }
+      travelSafetyBypass.add(button);
+      button.click();
+    } catch (error) {
+      moduleState.travelSafety.error = 'Travel safety could not verify the crime time, so the flight was not blocked: ' + errorMessage(error);
+      travelSafetyBypass.add(button);
+      button.click();
+    } finally {
+      travelSafetyPending.delete(button);
+    }
+  }
+
   const PDA_ABROAD = (function pdaAbroadFactory() {
     const CACHE_MS = 60_000;
     const ACTIVITY_MS = 5 * 60_000;
@@ -2972,6 +3161,7 @@
       ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch tier'],
       ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
       ['[data-efficiency-tab="dollarBazaars"]', 'slink.adhd.alerts'],
+      ['[data-quality-of-life-tab="travelSafety"]', TRAVEL_SAFETY_SCOPE],
       ['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
       ['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
     ];
@@ -6557,6 +6747,7 @@
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
     if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
+    if (name === 'travelSafety') { renderTravelSafety(); if (force) await refreshTravelSafety(true); return; }
     if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
     if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
@@ -6564,7 +6755,7 @@
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderTravelSafety(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -6719,9 +6910,10 @@
       </section>
       <section class="page" data-page-panel="quality-of-life" hidden>
         <div class="page-head"><div><h1>Quality of Life</h1><p>Convenience tools that work with Torn's visible page data.</p></div></div>
-        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button></nav>
+        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button><button type="button" data-quality-of-life-tab="travelSafety">Travel Safety</button></nav>
         <div class="subpage" data-quality-of-life-panel="racing"><div data-module-root="racing"></div></div>
         <div class="subpage" data-quality-of-life-panel="abroadStocks" hidden><div data-module-root="abroadStocks"></div></div>
+        <div class="subpage" data-quality-of-life-panel="travelSafety" hidden><div data-module-root="travelSafety"></div></div>
       </section>
       <section class="page" data-page-panel="access" hidden>
         <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
@@ -6812,11 +7004,12 @@
     const allowedByGroup = {
       combat:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'],
       efficiency:['alerts', 'market', 'merits', 'dollarBazaars'],
-      qualityOfLife:['racing','abroadStocks']
+      qualityOfLife:['racing','abroadStocks','travelSafety']
     };
     const allowed = allowedByGroup[group] || allowedByGroup.combat;
     if (!allowed.includes(tab)) tab = allowed[0];
     if (group === 'combat' && tab === 'mugging' && !hasScope('slink.mugging')) tab = 'targetList';
+    if (group === 'qualityOfLife' && tab === 'travelSafety' && !hasScope(TRAVEL_SAFETY_SCOPE)) tab = 'racing';
     const stateKey = group === 'combat' ? 'combatTab' : group === 'efficiency' ? 'efficiencyTab' : 'qualityOfLifeTab';
     state[stateKey] = tab;
     if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
@@ -6973,6 +7166,7 @@
     if (action === 'reset-layout') resetLayout();
     if (action === 'refresh-active') void loadActiveModule(true);
     if (action === 'refresh-mugging') void refreshMugging(true);
+    if (action === 'refresh-travel-safety') void refreshTravelSafety(true).catch(() => undefined);
     if (action === 'load-terms') void loadTerms(true);
     if (action === 'refresh-themes') void loadThemeCatalog(true);
     if (action === 'save-access') void saveAccess();
@@ -7586,6 +7780,7 @@
   schedulePurchaseOpportunityFormatting(0);
   ensureRacingHighlightStyle();
   scheduleRacingScan(0);
+  document.addEventListener('click', handleTravelSafetyClick, true);
   document.addEventListener('click', handleHighlightedQuickPurchaseClick, true);
   document.addEventListener('click', handleBazaarPurchaseClick, true);
   void scanIntendedProfileDom();
