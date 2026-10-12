@@ -4,11 +4,13 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
-assert.match(source, /@version\s+0\.4\.32/);
+assert.match(source, /@version\s+0\.4\.33/);
 assert.match(source, /@grant\s+GM_xmlhttpRequest/);
 assert.match(source, /@grant\s+GM_notification/);
 assert.match(source, /@connect\s+api\.torn\.com/);
 assert.match(source, /@connect\s+weav3r\.dev/);
+assert.match(source, /@connect\s+slinkmuggingworker\.richard-johnson554\.workers\.dev/);
+assert.match(source, /No HTTP origin is configured for/);
 assert.doesNotMatch(source, /@require\b/);
 assert.match(source, /viewport-fit=cover|safe-area-inset/);
 assert.match(source, /grid-template-columns:minmax\(0,1fr\)/);
