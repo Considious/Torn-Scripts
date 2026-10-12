@@ -213,7 +213,7 @@ function renderTravelSafety() {
 const root = moduleRoot('travelSafety');
 if (!root) return;
 const current = moduleState.travelSafety;
-const allowed = hasScope(TRAVEL_SAFETY_SCOPE);
+const allowed = true;
 root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Organized Crime Travel Safety</h2><span class="muted">Uses Torn’s displayed flight time and your current OC ready time.</span></div><span class="badge ' + (allowed ? 'ready' : '') + '">' + (allowed ? 'ACTIVE' : 'LOCKED') + '</span></div>' +
 (current.error ? '<div class="error">' + escapeHtml(current.error) + '</div>' : '') +
 '<p>Round trips use the displayed one-way duration twice, plus a 10% return buffer. Unsafe Travel clicks open a warning but can still be deliberately overridden.</p>' +

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
+const root = new URL('./', import.meta.url);
+const manifest = JSON.parse(readFileSync(new URL('source-manifest.json', root), 'utf8'));
+const source = manifest.fragments.map(path => readFileSync(new URL(path, root), 'utf8')).join('');
+new Function(source);
 for (const scope of [
   'slink.combat.bounties',
   'slink.combat.player-stats',
@@ -16,4 +19,5 @@ for (const scope of [
 assert.ok(source.includes("qualityOfLife:['racing','abroadStocks','company','museums']"));
 assert.ok(!source.includes("qualityOfLife:['racing','abroadStocks','travelSafety']"));
 assert.ok(source.includes('hasAdminScope() || hasGrantedScope(required)'));
+assert.ok(!source.includes('TRAVEL_SAFETY_SCOPE'));
 console.log('PDA permission and navigation validation passed.');

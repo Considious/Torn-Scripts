@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "output": "SLINK_PDA_Dashboard.user.js",
-  "maxBytes": 500000,
+  "maxBytes": 400000,
   "fragments": [
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",

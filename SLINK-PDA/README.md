@@ -1,5 +1,14 @@
 # SLINK PDA Dashboard
 
+## 0.4.42 — PDA loader recovery
+
+The published userscript is now compressed during the repository build so PDA
+parses a substantially smaller self-contained file. The readable modular source
+remains under `src/`; no code is fetched at runtime. The build also rejects
+syntax failures and output above 400,000 bytes.
+
+Travel Safety is fully ungated and no longer contains a stale permission lookup.
+
 ## 0.4.41 — Modular source and permission sweep
 
 The installable userscript remains one self-contained PDA file. Its maintainable
