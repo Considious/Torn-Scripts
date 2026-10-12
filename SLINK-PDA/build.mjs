@@ -26,7 +26,7 @@ const result = await minify(body, {
 });
 if (!result.code) throw new Error('Terser returned an empty PDA runtime.');
 
-const runtimeSource = '// Generated SLINK PDA runtime ' + version + '. Loaded at startup by the PDA userscript.\\n' + result.code + '\\n';
+const runtimeSource = '// Generated SLINK PDA runtime ' + version + '. Loaded at startup by the PDA userscript.\n' + result.code + '\n';
 new Script(runtimeSource, { filename:manifest.runtimeOutput });
 
 const runtimeUrl = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/' + manifest.runtimeOutput + '?v=' + encodeURIComponent(version);
@@ -102,9 +102,9 @@ const loaderBody = [
   '  await loadRuntime();',
   '})();',
   ''
-].join('\\n');
+].join('\n');
 new Script(loaderBody, { filename:manifest.output });
-const loaderSource = header + '\\n' + loaderBody;
+const loaderSource = header + '\n' + loaderBody;
 
 const runtimeBytes = Buffer.byteLength(runtimeSource, 'utf8');
 const loaderBytes = Buffer.byteLength(loaderSource, 'utf8');
