@@ -1176,4 +1176,5 @@ observe:observePlayerIntelligence,
 refresh:refreshPlayerIntelligence
 })
 });
+host.dataset.slinkReady = 'true';
 })(globalThis);
