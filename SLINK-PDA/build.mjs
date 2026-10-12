@@ -16,7 +16,7 @@ const headerEnd = readable.indexOf(marker);
 if (headerEnd < 0) throw new Error('Userscript metadata block is missing.');
 const header = readable.slice(0, headerEnd + marker.length);
 const body = readable.slice(headerEnd + marker.length);
-const version = header.match(/^\\/\\/ @version\\s+(.+)$/m)?.[1]?.trim();
+const version = header.split('\n').find(line => line.startsWith('// @version'))?.slice('// @version'.length).trim();
 if (!version) throw new Error('Userscript version is missing.');
 
 const result = await minify(body, {
