@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.37
+// @version      0.4.38
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -30,7 +30,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.36-form-state';
+  const BUILD = '0.4.38-gui-recovery';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -43,7 +43,7 @@
   const CONTRIBUTION_CEILING = 40;
   const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.37';
+  const CLIENT_VERSION = '0.4.38';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -658,11 +658,18 @@
     notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notification
   });
 
-  if (global.SLINK_PDA_DASHBOARD?.build === BUILD) {
-    global.SLINK_PDA_DASHBOARD.open();
+  const existingDashboard = global.SLINK_PDA_DASHBOARD;
+  const existingHost = document.getElementById(HOST_ID);
+  if (existingDashboard?.build === BUILD && existingHost?.isConnected) {
+    existingDashboard.open();
     return;
   }
-  document.getElementById(HOST_ID)?.remove();
+  // A PDA userscript update can leave the old global object alive after its
+  // Shadow DOM host was detached. Never reuse that dead instance.
+  existingHost?.remove();
+  if (existingDashboard) {
+    try { delete global.SLINK_PDA_DASHBOARD; } catch { global.SLINK_PDA_DASHBOARD = null; }
+  }
 
   const defaults = Object.freeze({
     page: 'combat',
