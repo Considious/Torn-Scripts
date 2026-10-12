@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.35
+// @version      0.4.36
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -30,7 +30,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.35-travel-safety';
+  const BUILD = '0.4.36-form-state';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -6786,9 +6786,118 @@
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
+  function protectEditableState(root) {
+    const selector = 'input,textarea,select,[contenteditable="true"]';
+    const dirty = new Map();
+    const commitAction = /(?:^|[-_\\s])(save|submit|apply|update|confirm|cancel|reset|clear|remove|delete)(?:$|[-_\\s])/i;
+    let focusedKey = '';
+    let restoring = false;
+    let scheduled = false;
+
+    function scope(control) {
+      const container = control?.closest?.('[data-module-root],[data-page-panel],form[id]');
+      if (container?.dataset?.moduleRoot) return `module:${container.dataset.moduleRoot}`;
+      if (container?.dataset?.pagePanel) return `page:${container.dataset.pagePanel}`;
+      if (container?.id) return `form:${container.id}`;
+      return 'root';
+    }
+    function identity(control) {
+      if (!control?.matches?.(selector)) return '';
+      const prefix = scope(control);
+      if (control.id) return `${prefix}|id:${control.id}`;
+      if (control.name) return `${prefix}|name:${control.name}`;
+      for (const name of ['field','setting','key','scope','targetListTag','targetId','watchId','marketWatchId','alertType','action']) {
+        if (control.dataset?.[name] !== undefined) return `${prefix}|data-${name}:${control.dataset[name]}`;
+      }
+      const container = control.closest?.('label,.field,.setting,.control') || control.parentElement;
+      const index = Math.max(0, [...(container?.querySelectorAll?.(selector) || [])].indexOf(control));
+      const label = String(container?.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+      return `${prefix}|${control.tagName.toLowerCase()}:${String(control.type || '')}:${label}:${index}`;
+    }
+    function take(control) {
+      if (control.matches('[contenteditable="true"]')) return { kind:'html', value:control.innerHTML };
+      if (control.tagName === 'INPUT' && ['checkbox','radio'].includes(control.type)) return { kind:'checked', checked:control.checked };
+      if (control.tagName === 'SELECT' && control.multiple) return { kind:'multiple', values:[...control.selectedOptions].map(option => option.value) };
+      return { kind:'value', value:control.value, start:Number.isInteger(control.selectionStart) ? control.selectionStart : null, end:Number.isInteger(control.selectionEnd) ? control.selectionEnd : null, direction:control.selectionDirection || 'none' };
+    }
+    function apply(control, state) {
+      if (state.kind === 'html') control.innerHTML = state.value;
+      else if (state.kind === 'checked') control.checked = Boolean(state.checked);
+      else if (state.kind === 'multiple') {
+        const values = new Set(state.values || []);
+        [...control.options].forEach(option => { option.selected = values.has(option.value); });
+      } else control.value = state.value ?? '';
+    }
+    function remember(control) {
+      const key = identity(control);
+      if (!key) return;
+      dirty.set(key, take(control));
+      if (control === (root.activeElement || document.activeElement)) focusedKey = key;
+    }
+    function clearScope(element) {
+      const prefix = scope(element?.querySelector?.(selector) || element);
+      for (const key of dirty.keys()) if (key.startsWith(`${prefix}|`)) dirty.delete(key);
+      if (focusedKey.startsWith(`${prefix}|`)) focusedKey = '';
+    }
+    function restore() {
+      scheduled = false;
+      if (restoring || !dirty.size) return;
+      restoring = true;
+      const scrollX = Number(global.scrollX) || 0;
+      const scrollY = Number(global.scrollY) || 0;
+      let focusTarget = null;
+      for (const control of root.querySelectorAll(selector)) {
+        const key = identity(control);
+        if (!dirty.has(key)) continue;
+        apply(control, dirty.get(key));
+        if (key === focusedKey) focusTarget = control;
+      }
+      if (focusTarget?.isConnected) {
+        try {
+          focusTarget.focus({ preventScroll:true });
+          const state = dirty.get(focusedKey);
+          if (state?.kind === 'value' && state.start !== null && focusTarget.setSelectionRange) focusTarget.setSelectionRange(state.start, state.end, state.direction);
+          global.scrollTo?.(scrollX, scrollY);
+        } catch {}
+      }
+      restoring = false;
+    }
+    function scheduleRestore() {
+      if (scheduled || !dirty.size) return;
+      scheduled = true;
+      queueMicrotask(restore);
+    }
+    function onEdit(event) {
+      if (!restoring && event.target?.matches?.(selector)) remember(event.target);
+    }
+    root.addEventListener('input', onEdit, true);
+    root.addEventListener('change', onEdit, true);
+    root.addEventListener('focusin', event => {
+      if (!event.target?.matches?.(selector)) return;
+      focusedKey = identity(event.target);
+      if (dirty.has(focusedKey)) remember(event.target);
+    }, true);
+    root.addEventListener('focusout', event => {
+      if (!event.target?.matches?.(selector)) return;
+      const key = identity(event.target);
+      queueMicrotask(() => {
+        if (event.target.isConnected && focusedKey === key && (root.activeElement || document.activeElement) !== event.target) focusedKey = '';
+      });
+    }, true);
+    root.addEventListener('click', event => {
+      const action = event.target?.closest?.('button,input[type="submit"],input[type="reset"],[role="button"]');
+      const signature = action ? [action.id,action.name,action.dataset?.action,action.value,action.textContent].filter(Boolean).join(' ') : '';
+      if (signature && commitAction.test(signature)) global.setTimeout(() => clearScope(action), 0);
+    }, true);
+    const observer = new MutationObserver(scheduleRestore);
+    observer.observe(root, { childList:true, subtree:true });
+    return Object.freeze({ clear:clearScope, restore, stop:() => observer.disconnect() });
+  }
+
   let host = document.createElement('div');
   host.id = HOST_ID;
   const shadow = host.attachShadow({ mode: 'open' });
+  const editableState = protectEditableState(shadow);
 
   const style = document.createElement('style');
   style.textContent = `
