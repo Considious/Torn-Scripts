@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.44
+// @version      0.4.45
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,9 +29,10 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.44";
+  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.45";
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
+  const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
 
   function showFailure(error) {
     const message = String(error?.message || error || 'Unknown startup error');
@@ -48,6 +49,21 @@
       void loadRuntime();
     });
     (document.body || document.documentElement).appendChild(button);
+  }
+
+  function isRecord(value) {
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+  }
+
+  function readLegacySettings() {
+    try {
+      const value = typeof globalThis.GM_getValue === 'function' ? globalThis.GM_getValue(DATA_STORAGE_KEY, {}) : {};
+      return isRecord(value) && !(value && typeof value.then === 'function') && isRecord(value.settings) ? value.settings : {};
+    } catch { return {}; }
+  }
+
+  function collectBootstrap() {
+    return { [DATA_STORAGE_KEY]:{ settings:readLegacySettings() } };
   }
 
   async function fetchRuntime() {
@@ -87,7 +103,8 @@
       }
       const downloaded = await fetchRuntime();
       if (downloaded.length < 1000) throw new Error('Downloaded runtime was empty or incomplete.');
-      const hydrated = downloaded.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Runtime.js';
+      const bootstrapSource = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(collectBootstrap()) + ';';
+      const hydrated = bootstrapSource + downloaded.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Runtime.js';
       await executeRuntime(hydrated);
       const readyDeadline = Date.now() + 15_000;
       while (Date.now() < readyDeadline) {
