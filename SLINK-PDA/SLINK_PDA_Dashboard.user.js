@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.39
+// @version      0.4.40
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -28,7 +28,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.39-pda-size-recovery';
+const BUILD = '0.4.40-museums';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -41,7 +41,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.39';
+const CLIENT_VERSION = '0.4.40';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -82,6 +82,34 @@ const TRAVEL_SAFETY_BUFFER_RATIO = 0.10;
 const TRAVEL_SAFETY_CACHE_MS = 2 * 60_000;
 const COMPANY_SCOPE = 'slink.qol.company';
 const COMPANY_CACHE_MS = 15 * 60_000;
+
+const MUSEUM_SCOPE='slink.qol.museum',MUSEUM_CACHE_MS=3600000,MUSEUM_CATALOG_MS=604800000;
+const museumItem=(name,amount=1)=>({name,amount});
+const MUSEUM_SETS=[
+{id:'plushies',name:'Plushie Set',points:10,travel:true,items:['Jaguar Plushie','Lion Plushie','Panda Plushie','Monkey Plushie','Chamois Plushie','Wolverine Plushie','Nessie Plushie','Red Fox Plushie','Camel Plushie','Kitten Plushie','Teddy Bear Plushie','Sheep Plushie','Stingray Plushie'].map(museumItem)},
+{id:'flowers',name:'Exotic Flower Set',points:10,travel:true,items:['Dahlia','Orchid','African Violet','Cherry Blossom','Peony','Ceibo Flower','Edelweiss','Crocus','Heather','Tribulus Omanense','Banana Orchid'].map(museumItem)},
+{id:'meteorite',name:'Meteorite Fragment',points:15,items:[museumItem('Meteorite Fragment')]},
+{id:'fossil',name:'Patagonian Fossil',points:20,items:[museumItem('Patagonian Fossil')]},
+{id:'arrowheads',name:'Arrowhead Set',points:25,items:['Obsidian Point','Quartz Point','Basalt Point','Chert Point','Chalcedony Point','Quartzite Point'].map(museumItem)},
+{id:'medieval-coins',name:'Medieval Coin Set',points:100,items:['Leopard Coin','Florin Coin','Gold Noble Coin'].map(museumItem)},
+{id:'vairocana',name:'Vairocana Buddha',points:100,items:[museumItem('Vairocana Buddha Sculpture')]},
+{id:'ganesha',name:'Ganesha Sculpture',points:250,items:[museumItem('Ganesha Sculpture')]},
+{id:'shabti',name:'Shabti Sculpture',points:500,items:[museumItem('Shabti Sculpture')]},
+{id:'companion-scripts',name:'Companion Scripts',points:1000,items:['Companion Script : Abdullah','Companion Script : Ali','Companion Script : Ubay'].map(museumItem)},
+{id:'senet',name:'Senet Game Set',points:2000,items:[museumItem('Senet board'),museumItem('White Senet pawn',5),museumItem('Black Senet pawn',5)]},
+{id:'amulet',name:'Egyptian Amulet',points:10000,items:[museumItem('Egyptian Amulet')]}
+];
+const MUSEUM_ALIASES={'quran script : ibn masud':'Companion Script : Abdullah','quran script : ali':'Companion Script : Ali',"quran script : ubay ibn ka'b":'Companion Script : Ubay','script from the quran: ibn masud':'Companion Script : Abdullah','script from the quran: ali':'Companion Script : Ali',"script from the quran: ubay ibn ka'b":'Companion Script : Ubay'};
+function museumKey(value){return String(value||'').trim().replace(/\s+/g,' ').toLowerCase()}
+function museumName(value){const text=String(value||'').trim().replace(/\s+/g,' ');return MUSEUM_ALIASES[museumKey(text)]||text}
+function museumBuildStatus(inventoryRows=[],catalogRows=[]){
+const owned=new Map(),catalog=new Map();
+for(const row of inventoryRows){const name=museumName(row?.name);if(!name)continue;const key=museumKey(name),prior=owned.get(key)||{id:Number(row?.id)||0,amount:0};prior.amount+=Math.max(0,Math.trunc(Number(row?.amount)||0));owned.set(key,prior)}
+for(const row of catalogRows){const name=museumName(row?.name);if(name)catalog.set(museumKey(name),row)}
+const sets=MUSEUM_SETS.map(definition=>{const items=definition.items.map(required=>{const inventory=owned.get(museumKey(required.name)),entry=catalog.get(museumKey(required.name)),amount=Number(inventory?.amount)||0,needed=Math.max(0,required.amount-amount);return{name:required.name,required:required.amount,owned:amount,needed,complete:needed===0,itemId:Number(entry?.id||inventory?.id)||0,marketPrice:Math.max(0,Number(entry?.marketPrice)||0)}});const completeSets=Math.min(...items.map(item=>Math.floor(item.owned/item.required)));return{...definition,complete:items.every(item=>item.complete),completeSets:Number.isFinite(completeSets)?completeSets:0,items}});
+return{sets,summary:{completed:sets.filter(set=>set.complete).length,total:sets.length,redeemablePoints:sets.reduce((sum,set)=>sum+set.completeSets*set.points,0)}}
+}
+
 function companySettings() {
 const value = dataState.settings.company || {};
 dataState.settings.company = {
@@ -628,7 +656,7 @@ return {
 page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
 combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
 efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
-qualityOfLifeTab:['racing','abroadStocks','travelSafety','company'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+qualityOfLifeTab:['racing','abroadStocks','company','museums'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
 theme:String(source.theme || defaults.theme),
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
 };
@@ -812,7 +840,8 @@ dollarBazaars:{ busy:false, error:'', data:dataState.caches.dollarBazaars || nul
 merits:{ busy:false, error:'', data:dataState.caches.merits || null },
 abroadStocks:{ busy:false, error:'', data:dataState.caches.abroadStocks || null, mode:'item', query:'' },
 travelSafety:{ busy:false, error:'', crime:dataState.caches.travelSafety?.crime || null, fetchedAt:Number(dataState.caches.travelSafety?.fetchedAt) || 0 },
-company:{ busy:false, error:'', notice:'', data:dataState.caches.company || null }
+company:{ busy:false, error:'', notice:'', data:dataState.caches.company || null },
+museums:{ busy:false,error:'',notice:'',data:dataState.caches.museums||null }
 };
 function serializeNetwork(task) {
 const result = networkQueue.then(task, task);
@@ -2709,6 +2738,25 @@ const button = [...panel.querySelectorAll('button[type="button"]')].find(candida
 if (!button) throw new Error('The private chat Send button is not ready.');
 button.click();
 }
+function renderMuseums(){
+const root=moduleRoot('museums');if(!root)return;
+if(!hasScope(MUSEUM_SCOPE)){root.innerHTML=lockedModule(MUSEUM_SCOPE,'Museums');return}
+const current=moduleState.museums,status=current.data;
+if(!status?.sets?.length){root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">Compare your inventory with every Museum exchange set.</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh inventory')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+'<p>Refresh to load your inventory and Torn item catalog.</p></article></div>';return}
+root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">'+status.summary.completed+'/'+status.summary.total+' complete · '+number(status.summary.redeemablePoints)+' redeemable points</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+(current.notice?moduleMessage(current.notice,'ready'):'')+'<p>Updated '+relativeTime(status.fetchedAt)+'. Torn inventory data is cached for one hour.</p></article>'+status.sets.map(set=>'<article class="card full"><details '+(set.complete?'':'open')+'><summary><strong>'+(set.complete?'Complete':'Needs items')+' · '+escapeHtml(set.name)+'</strong> · '+number(set.points)+' points</summary><div class="card-head"><span class="muted">'+number(set.completeSets)+' complete set'+(set.completeSets===1?'':'s')+' in inventory</span>'+(set.travel?'<button type="button" data-action="museum-track-abroad" data-museum-set="'+escapeHtml(set.id)+'">Track in Abroad Stocks</button>':'')+'</div><div class="target-list">'+set.items.map(item=>'<article class="target"><div><strong>'+escapeHtml(item.name)+'</strong><span>Owned '+number(item.owned)+' / '+number(item.required)+(item.needed?' · need '+number(item.needed):'')+(item.marketPrice?' · market USD '+number(item.marketPrice):'')+'</span></div>'+(item.needed&&item.itemId?'<div class="target-actions"><input type="number" min="1" step="1" data-museum-price="'+item.itemId+'" value="'+Math.max(1,item.marketPrice)+'"><button type="button" data-action="museum-add-market" data-museum-item="'+item.itemId+'">Add to Market Watch</button></div>':'')+'</article>').join('')+'</div></details></article>').join('')+'</div>'
+}
+async function refreshMuseums(force=false){
+const current=moduleState.museums;if(current.busy)return current.data;
+const cached=dataState.caches.museums;
+if(!force&&cached?.fetchedAt&&Date.now()-Number(cached.fetchedAt)<MUSEUM_CACHE_MS){current.data=cached;renderMuseums();return cached}
+current.busy=true;current.error='';current.notice='';renderMuseums();
+try{
+await ensurePermissionSession(false);if(!hasScope(MUSEUM_SCOPE))throw new Error('Your SLINK account does not have '+MUSEUM_SCOPE+' permission.');
+const runtime=marketRuntime(),catalog=await marketEnsureCatalog(runtime,false),inventoryRows=[];let offset=0;
+for(let page=0;page<20;page++){const body=await tornJson('/v2/user/inventory?limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&inventoryRows.length>=total))break;offset+=rows.length}
+const status=museumBuildStatus(inventoryRows,catalog.items||[]);current.data=dataState.caches.museums={fetchedAt:Date.now(),...status};dataState.caches.market=runtime;writeDataState();return current.data
+}catch(error){current.error=errorMessage(error);throw error}finally{current.busy=false;renderMuseums()}
+}
 function renderTravelSafety() {
 const root = moduleRoot('travelSafety');
 if (!root) return;
@@ -2728,7 +2776,6 @@ current.error = '';
 if (dashboardOpen) renderTravelSafety();
 try {
 await ensurePermissionSession(false);
-if (!hasScope(TRAVEL_SAFETY_SCOPE)) throw new Error('Your SLINK account does not have ' + TRAVEL_SAFETY_SCOPE + ' permission.');
 const cached = dataState.caches.travelSafety;
 if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < TRAVEL_SAFETY_CACHE_MS) {
 current.crime = cached.crime || null;
@@ -2772,7 +2819,7 @@ document.documentElement.append(travelSafetyModal);
 travelSafetyModal.querySelector('[data-cancel]').focus({ preventScroll:true });
 }
 async function handleTravelSafetyClick(event) {
-if (event.defaultPrevented || !hasScope(TRAVEL_SAFETY_SCOPE) || !/^\/travelagency\.php$/i.test(global.location.pathname)) return;
+if (event.defaultPrevented || !/^\/travelagency\.php$/i.test(global.location.pathname)) return;
 const button = event.target?.closest?.('button[aria-label^="Travel to "]');
 if (!button || button.disabled) return;
 if (travelSafetyBypass.has(button)) {
@@ -3030,6 +3077,13 @@ render();
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 renderAlerts();
 }
+function addItemWatches(names=[]){
+const current=runtime(),wanted=new Set(names.map(museumKey)),known=new Set(current.watches.map(entry=>entry.key));
+let added=0;
+for(const row of current.rows){if(!wanted.has(museumKey(row.itemName))||known.has(row.key))continue;current.watches.push({key:row.key,countryCode:row.countryCode,countryName:row.countryName,itemId:row.itemId,itemName:row.itemName});known.add(row.key);added++}
+if(added){current.activeUntil=Date.now()+ACTIVITY_MS;writeDataState();render();reconcileAlertNotifications(moduleState.alerts.data||dataState.caches.alerts);renderAlerts()}
+return added
+}
 function saveFromRoot() {
 const root = moduleRoot('abroadStocks');
 if (!root) return;
@@ -3067,7 +3121,7 @@ writeDataState();
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 renderAlerts();
 }
-return { alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
+return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
 })();
 function renderAccess() {
 const root = moduleRoot('access');
@@ -3139,8 +3193,8 @@ const gates = [
 ['[data-efficiency-tab="market"]', 'slink.adhd.marketwatch tier'],
 ['[data-efficiency-tab="merits"]', 'slink.adhd.alerts'],
 ['[data-efficiency-tab="dollarBazaars"]', 'slink.adhd.alerts'],
-['[data-quality-of-life-tab="travelSafety"]', TRAVEL_SAFETY_SCOPE],
 ['[data-quality-of-life-tab="company"]', COMPANY_SCOPE],
+['[data-quality-of-life-tab="museums"]', MUSEUM_SCOPE],
 ['[data-theme-choice="slinky-pursuit"]', 'slink.theme.pursuit'],
 ['[data-theme-choice="slinky-underglow"]', 'slink.theme.underglow']
 ];
@@ -5308,6 +5362,16 @@ settings.lastPriority = watch.priority; moduleState.market.editingUid = ''; modu
 const runtime = marketRuntime(); delete runtime.results[watch.uid]; dataState.caches.market = runtime;
 writeDataState(); renderMarket(false); void refreshMarket(false);
 }
+function addMuseumMarketWatch(itemId,maxPrice){
+const id=Math.trunc(Number(itemId)||0),price=Math.trunc(Number(maxPrice)||0),settings=marketSettings(),limit=marketWatchLimit();
+if(!id||price<1)throw new Error('Enter a maximum price greater than zero.');
+const item=(marketRuntime().catalog.items||[]).find(row=>Number(row.id)===id);
+if(!item)throw new Error('Refresh Museum inventory so this item can be matched to Torn’s catalog.');
+if(settings.watches.some(row=>row.marketType==='item'&&Number(row.itemId)===id))throw new Error(item.name+' is already saved in Market Watch.');
+if(settings.watches.length>=limit)throw new Error('Your permission allows '+limit+' Market Watch slots.');
+const watch=normalizeMarketWatch({marketType:'item',itemId:id,label:item.name,maxPrice:price,priority:'normal',enabled:true,marketEnabled:true,bazaarEnabled:false},settings.watches.length);
+settings.watches.push(watch);dataState.caches.market=marketRuntime();writeDataState();renderMarket(false);void refreshMarket(false);return watch
+}
 function focusedTornPage() {
 // Torn PDA's WebView can report hasFocus() as false while the visible
 // Torn page is still interactive.
@@ -6470,15 +6534,15 @@ if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await 
 if (name === 'bounties') touchBounties();
 if (name === 'targetList') { renderTargetList(); return; }
 if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
-if (name === 'travelSafety') { renderTravelSafety(); if (force) await refreshTravelSafety(true); return; }
 if (name === 'company') { renderCompany(); await refreshCompany(force).catch(() => undefined); return; }
+if (name === 'museums') { renderMuseums(); await refreshMuseums(force).catch(() => undefined); return; }
 if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
 if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
 const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
 if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 }
 function renderAllModules() {
-renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderTravelSafety(); renderCompany(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
+renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderCompany(); renderMuseums(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
 }
 function startScheduler() {
 if (schedulerTimer) return;
@@ -6737,11 +6801,11 @@ overlay.innerHTML = `
 </section>
 <section class="page" data-page-panel="quality-of-life" hidden>
 <div class="page-head"><div><h1>Quality of Life</h1><p>Convenience tools that work with Torn's visible page data.</p></div></div>
-<nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button><button type="button" data-quality-of-life-tab="travelSafety">Travel Safety</button><button type="button" data-quality-of-life-tab="company">Company</button></nav>
+<nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button><button type="button" data-quality-of-life-tab="company">Company</button><button type="button" data-quality-of-life-tab="museums">Museums</button></nav>
 <div class="subpage" data-quality-of-life-panel="racing"><div data-module-root="racing"></div></div>
 <div class="subpage" data-quality-of-life-panel="abroadStocks" hidden><div data-module-root="abroadStocks"></div></div>
-<div class="subpage" data-quality-of-life-panel="travelSafety" hidden><div data-module-root="travelSafety"></div></div>
 <div class="subpage" data-quality-of-life-panel="company" hidden><div data-module-root="company"></div></div>
+<div class="subpage" data-quality-of-life-panel="museums" hidden><div data-module-root="museums"></div></div>
 </section>
 <section class="page" data-page-panel="access" hidden>
 <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
@@ -6828,7 +6892,6 @@ qualityOfLife:['racing','abroadStocks','travelSafety']
 const allowed = allowedByGroup[group] || allowedByGroup.combat;
 if (!allowed.includes(tab)) tab = allowed[0];
 if (group === 'combat' && tab === 'mugging' && !hasScope('slink.mugging')) tab = 'targetList';
-if (group === 'qualityOfLife' && tab === 'travelSafety' && !hasScope(TRAVEL_SAFETY_SCOPE)) tab = 'racing';
 const stateKey = group === 'combat' ? 'combatTab' : group === 'efficiency' ? 'efficiencyTab' : 'qualityOfLifeTab';
 state[stateKey] = tab;
 if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
@@ -6976,6 +7039,15 @@ if (action === 'refresh-active') void loadActiveModule(true);
 if (action === 'refresh-mugging') void refreshMugging(true);
 if (action === 'refresh-travel-safety') void refreshTravelSafety(true).catch(() => undefined);
 if (action === 'refresh-company') void refreshCompany(true).catch(() => undefined);
+if (action === 'refresh-museums') void refreshMuseums(true).catch(() => undefined);
+if (action === 'museum-track-abroad') {
+const set=MUSEUM_SETS.find(entry=>entry.id===event.target.closest('[data-museum-set]')?.dataset.museumSet);
+if(set?.travel){const added=PDA_ABROAD.addItemWatches(set.items.map(item=>item.name));moduleState.museums.notice=added?'Added '+added+' Abroad Stocks watch'+(added===1?'':'es')+'.':'Matching Abroad Stocks rows are already tracked. Refresh Abroad Stocks first if no rows are loaded.';renderMuseums()}
+}
+if (action === 'museum-add-market') {
+const button=event.target.closest('[data-museum-item]'),itemId=Number(button?.dataset.museumItem),price=Number(moduleRoot('museums')?.querySelector('[data-museum-price="'+itemId+'"]')?.value);
+try{addMuseumMarketWatch(itemId,price);moduleState.museums.notice='Museum item added to Market Watch. It counts toward your active slot limit.';moduleState.museums.error=''}catch(error){moduleState.museums.error=errorMessage(error)}renderMuseums()
+}
 if (action === 'save-company-settings') {
 const root = moduleRoot('company');
 dataState.settings.company = { ...companySettings(), addictionThreshold:Number(root?.querySelector('[data-company-own-threshold]')?.value) || 10, directorThreshold:Number(root?.querySelector('[data-company-director-threshold]')?.value) || companySettings().directorThreshold };
