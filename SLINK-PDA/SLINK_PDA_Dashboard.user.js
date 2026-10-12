@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.33
+// @version      0.4.34
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -16,6 +16,10 @@
 // @connect      api.torn.com
 // @connect      ffscouter.com
 // @connect      weav3r.dev
+// @connect      yata.yt
+// @connect      prombot.co.uk
+// @connect      torn-intel.com
+// @connect      droqsdb.com
 // @connect      slinkyleveling.richard-johnson554.workers.dev
 // @connect      slinkcontributionworker.richard-johnson554.workers.dev
 // @connect      slinkwarworker.richard-johnson554.workers.dev
@@ -26,7 +30,7 @@
 (function installSlinkPdaDashboard(global) {
   'use strict';
 
-  const BUILD = '0.4.33-mugging-http-fallback';
+  const BUILD = '0.4.34-abroad-stocks';
   const HOST_ID = 'slink-pda-dashboard-host';
   const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -39,7 +43,7 @@
   const CONTRIBUTION_CEILING = 40;
   const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
   const CLIENT_NAME = 'SLINK PDA Dashboard';
-  const CLIENT_VERSION = '0.4.33';
+  const CLIENT_VERSION = '0.4.34';
   const WEEK_MS = 7 * 86_400_000;
   const PDA_ALERT_TYPES = Object.freeze([
     { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -77,6 +81,225 @@
     torn:'https://api.torn.com',
     weaver:'https://weav3r.dev'
   });
+  const ABROAD_STOCKS = (() => {
+  const PROVIDERS = Object.freeze({
+    yata:Object.freeze({ id:'yata', label:'YATA', url:'https://yata.yt/api/v1/travel/export/' }),
+    prometheus:Object.freeze({ id:'prometheus', label:'Prometheus', url:'https://prombot.co.uk:8443/api/travel' }),
+    tornIntel:Object.freeze({ id:'tornIntel', label:'Torn Intel', url:'https://torn-intel.com/api/v1/foreign-stock/travel-table' }),
+    droqs:Object.freeze({ id:'droqs', label:'DroqsDB', url:'https://droqsdb.com/api/public/v1/export', enrichment:true })
+  });
+  
+  const COUNTRIES = Object.freeze([
+    ['arg','Argentina',158], ['can','Canada',39], ['cay','Cayman Islands',33],
+    ['chi','China',229], ['haw','Hawaii',127], ['jap','Japan',213],
+    ['mex','Mexico',24], ['sou','South Africa',282], ['swi','Switzerland',175],
+    ['uae','UAE',271], ['uni','United Kingdom',159]
+  ].map(([code,name,minutes]) => Object.freeze({ code, name, minutes })));
+  
+  const TRAVEL_MULTIPLIERS = Object.freeze({ standard:1, airstrip:0.7, private:0.5, business:0.3 });
+  const countryByCode = new Map(COUNTRIES.map(country => [country.code, country]));
+  const countryByName = new Map(COUNTRIES.map(country => [key(country.name), country]));
+  
+  function key(value) {
+    return String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  }
+  
+  function finite(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+  
+  function timestamp(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') return Math.max(0, Number(fallback) || 0);
+    if (typeof value === 'string' && !/^\d+(?:\.\d+)?$/.test(value.trim())) {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : Math.max(0, Number(fallback) || 0);
+    }
+    const number = finite(value);
+    if (number === null || number <= 0) return Math.max(0, Number(fallback) || 0);
+    return number < 10_000_000_000 ? Math.round(number * 1000) : Math.round(number);
+  }
+  
+  function countryRecord(value) {
+    const normalized = key(value);
+    if (!normalized) return null;
+    const compact = normalized.replace(/[^a-z]/g, '');
+    return countryByCode.get(compact.slice(0, 3))
+      || countryByName.get(normalized)
+      || COUNTRIES.find(country => key(country.name).startsWith(normalized) || normalized.startsWith(key(country.name)))
+      || null;
+  }
+  
+  function rows(value) {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') return Object.values(value);
+    return [];
+  }
+  
+  function sourceCountries(payload) {
+    const stocks = payload?.stocks || payload?.data?.stocks || payload?.result?.stocks;
+    if (stocks && typeof stocks === 'object' && !Array.isArray(stocks)) {
+      return Object.entries(stocks).map(([country, record]) => ({ country, ...(record || {}) }));
+    }
+    for (const candidate of [payload?.countries, payload?.data?.countries, payload?.result?.countries, payload?.data]) {
+      if (Array.isArray(candidate)) return candidate;
+    }
+    return [];
+  }
+  
+  function itemTimestamp(item, names, fallback = 0) {
+    for (const name of names) {
+      if (item?.[name] !== undefined && item?.[name] !== null) {
+        const direct = timestamp(item[name]);
+        if (direct) return direct;
+      }
+    }
+    return timestamp(fallback);
+  }
+  
+  function normalizeProvider(providerId, payload, fetchedAt = Date.now()) {
+    const provider = PROVIDERS[providerId];
+    if (!provider) throw new Error('Unknown abroad-stock provider.');
+    const normalized = [];
+    for (const countryInput of sourceCountries(payload || {})) {
+      const country = countryRecord(countryInput?.country || countryInput?.code || countryInput?.iata || countryInput?.yataCode || countryInput?.name);
+      if (!country) continue;
+      const updatedAt = timestamp(
+        countryInput?.update ?? countryInput?.updatedAt ?? countryInput?.lastUpdated ?? countryInput?.timestamp,
+        payload?.timestamp ?? payload?.generatedAt ?? fetchedAt
+      );
+      const itemRows = rows(countryInput?.stocks || countryInput?.items || countryInput?.inventory || countryInput?.data);
+      for (const item of itemRows) {
+        const name = String(item?.name || item?.itemName || item?.item || '').trim();
+        const id = Math.max(0, Math.trunc(finite(item?.id ?? item?.itemId ?? item?.item_id) || 0));
+        if (!id && !name) continue;
+        const quantity = finite(item?.quantity ?? item?.stock ?? item?.current ?? item?.amount);
+        const cost = finite(item?.cost ?? item?.buyPrice ?? item?.price ?? item?.foreignPrice);
+        let nextRestockAt = itemTimestamp(item, ['nextRestock','next_restock','nextRestockAt','estimatedRestockAt','restockAt']);
+        if (!nextRestockAt && finite(item?.estimatedRestockMinutes) !== null) nextRestockAt = fetchedAt + Number(item.estimatedRestockMinutes) * 60_000;
+        normalized.push({
+          provider:providerId,
+          countryCode:country.code,
+          countryName:country.name,
+          itemId:id || null,
+          itemName:name || ('Item ' + id),
+          quantity:quantity === null ? null : Math.max(0, Math.trunc(quantity)),
+          cost:cost === null ? null : Math.max(0, Math.round(cost)),
+          updatedAt,
+          lastRestockAt:itemTimestamp(item, ['lastRestock','last_restock','lastRestockAt','previousRestockAt']),
+          nextRestockAt,
+          predictionSource:nextRestockAt ? provider.label : ''
+        });
+      }
+    }
+    return normalized;
+  }
+  
+  function itemKey(row) {
+    return String(row.countryCode) + ':' + (row.itemId || key(row.itemName));
+  }
+  
+  function median(values) {
+    const sorted = values.filter(Number.isFinite).sort((a,b) => a-b);
+    if (!sorted.length) return 0;
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+  }
+  
+  function historyPrediction(historyEntry) {
+    const events = [...new Set(rows(historyEntry?.restocks).map(Number).filter(value => Number.isFinite(value) && value > 0))].sort((a,b) => a-b);
+    if (!events.length) return { lastRestockAt:0, nextRestockAt:0, samples:0 };
+    const intervals = events.slice(1).map((value,index) => value - events[index]).filter(value => value >= 10 * 60_000 && value <= 14 * 24 * 60 * 60_000);
+    const interval = median(intervals.slice(-6));
+    return {
+      lastRestockAt:events.at(-1),
+      nextRestockAt:interval ? events.at(-1) + interval : 0,
+      samples:intervals.length
+    };
+  }
+  
+  function mergeSnapshots(snapshots = {}, history = {}) {
+    const merged = new Map();
+    for (const [providerId, providerRows] of Object.entries(snapshots || {})) {
+      if (!PROVIDERS[providerId]) continue;
+      for (const source of rows(providerRows)) {
+        const mapKey = itemKey(source);
+        const current = merged.get(mapKey) || {
+          key:mapKey,
+          countryCode:source.countryCode,
+          countryName:source.countryName,
+          itemId:source.itemId,
+          itemName:source.itemName,
+          sources:{},
+          lastRestockAt:0,
+          nextRestockAt:0,
+          predictionSource:'',
+          predictionSamples:0
+        };
+        current.sources[providerId] = {
+          quantity:source.quantity,
+          cost:source.cost,
+          updatedAt:source.updatedAt
+        };
+        if (Number(source.lastRestockAt) > Number(current.lastRestockAt)) current.lastRestockAt = Number(source.lastRestockAt);
+        if (Number(source.nextRestockAt) > Date.now() && (!current.nextRestockAt || Number(source.nextRestockAt) < current.nextRestockAt)) {
+          current.nextRestockAt = Number(source.nextRestockAt);
+          current.predictionSource = source.predictionSource || PROVIDERS[providerId].label;
+        }
+        merged.set(mapKey, current);
+      }
+    }
+    for (const row of merged.values()) {
+      const prediction = historyPrediction(history[row.key]);
+      if (prediction.lastRestockAt > row.lastRestockAt) row.lastRestockAt = prediction.lastRestockAt;
+      if (!row.nextRestockAt && prediction.samples >= 2 && prediction.nextRestockAt > Date.now()) {
+        row.nextRestockAt = prediction.nextRestockAt;
+        row.predictionSource = 'SLINK observed history';
+        row.predictionSamples = prediction.samples;
+      }
+    }
+    return [...merged.values()].sort((left,right) => left.countryName.localeCompare(right.countryName) || left.itemName.localeCompare(right.itemName));
+  }
+  
+  function travelMinutes(countryCode, method = 'private', bufferMinutes = 0) {
+    const country = countryByCode.get(String(countryCode || '').toLowerCase());
+    if (!country) return null;
+    const multiplier = TRAVEL_MULTIPLIERS[method] ?? TRAVEL_MULTIPLIERS.private;
+    return Math.ceil(country.minutes * multiplier) + Math.max(0, Number(bufferMinutes) || 0);
+  }
+  
+  function departureAt(row, settings = {}) {
+    const next = Number(row?.nextRestockAt) || 0;
+    const minutes = travelMinutes(row?.countryCode, settings.travelMethod, settings.arrivalBufferMinutes);
+    return next && minutes !== null ? next - minutes * 60_000 : 0;
+  }
+  
+  function formatTct(value) {
+    const time = Number(value);
+    if (!time) return '';
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone:'UTC', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+    }).format(new Date(time)) + ' TCT';
+  }
+  
+  
+  return Object.freeze({
+    COUNTRIES,
+    PROVIDERS,
+    TRAVEL_MULTIPLIERS,
+    countryRecord,
+    departureAt,
+    formatTct,
+    historyPrediction,
+    itemKey,
+    mergeSnapshots,
+    normalizeProvider,
+    timestamp,
+    travelMinutes
+  });
+  })();
+
   const RACING_MAX_NICKNAME_LENGTH = 22;
   const RACING_TRACK_ABBREVIATIONS = Object.freeze({
     'Underdog':'UndrDog',
@@ -280,7 +503,7 @@
       page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
       combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
       efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
-      qualityOfLifeTab:source.qualityOfLifeTab === 'racing' ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+      qualityOfLifeTab:['racing','abroadStocks'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
       theme:String(source.theme || defaults.theme),
       bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
     };
@@ -368,7 +591,8 @@
         alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(value.settings?.alerts || {}), enabledTypes:normalizePdaAlertTypes(value.settings?.alerts?.enabledTypes) },
         market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(value.settings?.market || {}) },
         merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(value.settings?.merits || {}) },
-        racing:normalizeRacingState(value.settings?.racing)
+        racing:normalizeRacingState(value.settings?.racing),
+        abroadStocks:{ ...(value.settings?.abroadStocks || {}) }
       }
     };
   }
@@ -475,7 +699,8 @@
     alerts:{ busy:false, error:'', data:dataState.caches.alerts || null, lastAttemptAt:0 },
     market:{ busy:false, error:'', data:dataState.caches.market || null, editingUid:'', lastAttemptAt:0, refreshPermissions:true, draft:null, renderPending:false },
     dollarBazaars:{ busy:false, error:'', data:dataState.caches.dollarBazaars || null, lastAttemptAt:0 },
-    merits:{ busy:false, error:'', data:dataState.caches.merits || null }
+    merits:{ busy:false, error:'', data:dataState.caches.merits || null },
+    abroadStocks:{ busy:false, error:'', data:dataState.caches.abroadStocks || null, mode:'item', query:'' }
   };
 
   function serializeNetwork(task) {
@@ -2392,6 +2617,287 @@
         }).join('') : '<div class="module-message">No builds in this view.</div>'}</div></article></div>`;
       renderRacingAssistant();
     }
+
+  const PDA_ABROAD = (function pdaAbroadFactory() {
+    const CACHE_MS = 60_000;
+    const ACTIVITY_MS = 5 * 60_000;
+    const PROVIDER_ORDER = ['yata','prometheus','tornIntel'];
+  
+    function settings() {
+      const input = dataState.settings.abroadStocks || {};
+      const normalized = {
+        travelMethod:Object.hasOwn(ABROAD_STOCKS.TRAVEL_MULTIPLIERS, input.travelMethod) ? input.travelMethod : 'private',
+        arrivalBufferMinutes:Math.min(30, Math.max(0, Number(input.arrivalBufferMinutes) || 3)),
+        alertLeadMinutes:Math.min(180, Math.max(0, Number(input.alertLeadMinutes) || 10)),
+        alertsEnabled:input.alertsEnabled !== false,
+        soundEnabled:input.soundEnabled === true,
+        tornIntelKey:String(input.tornIntelKey || '').trim().slice(0, 256),
+        useDroqs:input.useDroqs !== false
+      };
+      dataState.settings.abroadStocks = normalized;
+      return normalized;
+    }
+  
+    function runtime() {
+      const value = dataState.caches.abroadStocks;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        dataState.caches.abroadStocks = { fetchedAt:0, activeUntil:0, snapshots:{}, providers:{}, rows:[], history:{}, watches:[], snoozes:{} };
+      }
+      const current = dataState.caches.abroadStocks;
+      if (!current.snapshots || typeof current.snapshots !== 'object') current.snapshots = {};
+      if (!current.providers || typeof current.providers !== 'object') current.providers = {};
+      if (!current.history || typeof current.history !== 'object') current.history = {};
+      if (!Array.isArray(current.rows)) current.rows = [];
+      if (!Array.isArray(current.watches)) current.watches = [];
+      if (!current.snoozes || typeof current.snoozes !== 'object') current.snoozes = {};
+      return current;
+    }
+  
+    function visible() {
+      return dashboardOpen && state.page === 'quality-of-life' && state.qualityOfLifeTab === 'abroadStocks' && !document.hidden;
+    }
+  
+    function touch() {
+      runtime().activeUntil = Date.now() + ACTIVITY_MS;
+      writeDataState();
+    }
+  
+    function requestProvider(providerId, currentSettings) {
+      const definition = ABROAD_STOCKS.PROVIDERS[providerId];
+      const headers = {};
+      if (providerId === 'tornIntel' && currentSettings.tornIntelKey) headers['X-Torn-Intel-Key'] = currentSettings.tornIntelKey;
+      return requestJson(definition.url, { headers }).then(payload => ABROAD_STOCKS.normalizeProvider(providerId, payload, Date.now()));
+    }
+  
+    function updateHistory(currentHistory, snapshots) {
+      const history = currentHistory && typeof currentHistory === 'object' ? { ...currentHistory } : {};
+      for (const [providerId, providerRows] of Object.entries(snapshots || {})) {
+        if (ABROAD_STOCKS.PROVIDERS[providerId]?.enrichment) continue;
+        for (const row of Array.isArray(providerRows) ? providerRows : []) {
+          const mapKey = ABROAD_STOCKS.itemKey(row);
+          const entry = history[mapKey] && typeof history[mapKey] === 'object'
+            ? { ...history[mapKey], providers:{ ...(history[mapKey].providers || {}) }, restocks:[...(history[mapKey].restocks || [])] }
+            : { providers:{}, restocks:[] };
+          const previous = entry.providers[providerId];
+          const updatedAt = Number(row.updatedAt) || Date.now();
+          const quantity = Number.isFinite(Number(row.quantity)) ? Number(row.quantity) : null;
+          if (previous && quantity !== null && previous.quantity !== null && updatedAt > Number(previous.updatedAt || 0) && quantity > Number(previous.quantity)) {
+            if (!entry.restocks.some(value => Math.abs(Number(value) - updatedAt) < 5 * 60_000)) entry.restocks.push(updatedAt);
+          }
+          if (Number(row.lastRestockAt) > 0 && !entry.restocks.some(value => Math.abs(Number(value) - Number(row.lastRestockAt)) < 5 * 60_000)) entry.restocks.push(Number(row.lastRestockAt));
+          entry.restocks = [...new Set(entry.restocks.map(Number).filter(Number.isFinite))].sort((a,b) => a-b).slice(-8);
+          entry.providers[providerId] = { quantity, updatedAt };
+          entry.updatedAt = Date.now();
+          history[mapKey] = entry;
+        }
+      }
+      return Object.fromEntries(Object.entries(history)
+        .sort((left,right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0))
+        .slice(0, 750));
+    }
+  
+    function status() {
+      const current = runtime();
+      const currentSettings = settings();
+      const watched = new Set(current.watches.map(entry => entry.key));
+      return {
+        fetchedAt:Number(current.fetchedAt) || 0,
+        providers:current.providers,
+        settings:currentSettings,
+        rows:current.rows.map(row => ({ ...row, watched:watched.has(row.key), departureAt:ABROAD_STOCKS.departureAt(row, currentSettings) })),
+        activeAlerts:alerts()
+      };
+    }
+  
+    async function refresh(force = false) {
+      const current = runtime();
+      const now = Date.now();
+      if (moduleState.abroadStocks.busy) return status();
+      if (!force && Number(current.fetchedAt) + CACHE_MS > now) { render(); return status(); }
+      if (!force && Number(current.activeUntil) <= now && !current.watches.length) return status();
+      moduleState.abroadStocks.busy = true;
+      moduleState.abroadStocks.error = '';
+      render();
+      try {
+        const currentSettings = settings();
+        const providerIds = ['yata','prometheus','tornIntel', ...(currentSettings.useDroqs ? ['droqs'] : [])];
+        const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, currentSettings)));
+        const snapshots = { ...current.snapshots };
+        const providers = { ...current.providers };
+        settled.forEach((result,index) => {
+          const providerId = providerIds[index];
+          if (result.status === 'fulfilled') {
+            snapshots[providerId] = result.value;
+            providers[providerId] = { ok:true, fetchedAt:now, rows:result.value.length, error:'', needsKey:false };
+          } else {
+            const error = result.reason;
+            const code = Number(error?.status || 0);
+            providers[providerId] = {
+              ok:false,
+              fetchedAt:Number(providers[providerId]?.fetchedAt || 0),
+              rows:Array.isArray(snapshots[providerId]) ? snapshots[providerId].length : 0,
+              error:ABROAD_STOCKS.PROVIDERS[providerId]?.enrichment ? '' : errorMessage(error),
+              needsKey:providerId === 'tornIntel' && [401,403].includes(code)
+            };
+          }
+        });
+        current.snapshots = snapshots;
+        current.providers = providers;
+        current.history = updateHistory(current.history, snapshots);
+        current.rows = ABROAD_STOCKS.mergeSnapshots(snapshots, current.history);
+        current.fetchedAt = now;
+        moduleState.abroadStocks.data = status();
+        if (!current.rows.length && settled.every(result => result.status === 'rejected')) {
+          moduleState.abroadStocks.error = 'Every abroad-stock provider failed. Check the provider status below.';
+        }
+        writeDataState();
+        reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+        renderAlerts();
+        return status();
+      } finally {
+        moduleState.abroadStocks.busy = false;
+        render();
+      }
+    }
+  
+    function alerts(now = Date.now()) {
+      const current = runtime();
+      const currentSettings = settings();
+      if (!currentSettings.alertsEnabled) return [];
+      const byKey = new Map(current.rows.map(row => [row.key, row]));
+      return current.watches.flatMap(watch => {
+        const row = byKey.get(watch.key);
+        const nextRestockAt = Number(row?.nextRestockAt) || 0;
+        const leaveAt = ABROAD_STOCKS.departureAt(row, currentSettings);
+        if (!row || !nextRestockAt || !leaveAt) return [];
+        const alertAt = leaveAt - currentSettings.alertLeadMinutes * 60_000;
+        if (now < alertAt || now > nextRestockAt + 30 * 60_000) return [];
+        const id = `abroad:${row.countryCode}:${row.itemId || row.itemName}:${nextRestockAt}`;
+        if (Number(current.snoozes[id] || 0) > now) return [];
+        return [{
+          id,
+          title:`Leave for ${row.countryName} — ${row.itemName}`,
+          detail:`Leave at ${ABROAD_STOCKS.formatTct(leaveAt)} to arrive near the estimated ${ABROAD_STOCKS.formatTct(nextRestockAt)} restock.`,
+          links:[['Travel Agency','https://www.torn.com/travelagency.php']]
+        }];
+      });
+    }
+  
+    function filteredRows() {
+      const current = status();
+      const query = String(moduleState.abroadStocks.query || '').trim().toLocaleLowerCase();
+      if (!query) return current.rows;
+      return current.rows.filter(row => {
+        const primary = moduleState.abroadStocks.mode === 'country' ? row.countryName : `${row.itemName} ${row.itemId || ''}`;
+        return String(primary).toLocaleLowerCase().includes(query);
+      });
+    }
+  
+    function sourceCell(row, providerId) {
+      const source = row.sources?.[providerId];
+      if (!source) return '<span class="abroad-source missing">Not reported</span>';
+      const stock = source.quantity === null ? 'Stock unavailable' : `${Number(source.quantity).toLocaleString()} in stock`;
+      const cost = source.cost === null ? '' : ` · ${Number(source.cost).toLocaleString()}`;
+      return `<span class="abroad-source"><strong>${stock}${cost}</strong><small>${escapeHtml(relativeTime(source.updatedAt))}</small></span>`;
+    }
+  
+    function render() {
+      const root = moduleRoot('abroadStocks');
+      if (!root) return;
+      const current = status();
+      const rows = filteredRows();
+      const watchedCount = runtime().watches.length;
+      const providerStatus = PROVIDER_ORDER.map(id => {
+        const provider = current.providers[id] || {};
+        const label = ABROAD_STOCKS.PROVIDERS[id].label;
+        return `<span class="badge ${provider.ok ? 'ready' : provider.error ? 'warn' : ''}">${escapeHtml(label)}: ${provider.ok ? `${Number(provider.rows || 0).toLocaleString()} rows` : provider.error ? 'unavailable' : 'waiting'}</span>`;
+      }).join('');
+      const needsTornIntelKey = Boolean(current.providers.tornIntel?.needsKey || current.settings.tornIntelKey);
+      root.innerHTML = `<div class="grid"><article class="card full">
+        <div class="card-head"><div><h2>Abroad Stocks</h2><span class="muted">Compare public reports from YATA, Prometheus, and Torn Intel.</span></div><button type="button" data-action="refresh-abroad-stocks" ${moduleState.abroadStocks.busy ? 'disabled' : ''}>${moduleState.abroadStocks.busy ? 'Refreshing…' : 'Refresh'}</button></div>
+        ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error, 'error') : ''}
+        <div class="module-toolbar"><span>${current.fetchedAt ? `Updated ${escapeHtml(relativeTime(current.fetchedAt))}` : 'Not loaded yet'} · ${watchedCount} departure watch${watchedCount === 1 ? '' : 'es'}</span><div class="target-actions">${providerStatus}</div></div>
+        <div class="abroad-search"><div class="racing-filters"><button type="button" data-abroad-mode="item" aria-selected="${String(moduleState.abroadStocks.mode === 'item')}">Search item</button><button type="button" data-abroad-mode="country" aria-selected="${String(moduleState.abroadStocks.mode === 'country')}">Search country</button></div><input type="search" data-abroad-query value="${escapeHtml(moduleState.abroadStocks.query)}" placeholder="${moduleState.abroadStocks.mode === 'item' ? 'Xanax, plushie, flower…' : 'Mexico, China, UAE…'}"></div>
+        <details class="alert-settings"><summary>Travel and reminder settings</summary>
+          <div class="abroad-settings">
+            <label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${method[0].toUpperCase()+method.slice(1)}</option>`).join('')}</select></label>
+            <label>Arrive early (minutes)<input type="number" min="0" max="30" data-field="abroad-arrival-buffer" value="${current.settings.arrivalBufferMinutes}"></label>
+            <label>Alert before leave time (minutes)<input type="number" min="0" max="180" data-field="abroad-alert-lead" value="${current.settings.alertLeadMinutes}"></label>
+            <label class="check-row"><input type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
+            <label class="check-row"><input type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
+            <label class="check-row"><input type="checkbox" data-field="abroad-use-droqs" ${current.settings.useDroqs ? 'checked' : ''}>Use optional DroqsDB enrichment</label>
+            <button type="button" data-action="save-abroad-settings">Save settings</button>
+          </div>
+        </details>
+        ${needsTornIntelKey ? `<details class="alert-settings" open><summary>Torn Intel access</summary><p>Torn Intel requested a client key. Register or contact Torn Intel, then save the key here. YATA and Prometheus continue working without it.</p><div class="abroad-provider-key"><a href="https://torn-intel.com/contact" target="_blank" rel="noopener">Open Torn Intel</a><input type="password" data-field="abroad-torn-intel-key" value="${escapeHtml(current.settings.tornIntelKey)}" placeholder="Torn Intel client key"><button type="button" data-action="save-abroad-settings">Save key</button></div></details>` : ''}
+        <div class="abroad-list">${rows.length ? rows.map(row => {
+          const prediction = row.nextRestockAt
+            ? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span>Leave: ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))} · ${escapeHtml(row.predictionSource || 'reported estimate')}</span>`
+            : '<strong>Restock estimate unavailable</strong><span>History is still learning; no reminder will fire yet.</span>';
+          return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" data-action="toggle-abroad-watch">${row.watched ? 'Stop alert' : 'Alert me when to leave'}</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
+        }).join('') : moduleMessage(current.fetchedAt ? 'No abroad stocks match this search.' : 'Press Refresh to load abroad stock reports.')}</div>
+      </article></div>`;
+    }
+  
+    function toggleWatch(key) {
+      const current = runtime();
+      const index = current.watches.findIndex(entry => entry.key === key);
+      if (index >= 0) current.watches.splice(index,1);
+      else {
+        const row = current.rows.find(entry => entry.key === key);
+        if (!row) return;
+        current.watches.push({ key:row.key, countryCode:row.countryCode, countryName:row.countryName, itemId:row.itemId, itemName:row.itemName });
+        current.activeUntil = Date.now() + ACTIVITY_MS;
+      }
+      writeDataState();
+      render();
+      reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+      renderAlerts();
+    }
+  
+    function saveFromRoot() {
+      const root = moduleRoot('abroadStocks');
+      if (!root) return;
+      const current = settings();
+      current.travelMethod = String(root.querySelector('[data-field="abroad-travel-method"]')?.value || current.travelMethod);
+      current.arrivalBufferMinutes = Math.min(30, Math.max(0, Number(root.querySelector('[data-field="abroad-arrival-buffer"]')?.value) || 0));
+      current.alertLeadMinutes = Math.min(180, Math.max(0, Number(root.querySelector('[data-field="abroad-alert-lead"]')?.value) || 0));
+      current.alertsEnabled = root.querySelector('[data-field="abroad-alerts-enabled"]')?.checked !== false;
+      current.soundEnabled = root.querySelector('[data-field="abroad-sound-enabled"]')?.checked === true;
+      current.useDroqs = root.querySelector('[data-field="abroad-use-droqs"]')?.checked !== false;
+      const keyField = root.querySelector('[data-field="abroad-torn-intel-key"]');
+      if (keyField) current.tornIntelKey = String(keyField.value || '').trim().slice(0,256);
+      dataState.settings.abroadStocks = current;
+      writeDataState();
+      moduleState.abroadStocks.error = '';
+      render();
+      void refresh(true);
+    }
+  
+    function setMode(mode) {
+      moduleState.abroadStocks.mode = mode === 'country' ? 'country' : 'item';
+      render();
+    }
+  
+    function setQuery(value) {
+      moduleState.abroadStocks.query = String(value || '').slice(0,100);
+      render();
+      const input = moduleRoot('abroadStocks')?.querySelector('[data-abroad-query]');
+      if (input) {
+        input.focus({ preventScroll:true });
+        input.setSelectionRange(input.value.length,input.value.length);
+      }
+    }
+  
+    function snooze(id, minutes) {
+      runtime().snoozes[String(id)] = Date.now() + Math.max(1, Number(minutes) || 60) * 60_000;
+      writeDataState();
+      reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+      renderAlerts();
+    }
+  
+    return { alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
+  })();
 
   function renderAccess() {
     const root = moduleRoot('access');
@@ -4367,7 +4873,7 @@
     const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Array.isArray(body?.battlestats?.[name]?.modifiers) ? body.battlestats[name].modifiers : []).filter(row => /addiction/i.test(`${row?.effect || ''} ${row?.type || ''}`));
     const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
     add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
-    return [...stakeoutAlertRows(), ...rows];
+    return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...rows];
   }
 
   function updateAlertIndicator(count) {
@@ -4400,7 +4906,8 @@
     const text = `${String(alert.detail || 'Open Torn PDA to review this alert.')}${href ? ' Tap to open.' : ''}`;
     try {
       if (typeof GM_API.notify === 'function') {
-        GM_API.notify({ title, text, tag:`slink-efficiency-${alert.id}`, timeout:12_000, ...(href ? { onclick:() => openAlertDestination(href) } : {}) });
+        const silent = alert.id.startsWith('abroad:') && dataState.settings.abroadStocks?.soundEnabled !== true;
+        GM_API.notify({ title, text, tag:`slink-efficiency-${alert.id}`, timeout:12_000, silent, ...(href ? { onclick:() => openAlertDestination(href) } : {}) });
         return;
       }
     } catch {}
@@ -4457,9 +4964,10 @@
     if (!root) return;
     const permitted = hasScope('slink.adhd.alerts');
     const stakeoutAlerts = stakeoutAlertRows();
-    if (!permitted && !stakeoutAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+    const abroadAlerts = PDA_ABROAD.alerts();
+    if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
     const current = moduleState.alerts;
-    const alerts = permitted ? alertRows(current.data) : stakeoutAlerts;
+    const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts];
     const cityBought = finite(current.data?.cityBought);
     const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
     const cityStatus = cityHidden
@@ -6049,13 +6557,14 @@
     if (name === 'bounties') touchBounties();
     if (name === 'targetList') { renderTargetList(); return; }
     if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
+    if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
     if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
     const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
     if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
   }
 
   function renderAllModules() {
-    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderThemeChoices(); applyPermissionGates();
+    renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
   }
 
   function startScheduler() {
@@ -6082,6 +6591,7 @@
       if (moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
       if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
       if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
+      void PDA_ABROAD.refresh(false);
       if (dashboardOpen && !document.hidden) void loadActiveModule(false);
     }, 30_000);
   }
@@ -6150,12 +6660,13 @@
     .positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
     .mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav{visibility:hidden;pointer-events:none}
     @media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    .abroad-search{display:grid;grid-template-columns:auto minmax(180px,1fr);gap:8px;align-items:center;margin:10px 0}.abroad-search input{width:100%;min-height:42px}.abroad-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}.abroad-provider-key{display:grid;grid-template-columns:auto minmax(180px,1fr) auto;gap:8px;align-items:center}.abroad-list{display:grid;gap:9px;margin-top:10px}.abroad-card{display:grid;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:10px;background:color-mix(in srgb,var(--s-card) 86%,transparent)}.abroad-card header,.abroad-card footer{display:flex;gap:8px;align-items:center;justify-content:space-between}.abroad-card h3{margin:0}.abroad-card header span,.abroad-card footer span,.abroad-card footer small{display:block;color:var(--s-muted)}.abroad-sources{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.abroad-sources>div{padding:7px;border:1px solid var(--s-soft);border-radius:8px}.abroad-source{display:grid;gap:2px;margin-top:4px}.abroad-source small,.abroad-source.missing{color:var(--s-muted)}
     @media(max-width:700px){
       .alert-settings-groups{grid-template-columns:1fr}.racing-list{grid-template-columns:1fr}
       .overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
       .primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="quality-of-life"]::before{content:"🏁"}.primary-nav button[data-page="access"]::before{content:"⚙"}
       .scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
-      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form,.target-list-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide,.target-list-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+      .grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form,.target-list-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide,.target-list-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list,.abroad-search,.abroad-settings,.abroad-provider-key,.abroad-sources{grid-template-columns:1fr}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
     }
     @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
@@ -6208,8 +6719,9 @@
       </section>
       <section class="page" data-page-panel="quality-of-life" hidden>
         <div class="page-head"><div><h1>Quality of Life</h1><p>Convenience tools that work with Torn's visible page data.</p></div></div>
-        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button></nav>
+        <nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button></nav>
         <div class="subpage" data-quality-of-life-panel="racing"><div data-module-root="racing"></div></div>
+        <div class="subpage" data-quality-of-life-panel="abroadStocks" hidden><div data-module-root="abroadStocks"></div></div>
       </section>
       <section class="page" data-page-panel="access" hidden>
         <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
@@ -6300,7 +6812,7 @@
     const allowedByGroup = {
       combat:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'],
       efficiency:['alerts', 'market', 'merits', 'dollarBazaars'],
-      qualityOfLife:['racing']
+      qualityOfLife:['racing','abroadStocks']
     };
     const allowed = allowedByGroup[group] || allowedByGroup.combat;
     if (!allowed.includes(tab)) tab = allowed[0];
@@ -6421,6 +6933,7 @@
     else if (target.closest('[data-combat-panel="war"]')) touchModuleActivity('war');
     else if (target.closest('[data-combat-panel="mugging"]')) touchModuleActivity('mugging');
     else if (target.closest('[data-efficiency-panel="market"]')) touchModuleActivity('market');
+    else if (target.closest('[data-quality-of-life-panel="abroadStocks"]')) PDA_ABROAD.touch();
   }
 
   overlay.addEventListener('input', event => trackModuleInteraction(event.target), true);
@@ -6435,6 +6948,8 @@
     const targetProfile = event.target.closest('[data-target-list-profile]');
     if (targetProfile) rememberPlayerProfileIntent(targetProfile.dataset.targetListProfile, 'target-list');
     const action = event.target.closest('[data-action]')?.dataset.action;
+    const abroadMode = event.target.closest('[data-abroad-mode]')?.dataset.abroadMode;
+    if (abroadMode) PDA_ABROAD.setMode(abroadMode);
     const racingView = event.target.closest('[data-racing-view]')?.dataset.racingView;
     if (racingView) {
       racingSettings().view = racingView;
@@ -6496,6 +7011,10 @@
       const id = String(button?.dataset.alertId || '');
       const minutes = Math.max(1, Number(button?.dataset.minutes) || 5);
       if (id) {
+        if (id.startsWith('abroad:')) {
+          PDA_ABROAD.snooze(id, minutes);
+          return;
+        }
         dataState.settings.alerts.snoozedUntil[id] = Date.now() + minutes * 60_000;
         writeDataState();
         renderAlerts();
@@ -6753,6 +7272,12 @@
       void refreshBounties(false);
     }
     if (action === 'refresh-dollar-bazaars') void refreshDollarBazaars(true);
+    if (action === 'refresh-abroad-stocks') { PDA_ABROAD.touch(); void PDA_ABROAD.refresh(true); }
+    if (action === 'save-abroad-settings') PDA_ABROAD.saveFromRoot();
+    if (action === 'toggle-abroad-watch') {
+      const key = String(event.target.closest('[data-abroad-key]')?.dataset.abroadKey || '');
+      if (key) PDA_ABROAD.toggleWatch(key);
+    }
     if (action === 'sync-market-weaver-pricelist') void syncMarketPricelistNow();
     if (action === 'save-market-watch') saveMarketWatch();
     if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = ''; renderMarket(false); }
@@ -6818,6 +7343,10 @@
   });
 
   overlay.addEventListener('input', event => {
+    if (event.target.matches('[data-abroad-query]')) {
+      PDA_ABROAD.setQuery(event.target.value);
+      return;
+    }
     if (!event.target.matches('[data-racing-name]')) return;
     const card = event.target.closest('[data-racing-build]');
     const buildState = card ? racingSettings().builds[card.dataset.racingBuild] : null;
