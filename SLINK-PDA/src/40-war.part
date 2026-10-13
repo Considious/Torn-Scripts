@@ -427,7 +427,7 @@ add('stockBenefits', readyStocks.length > 0, 'Stock benefit ready', readyStocks.
 const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Array.isArray(body?.battlestats?.[name]?.modifiers) ? body.battlestats[name].modifiers : []).filter(row => /addiction/i.test(`${row?.effect || ''} ${row?.type || ''}`));
 const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
 add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
-return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...rows];
+return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows];
 }
 function updateAlertIndicator(count) {
 const alertTotal = Math.max(0, Number(count) || 0);
@@ -457,7 +457,8 @@ const href = String(alert.href || alert.links?.[0]?.[1] || '');
 const text = `${String(alert.detail || 'Open Torn PDA to review this alert.')}${href ? ' Tap to open.' : ''}`;
 try {
 if (typeof GM_API.notify === 'function') {
-const silent = alert.id.startsWith('abroad:') && dataState.settings.abroadStocks?.soundEnabled !== true;
+const silent = (alert.id.startsWith('abroad:') && dataState.settings.abroadStocks?.soundEnabled !== true)
+|| (alert.id.startsWith('money-property:') && dataState.settings.plugins?.moneyProperty?.soundEnabled !== true);
 GM_API.notify({ title, text, tag:`slink-efficiency-${alert.id}`, timeout:12_000, silent, ...(href ? { onclick:() => openAlertDestination(href) } : {}) });
 return;
 }
@@ -512,9 +513,10 @@ const permitted = hasScope('slink.adhd.alerts');
 const stakeoutAlerts = stakeoutAlertRows();
 const abroadAlerts = PDA_ABROAD.alerts();
 const companyAlerts = companyAlertRows();
-if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+const pluginAlerts = pdaPluginAlerts();
+if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
 const current = moduleState.alerts;
-const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts];
+const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
 const cityBought = finite(current.data?.cityBought);
 const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
 const cityStatus = cityHidden

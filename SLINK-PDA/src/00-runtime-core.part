@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.46
+// @version      0.4.47
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.46-external-runtime';
+const BUILD = '0.4.47-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -43,7 +43,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.46';
+const CLIENT_VERSION = '0.4.47';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -702,7 +702,7 @@ return {
 page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
 combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
 efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
-qualityOfLifeTab:['racing','abroadStocks','company','museums'].includes(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
+qualityOfLifeTab:typeof source.qualityOfLifeTab === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
 theme:String(source.theme || defaults.theme),
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
 };
@@ -889,6 +889,7 @@ quickPurchaseSyncTimer:null
 };
 const reportedMugNodes = new WeakSet();
 const recentMugResults = new Map();
+const pdaPlugins = new Map();
 const moduleState = {
 access:{ busy:false, error:'' },
 leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
@@ -906,6 +907,19 @@ travelSafety:{ busy:false, error:'', crime:dataState.caches.travelSafety?.crime 
 company:{ busy:false, error:'', notice:'', data:dataState.caches.company || null },
 museums:{ busy:false,error:'',notice:'',data:dataState.caches.museums||null }
 };
+function pdaPluginAlerts() {
+const snoozed = dataState.settings.alerts?.snoozedUntil || {};
+const rows = [];
+for (const plugin of pdaPlugins.values()) {
+try {
+const alerts = typeof plugin.alerts === 'function' ? plugin.alerts() : [];
+for (const alert of Array.isArray(alerts) ? alerts : []) {
+if (alert?.id && Number(snoozed[alert.id] || 0) <= Date.now()) rows.push(alert);
+}
+} catch (error) { console.warn('[SLINK PDA] Plugin alerts:', plugin.id, error); }
+}
+return rows;
+}
 function serializeNetwork(task) {
 const result = networkQueue.then(task, task);
 networkQueue = result.catch(() => undefined);

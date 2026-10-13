@@ -7,6 +7,14 @@ return 'access';
 async function loadActiveModule(force = false) {
 if (!dashboardOpen || document.hidden) return;
 const name = activeModuleName();
+const plugin = pdaPlugins.get(name);
+if (plugin) {
+try {
+plugin.render?.();
+if (!plugin.scope || hasScope(plugin.scope)) await plugin.refresh?.(force);
+} catch (error) { console.warn('[SLINK PDA] Plugin refresh:', name, error); }
+return;
+}
 if (!canAccessModule(name)) { applyPermissionGates(); return; }
 if (['leveling', 'war', 'mugging', 'market'].includes(name)) touchModuleActivity(name);
 if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
@@ -21,7 +29,7 @@ const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refres
 if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 }
 function renderAllModules() {
-renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderCompany(); renderMuseums(); PDA_ABROAD.render(); renderThemeChoices(); applyPermissionGates();
+renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderCompany(); renderMuseums(); PDA_ABROAD.render(); for (const plugin of pdaPlugins.values()) { try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', plugin.id, error); } } renderThemeChoices(); applyPermissionGates();
 }
 function startScheduler() {
 if (schedulerTimer) return;
@@ -411,12 +419,14 @@ shadow.querySelector('.scroll').scrollTop = 0;
 if (dashboardOpen) void loadActiveModule(false);
 }
 function selectSubpage(group, tab, persist = true) {
+const requestedTab = tab;
 const allowedByGroup = {
 combat:['leveling','bounties','mugging','targetList','war','stats'],
 efficiency:['alerts','market','merits','dollarBazaars'],
-qualityOfLife:['racing','abroadStocks','company','museums']
+qualityOfLife:['racing','abroadStocks','company','museums',...pdaPlugins.keys()]
 };
 const allowed = allowedByGroup[group] || allowedByGroup.combat;
+const pendingPlugin = group === 'qualityOfLife' && !allowed.includes(tab) && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(String(tab || ''));
 const permitted = allowed.filter(canAccessModule);
 if (!allowed.includes(tab) || !canAccessModule(tab)) tab = permitted[0] || allowed[0];
 const stateKey = group === 'combat' ? 'combatTab' : group === 'efficiency' ? 'efficiencyTab' : 'qualityOfLifeTab';
@@ -425,7 +435,8 @@ if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.re
 const attributeGroup = group === 'qualityOfLife' ? 'quality-of-life' : group;
 shadow.querySelectorAll(`[data-${attributeGroup}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
 shadow.querySelectorAll(`[data-${attributeGroup}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[`${group}Tab`] === tab)));
-if (persist) writeState();
+if (pendingPlugin) state.qualityOfLifeTab = requestedTab;
+else if (persist) writeState();
 if (dashboardOpen) void loadActiveModule(false);
 }
 function setTheme(theme, persist = true) {
@@ -1195,6 +1206,68 @@ document.addEventListener('click', handleHighlightedQuickPurchaseClick, true);
 document.addEventListener('click', handleBazaarPurchaseClick, true);
 void scanIntendedProfileDom();
 scanAttackMugResults();
+
+function pdaPluginSettings(id, defaults = {}) {
+if (!dataState.settings.plugins || typeof dataState.settings.plugins !== 'object') dataState.settings.plugins = {};
+const current = dataState.settings.plugins[id];
+dataState.settings.plugins[id] = { ...defaults, ...(current && typeof current === 'object' ? current : {}) };
+return dataState.settings.plugins[id];
+}
+function pdaPluginCache(id, defaults = {}) {
+if (!dataState.caches.plugins || typeof dataState.caches.plugins !== 'object') dataState.caches.plugins = {};
+const current = dataState.caches.plugins[id];
+dataState.caches.plugins[id] = { ...defaults, ...(current && typeof current === 'object' ? current : {}) };
+return dataState.caches.plugins[id];
+}
+function registerPdaPlugin(plugin) {
+if (!plugin || !/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(String(plugin.id || ''))) throw new Error('Invalid PDA plugin id.');
+const id = String(plugin.id);
+if (pdaPlugins.has(id)) return pdaPlugins.get(id);
+pdaPlugins.set(id, plugin);
+const page = shadow.querySelector('[data-page-panel="quality-of-life"]');
+const nav = page?.querySelector('.subnav');
+if (nav && !nav.querySelector('[data-quality-of-life-tab="' + id + '"]')) {
+const button = document.createElement('button');
+button.type = 'button';
+button.dataset.qualityOfLifeTab = id;
+button.textContent = String(plugin.shortTitle || plugin.title || id);
+nav.appendChild(button);
+}
+if (page && !page.querySelector('[data-quality-of-life-panel="' + id + '"]')) {
+const panel = document.createElement('div');
+panel.className = 'subpage';
+panel.dataset.qualityOfLifePanel = id;
+panel.hidden = true;
+const root = document.createElement('div');
+root.dataset.moduleRoot = id;
+panel.appendChild(root);
+page.appendChild(panel);
+}
+try { plugin.start?.(); } catch (error) { console.warn('[SLINK PDA] Plugin start:', id, error); }
+try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', id, error); }
+if (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);
+renderAlerts();
+return plugin;
+}
+global.SLINK_PDA_PLUGIN_API = Object.freeze({
+register:registerPdaPlugin,
+root:moduleRoot,
+settings:pdaPluginSettings,
+cache:pdaPluginCache,
+save:writeDataState,
+hasScope,
+ensurePermission:ensurePermissionSession,
+tornJson,
+catalogItems:body => marketRuntime().catalogItems(body),
+escapeHtml,
+number,
+relativeTime,
+moduleMessage,
+actionLink,
+lockedModule,
+errorMessage,
+alertsChanged:() => { writeDataState(); renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
+});
 global.SLINK_PDA_DASHBOARD = Object.freeze({
 build:BUILD,
 open:openDashboard,

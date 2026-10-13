@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
     "src/00-runtime-core.part",
@@ -11,6 +11,13 @@
     "src/90-shell-bootstrap.part"
   ],
   "runtimeOutput": "SLINK_PDA_Runtime.js",
-  "loaderMaxBytes": 12000,
-  "runtimeMaxBytes": 450000
+  "startupAddons": [
+    {
+      "source": "src/addons/money-property.addon.js",
+      "output": "SLINK_PDA_Money_Property.js",
+      "maxBytes": 60000
+    }
+  ],
+  "loaderMaxBytes": 14000,
+  "runtimeMaxBytes": 455000
 }
