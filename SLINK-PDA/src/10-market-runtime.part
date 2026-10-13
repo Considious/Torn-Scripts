@@ -669,7 +669,8 @@ if (total >= 60) return `${Math.floor(total / 60)}m`;
 return `${total}s`;
 }
 function moduleRoot(name) {
-return shadow?.querySelector?.(`[data-module-root="${name}"]`) || null;
+const root = shadow?.querySelector?.(`[data-module-root="${name}"]`) || null;
+return root ? installModuleRenderGuard(root) : null;
 }
 function moduleMessage(text, kind = '') {
 return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(text)}</div>`;

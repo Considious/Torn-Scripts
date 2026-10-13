@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.45
+// @version      0.4.46
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.45-external-runtime';
+const BUILD = '0.4.46-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -43,7 +43,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.45';
+const CLIENT_VERSION = '0.4.46';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -164,9 +164,16 @@ const employees = rawEmployees.map(normalizeCompanyEmployee).filter(employee => 
 const currentUserId = Math.trunc(Number(userId) || 0);
 const directorId = Math.trunc(Number(profile?.director?.id ?? profile?.director_id) || 0);
 const companyId = Math.trunc(Number(job?.company_id ?? job?.company?.id ?? profile?.id) || 0);
-const companyPoints = Array.isArray(jobpoints?.companies)
-? jobpoints.companies.find(entry => Number(entry?.company?.id ?? entry?.company_id) === companyId)
-: null;
+const companyTypeId = Math.trunc(Number(job?.company_type ?? job?.type_id ?? job?.company?.type_id ?? profile?.type_id) || 0);
+const companyPointRows = Array.isArray(jobpoints?.companies)
+? jobpoints.companies
+: Object.entries(jobpoints?.companies || {}).map(([id, entry]) => ({
+...entry,
+company:entry?.company || { id:Number(id), name:entry?.name || '' },
+points:entry?.points ?? entry?.jobpoints
+}));
+const companyPoints = companyPointRows.find(entry => Number(entry?.company?.id ?? entry?.company_id ?? entry?.id) === companyTypeId)
+|| companyPointRows.find(entry => key(entry?.company?.name ?? entry?.name) === key(job?.company_type_name ?? job?.company?.type_name ?? profile?.type_name));
 return {
 fetchedAt:Date.now(),
 userId:currentUserId,
@@ -175,11 +182,11 @@ directorId,
 company:{
 id:companyId,
 name:String(job?.company_name ?? job?.company?.name ?? profile?.name ?? ''),
-typeId:Math.trunc(Number(job?.company_type ?? job?.type_id ?? job?.company?.type_id) || 0),
+typeId:companyTypeId,
 rating:Math.trunc(Number(job?.company_rating ?? job?.rating ?? profile?.rating) || 0),
 position:String(job?.position || ''),
 daysInCompany:Math.max(0, Math.trunc(Number(job?.days_in_company) || 0)),
-jobPoints:companyFinite(companyPoints?.points ?? jobpoints?.jobs?.points ?? jobpoints?.points)
+jobPoints:companyFinite(companyPoints?.points ?? companyPoints?.jobpoints ?? jobpoints?.jobs?.points ?? jobpoints?.points)
 },
 self:employees.find(employee => employee.id === currentUserId) || null,
 employees
@@ -277,7 +284,7 @@ const PROVIDERS = Object.freeze({
 yata:Object.freeze({ id:'yata', label:'YATA', url:'https://yata.yt/api/v1/travel/export/' }),
 prometheus:Object.freeze({ id:'prometheus', label:'Prometheus', url:'https://prombot.co.uk:8443/api/travel' }),
 tornIntel:Object.freeze({ id:'tornIntel', label:'Torn Intel', url:'https://torn-intel.com/api/v1/foreign-stock/travel-table' }),
-droqs:Object.freeze({ id:'droqs', label:'DroqsDB', url:'https://droqsdb.com/api/public/v1/export', enrichment:true })
+droqs:Object.freeze({ id:'droqs', label:'DroqsDB forecast', url:'https://droqsdb.com/api/public/v1/restocking-soon', enrichment:true })
 });
 const COUNTRIES = Object.freeze([
 ['arg','Argentina',158], ['can','Canada',39], ['cay','Cayman Islands',33],
@@ -343,6 +350,34 @@ function normalizeProvider(providerId, payload, fetchedAt = Date.now()) {
 const provider = PROVIDERS[providerId];
 if (!provider) throw new Error('Unknown abroad-stock provider.');
 const normalized = [];
+if (provider.enrichment && Array.isArray(payload?.items)) {
+for (const item of payload.items) {
+const country = countryRecord(item?.countryCode ?? item?.yataCode ?? item?.country?.yataCode ?? item?.country?.code ?? item?.country?.name ?? item?.countryName ?? item?.country);
+if (!country) continue;
+const name = String(item?.itemName ?? item?.name ?? item?.item ?? '').trim();
+const id = Math.max(0, Math.trunc(finite(item?.itemId ?? item?.id ?? item?.item_id) || 0));
+if (!id && !name) continue;
+const quantity = finite(item?.quantity ?? item?.stock ?? item?.currentStock ?? item?.current);
+const cost = finite(item?.buyPrice ?? item?.cost ?? item?.price ?? item?.foreignPrice);
+let nextRestockAt = itemTimestamp(item, ['nextRestockAt','estimatedRestockAt','restockAt','restock_at']);
+const estimatedMinutes = finite(item?.estimatedRestockMinutes ?? item?.restockMinutes);
+if (!nextRestockAt && estimatedMinutes !== null && estimatedMinutes >= 0) nextRestockAt = timestamp(payload?.generatedAt, fetchedAt) + estimatedMinutes * 60_000;
+normalized.push({
+provider:providerId,
+countryCode:country.code,
+countryName:country.name,
+itemId:id || null,
+itemName:name || ('Item ' + id),
+quantity:quantity === null ? null : Math.max(0, Math.trunc(quantity)),
+cost:cost === null ? null : Math.max(0, Math.round(cost)),
+updatedAt:itemTimestamp(item, ['stockUpdatedAt','updatedAt','lastUpdated','timestamp'], payload?.generatedAt ?? fetchedAt),
+lastRestockAt:itemTimestamp(item, ['lastRestockAt','lastRestock','previousRestockAt']),
+nextRestockAt,
+predictionSource:nextRestockAt ? provider.label : ''
+});
+}
+return normalized;
+}
 for (const countryInput of sourceCountries(payload || {})) {
 const country = countryRecord(countryInput?.country || countryInput?.code || countryInput?.iata || countryInput?.yataCode || countryInput?.name);
 if (!country) continue;
@@ -357,7 +392,7 @@ const id = Math.max(0, Math.trunc(finite(item?.id ?? item?.itemId ?? item?.item_
 if (!id && !name) continue;
 const quantity = finite(item?.quantity ?? item?.stock ?? item?.current ?? item?.amount);
 const cost = finite(item?.cost ?? item?.buyPrice ?? item?.price ?? item?.foreignPrice);
-let nextRestockAt = itemTimestamp(item, ['nextRestock','next_restock','nextRestockAt','estimatedRestockAt','restockAt']);
+let nextRestockAt = itemTimestamp(item, ['nextRestock','next_restock','nextRestockAt','estimatedRestockAt','estimatedRestockTime','restockAt','restock_at']);
 if (!nextRestockAt && finite(item?.estimatedRestockMinutes) !== null) nextRestockAt = fetchedAt + Number(item.estimatedRestockMinutes) * 60_000;
 normalized.push({
 provider:providerId,
