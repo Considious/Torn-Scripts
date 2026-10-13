@@ -6,7 +6,10 @@ let plugin = null;
 const storedSettings = {};
 const context = {
   console,
+  document:{ body:null },
   setInterval() { return 1; },
+  setTimeout(callback) { callback(); return 1; },
+  addEventListener() {},
   SLINK_PDA_PLUGIN_API:{
     register(value) { plugin = value; },
     settings(id, defaults) { storedSettings[id] ||= { ...defaults }; return storedSettings[id]; },
@@ -44,4 +47,21 @@ assert.equal(calendar.next.personalized, true);
 assert.equal(calendar.next.startAt, now + 2 * 86_400_000);
 storedSettings.events = { selectedId:'christmas' };
 assert.equal(plugin.test.selectedEvent(calendar).name, 'Christmas Town');
+
+assert.equal(plugin.test.UPGRADE_ORDER.length, 20);
+assert.deepEqual(Array.from(plugin.test.UPGRADE_ORDER.slice(0,8), entry => entry.name), [
+  'I See Dead People', "Here's Johnny", 'Doubler', 'Tripler', 'Quadrupler', 'Cat in Hell', 'Quintupler', 'Shadow of Doubt'
+]);
+assert.equal(plugin.test.basketRank('Halloween Basket : Terrifying'), 'Terrifying');
+const guide = plugin.test.recommendations([
+  ...[1,2,3,4,5,13,6].map(upgradeId => ({ upgradeId, unlocked:true })),
+  { upgradeId:23, unlocked:false, disabled:true, selected:true },
+  { upgradeId:19, unlocked:false, disabled:true },
+  { upgradeId:20, unlocked:false, disabled:true }
+]);
+assert.equal(guide.completedCount, 7);
+assert.deepEqual(Array.from(guide.recommendations, entry => entry.name), ['Shadow of Doubt','Multipack','Deal with the Devil']);
+assert.equal(guide.recommendations[0].disabled, true);
+assert.equal(plugin.test.recommendations([{ upgradeId:13, selected:true, unlocked:false }],7).recommendations.some(entry => entry.name === 'Cat in Hell'), true);
 console.log('PDA Events tests passed.');
+
