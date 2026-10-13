@@ -8,6 +8,7 @@ on:
       - 'SLINK-PDA/build.mjs'
       - 'SLINK-PDA/package.json'
       - 'SLINK-PDA/source-manifest.json'
+      - 'SLINK-PDA/test-*.mjs'
       - '.github/workflows/check-slink-pda.yml'
   pull_request:
     paths:
@@ -41,5 +42,5 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Build PDA external runtime 0.4.43 [skip ci]"
+          git commit -m "Build PDA external runtime [skip ci]"
           git push
