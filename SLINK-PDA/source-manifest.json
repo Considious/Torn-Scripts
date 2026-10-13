@@ -16,6 +16,11 @@
       "source": "src/addons/money-property.addon.js",
       "output": "SLINK_PDA_Money_Property.js",
       "maxBytes": 60000
+    },
+    {
+      "source": "src/addons/events.addon.js",
+      "output": "SLINK_PDA_Events.js",
+      "maxBytes": 30000
     }
   ],
   "loaderMaxBytes": 14000,

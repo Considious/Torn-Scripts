@@ -17,7 +17,8 @@ for (const scope of [
   'slink.qol.abroad-stocks',
   'slink.qol.company',
   'slink.qol.museum',
-  'slink.qol.money-property'
+  'slink.qol.money-property',
+  'slink.qol.events'
 ]) assert.ok(allSource.includes(scope), `Missing PDA permission scope: ${scope}`);
 assert.ok(source.includes("qualityOfLife:['racing','abroadStocks','company','museums',...pdaPlugins.keys()]"));
 assert.ok(!source.includes("qualityOfLife:['racing','abroadStocks','travelSafety']"));
