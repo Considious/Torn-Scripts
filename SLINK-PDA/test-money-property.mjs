@@ -50,7 +50,7 @@ assert.equal(status.money.availableCash, 5000000);
 assert.equal(status.bank.matured, true);
 assert.equal(status.currentProperty.name, 'Private Island');
 assert.equal(status.stocks[0].incrementalCost, 50000);
-storedSettings.moneyProperty.stockAlerts[status.stocks[0].alertKey] = true;
+storedSettings.moneyProperty = { enabled:true, bankLeadHours:2, rentalLeadDays:3, cashierLeadHours:24, upkeepThreshold:1000000, loanReminder:true, soundEnabled:false, stockAlerts:{ [status.stocks[0].alertKey]:true } };
 const alerts = plugin.test.buildAlerts(status, now);
 assert.ok(alerts.some(alert => alert.id === 'money-property:bank-matured'));
 assert.ok(alerts.some(alert => alert.id === 'money-property:upkeep'));
