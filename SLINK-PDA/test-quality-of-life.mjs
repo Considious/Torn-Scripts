@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const source = fs.readFileSync(new URL('./SLINK_PDA_Runtime.js', import.meta.url), 'utf8');
+const coreSource = fs.readFileSync(new URL('./src/00-runtime-core.part', import.meta.url), 'utf8');
+const qualitySource = fs.readFileSync(new URL('./src/20-quality-of-life.part', import.meta.url), 'utf8');
+const source = coreSource + '\n' + qualitySource;
 
 assert(source.includes('/api/public/v1/restocking-soon'), 'Abroad Stocks must use the provider forecast endpoint for published restock estimates.');
 assert(source.includes('estimatedRestockMinutes'), 'Abroad Stocks must normalize provider restock estimates.');
