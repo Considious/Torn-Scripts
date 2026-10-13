@@ -87,6 +87,18 @@
     throw new Error('PDA_httpGet is unavailable.');
   }
 
+  async function fetchRuntime() {
+    const [runtimeSource, ...addonSources] = await Promise.all([
+      fetchSource(RUNTIME_URL),
+      ...ADDON_URLS.map(url => fetchSource(url))
+    ]);
+    if (runtimeSource.length < 1000) throw new Error('Downloaded runtime was empty or incomplete.');
+    addonSources.forEach((source, index) => {
+      if (source.length < 100) throw new Error('Downloaded startup add-on ' + (index + 1) + ' was empty or incomplete.');
+    });
+    return { runtimeSource, addonSources };
+  }
+
   async function executeRuntime(source) {
     if (typeof globalThis.PDA_evaluateJavascript === 'function') {
       await globalThis.PDA_evaluateJavascript(source);
@@ -98,15 +110,22 @@
   async function loadRuntime() {
     try {
       const currentHost = document.getElementById('slink-pda-dashboard-host');
-      if (currentHost?.dataset?.slinkReady === 'true') {
+      const runtimeReady = currentHost?.dataset?.slinkReady === 'true';
+      if (runtimeReady && globalThis.__SLINK_PDA_ADDONS_READY__ === true) {
         document.getElementById(ERROR_ID)?.remove();
         return;
       }
-      const downloaded = await fetchRuntime();
-      if (downloaded.length < 1000) throw new Error('Downloaded runtime was empty or incomplete.');
+      const { runtimeSource, addonSources } = await fetchRuntime();
       const bootstrapSource = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(collectBootstrap()) + ';';
-      const hydrated = bootstrapSource + downloaded.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Runtime.js';
-      await executeRuntime(hydrated);
+      const executableSources = ['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];
+      if (!runtimeReady) {
+        executableSources.push(bootstrapSource + runtimeSource.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Runtime.js\n');
+      }
+      addonSources.forEach((source, index) => {
+        executableSources.push(source.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Addon_' + (index + 1) + '.js\n');
+      });
+      executableSources.push('globalThis.__SLINK_PDA_ADDONS_READY__=true;');
+      await executeRuntime(executableSources.join('\n;\n'));
       const readyDeadline = Date.now() + 15_000;
       while (Date.now() < readyDeadline) {
         const readyHost = document.getElementById('slink-pda-dashboard-host');
