@@ -1,0 +1,46 @@
+name: Build and check SLINK PDA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'SLINK-PDA/src/**'
+      - 'SLINK-PDA/build.mjs'
+      - 'SLINK-PDA/package.json'
+      - 'SLINK-PDA/source-manifest.json'
+      - 'SLINK-PDA/test-*.mjs'
+      - '.github/workflows/check-slink-pda.yml'
+  pull_request:
+    paths:
+      - 'SLINK-PDA/**'
+      - '.github/workflows/check-slink-pda.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm install --prefix SLINK-PDA --no-package-lock
+      - run: npm --prefix SLINK-PDA run build
+      - run: npm --prefix SLINK-PDA test
+      - name: Require committed build in pull requests
+        if: github.event_name == 'pull_request'
+        run: git diff --exit-code -- SLINK-PDA/SLINK_PDA_*.js
+      - name: Publish generated PDA loader and runtime
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          git add SLINK-PDA/SLINK_PDA_*.js
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Build PDA external runtime [skip ci]"
+          git push
