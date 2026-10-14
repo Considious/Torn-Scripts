@@ -24,5 +24,5 @@
     }
   ],
   "loaderMaxBytes": 14000,
-  "runtimeMaxBytes": 455000
+  "runtimeMaxBytes": 500000
 }
