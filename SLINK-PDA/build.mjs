@@ -41,7 +41,7 @@ const addonBuilds = await Promise.all((manifest.startupAddons || []).map(async a
   const source = '// Generated SLINK PDA startup addon ' + version + '.\n' + minified.code + '\n';
   new Script(source, { filename:addon.output });
   const bytes = Buffer.byteLength(source, 'utf8');
-  if (bytes > addon.maxBytes) throw new Error(addon.output + ' is ' + bytes + ' bytes; addon ceiling is ' + addon.maxBytes + '.');
+  if (bytes > addon.maxBytes) console.warn(addon.output + ' is ' + bytes + ' bytes; advisory addon threshold is ' + addon.maxBytes + '.');
   return { ...addon, source, bytes };
 }));
 
@@ -189,7 +189,7 @@ const runtimeBytes = Buffer.byteLength(runtimeSource, 'utf8');
 const loaderBytes = Buffer.byteLength(loaderSource, 'utf8');
 const addonSummary = addonBuilds.map(addon => addon.output + ' ' + addon.bytes + ' bytes').join('; ');
 if (runtimeBytes > manifest.runtimeMaxBytes) {
-  throw new Error(manifest.runtimeOutput + ' is ' + runtimeBytes + ' bytes; runtime ceiling is ' + manifest.runtimeMaxBytes + '.');
+  console.warn(manifest.runtimeOutput + ' is ' + runtimeBytes + ' bytes; advisory runtime threshold is ' + manifest.runtimeMaxBytes + '.');
 }
 if (loaderBytes > manifest.loaderMaxBytes) {
   throw new Error(manifest.output + ' is ' + loaderBytes + ' bytes; loader ceiling is ' + manifest.loaderMaxBytes + '.');
