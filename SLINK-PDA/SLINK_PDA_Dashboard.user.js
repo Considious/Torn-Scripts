@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.49
+// @version      0.4.50
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,11 +29,12 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.49";
-  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.49","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.49"];
+  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.50";
+  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.50","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.50"];
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
+  const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
 
   function showFailure(error) {
     const message = String(error?.message || error || 'Unknown startup error');
@@ -56,15 +57,29 @@
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));
   }
 
-  function readLegacySettings() {
+  function readPersistedData() {
     try {
       const value = typeof globalThis.GM_getValue === 'function' ? globalThis.GM_getValue(DATA_STORAGE_KEY, {}) : {};
-      return isRecord(value) && !(value && typeof value.then === 'function') && isRecord(value.settings) ? value.settings : {};
+      return isRecord(value) && !(value && typeof value.then === 'function') ? value : {};
     } catch { return {}; }
   }
 
   function collectBootstrap() {
-    return { [DATA_STORAGE_KEY]:{ settings:readLegacySettings() } };
+    return { [DATA_STORAGE_KEY]:readPersistedData(), storageWriteEvent:STORAGE_WRITE_EVENT };
+  }
+
+  function installStorageBridge() {
+    document.addEventListener(STORAGE_WRITE_EVENT, event => {
+      try {
+        const payload = JSON.parse(String(event?.detail || ''));
+        if (!isRecord(payload) || payload.key !== DATA_STORAGE_KEY) return;
+        if (payload.remove) {
+          if (typeof globalThis.GM_deleteValue === 'function') globalThis.GM_deleteValue(DATA_STORAGE_KEY);
+          return;
+        }
+        if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, payload.value);
+      } catch {}
+    });
   }
 
   async function fetchSource(url) {
@@ -141,5 +156,6 @@
     }
   }
 
+  installStorageBridge();
   await loadRuntime();
 })();
