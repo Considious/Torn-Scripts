@@ -429,15 +429,26 @@ const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(N
 add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
 return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows];
 }
-function updateAlertIndicator(count) {
+function updateAlertIndicator(count, rows = []) {
 const alertTotal = Math.max(0, Number(count) || 0);
 const marketTotal = marketWatchLimit() > 0 ? marketOpportunities(moduleState.market.data || marketRuntime()).length : 0;
 const total = alertTotal + marketTotal;
 const badge = shadow?.querySelector?.('.launcher-alert-count');
+const summary = shadow?.querySelector?.('.launcher-summary');
 if (!badge) return;
 badge.hidden = total === 0;
 badge.textContent = total > 99 ? '99+' : String(total);
 launcher.classList.toggle('has-alerts', total > 0);
+const firstAlert = Array.isArray(rows) ? rows.find(row => row?.title) : null;
+const summaryText = firstAlert
+? `${alertTotal} alert${alertTotal === 1 ? '' : 's'} · ${String(firstAlert.title)}`
+: marketTotal > 0
+? `${marketTotal} market opportunit${marketTotal === 1 ? 'y' : 'ies'}`
+: 'No active alerts';
+if (summary) {
+summary.textContent = summaryText;
+summary.title = summaryText;
+}
 launcher.setAttribute('aria-label', total > 0 ? `Open SLINK dashboard, ${total} active alert${total === 1 ? '' : 's'}` : 'Open SLINK dashboard');
 }
 function openAlertDestination(href) {
@@ -451,10 +462,15 @@ return true;
 return false;
 }
 }
-function showSystemAlert(alert) {
-const title = `SLINK Efficiency: ${alert.title}`;
-const href = String(alert.href || alert.links?.[0]?.[1] || '');
-const text = `${String(alert.detail || 'Open Torn PDA to review this alert.')}${href ? ' Tap to open.' : ''}`;
+function pdaNotificationId(value) {
+let hash = 2166136261;
+for (const character of String(value || 'slink')) {
+hash ^= character.charCodeAt(0);
+hash = Math.imul(hash, 16777619);
+}
+return 1000 + ((hash >>> 0) % 8000);
+}
+function showFallbackSystemAlert(alert, title, text, href) {
 try {
 if (typeof GM_API.notify === 'function') {
 const silent = (alert.id.startsWith('abroad:') && dataState.settings.abroadStocks?.soundEnabled !== true)
@@ -470,6 +486,30 @@ if (href) notification.onclick = () => { notification.close(); openAlertDestinat
 }
 } catch {}
 }
+function showSystemAlert(alert) {
+const title = `SLINK Efficiency: ${alert.title}`;
+const href = String(alert.href || alert.links?.[0]?.[1] || '');
+const text = `${String(alert.detail || 'Open Torn PDA to review this alert.')}${href ? ' Tap to open.' : ''}`;
+const bridge = global.flutter_inappwebview;
+if (bridge && typeof bridge.callHandler === 'function') {
+try {
+const request = bridge.callHandler('scheduleNotification', {
+title,
+subtitle:text,
+id:pdaNotificationId(alert.id),
+timestamp:Date.now() + 1500,
+overwriteID:true,
+launchNativeToast:false,
+...(href && /^https?:/i.test(href) ? { urlCallback:href } : {})
+});
+Promise.resolve(request).then(response => {
+if (response?.status === 'error') showFallbackSystemAlert(alert, title, text, href);
+}).catch(() => showFallbackSystemAlert(alert, title, text, href));
+return;
+} catch {}
+}
+showFallbackSystemAlert(alert, title, text, href);
+}
 function reconcileAlertNotifications(snapshot) {
 const active = alertRows(snapshot);
 const currentIds = active.map(alert => alert.id);
@@ -479,7 +519,7 @@ const priorIds = new Set(prior.map(String));
 active.filter(alert => !priorIds.has(alert.id)).forEach(showSystemAlert);
 }
 dataState.caches.alertNotificationIds = currentIds;
-updateAlertIndicator(active.length);
+updateAlertIndicator(active.length, active);
 }
 function endStackIfSpent(snapshot) {
 const since = Number(dataState.settings.alerts.stackModeSince) || 0;
@@ -514,7 +554,7 @@ const stakeoutAlerts = stakeoutAlertRows();
 const abroadAlerts = PDA_ABROAD.alerts();
 const companyAlerts = companyAlertRows();
 const pluginAlerts = pdaPluginAlerts();
-if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
 const current = moduleState.alerts;
 const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
 const cityBought = finite(current.data?.cityBought);
@@ -524,7 +564,7 @@ const cityStatus = cityHidden
 : cityBought === null ? 'City purchase total unavailable'
 : cityBought >= 100 ? 'City cap complete · 100 / 100 bought today'
 : `${number(cityBought)} / 100 city items bought today`;
-updateAlertIndicator(alerts.length);
+updateAlertIndicator(alerts.length, alerts);
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
 <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
 <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
@@ -689,7 +729,8 @@ const seen = new Set(prior.map(String));
 deals.filter(deal => !seen.has(deal.dismissKey)).forEach(deal => showSystemAlert({ id:`market-${deal.id}`, title:`${deal.itemName} at ${marketMoney(deal.price)}`, detail:`${deal.source}: ${deal.detail}`, href:deal.href }));
 }
 dataState.caches.marketNotificationIds = currentIds;
-updateAlertIndicator(alertRows(moduleState.alerts.data).length);
+const minimizedAlerts = alertRows(moduleState.alerts.data);
+updateAlertIndicator(minimizedAlerts.length, minimizedAlerts);
 }
 function marketItemLabel(item) {
 return `${item.name} [${item.id}]${item.shopSellPrice > 0 ? ` · shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : ''}`;
