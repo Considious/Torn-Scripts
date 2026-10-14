@@ -29,7 +29,13 @@ const parsed = finite(value);
 if (parsed === null || parsed <= 0) return 0;
 return parsed < 10000000000 ? Math.trunc(parsed * 1000) : Math.trunc(parsed);
 }
-function money(value) { return '$' + integer(value).toLocaleString(); }
+function money(value) {
+const amount=integer(value);
+if(amount<1000000)return '$'+amount.toLocaleString();
+const units=[[1e12,'T'],[1e9,'B'],[1e6,'M']],unit=units.find(([scale])=>amount>=scale),scaled=amount/unit[0],digits=scaled>=100?0:scaled>=10?1:2;
+return '$'+scaled.toFixed(digits).replace(/\.0+$|(?<=\.[0-9])0+$/,'')+unit[1];
+}
+function exactMoney(value){return '$'+integer(value).toLocaleString()}
 function duration(ms) {
 if (!Number.isFinite(ms)) return 'unknown';
 if (ms <= 0) return 'now';
@@ -74,7 +80,7 @@ function normalizeBank(moneyData = {}, now = Date.now()) {
 const raw = moneyData.city_bank || moneyData.cityBank || moneyData.bank || {};
 const amount = integer(raw.amount ?? raw.invested ?? raw.balance);
 const timeLeft = firstFinite(raw.time_left, raw.timeLeft, raw.seconds_remaining, raw.remaining);
-const maturedAt = timestampMs(raw.matures_at ?? raw.maturity ?? raw.end_time ?? raw.ends_at) || (timeLeft !== null ? now + Math.max(0,timeLeft) * 1000 : 0);
+const maturedAt = timestampMs(raw.until ?? raw.matures_at ?? raw.maturity ?? raw.end_time ?? raw.ends_at) || (timeLeft !== null ? now + Math.max(0,timeLeft) * 1000 : 0);
 return {amount, interest:integer(raw.interest ?? raw.profit ?? raw.return_amount), maturedAt, matured:amount > 0 && ((timeLeft !== null && timeLeft <= 0) || (maturedAt > 0 && maturedAt <= now))};
 }
 function normalizeChecks(moneyData = {}, now = Date.now()) {
@@ -87,16 +93,22 @@ function normalizeProperties(payload = {}, now = Date.now()) {
 return rows(payload.properties ?? payload).map((entry,index) => {
 const rental = entry?.rental || entry?.rented || {};
 const lease = entry?.lease_extension ?? entry?.leaseExtension ?? null;
-const daysLeft = firstFinite(rental?.days_left,rental?.daysLeft,entry?.days_left);
+const daysLeft = firstFinite(rental?.days_left,rental?.daysLeft,entry?.days_left,entry?.rental_period_remaining);
 const rentalEndsAt = timestampMs(rental?.expires_at ?? rental?.end_date ?? rental?.until ?? entry?.rental_ends_at) || (daysLeft !== null ? now + Math.max(0,daysLeft) * 86400000 : 0);
+const status=String(entry?.status||''),upkeep=entry?.upkeep&&typeof entry.upkeep==='object'?entry.upkeep:null;
+const upkeepPerDay=upkeep?integer(upkeep.property)+integer(upkeep.staff):integer(entry?.upkeep??entry?.upkeep_per_day);
+const upkeepOwedRaw=firstFinite(entry?.upkeep_owed,entry?.upkeep_due,entry?.owed?.upkeep);
+const modifications=rows(entry?.modifications).map(value=>String(value||'').trim()).filter(Boolean);
 return {
 id:integer(entry?.id ?? entry?.property_id) || index + 1,
 name:String(entry?.property?.name ?? entry?.name ?? entry?.property ?? 'Property'),
-status:String(entry?.status || ''),
-current:entry?.current === true || entry?.active === true || /rented|occupied/i.test(String(entry?.status || '')),
+status,
+current:entry?.current === true || entry?.active === true || /^(?:in_use|rented|occupied)$/i.test(status),
 rentalEndsAt,
-upkeepPerDay:integer(entry?.upkeep ?? entry?.upkeep_per_day),
-upkeepOwed:integer(entry?.upkeep_owed ?? entry?.upkeep_due ?? entry?.owed?.upkeep),
+upkeepPerDay,
+upkeepOwed:upkeepOwedRaw===null?null:integer(upkeepOwedRaw),
+modifications,
+hasAirstrip:modifications.some(value=>/airstrip/i.test(value)),
 leaseExtension:lease && typeof lease === 'object' ? {status:String(lease.status || 'pending').toLowerCase(),cost:integer(lease.cost),period:integer(lease.period)} : null
 };
 });
@@ -119,13 +131,14 @@ const match = rows(itemCatalog).find(row => (itemId && integer(row?.id) === item
 return quantity * Math.max(0,firstFinite(match?.marketPrice,match?.market_value,match?.marketValue) || 0);
 }
 function stockRows(userStocks = {}, tornStocks = {}, itemCatalog = [], availableCash = 0) {
-const owned = new Map(rows(userStocks.stocks ?? userStocks).map(entry => [integer(entry?.id ?? entry?.stock_id),integer(entry?.shares ?? entry?.total_shares ?? entry?.amount)]).filter(([id]) => id));
+const owned = new Map(rows(userStocks.stocks ?? userStocks).map(entry => {const id=integer(entry?.id??entry?.stock_id);return[id,{shares:integer(entry?.shares??entry?.total_shares??entry?.amount),bonus:entry?.bonus&&typeof entry.bonus==='object'?{...entry.bonus}:{}}]}).filter(([id]) => id));
 return rows(tornStocks.stocks ?? tornStocks).flatMap(stock => {
 const id = integer(stock?.id ?? stock?.stock_id);
-const price = Math.max(0,firstFinite(stock?.current_price,stock?.currentPrice,stock?.price) || 0);
+const price = Math.max(0,firstFinite(stock?.market?.price,stock?.current_price,stock?.currentPrice,stock?.price) || 0);
 const definitions = Array.isArray(stock?.benefits) ? stock.benefits.map(entry => ({...entry,repeatable:false})) : Array.isArray(stock?.bonus?.tiers) ? stock.bonus.tiers.map(entry => ({...entry,repeatable:false})) : stock?.bonus && typeof stock.bonus === 'object' ? [{...stock.bonus,repeatable:true}] : [];
 if (!id || !price || !definitions.length) return [];
-const sharesOwned = owned.get(id) || 0;
+const holding=owned.get(id)||{shares:0,bonus:{}};
+const sharesOwned=holding.shares;
 const tiers = definitions.map(benefit => ({benefit,requirement:integer(benefit.requirement ?? benefit.shares_required ?? benefit.shares ?? benefit.minimum_shares)})).filter(entry => entry.requirement > 0).sort((a,b) => a.requirement-b.requirement);
 if (!tiers.length) return [];
 let next = tiers.find(entry => entry.requirement > sharesOwned);
@@ -134,7 +147,7 @@ if (!next) {
 const base = tiers[tiers.length-1];
 if (!base.benefit.repeatable) return [];
 next = base;
-threshold = base.requirement * (Math.floor(sharesOwned/base.requirement)+1);
+threshold = base.requirement * Math.max(1,integer(holding.bonus?.increment)+1,Math.floor(sharesOwned/base.requirement)+1);
 }
 const sharesNeeded = Math.max(0,threshold-sharesOwned);
 const incrementalCost = Math.ceil(sharesNeeded*price);
@@ -149,7 +162,7 @@ return [{id,name:String(stock.name || stock.acronym || ''),acronym:String(stock.
 function buildStatus(input = {}, now = Date.now()) {
 const user = input.user || {};
 const moneyData = user.money || user;
-const cashOnHand = integer(moneyData.cash ?? moneyData.money_onhand ?? moneyData.moneyOnHand);
+const cashOnHand = integer(moneyData.wallet ?? moneyData.cash ?? moneyData.money_onhand ?? moneyData.moneyOnHand);
 const factionCash = integer(moneyData.faction?.money ?? moneyData.faction_money ?? moneyData.armory?.money);
 const vaultCash = integer(moneyData.vault?.amount ?? moneyData.vault);
 const properties = normalizeProperties(user.properties || {},now);
@@ -157,7 +170,7 @@ const names = achievementNames(user);
 const loanRaw = moneyData.duke_loan ?? moneyData.dukeLoan ?? moneyData.loan ?? moneyData.duke ?? {};
 const loan = typeof loanRaw === 'number' ? {amount:integer(loanRaw),dueAt:0} : {amount:integer(loanRaw?.amount ?? loanRaw?.balance ?? loanRaw?.owed ?? loanRaw?.debt),dueAt:timestampMs(loanRaw?.due_at ?? loanRaw?.expires_at ?? loanRaw?.end_time)};
 const availableCash = cashOnHand+factionCash;
-return {at:now,money:{cashOnHand,factionCash,vaultCash,availableCash},bank:normalizeBank(moneyData,now),cashierChecks:normalizeChecks(moneyData,now),properties,currentProperty:properties.find(entry=>entry.current)||properties[0]||null,loan,loanSharkEarned:names.length?names.some(name=>/loan shark/i.test(name)):null,stocks:stockRows(user.stocks || {},input.tornStocks || {},input.itemCatalog || [],availableCash)};
+return {at:now,money:{cashOnHand,factionCash,vaultCash,availableCash},bank:normalizeBank(moneyData,now),cashierChecks:normalizeChecks(moneyData,now),properties,currentProperty:properties.find(entry=>entry.current)||properties.find(entry=>/^(?:in_use|rented)$/i.test(entry.status))||properties[0]||null,loan,loanSharkEarned:names.length?names.some(name=>/loan shark/i.test(name)):null,stocks:stockRows(user.stocks || {},input.tornStocks || {},input.itemCatalog || [],availableCash)};
 }
 function buildAlerts(status = {}, now = Date.now()) {
 const config = settings();
@@ -173,7 +186,7 @@ push('cashier:'+check.id,check.expired?'Cashier check expired':'Cashier check ex
 }
 const property = status.currentProperty;
 if (property?.rentalEndsAt && property.rentalEndsAt-now <= config.rentalLeadDays*86400000) push('rental',property.rentalEndsAt<=now?'Property rental expired':'Property rental expires soon',property.name,[['Property',URLS.property]]);
-if (property?.upkeepOwed >= config.upkeepThreshold && config.upkeepThreshold > 0) push('upkeep','Property upkeep needs attention',money(property.upkeepOwed)+' is currently owed.',[['Property',URLS.property]]);
+if (Number.isFinite(property?.upkeepOwed) && property.upkeepOwed >= config.upkeepThreshold && config.upkeepThreshold > 0) push('upkeep','Property upkeep needs attention',money(property.upkeepOwed)+' is currently owed.',[['Property',URLS.property]]);
 if (property?.leaseExtension && !['accepted','declined'].includes(property.leaseExtension.status)) push('lease-extension','Rental extension offer waiting',property.name+' has a pending lease-extension offer.',[['Property',URLS.property]]);
 if (status.loan?.amount > 0) push('duke-loan','Duke loan is outstanding',money(status.loan.amount)+' is currently owed.',[['Duke',URLS.loan]]);
 else if (config.loanReminder && status.loanSharkEarned === false) push('loan-shark','Loan Shark merit is still available','You have no Duke loan and have not earned Loan Shark yet.',[['Duke',URLS.loan]]);
@@ -203,7 +216,7 @@ summaryCard('Faction armory cash',money(status.money.factionCash),'Included for 
 summaryCard('Available for stocks',money(status.money.availableCash),'Cash + faction armory')+
 summaryCard('Property',property?.name||'Unavailable',property?.rentalEndsAt?'Rental ends in '+duration(property.rentalEndsAt-Date.now()):'No rental timer returned')+
 '<article class="card wide"><h2>Reminder settings</h2><div class="form-grid"><label>Bank lead hours<input type="number" min="0" max="168" data-mp-setting="bankLeadHours" value="'+config.bankLeadHours+'"></label><label>Rental lead days<input type="number" min="0" max="30" data-mp-setting="rentalLeadDays" value="'+config.rentalLeadDays+'"></label><label>Cashier-check lead hours<input type="number" min="0" max="168" data-mp-setting="cashierLeadHours" value="'+config.cashierLeadHours+'"></label><label>Upkeep alert threshold<input type="number" min="0" step="1000" data-mp-setting="upkeepThreshold" value="'+config.upkeepThreshold+'"></label></div><label class="check-row"><input type="checkbox" data-mp-setting="loanReminder"'+(config.loanReminder?' checked':'')+'> Remind me to pursue Loan Shark when the achievement state is available</label><label class="check-row"><input type="checkbox" data-mp-setting="soundEnabled"'+(config.soundEnabled?' checked':'')+'> Play sounds for Money &amp; Property alerts</label></article>'+
-'<article class="card wide"><div class="card-head"><div><h2>Financial status</h2><span class="muted">Only fields actually returned by Torn are shown.</span></div></div><p><strong>Bank:</strong> '+(status.bank.amount?money(status.bank.amount)+(status.bank.matured?' · ready to collect':status.bank.maturedAt?' · '+duration(status.bank.maturedAt-Date.now())+' remaining':''):'No active investment returned')+'</p><p><strong>Duke:</strong> '+(status.loan.amount?money(status.loan.amount)+' owed':'No balance returned')+'</p><p><strong>Upkeep owed:</strong> '+(property?money(property.upkeepOwed):'Unavailable')+'</p><p><strong>Cashier checks:</strong> '+status.cashierChecks.length+'</p><div class="target-actions">'+api.actionLink('Open Bank',URLS.bank)+api.actionLink('Open Property',URLS.property)+api.actionLink('Open Duke',URLS.loan)+'</div></article>'+
+'<article class="card wide"><div class="card-head"><div><h2>Financial status</h2><span class="muted">Only fields actually returned by Torn are shown.</span></div></div><p><strong>Bank:</strong> '+(status.bank.amount?money(status.bank.amount)+(status.bank.matured?' · ready to collect':status.bank.maturedAt?' · '+duration(status.bank.maturedAt-Date.now())+' remaining':''):'No active investment returned')+'</p><p><strong>Duke:</strong> '+(status.loan.amount?money(status.loan.amount)+' owed':'No balance returned')+'</p><p><strong>Daily property upkeep:</strong> '+(property?money(property.upkeepPerDay):'Unavailable')+'</p><p><strong>Upkeep owed:</strong> '+(property&&Number.isFinite(property.upkeepOwed)?money(property.upkeepOwed):'Not exposed by Torn API')+'</p><p><strong>Cashier checks:</strong> '+status.cashierChecks.length+'</p><div class="target-actions">'+api.actionLink('Open Bank',URLS.bank)+api.actionLink('Open Property',URLS.property)+api.actionLink('Open Duke',URLS.loan)+'</div></article>'+
 '<article class="card full"><div class="card-head"><div><h2>Stock benefit planner</h2><span class="muted">Sorted by estimated monthly return on the full next benefit block.</span></div>'+api.actionLink('Open Stocks',URLS.stocks)+'</div><div class="table-wrap"><table><thead><tr><th>Stock / benefit</th><th>Cost to next tier</th><th>Estimated value</th><th>Monthly ROI</th><th>Reminder</th></tr></thead><tbody>'+stockRowsHtml+'</tbody></table></div></article></div>';
 bind(root);
 }
@@ -234,12 +247,16 @@ busy = true; error = ''; render();
 try {
 await api.ensurePermission(false);
 if (!api.hasScope(SCOPE)) throw new Error('Your SLINK account does not have '+SCOPE+' permission.');
-const [user,tornStocks] = await Promise.all([
-api.tornJson('/v2/user?selections=money,properties,stocks,honors,medals,merits','SLINK PDA Money and Property'),
+const [moneyData,propertiesData,stocksData,achievements,tornStocks] = await Promise.all([
+api.tornJson('/v2/user/money','SLINK PDA Money and Property'),
+api.tornJson('/v2/user/properties?limit=100','SLINK PDA Money and Property'),
+api.tornJson('/v2/user/stocks','SLINK PDA Money and Property'),
+api.tornJson('/v2/user?selections=honors,medals,merits','SLINK PDA Money and Property').catch(()=>({})),
 api.tornJson('/v2/torn/stocks','SLINK PDA stock benefit catalog')
 ]);
+const user={...achievements,money:moneyData?.money||{},properties:propertiesData?.properties||[],stocks:stocksData?.stocks||[]};
 if (!current.itemCatalogAt || Date.now()-current.itemCatalogAt>=CATALOG_MS) {
-const catalogBody = await api.tornJson('/v2/torn/items?cat=All&sort=ASC','SLINK PDA Money and Property item values');
+const catalogBody = await api.tornJson('/v2/torn/items?sort=ASC','SLINK PDA Money and Property item values');
 current.itemCatalog = api.catalogItems(catalogBody);
 current.itemCatalogAt = Date.now();
 }

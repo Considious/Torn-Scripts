@@ -140,12 +140,14 @@ renderCompany();
 try {
 await ensurePermissionSession(false);
 if (!hasScope(COMPANY_SCOPE)) throw new Error('Your SLINK account does not have ' + COMPANY_SCOPE + ' permission.');
-const [user, company] = await Promise.all([
-tornJson('/v2/user?selections=job,jobpoints', 'SLINK PDA company assistant'),
-tornJson('/v2/company?selections=profile,employees', 'SLINK PDA company assistant')
+const [job,jobpoints,profile,employees] = await Promise.all([
+tornJson('/v2/user/job', 'SLINK PDA company assistant'),
+tornJson('/v2/user/jobpoints', 'SLINK PDA company assistant'),
+tornJson('/v2/company/profile', 'SLINK PDA company assistant'),
+tornJson('/v2/company/employees', 'SLINK PDA company assistant')
 ]);
 const userId = Number(dataState.sessions.permission?.userId) || 0;
-const snapshot = normalizeCompanySnapshot(user, company, userId);
+const snapshot = normalizeCompanySnapshot({...job,...jobpoints}, {...profile,...employees}, userId);
 current.data = dataState.caches.company = { fetchedAt:Date.now(), snapshot };
 writeDataState();
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
@@ -311,10 +313,15 @@ const CACHE_MS = 60_000;
 const ACTIVITY_MS = 5 * 60_000;
 const PROVIDER_ORDER = ['yata','prometheus','tornIntel'];
 const PROVIDER_STATUS_ORDER = [...PROVIDER_ORDER,'droqs'];
+const TRAVEL_LABELS = Object.freeze({standard:'Standard',airstrip:'Private Island airstrip',business:'Business Class',private:'Private Jet'});
 function settings() {
 const input = dataState.settings.abroadStocks || {};
+const explicit=input.travelMethodExplicit===true;
+const detectedDefault=input.travelDefault==='airstrip'?'airstrip':'standard';
 const normalized = {
-travelMethod:Object.hasOwn(ABROAD_STOCKS.TRAVEL_MULTIPLIERS, input.travelMethod) ? input.travelMethod : 'private',
+travelMethod:explicit&&Object.hasOwn(ABROAD_STOCKS.TRAVEL_MULTIPLIERS,input.travelMethod)?input.travelMethod:detectedDefault,
+travelMethodExplicit:explicit,
+travelDefault:detectedDefault,
 arrivalBufferMinutes:Math.min(30, Math.max(0, Number(input.arrivalBufferMinutes) || 3)),
 alertLeadMinutes:Math.min(180, Math.max(0, Number(input.alertLeadMinutes) || 10)),
 alertsEnabled:input.alertsEnabled !== false,
@@ -345,6 +352,31 @@ return dashboardOpen && state.page === 'quality-of-life' && state.qualityOfLifeT
 function touch() {
 runtime().activeUntil = Date.now() + ACTIVITY_MS;
 writeDataState();
+}
+async function detectTravelDefault(current,currentSettings){
+if(currentSettings.travelMethodExplicit)return currentSettings;
+const checkedAt=Number(current.travelDefaultCheckedAt)||0;
+if(checkedAt&&Date.now()-checkedAt<86400000)return currentSettings;
+try{
+const response=await tornJson('/v2/user/property','SLINK PDA Abroad Stocks travel default');
+const property=response?.property||{};
+const hasAirstrip=Array.isArray(property.modifications)&&property.modifications.some(value=>/airstrip/i.test(String(value||'')));
+currentSettings.travelDefault=hasAirstrip?'airstrip':'standard';
+currentSettings.travelMethod=currentSettings.travelDefault;
+current.travelDefaultCheckedAt=Date.now();
+current.hasAirstrip=hasAirstrip;
+dataState.settings.abroadStocks=currentSettings;
+writeDataState();
+return currentSettings;
+}catch{
+current.travelDefaultCheckedAt=Date.now();
+current.hasAirstrip=false;
+currentSettings.travelDefault='standard';
+currentSettings.travelMethod='standard';
+dataState.settings.abroadStocks=currentSettings;
+writeDataState();
+return currentSettings;
+}
 }
 function requestProvider(providerId, currentSettings) {
 const definition = ABROAD_STOCKS.PROVIDERS[providerId];
@@ -400,7 +432,7 @@ moduleState.abroadStocks.busy = true;
 moduleState.abroadStocks.error = '';
 render();
 try {
-const currentSettings = settings();
+const currentSettings = await detectTravelDefault(current,settings());
 const providerIds = ['yata','prometheus','tornIntel', ...(currentSettings.useDroqs ? ['droqs'] : [])];
 const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, currentSettings)));
 const snapshots = { ...current.snapshots };
@@ -497,7 +529,7 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 <div class="abroad-search"><div class="racing-filters"><button type="button" data-abroad-mode="item" aria-selected="${String(moduleState.abroadStocks.mode === 'item')}">Search item</button><button type="button" data-abroad-mode="country" aria-selected="${String(moduleState.abroadStocks.mode === 'country')}">Search country</button></div><input type="search" data-abroad-query value="${escapeHtml(moduleState.abroadStocks.query)}" placeholder="${moduleState.abroadStocks.mode === 'item' ? 'Xanax, plushie, flower…' : 'Mexico, China, UAE…'}"></div>
 <details class="alert-settings"><summary>Travel and reminder settings</summary>
 <div class="abroad-settings">
-<label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${method[0].toUpperCase()+method.slice(1)}</option>`).join('')}</select></label>
+<label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${escapeHtml(TRAVEL_LABELS[method]||method)}</option>`).join('')}</select><span class="muted">${current.settings.travelMethodExplicit?'Manually selected':'Automatically selected from your current property'}</span></label>
 <label>Arrive early (minutes)<input type="number" min="0" max="30" data-field="abroad-arrival-buffer" value="${current.settings.arrivalBufferMinutes}"></label>
 <label>Alert before leave time (minutes)<input type="number" min="0" max="180" data-field="abroad-alert-lead" value="${current.settings.alertLeadMinutes}"></label>
 <label class="check-row"><input type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
@@ -509,7 +541,7 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 ${needsTornIntelKey ? `<details class="alert-settings" open><summary>Torn Intel access</summary><p>Torn Intel requested a client key. Register or contact Torn Intel, then save the key here. YATA and Prometheus continue working without it.</p><div class="abroad-provider-key"><a href="https://torn-intel.com/contact" target="_blank" rel="noopener">Open Torn Intel</a><input type="password" data-field="abroad-torn-intel-key" value="${escapeHtml(current.settings.tornIntelKey)}" placeholder="Torn Intel client key"><button type="button" data-action="save-abroad-settings">Save key</button></div></details>` : ''}
 <div class="abroad-list">${rows.length ? rows.map(row => {
 const prediction = row.nextRestockAt
-? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span>Leave: ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))} · ${escapeHtml(row.predictionSource || 'reported estimate')}</span>`
+? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span class="abroad-leave-time">Leave at ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))}</span><span>${escapeHtml(row.predictionSource || 'reported estimate')}</span>`
 : '<strong>Restock estimate unavailable</strong><span>No connected provider has published an estimate for this item yet.</span>';
 return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}" data-abroad-item="${escapeHtml((row.itemName + ' ' + (row.itemId || '')).toLocaleLowerCase())}" data-abroad-country="${escapeHtml(row.countryName.toLocaleLowerCase())}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" data-action="toggle-abroad-watch">${row.watched ? 'Stop alert' : 'Alert me when to leave'}</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
 }).join('') : moduleMessage(current.fetchedAt ? 'No abroad stocks match this search.' : 'Press Refresh to load abroad stock reports.')}</div>
@@ -542,6 +574,7 @@ const root = moduleRoot('abroadStocks');
 if (!root) return;
 const current = settings();
 current.travelMethod = String(root.querySelector('[data-field="abroad-travel-method"]')?.value || current.travelMethod);
+current.travelMethodExplicit = true;
 current.arrivalBufferMinutes = Math.min(30, Math.max(0, Number(root.querySelector('[data-field="abroad-arrival-buffer"]')?.value) || 0));
 current.alertLeadMinutes = Math.min(180, Math.max(0, Number(root.querySelector('[data-field="abroad-alert-lead"]')?.value) || 0));
 current.alertsEnabled = root.querySelector('[data-field="abroad-alerts-enabled"]')?.checked !== false;
