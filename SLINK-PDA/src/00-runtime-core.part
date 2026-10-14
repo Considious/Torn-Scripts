@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.49
+// @version      0.4.50
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.49-external-runtime';
+const BUILD = '0.4.50-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -43,7 +43,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.48';
+const CLIENT_VERSION = '0.4.50';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -675,6 +675,7 @@ notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notif
 });
 const PDA_BOOTSTRAP_KEY = '__SLINK_PDA_BOOTSTRAP__';
 const PDA_BOOTSTRAP = global[PDA_BOOTSTRAP_KEY] && typeof global[PDA_BOOTSTRAP_KEY] === 'object' ? global[PDA_BOOTSTRAP_KEY] : {};
+const PDA_STORAGE_WRITE_EVENT = String(PDA_BOOTSTRAP.storageWriteEvent || '');
 try { delete global[PDA_BOOTSTRAP_KEY]; } catch { global[PDA_BOOTSTRAP_KEY] = null; }
 const existingDashboard = global.SLINK_PDA_DASHBOARD;
 const existingHost = document.getElementById(HOST_ID);
@@ -739,6 +740,10 @@ const value = GM_API.get(key, fallback);
 if (!(value && typeof value.then === 'function')) return value;
 }
 } catch {}
+if (key === DATA_STORAGE_KEY) {
+const bootstrapped = PDA_BOOTSTRAP[key];
+if (bootstrapped && typeof bootstrapped === 'object' && !Array.isArray(bootstrapped)) return bootstrapped;
+}
 if (key !== DATA_STORAGE_KEY) {
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
@@ -749,12 +754,18 @@ return fallback;
 }
 function storageWrite(key, value) {
 try { if (typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
+if (key === DATA_STORAGE_KEY && PDA_STORAGE_WRITE_EVENT) {
+try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, value }) })); } catch {}
+}
 if (key !== DATA_STORAGE_KEY) {
 try { global.localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 }
 function storageDelete(key) {
 try { if (typeof GM_API.remove === 'function') GM_API.remove(key); } catch {}
+if (key === DATA_STORAGE_KEY && PDA_STORAGE_WRITE_EVENT) {
+try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, remove:true }) })); } catch {}
+}
 try { global.localStorage.removeItem(key); } catch {}
 }
 function readDataState() {
