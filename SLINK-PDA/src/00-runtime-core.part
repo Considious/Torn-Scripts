@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.52
+// @version      0.4.53
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.52-external-runtime';
+const BUILD = '0.4.53-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -43,7 +43,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.52';
+const CLIENT_VERSION = '0.4.53';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -696,6 +696,7 @@ efficiencyTab: 'alerts',
 qualityOfLifeTab: 'racing',
 theme: 'slink-dark',
 minimizedMode: 'bar',
+launcherOpacity: 85,
 bubblePosition: null
 });
 function normalizeUiState(value) {
@@ -707,6 +708,7 @@ efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.ef
 qualityOfLifeTab:typeof source.qualityOfLifeTab === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
 theme:String(source.theme || defaults.theme),
 minimizedMode:source.minimizedMode === 'bubble' ? 'bubble' : defaults.minimizedMode,
+launcherOpacity:Math.min(100, Math.max(35, Math.round(Number(source.launcherOpacity) || defaults.launcherOpacity))),
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null
 };
 }
@@ -731,6 +733,7 @@ efficiencyTab:state.efficiencyTab,
 qualityOfLifeTab:state.qualityOfLifeTab,
 theme:state.theme,
 minimizedMode:state.minimizedMode,
+launcherOpacity:state.launcherOpacity,
 bubblePosition:state.bubblePosition
 };
 try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
@@ -868,6 +871,7 @@ return now;
 let dashboardOpen = false;
 let drag = null;
 let swipe = null;
+let minimizedBarPositionTimer = null;
 let networkQueue = Promise.resolve();
 let bountyBudgetQueue = Promise.resolve();
 let playerDomLastSignature = '';
