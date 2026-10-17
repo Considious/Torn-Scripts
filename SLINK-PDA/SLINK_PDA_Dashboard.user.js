@@ -84,11 +84,11 @@
       if (!(value && typeof value.then === 'function') && isRecord(value)) primary = value;
     } catch {}
     const mirror = readMirror();
-    if (hasData(primary)) { writeMirror(primary); return primary; }
     if (hasData(mirror)) {
       try { if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, mirror); } catch {}
       return mirror;
     }
+    if (hasData(primary)) { writeMirror(primary); return primary; }
     return primary || mirror || {};
   }
 
