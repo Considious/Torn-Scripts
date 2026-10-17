@@ -1319,6 +1319,7 @@ page.appendChild(panel);
 }
 try { plugin.start?.(); } catch (error) { console.warn('[SLINK PDA] Plugin start:', id, error); }
 try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', id, error); }
+applyPermissionGates();
 if (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);
 renderAlerts();
 return plugin;

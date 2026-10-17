@@ -81,6 +81,8 @@ museums:MUSEUM_SCOPE
 });
 function canAccessModule(name) {
 if (name === 'market') return marketWatchLimit() > 0;
+const plugin = pdaPlugins.get(name);
+if (plugin?.scope) return hasScope(plugin.scope);
 const required = MODULE_SCOPES[name];
 return !required || hasScope(required);
 }
@@ -88,7 +90,8 @@ function applyPermissionGates() {
 const gates = [
 ['combat','leveling'],['combat','bounties'],['combat','mugging'],['combat','targetList'],['combat','war'],['combat','stats'],
 ['efficiency','alerts'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],
-['quality-of-life','racing'],['quality-of-life','abroadStocks'],['quality-of-life','company'],['quality-of-life','museums']
+['quality-of-life','racing'],['quality-of-life','abroadStocks'],['quality-of-life','company'],['quality-of-life','museums'],
+...[...pdaPlugins.values()].map(plugin => ['quality-of-life', String(plugin.id)])
 ];
 for (const [group, moduleName] of gates) {
 const tab = shadow?.querySelector?.(`[data-${group}-tab="${moduleName}"]`);
@@ -119,9 +122,9 @@ const groups = [
 for (const [group,stateKey,panelKey,tabKey] of groups) {
 const allowed = gates.filter(entry => entry[0] === group).map(entry => entry[1]).filter(canAccessModule);
 if (!allowed.length) continue;
-if (!allowed.includes(state[stateKey])) state[stateKey] = allowed[0];
-shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[panelKey] !== state[stateKey]; });
-shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[tabKey] === state[stateKey])));
+const visibleTab = allowed.includes(state[stateKey]) ? state[stateKey] : allowed[0];
+shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[panelKey] !== visibleTab; });
+shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[tabKey] === visibleTab)));
 }
 }
 function levelingRows(payload) {

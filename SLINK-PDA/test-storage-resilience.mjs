@@ -22,5 +22,9 @@ assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includ
 assert(dashboard.includes('API keys and login sessions are never included'), 'The Access UI must clearly explain backup exclusions.');
 assert(shell.includes("data-action=\"restore-data-backup\"") || shell.includes("action === 'restore-data-backup'"), 'The Access UI restore action must be wired.');
 assert(shell.includes('uploadDataBackup(false)'), 'PDA startup must schedule the twice-daily backup check.');
+assert(dashboard.includes("...[...pdaPlugins.values()].map(plugin => ['quality-of-life', String(plugin.id)])"), 'Permission gates must include dynamically registered Quality of Life modules.');
+assert(dashboard.includes('const visibleTab = allowed.includes(state[stateKey]) ? state[stateKey] : allowed[0];'), 'Unavailable modules may use a visible fallback without overwriting the saved tab.');
+assert(!dashboard.includes('if (!allowed.includes(state[stateKey])) state[stateKey] = allowed[0];'), 'Permission refreshes must never overwrite the saved last tab.');
+assert(shell.includes("applyPermissionGates();\nif (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);"), 'Plugin registration must restore the exact saved Quality of Life module after applying its permission gate.');
 
 console.log('PDA durable local storage and API-key-free backup wiring are verified.');
