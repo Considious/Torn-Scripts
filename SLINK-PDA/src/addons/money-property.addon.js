@@ -59,6 +59,15 @@ if (/weekly|each week/.test(text)) return 7;
 if (/monthly|each month/.test(text)) return 30.4375;
 return 0;
 }
+function cadenceLabel(days) {
+const value=Number(days);
+if(!Number.isFinite(value)||value<=0)return'Cadence unavailable';
+if(Math.abs(value-1)<0.01)return'Every day';
+if(Math.abs(value-7)<0.01)return'Every week';
+if(Math.abs(value-14)<0.01)return'Every 2 weeks';
+if(Math.abs(value-30.4375)<0.1)return'Every month';
+return'Every '+Number(value.toFixed(1))+' days';
+}
 function settings() {
 const value = api.settings(ID, defaults);
 const bounded = (key, fallback, min, max) => {
@@ -75,7 +84,11 @@ value.soundEnabled = value.soundEnabled === true;
 value.stockAlerts = value.stockAlerts && typeof value.stockAlerts === 'object' ? value.stockAlerts : {};
 return value;
 }
-function cache() { return api.cache(ID, {fetchedAt:0,status:null,itemCatalogAt:0,itemCatalog:[]}); }
+function cache() {
+const value=api.cache(ID,{schema:2,fetchedAt:0,status:null,itemCatalogAt:0,itemCatalog:[]});
+if(value.schema!==2){value.schema=2;value.fetchedAt=0;value.status=null;value.itemCatalogAt=0;value.itemCatalog=[]}
+return value;
+}
 function normalizeBank(moneyData = {}, now = Date.now()) {
 const raw = moneyData.city_bank || moneyData.cityBank || moneyData.bank || {};
 const amount = integer(raw.amount ?? raw.invested ?? raw.balance);
@@ -127,8 +140,11 @@ const item = benefit.item || benefit.reward?.item || {};
 const itemId = integer(item.id ?? benefit.item_id);
 const itemName = String(item.name ?? benefit.item_name ?? '');
 const quantity = Math.max(1,integer(item.amount ?? benefit.quantity ?? benefit.amount) || 1);
-const match = rows(itemCatalog).find(row => (itemId && integer(row?.id) === itemId) || (itemName && String(row?.name || '').toLowerCase() === itemName.toLowerCase()));
-return quantity * Math.max(0,firstFinite(match?.marketPrice,match?.market_value,match?.marketValue) || 0);
+const catalog=rows(itemCatalog),lowerDescription=description.toLowerCase();
+const match=catalog.find(row => (itemId && integer(row?.id) === itemId) || (itemName && String(row?.name || '').toLowerCase() === itemName.toLowerCase()))
+||catalog.filter(row=>String(row?.name||'').length>=4&&lowerDescription.includes(String(row.name).toLowerCase())).sort((left,right)=>String(right?.name||'').length-String(left?.name||'').length)[0];
+const describedQuantity=Number(description.match(/(?:^|\s)(\d+)\s*(?:x|×)?\s+/i)?.[1])||quantity;
+return describedQuantity * Math.max(0,firstFinite(match?.marketPrice,match?.market_value,match?.marketValue) || 0);
 }
 function stockRows(userStocks = {}, tornStocks = {}, itemCatalog = [], availableCash = 0) {
 const owned = new Map(rows(userStocks.stocks ?? userStocks).map(entry => {const id=integer(entry?.id??entry?.stock_id);return[id,{shares:integer(entry?.shares??entry?.total_shares??entry?.amount),bonus:entry?.bonus&&typeof entry.bonus==='object'?{...entry.bonus}:{}}]}).filter(([id]) => id));
@@ -154,9 +170,10 @@ const incrementalCost = Math.ceil(sharesNeeded*price);
 const blockCost = Math.ceil(threshold*price);
 const value = benefitValue(next.benefit,itemCatalog);
 const days = daysFromFrequency(next.benefit.frequency ?? next.benefit.interval,next.benefit.description);
-const weeklyValue = value > 0 && days > 0 ? value*7/days : 0;
-const monthlyValue = value > 0 && days > 0 ? value*30.4375/days : 0;
-return [{id,name:String(stock.name || stock.acronym || ''),acronym:String(stock.acronym || ''),sharesOwned,nextThreshold:threshold,sharesNeeded,incrementalCost,blockCost,affordable:incrementalCost > 0 && availableCash >= incrementalCost,benefitDescription:String(next.benefit.description || next.benefit.name || 'Benefit value unavailable'),weeklyValue,monthlyValue,weeklyRoi:blockCost ? weeklyValue/blockCost : 0,monthlyRoi:blockCost ? monthlyValue/blockCost : 0,alertKey:id+':'+threshold}];
+if(!(value>0)||!(days>0))return[];
+const weeklyValue=value*7/days;
+const monthlyValue=value*30.4375/days;
+return [{id,name:String(stock.name || stock.acronym || ''),acronym:String(stock.acronym || ''),sharesOwned,nextThreshold:threshold,sharesNeeded,incrementalCost,blockCost,affordable:incrementalCost > 0 && availableCash >= incrementalCost,benefitDescription:String(next.benefit.description || next.benefit.name || 'Income benefit'),payoutValue:value,periodDays:days,cadenceLabel:cadenceLabel(days),weeklyValue,monthlyValue,weeklyRoi:blockCost ? weeklyValue/blockCost : 0,monthlyRoi:blockCost ? monthlyValue/blockCost : 0,alertKey:id+':'+threshold}];
 }).sort((a,b) => b.monthlyRoi-a.monthlyRoi || a.incrementalCost-b.incrementalCost);
 }
 function buildStatus(input = {}, now = Date.now()) {
@@ -166,11 +183,13 @@ const cashOnHand = integer(moneyData.wallet ?? moneyData.cash ?? moneyData.money
 const factionCash = integer(moneyData.faction?.money ?? moneyData.faction_money ?? moneyData.armory?.money);
 const vaultCash = integer(moneyData.vault?.amount ?? moneyData.vault);
 const properties = normalizeProperties(user.properties || {},now);
+const currentPropertyPayload=user.currentProperty||input.currentProperty||null;
+const currentProperty=currentPropertyPayload?normalizeProperties([currentPropertyPayload.property||currentPropertyPayload],now)[0]||null:null;
 const names = achievementNames(user);
 const loanRaw = moneyData.duke_loan ?? moneyData.dukeLoan ?? moneyData.loan ?? moneyData.duke ?? {};
 const loan = typeof loanRaw === 'number' ? {amount:integer(loanRaw),dueAt:0} : {amount:integer(loanRaw?.amount ?? loanRaw?.balance ?? loanRaw?.owed ?? loanRaw?.debt),dueAt:timestampMs(loanRaw?.due_at ?? loanRaw?.expires_at ?? loanRaw?.end_time)};
 const availableCash = cashOnHand+factionCash;
-return {at:now,money:{cashOnHand,factionCash,vaultCash,availableCash},bank:normalizeBank(moneyData,now),cashierChecks:normalizeChecks(moneyData,now),properties,currentProperty:properties.find(entry=>entry.current)||properties.find(entry=>/^(?:in_use|rented)$/i.test(entry.status))||properties[0]||null,loan,loanSharkEarned:names.length?names.some(name=>/loan shark/i.test(name)):null,stocks:stockRows(user.stocks || {},input.tornStocks || {},input.itemCatalog || [],availableCash)};
+return {at:now,money:{cashOnHand,factionCash,vaultCash,availableCash},bank:normalizeBank(moneyData,now),cashierChecks:normalizeChecks(moneyData,now),properties,currentProperty:currentProperty||properties.find(entry=>entry.current)||properties.find(entry=>/^(?:in_use|rented)$/i.test(entry.status))||properties[0]||null,loan,loanSharkEarned:names.length?names.some(name=>/loan shark/i.test(name)):null,stocks:stockRows(user.stocks || {},input.tornStocks || {},input.itemCatalog || [],availableCash)};
 }
 function buildAlerts(status = {}, now = Date.now()) {
 const config = settings();
@@ -207,9 +226,10 @@ bind(root); return;
 }
 const property = status.currentProperty;
 const stockRowsHtml = status.stocks.length ? status.stocks.map(stock => {
-const checked = config.stockAlerts[stock.alertKey] === true ? ' checked' : '';
-return '<tr><td><strong>'+api.escapeHtml(stock.acronym||stock.name)+'</strong><br><span class="muted">'+api.escapeHtml(stock.benefitDescription)+'</span></td><td>'+money(stock.incrementalCost)+'<br><span class="muted">'+stock.sharesNeeded.toLocaleString()+' shares</span></td><td>'+money(Math.round(stock.weeklyValue))+' / wk<br><span class="muted">'+money(Math.round(stock.monthlyValue))+' / mo</span></td><td>'+((stock.monthlyRoi*100).toFixed(3))+'%</td><td><label><input type="checkbox" data-mp-stock="'+api.escapeHtml(stock.alertKey)+'"'+checked+'> Alert</label></td></tr>';
-}).join('') : '<tr><td colspan="5">No next stock-benefit tiers were returned.</td></tr>';
+const checked=config.stockAlerts[stock.alertKey]===true?' checked':'';
+const roi=(stock.monthlyRoi*100).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')+'%';
+return '<article class="card"><div class="card-head"><div><h2>'+api.escapeHtml(stock.acronym||stock.name)+'</h2><span class="muted">'+api.escapeHtml(stock.benefitDescription)+'</span></div><strong title="'+api.escapeHtml(exactMoney(stock.payoutValue))+'">'+money(stock.payoutValue)+'</strong></div><p><strong>Actual payout:</strong> '+money(stock.payoutValue)+' · '+api.escapeHtml(stock.cadenceLabel)+'</p><div class="stats"><div><strong>'+money(stock.incrementalCost)+'</strong><span>Next block · '+stock.sharesNeeded.toLocaleString()+' shares</span></div><div><strong>'+money(Math.round(stock.weeklyValue))+'</strong><span>Weekly value</span></div><div><strong>'+money(Math.round(stock.monthlyValue))+'</strong><span>Monthly value</span></div><div><strong>'+roi+'</strong><span>Monthly ROI</span></div></div><label class="check-row"><input type="checkbox" data-mp-stock="'+api.escapeHtml(stock.alertKey)+'"'+checked+'> Alert when affordable</label></article>';
+}).join('') : '<article class="card wide">No income-producing stock benefit could be valued from Torn’s current stock and item data.</article>';
 root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Money &amp; Property</h2><span class="muted">Updated '+api.relativeTime(status.at)+' · cached for 15 minutes</span></div><button type="button" data-mp-action="refresh">'+(busy?'Checking…':'Refresh')+'</button></div>'+(error?api.moduleMessage(error,'error'):'')+'<label class="check-row"><input type="checkbox" data-mp-setting="enabled"'+(config.enabled?' checked':'')+'> Enable Money &amp; Property reminders</label></article>'+
 summaryCard('Cash on hand',money(status.money.cashOnHand),'Personal cash')+
 summaryCard('Faction armory cash',money(status.money.factionCash),'Included for affordability alerts')+
@@ -217,7 +237,7 @@ summaryCard('Available for stocks',money(status.money.availableCash),'Cash + fac
 summaryCard('Property',property?.name||'Unavailable',property?.rentalEndsAt?'Rental ends in '+duration(property.rentalEndsAt-Date.now()):'No rental timer returned')+
 '<article class="card wide"><h2>Reminder settings</h2><div class="form-grid"><label>Bank lead hours<input type="number" min="0" max="168" data-mp-setting="bankLeadHours" value="'+config.bankLeadHours+'"></label><label>Rental lead days<input type="number" min="0" max="30" data-mp-setting="rentalLeadDays" value="'+config.rentalLeadDays+'"></label><label>Cashier-check lead hours<input type="number" min="0" max="168" data-mp-setting="cashierLeadHours" value="'+config.cashierLeadHours+'"></label><label>Upkeep alert threshold<input type="number" min="0" step="1000" data-mp-setting="upkeepThreshold" value="'+config.upkeepThreshold+'"></label></div><label class="check-row"><input type="checkbox" data-mp-setting="loanReminder"'+(config.loanReminder?' checked':'')+'> Remind me to pursue Loan Shark when the achievement state is available</label><label class="check-row"><input type="checkbox" data-mp-setting="soundEnabled"'+(config.soundEnabled?' checked':'')+'> Play sounds for Money &amp; Property alerts</label></article>'+
 '<article class="card wide"><div class="card-head"><div><h2>Financial status</h2><span class="muted">Only fields actually returned by Torn are shown.</span></div></div><p><strong>Bank:</strong> '+(status.bank.amount?money(status.bank.amount)+(status.bank.matured?' · ready to collect':status.bank.maturedAt?' · '+duration(status.bank.maturedAt-Date.now())+' remaining':''):'No active investment returned')+'</p><p><strong>Duke:</strong> '+(status.loan.amount?money(status.loan.amount)+' owed':'No balance returned')+'</p><p><strong>Daily property upkeep:</strong> '+(property?money(property.upkeepPerDay):'Unavailable')+'</p><p><strong>Upkeep owed:</strong> '+(property&&Number.isFinite(property.upkeepOwed)?money(property.upkeepOwed):'Not exposed by Torn API')+'</p><p><strong>Cashier checks:</strong> '+status.cashierChecks.length+'</p><div class="target-actions">'+api.actionLink('Open Bank',URLS.bank)+api.actionLink('Open Property',URLS.property)+api.actionLink('Open Duke',URLS.loan)+'</div></article>'+
-'<article class="card full"><div class="card-head"><div><h2>Stock benefit planner</h2><span class="muted">Sorted by estimated monthly return on the full next benefit block.</span></div>'+api.actionLink('Open Stocks',URLS.stocks)+'</div><div class="table-wrap"><table><thead><tr><th>Stock / benefit</th><th>Cost to next tier</th><th>Estimated value</th><th>Monthly ROI</th><th>Reminder</th></tr></thead><tbody>'+stockRowsHtml+'</tbody></table></div></article></div>';
+'<article class="card full"><div class="card-head"><div><h2>Income-producing stock benefits</h2><span class="muted">Actual payout value and cadence, sorted by estimated monthly ROI. Non-income perks are omitted.</span></div>'+api.actionLink('Open Stocks',URLS.stocks)+'</div><div class="grid">'+stockRowsHtml+'</div></article></div>';
 bind(root);
 }
 function bind(root) {
@@ -247,15 +267,16 @@ busy = true; error = ''; render();
 try {
 await api.ensurePermission(false);
 if (!api.hasScope(SCOPE)) throw new Error('Your SLINK account does not have '+SCOPE+' permission.');
-const [moneyData,propertiesData,stocksData,achievements,tornStocks] = await Promise.all([
+const [moneyData,propertiesData,currentPropertyData,stocksData,achievements,tornStocks] = await Promise.all([
 api.tornJson('/v2/user/money','SLINK PDA Money and Property'),
 api.tornJson('/v2/user/properties?limit=100','SLINK PDA Money and Property'),
+api.tornJson('/v2/user/property','SLINK PDA current property').catch(()=>({})),
 api.tornJson('/v2/user/stocks','SLINK PDA Money and Property'),
 api.tornJson('/v2/user?selections=honors,medals,merits','SLINK PDA Money and Property').catch(()=>({})),
 api.tornJson('/v2/torn/stocks','SLINK PDA stock benefit catalog')
 ]);
-const user={...achievements,money:moneyData?.money||{},properties:propertiesData?.properties||[],stocks:stocksData?.stocks||[]};
-if (!current.itemCatalogAt || Date.now()-current.itemCatalogAt>=CATALOG_MS) {
+const user={...achievements,money:moneyData?.money||{},properties:propertiesData?.properties||[],currentProperty:currentPropertyData?.property||currentPropertyData?.properties?.[0]||null,stocks:stocksData?.stocks||[]};
+if (force || !current.itemCatalogAt || Date.now()-current.itemCatalogAt>=CATALOG_MS) {
 const catalogBody = await api.tornJson('/v2/torn/items?sort=ASC','SLINK PDA Money and Property item values');
 current.itemCatalog = api.catalogItems(catalogBody);
 current.itemCatalogAt = Date.now();

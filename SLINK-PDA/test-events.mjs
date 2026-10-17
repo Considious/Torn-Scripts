@@ -63,5 +63,8 @@ assert.equal(guide.completedCount, 7);
 assert.deepEqual(Array.from(guide.recommendations, entry => entry.name), ['Shadow of Doubt','Multipack','Deal with the Devil']);
 assert.equal(guide.recommendations[0].disabled, true);
 assert.equal(plugin.test.recommendations([{ upgradeId:13, selected:true, unlocked:false }],7).recommendations.some(entry => entry.name === 'Cat in Hell'), true);
+const yearRound=plugin.test.mergeCalendars({calendar:[{id:'christmas',name:'Christmas Town',start:Math.floor((now+30*86400000)/1000)}]}, {}, now);
+assert.equal(yearRound.next.name,'Christmas Town');
+assert.equal(yearRound.events.some(event=>event.id==='guide:halloween'&&event.guideOnly),true);
 console.log('PDA Events tests passed.');
 
