@@ -775,9 +775,9 @@ if (key === DATA_STORAGE_KEY) {
 const bootstrapped = storedRecord(PDA_BOOTSTRAP[key]);
 const mirror = readDataMirror();
 const legacy = readLocalRecord(DATA_STORAGE_KEY);
-if (recordHasData(gmValue)) return gmValue;
-if (recordHasData(bootstrapped)) return bootstrapped;
 if (recordHasData(mirror)) return mirror;
+if (recordHasData(bootstrapped)) return bootstrapped;
+if (recordHasData(gmValue)) return gmValue;
 if (recordHasData(legacy)) return legacy;
 return storedRecord(gmValue) || bootstrapped || mirror || legacy || fallback;
 }
@@ -859,7 +859,17 @@ schema:1,
 client:'pda',
 createdAt:Date.now(),
 settings:JSON.parse(JSON.stringify(dataState.settings || {})),
-targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))
+targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {})),
+uiState:{
+page:state.page,
+combatTab:state.combatTab,
+efficiencyTab:state.efficiencyTab,
+qualityOfLifeTab:state.qualityOfLifeTab,
+theme:state.theme,
+minimizedMode:state.minimizedMode,
+launcherOpacity:state.launcherOpacity,
+bubblePosition:state.bubblePosition
+}
 };
 }
 function restorePortableBackup(backup) {
@@ -868,6 +878,18 @@ throw new Error('The saved SLINK backup is invalid or incompatible.');
 }
 dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
 dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
+if (storedRecord(backup.uiState)) {
+const restoredUi = backup.uiState;
+if (['combat','efficiency','quality-of-life','access'].includes(restoredUi.page)) state.page = restoredUi.page;
+if (typeof restoredUi.combatTab === 'string') state.combatTab = restoredUi.combatTab;
+if (typeof restoredUi.efficiencyTab === 'string') state.efficiencyTab = restoredUi.efficiencyTab;
+if (typeof restoredUi.qualityOfLifeTab === 'string') state.qualityOfLifeTab = restoredUi.qualityOfLifeTab;
+if (typeof restoredUi.theme === 'string') state.theme = restoredUi.theme;
+if (['bar','bubble'].includes(restoredUi.minimizedMode)) state.minimizedMode = restoredUi.minimizedMode;
+if (Number.isFinite(Number(restoredUi.launcherOpacity))) state.launcherOpacity = Math.min(100, Math.max(35, Number(restoredUi.launcherOpacity)));
+if (storedRecord(restoredUi.bubblePosition) || restoredUi.bubblePosition === null) state.bubblePosition = restoredUi.bubblePosition;
+writeState();
+}
 writeDataState();
 }
 function dataBackupRuntime() {
