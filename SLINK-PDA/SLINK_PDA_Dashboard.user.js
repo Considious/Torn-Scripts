@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.55
+// @version      0.4.56
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,11 +29,12 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.55";
-  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.55","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.55"];
+  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.56";
+  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.56","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.56"];
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
+  const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
   const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
 
   function showFailure(error) {
@@ -57,11 +58,38 @@
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));
   }
 
+  function hasData(value) {
+    return Boolean(isRecord(value) && Object.keys(value).length);
+  }
+
+  function readMirror() {
+    try {
+      const parsed = JSON.parse(globalThis.localStorage?.getItem(DATA_MIRROR_KEY) || 'null');
+      return isRecord(parsed?.data) ? parsed.data : isRecord(parsed) ? parsed : null;
+    } catch { return null; }
+  }
+
+  function writeMirror(value) {
+    if (!isRecord(value)) return;
+    try {
+      globalThis.localStorage?.setItem(DATA_MIRROR_KEY, JSON.stringify({ schema:1, savedAt:Date.now(), data:value }));
+      globalThis.localStorage?.setItem(DATA_STORAGE_KEY, JSON.stringify(value));
+    } catch {}
+  }
+
   function readPersistedData() {
+    let primary = null;
     try {
       const value = typeof globalThis.GM_getValue === 'function' ? globalThis.GM_getValue(DATA_STORAGE_KEY, {}) : {};
-      return isRecord(value) && !(value && typeof value.then === 'function') ? value : {};
-    } catch { return {}; }
+      if (!(value && typeof value.then === 'function') && isRecord(value)) primary = value;
+    } catch {}
+    const mirror = readMirror();
+    if (hasData(primary)) { writeMirror(primary); return primary; }
+    if (hasData(mirror)) {
+      try { if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, mirror); } catch {}
+      return mirror;
+    }
+    return primary || mirror || {};
   }
 
   function collectBootstrap() {
@@ -74,9 +102,11 @@
         const payload = JSON.parse(String(event?.detail || ''));
         if (!isRecord(payload) || payload.key !== DATA_STORAGE_KEY) return;
         if (payload.remove) {
+          try { globalThis.localStorage?.removeItem(DATA_MIRROR_KEY); globalThis.localStorage?.removeItem(DATA_STORAGE_KEY); } catch {}
           if (typeof globalThis.GM_deleteValue === 'function') globalThis.GM_deleteValue(DATA_STORAGE_KEY);
           return;
         }
+        writeMirror(payload.value);
         if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, payload.value);
       } catch {}
     });
