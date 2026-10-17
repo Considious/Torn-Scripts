@@ -655,6 +655,25 @@ else { try { fillCompanyPrivateChat(employee, action === 'send-company-chat'); m
 if (action === 'load-terms') void loadTerms(true);
 if (action === 'refresh-themes') void loadThemeCatalog(true);
 if (action === 'save-access') void saveAccess();
+if (action === 'backup-data-now') void (async () => {
+moduleState.access.error = '';
+moduleState.access.notice = '';
+try {
+await uploadDataBackup(true);
+moduleState.access.notice = 'Settings and target lists backed up. API keys and sessions were excluded.';
+} catch (error) { moduleState.access.error = errorMessage(error); }
+renderAccess();
+})();
+if (action === 'restore-data-backup') void (async () => {
+moduleState.access.error = '';
+moduleState.access.notice = '';
+if (!global.confirm('Restore the latest SLINK settings backup? Your API keys and current login session will stay on this device.')) return;
+try {
+await downloadDataBackup();
+moduleState.access.notice = 'Latest settings backup restored. API keys and the current login session were kept.';
+renderAllModules();
+} catch (error) { moduleState.access.error = errorMessage(error); renderAccess(); }
+})();
 if (action === 'clear-access') {
 dataState.apiKey = '';
 dataState.ffKey = '';
@@ -1248,6 +1267,7 @@ writeDataState();
 startScheduler();
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) global.setTimeout(() => void runMuggingContribution(true), 3_000);
 global.setTimeout(() => void loadThemeCatalog(false), 2_000);
+global.setTimeout(() => void uploadDataBackup(false), 12_000);
 if (currentApiKey() && hasScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
 if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
 if (currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE)) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);

@@ -1,12 +1,12 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.55",
+  "version": "0.4.56",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
     "check": "node build.mjs --check",
-    "test": "node build.mjs --check && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-money-property.mjs && node test-events.mjs"
+    "test": "node build.mjs --check && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-money-property.mjs && node test-events.mjs && node test-storage-resilience.mjs"
   },
   "devDependencies": {
     "terser": "5.39.0"

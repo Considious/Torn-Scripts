@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.55
+// @version      0.4.56
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,11 +29,13 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.55-external-runtime';
+const BUILD = '0.4.56-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
+const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
 const SETTINGS_STORAGE_KEY = 'slink-pda-dashboard:settings:v1';
+const DATA_BACKUP_INTERVAL_MS = 12 * 60 * 60_000;
 const SHARED_API_LEDGER_KEY = 'considious:torn-api-ledger:v1';
 const SHARED_API_LOCK = 'considious-torn-api-limiter-v1';
 const ROOT_OVERFLOW_KEY = 'slinkPdaPreviousOverflow';
@@ -43,7 +45,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.55';
+const CLIENT_VERSION = '0.4.56';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -739,26 +741,55 @@ bubblePosition:state.bubblePosition
 try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
 try { if (typeof GM_API.set === 'function') GM_API.set(STORAGE_KEY, snapshot); } catch {}
 }
+function storedRecord(value) {
+return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+function recordHasData(value) {
+return Boolean(storedRecord(value) && Object.keys(value).length);
+}
+function readLocalRecord(key) {
+try { return storedRecord(JSON.parse(global.localStorage.getItem(key) || 'null')); }
+catch { return null; }
+}
+function readDataMirror() {
+const envelope = readLocalRecord(DATA_MIRROR_KEY);
+return storedRecord(envelope?.data) || storedRecord(envelope);
+}
+function writeDataMirror(value) {
+const record = storedRecord(value);
+if (!record) return;
+try {
+global.localStorage.setItem(DATA_MIRROR_KEY, JSON.stringify({ schema:1, savedAt:Date.now(), data:record }));
+global.localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(record));
+} catch {}
+}
 function storageRead(key, fallback) {
+let gmValue = null;
 try {
 if (typeof GM_API.get === 'function') {
 const value = GM_API.get(key, fallback);
-if (!(value && typeof value.then === 'function')) return value;
+if (!(value && typeof value.then === 'function')) gmValue = value;
 }
 } catch {}
 if (key === DATA_STORAGE_KEY) {
-const bootstrapped = PDA_BOOTSTRAP[key];
-if (bootstrapped && typeof bootstrapped === 'object' && !Array.isArray(bootstrapped)) return bootstrapped;
+const bootstrapped = storedRecord(PDA_BOOTSTRAP[key]);
+const mirror = readDataMirror();
+const legacy = readLocalRecord(DATA_STORAGE_KEY);
+if (recordHasData(gmValue)) return gmValue;
+if (recordHasData(bootstrapped)) return bootstrapped;
+if (recordHasData(mirror)) return mirror;
+if (recordHasData(legacy)) return legacy;
+return storedRecord(gmValue) || bootstrapped || mirror || legacy || fallback;
 }
-if (key !== DATA_STORAGE_KEY) {
+if (gmValue !== null) return gmValue;
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
 return parsed === null ? fallback : parsed;
 } catch {}
-}
 return fallback;
 }
 function storageWrite(key, value) {
+if (key === DATA_STORAGE_KEY) writeDataMirror(value);
 try { if (typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
 if (key === DATA_STORAGE_KEY && PDA_STORAGE_WRITE_EVENT) {
 try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, value }) })); } catch {}
@@ -772,7 +803,10 @@ try { if (typeof GM_API.remove === 'function') GM_API.remove(key); } catch {}
 if (key === DATA_STORAGE_KEY && PDA_STORAGE_WRITE_EVENT) {
 try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, remove:true }) })); } catch {}
 }
-try { global.localStorage.removeItem(key); } catch {}
+try {
+global.localStorage.removeItem(key);
+if (key === DATA_STORAGE_KEY) global.localStorage.removeItem(DATA_MIRROR_KEY);
+} catch {}
 }
 function readDataState() {
 const saved = storageRead(DATA_STORAGE_KEY, {});
@@ -819,6 +853,74 @@ company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinu
 }
 };
 }
+function portableBackupPayload() {
+return {
+schema:1,
+client:'pda',
+createdAt:Date.now(),
+settings:JSON.parse(JSON.stringify(dataState.settings || {})),
+targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))
+};
+}
+function restorePortableBackup(backup) {
+if (!backup || Number(backup.schema) !== 1 || !storedRecord(backup.settings) || !storedRecord(backup.targetList)) {
+throw new Error('The saved SLINK backup is invalid or incompatible.');
+}
+dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
+dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
+writeDataState();
+}
+function dataBackupRuntime() {
+const current = storedRecord(dataState.caches.dataBackup) || {};
+dataState.caches.dataBackup = {
+lastUploadedAt:Math.max(0, Number(current.lastUploadedAt) || 0),
+lastRemoteAt:Math.max(0, Number(current.lastRemoteAt) || 0),
+lastCheckedAt:Math.max(0, Number(current.lastCheckedAt) || 0),
+error:String(current.error || '')
+};
+return dataState.caches.dataBackup;
+}
+async function uploadDataBackup(force = false) {
+const session = validSession('permission');
+if (!session) return null;
+const runtime = dataBackupRuntime();
+if (!force && Date.now() - runtime.lastUploadedAt < DATA_BACKUP_INTERVAL_MS) return runtime;
+try {
+const response = await requestJson(`${URLS.permission}/api/user-backup`, {
+method:'POST',
+headers:{ Authorization:`Bearer ${session.token}` },
+body:{ backup:portableBackupPayload() }
+});
+runtime.lastUploadedAt = Number(response?.saved_at) || Date.now();
+runtime.lastRemoteAt = runtime.lastUploadedAt;
+runtime.lastCheckedAt = Date.now();
+runtime.error = '';
+writeDataState();
+return runtime;
+} catch (error) {
+runtime.lastCheckedAt = Date.now();
+runtime.error = errorMessage(error);
+writeDataState();
+if (force) throw error;
+return runtime;
+}
+}
+async function downloadDataBackup() {
+const session = validSession('permission');
+if (!session) throw new Error('Authenticate under Access before restoring a backup.');
+const response = await requestJson(`${URLS.permission}/api/user-backup`, {
+headers:{ Authorization:`Bearer ${session.token}` }
+});
+const backup = response?.backup;
+restorePortableBackup(backup);
+const runtime = dataBackupRuntime();
+runtime.lastRemoteAt = Number(response?.saved_at || backup?.savedAt || backup?.createdAt) || Date.now();
+runtime.lastCheckedAt = Date.now();
+runtime.error = '';
+writeDataState();
+return runtime;
+}
+
 function writeDataState() {
 try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(dataState.settings)); } catch {}
 storageWrite(DATA_STORAGE_KEY, dataState);
@@ -840,7 +942,7 @@ const state = readState();
 const dataState = readDataState();
 try {
 global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(dataState.settings));
-global.localStorage.removeItem(DATA_STORAGE_KEY);
+writeDataMirror(dataState);
 } catch {}
 function moduleActivityMap() {
 const value = dataState.caches.moduleActivity;
@@ -908,7 +1010,7 @@ const reportedMugNodes = new WeakSet();
 const recentMugResults = new Map();
 const pdaPlugins = new Map();
 const moduleState = {
-access:{ busy:false, error:'' },
+access:{ busy:false, error:'', notice:'' },
 leveling:{ busy:false, error:'', data:dataState.caches.leveling || null },
 bounties:{ busy:false, error:'', data:dataState.caches.bounties || null },
 mugging:{ busy:false, error:'', notice:'' },
