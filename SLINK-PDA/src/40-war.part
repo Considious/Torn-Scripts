@@ -332,7 +332,11 @@ return Math.floor(Number(timestamp) / 86_400_000);
 }
 function cooldownSeconds(body, name, fetchedAt) {
 const value = finite(body?.cooldowns?.[name]);
-return value === null ? null : Math.max(0, Math.ceil(value - Math.max(0, Date.now() - fetchedAt) / 1000));
+const observedAt = Math.max(0, Number(fetchedAt) || 0);
+// A locally predicted expiry is not proof that a cooldown is clear: the user
+// may have consumed another item while a later API refresh failed.
+if (value === null || !observedAt || Date.now() - observedAt > 10 * 60_000) return null;
+return Math.max(0, Math.ceil(value));
 }
 function apiRows(value, nestedKey) {
 if (Array.isArray(value)) return value;
@@ -804,17 +808,25 @@ const selections = 'bars,cooldowns,travel,education,organizedcrime,refills,missi
 const day = utcDay();
 const reset = day * 86_400_000;
 const energyObservedAt = Date.now();
-const [body, cityCurrent] = await Promise.all([
+const [body, cityResult] = await Promise.all([
 tornJson(`/v2/user?selections=${selections}`, 'SLINK PDA efficiency alerts'),
 tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total')
+.then(value => ({ value }))
+.catch(error => ({ error }))
 ]);
-const currentBought = personalStat(cityCurrent, 'cityitemsbought');
-let resetBought = cached?.cityDay === day && Number(cached.cityBaselineVersion) === 2 ? finite(cached.cityAtReset) : null;
+let currentBought = finite(cached?.cityTotal);
+let resetBought = cached?.cityDay === day && Number(cached?.cityBaselineVersion) === 2 ? finite(cached.cityAtReset) : null;
+let cityError = cityResult.error ? errorMessage(cityResult.error) : '';
+if (!cityError) {
+try {
+currentBought = personalStat(cityResult.value, 'cityitemsbought');
 if (resetBought === null) {
 const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000) - 1}`, 'SLINK PDA city item baseline');
 resetBought = personalStat(atReset, 'cityitemsbought');
 }
-if (currentBought === null || resetBought === null) throw new Error('Torn returned no usable city-item purchase total.');
+if (currentBought === null || resetBought === null) cityError = 'Torn returned no usable city-item purchase total.';
+} catch (error) { cityError = errorMessage(error); }
+}
 let stockCatalog = dataState.caches.stockCatalog?.data || null;
 if (!dataState.caches.stockCatalog?.at || Date.now() - dataState.caches.stockCatalog.at >= 7 * 86_400_000) {
 stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
@@ -827,7 +839,15 @@ crimeCache.lastError = '';
 } catch (crimeError) {
 dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), lastError:errorMessage(crimeError), lastErrorAt:Date.now() };
 }
-current.data = dataState.caches.alerts = { at:Date.now(), energyObservedAt, body, stockCatalog, cityDay:day, cityBaselineVersion:2, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
+current.data = dataState.caches.alerts = {
+at:Date.now(), energyObservedAt, body, stockCatalog,
+cityDay:cityError ? Number(cached?.cityDay) || day : day,
+cityBaselineVersion:2,
+cityTotal:currentBought,
+cityAtReset:resetBought,
+cityBought:currentBought !== null && resetBought !== null ? Math.max(0, currentBought - resetBought) : finite(cached?.cityBought)
+};
+current.error = cityError ? `City item reminder: ${cityError}` : '';
 endStackIfSpent(current.data);
 reconcileAlertNotifications(current.data);
 writeDataState();

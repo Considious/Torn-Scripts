@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.60
+// @version      0.4.61
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.60-external-runtime';
+const BUILD = '0.4.61-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -45,7 +45,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.60';
+const CLIENT_VERSION = '0.4.61';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -766,11 +766,28 @@ function readDataMirror() {
 const envelope = readLocalRecord(DATA_MIRROR_KEY);
 return storedRecord(envelope?.data) || storedRecord(envelope);
 }
+function storedRecordSavedAt(value) {
+return Math.max(0, Number(storedRecord(value)?._savedAt) || 0);
+}
+function newestStoredRecord(candidates, fallback) {
+let chosen = null;
+let chosenAt = 0;
+for (const candidate of candidates) {
+const record = storedRecord(candidate);
+if (!recordHasData(record)) continue;
+const savedAt = storedRecordSavedAt(record);
+if (!chosen || savedAt > chosenAt) {
+chosen = record;
+chosenAt = savedAt;
+}
+}
+return chosen || fallback;
+}
 function writeDataMirror(value) {
 const record = storedRecord(value);
 if (!record) return;
 try {
-global.localStorage.setItem(DATA_MIRROR_KEY, JSON.stringify({ schema:1, savedAt:Date.now(), data:record }));
+global.localStorage.setItem(DATA_MIRROR_KEY, JSON.stringify({ schema:1, savedAt:storedRecordSavedAt(record) || Date.now(), data:record }));
 global.localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(record));
 } catch {}
 }
@@ -786,11 +803,9 @@ if (key === DATA_STORAGE_KEY) {
 const bootstrapped = storedRecord(PDA_BOOTSTRAP[key]);
 const mirror = readDataMirror();
 const legacy = readLocalRecord(DATA_STORAGE_KEY);
-if (recordHasData(mirror)) return mirror;
-if (recordHasData(bootstrapped)) return bootstrapped;
-if (recordHasData(gmValue)) return gmValue;
-if (recordHasData(legacy)) return legacy;
-return storedRecord(gmValue) || bootstrapped || mirror || legacy || fallback;
+// The loader-vetted primary record is authoritative for legacy data. Once
+// records carry _savedAt, a genuinely newer fallback may recover interrupted writes.
+return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy], storedRecord(gmValue) || bootstrapped || mirror || legacy || fallback);
 }
 if (gmValue !== null) return gmValue;
 try {
@@ -822,19 +837,18 @@ if (key === DATA_STORAGE_KEY) global.localStorage.removeItem(DATA_MIRROR_KEY);
 function readDataState() {
 const saved = storageRead(DATA_STORAGE_KEY, {});
 const value = saved && typeof saved === 'object' ? saved : {};
-let locallyPreservedSettings = {};
+let safeSettings = null;
+let safeSettingsAt = 0;
 try {
 const safe = JSON.parse(global.localStorage.getItem(SETTINGS_STORAGE_KEY) || 'null');
-const legacy = JSON.parse(global.localStorage.getItem(DATA_STORAGE_KEY) || 'null');
-if (legacy?.settings && typeof legacy.settings === 'object') locallyPreservedSettings = legacy.settings;
-if (safe && typeof safe === 'object' && !Array.isArray(safe)) locallyPreservedSettings = { ...locallyPreservedSettings, ...safe };
+safeSettings = storedRecord(safe?.data) || storedRecord(safe);
+safeSettingsAt = Math.max(0, Number(safe?.savedAt) || storedRecordSavedAt(safeSettings));
 } catch {}
-const migratedSettings = PDA_BOOTSTRAP[DATA_STORAGE_KEY]?.settings;
-const settingsSource = {
-...(value.settings && typeof value.settings === 'object' ? value.settings : {}),
-...locallyPreservedSettings,
-...(migratedSettings && typeof migratedSettings === 'object' ? migratedSettings : {})
-};
+const valueSettings = storedRecord(value.settings);
+const valueSavedAt = storedRecordSavedAt(value);
+const settingsSource = recordHasData(safeSettings) && (!recordHasData(valueSettings) || safeSettingsAt > valueSavedAt)
+? safeSettings
+: valueSettings || {};
 return {
 apiKey:String(value.apiKey || ''),
 ffKey:String(value.ffKey || ''),
@@ -938,7 +952,8 @@ if (force) throw error;
 return runtime;
 }
 }
-async function downloadDataBackup() {
+async function downloadDataBackup(userInitiated = false) {
+if (userInitiated !== true) throw new Error('Cloud backup recovery must be started manually from Access.');
 const session = validSession('permission');
 if (!session) throw new Error('Authenticate under Access before restoring a backup.');
 const response = await requestJson(`${URLS.permission}/api/user-backup`, {
@@ -955,7 +970,8 @@ return runtime;
 }
 
 function writeDataState() {
-try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(dataState.settings)); } catch {}
+dataState._savedAt = Math.max(Date.now(), Number(dataState._savedAt || 0) + 1);
+try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings })); } catch {}
 storageWrite(DATA_STORAGE_KEY, dataState);
 }
 function currentApiKey() {
@@ -974,7 +990,8 @@ return String(dataState.ffKey || '').trim();
 const state = readState();
 const dataState = readDataState();
 try {
-global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(dataState.settings));
+if (!Number(dataState._savedAt)) dataState._savedAt = Date.now();
+global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings }));
 writeDataMirror(dataState);
 } catch {}
 function moduleActivityMap() {

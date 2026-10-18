@@ -670,7 +670,7 @@ moduleState.access.error = '';
 moduleState.access.notice = '';
 if (!global.confirm('Restore the latest SLINK settings backup? Your API keys and current login session will stay on this device.')) return;
 try {
-await downloadDataBackup();
+await downloadDataBackup(true);
 moduleState.access.notice = 'Latest settings backup restored. API keys and the current login session were kept.';
 renderAllModules();
 } catch (error) { moduleState.access.error = errorMessage(error); renderAccess(); }
