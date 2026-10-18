@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.60
+// @version      0.4.61
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,8 +29,8 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.60";
-  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.60","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.60"];
+  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.61";
+  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.61","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.61"];
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -69,6 +69,10 @@
     } catch { return null; }
   }
 
+  function savedAt(value) {
+    return Math.max(0, Number(isRecord(value) ? value._savedAt : 0) || 0);
+  }
+
   function writeMirror(value) {
     if (!isRecord(value)) return;
     try {
@@ -84,12 +88,13 @@
       if (!(value && typeof value.then === 'function') && isRecord(value)) primary = value;
     } catch {}
     const mirror = readMirror();
-    if (hasData(mirror)) {
-      try { if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, mirror); } catch {}
-      return mirror;
+    let selected = hasData(primary) ? primary : mirror || {};
+    if (hasData(mirror) && savedAt(mirror) > savedAt(selected)) selected = mirror;
+    if (hasData(selected)) writeMirror(selected);
+    if (selected === mirror && selected !== primary) {
+      try { if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, selected); } catch {}
     }
-    if (hasData(primary)) { writeMirror(primary); return primary; }
-    return primary || mirror || {};
+    return selected;
   }
 
   function collectBootstrap() {
