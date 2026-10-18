@@ -378,11 +378,60 @@ writeDataState();
 return currentSettings;
 }
 }
-function requestProvider(providerId, currentSettings) {
+async function requestTornIntelPageContext(url) {
+let response;
+try {
+response = await global.fetch(url, {
+method:'GET',
+headers:{ Accept:'application/json' },
+cache:'no-store',
+credentials:'omit',
+mode:'cors',
+redirect:'follow'
+});
+} catch (error) {
+const failure = new Error('PDA browser request was blocked by CORS or the network.');
+failure.code = 'SLINK_TORN_INTEL_PAGE_FETCH_BLOCKED';
+failure.cause = error;
+throw failure;
+}
+let payload = null;
+try { payload = await response.json(); }
+catch {
+const failure = new Error('Torn Intel returned a non-JSON response.');
+failure.status = Number(response.status) || 0;
+throw failure;
+}
+if (!response.ok) {
+const detail = payload?.message || payload?.error?.message || payload?.error || ('HTTP ' + response.status);
+const failure = new Error('Torn Intel browser request failed: ' + detail);
+failure.status = Number(response.status) || 0;
+failure.body = payload;
+throw failure;
+}
+return payload || {};
+}
+async function requestProvider(providerId, currentSettings) {
 const definition = ABROAD_STOCKS.PROVIDERS[providerId];
-const headers = {};
-if (providerId === 'tornIntel' && currentSettings.tornIntelKey) headers['X-Torn-Intel-Key'] = currentSettings.tornIntelKey;
-return requestJson(definition.url, { headers }).then(payload => ABROAD_STOCKS.normalizeProvider(providerId, payload, Date.now()));
+if (providerId === 'tornIntel') {
+try {
+const payload = await requestTornIntelPageContext(definition.url);
+return ABROAD_STOCKS.normalizeProvider(providerId, payload, Date.now());
+} catch (pageError) {
+if (!currentSettings.tornIntelKey) throw pageError;
+try {
+const payload = await requestJson(definition.url, { headers:{ 'X-Torn-Intel-Key':currentSettings.tornIntelKey } });
+return ABROAD_STOCKS.normalizeProvider(providerId, payload, Date.now());
+} catch (keyError) {
+const failure = new Error(errorMessage(pageError) + ' Client-key fallback also failed: ' + errorMessage(keyError));
+failure.status = Number(keyError?.status || pageError?.status || 0);
+failure.body = keyError?.body || pageError?.body || null;
+throw failure;
+}
+}
+}
+const payload = await requestJson(definition.url);
+return ABROAD_STOCKS.normalizeProvider(providerId, payload, Date.now());
 }
 function updateHistory(currentHistory, snapshots) {
 const history = currentHistory && typeof currentHistory === 'object' ? { ...currentHistory } : {};
@@ -519,7 +568,7 @@ const watchedCount = runtime().watches.length;
 const providerStatus = PROVIDER_STATUS_ORDER.map(id => {
 const provider = current.providers[id] || {};
 const label = ABROAD_STOCKS.PROVIDERS[id].label;
-return `<span class="badge ${provider.ok ? 'ready' : provider.error ? 'warn' : ''}">${escapeHtml(label)}: ${provider.ok ? `${Number(provider.rows || 0).toLocaleString()} rows` : provider.error ? 'unavailable' : 'waiting'}</span>`;
+return `<span class="badge ${provider.ok ? 'ready' : provider.error ? 'warn' : ''}">${escapeHtml(label)}: ${provider.ok ? `${Number(provider.rows || 0).toLocaleString()} rows` : provider.error ? (id === 'tornIntel' ? 'unavailable · ' + escapeHtml(provider.error) : 'unavailable') : 'waiting'}</span>`;
 }).join('');
 const needsTornIntelKey = Boolean(current.providers.tornIntel?.needsKey || current.settings.tornIntelKey);
 root.innerHTML = `<div class="grid"><article class="card full">
