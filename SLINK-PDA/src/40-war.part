@@ -373,6 +373,164 @@ detail:'Claim in the Play Store app on Android or Google Play Games on Windows, 
 links:[['Official claiming instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
 };
 }
+let crimeUniqueRefreshBusy = false;
+function crimeUniqueCompletedRowsPda(payload) {
+return Array.isArray(payload?.crimes?.uniques) ? payload.crimes.uniques : [];
+}
+function clusterRingAchievedPda(payload) {
+return crimeUniqueCompletedRowsPda(payload).some(unique => (unique?.rewards?.items || []).some(item => Number(item?.id ?? item?.item_id) === 1465));
+}
+function crimeUniqueProgressRowsPda() {
+const cache = dataState.caches.crimeUniques || {};
+const catalogRows = Array.isArray(cache?.catalog?.crimes) ? cache.catalog.crimes : [];
+const users = cache.user && typeof cache.user === 'object' ? cache.user : {};
+return PDA_ALERT_TYPES.filter(definition => Number(definition.crimeId) > 0).map(definition => {
+const catalog = catalogRows.find(row => Number(row?.id) === Number(definition.crimeId)) || {};
+const user = users[definition.crimeId] || {};
+const completedIds = [...new Set(crimeUniqueCompletedRowsPda(user).map(row => Number(row?.id)).filter(Number.isFinite))];
+const expectedIds = [...new Set((Array.isArray(catalog?.unique_outcomes_ids) ? catalog.unique_outcomes_ids : []).map(Number).filter(Number.isFinite))];
+let total = Math.max(0, Number(catalog?.unique_outcomes_count) || expectedIds.length || 0);
+let completed = total ? Math.min(total, completedIds.length) : completedIds.length;
+const skill = Math.max(0, finite(user?.crimes?.skill) || 0);
+let eligibleTotal = skill > 0 ? total : 0;
+if (Number(definition.crimeId) === 13) eligibleTotal = ARSON_UNIQUE_SKILL_THRESHOLDS.filter(threshold => skill >= threshold).length;
+if (Number(definition.crimeId) === 4) {
+total = 1;
+completed = clusterRingAchievedPda(user) ? 1 : 0;
+eligibleTotal = skill >= 100 ? 1 : 0;
+}
+return {
+...definition,
+name:String(catalog?.name || definition.label.replace(/ unique.*$/i, '')),
+skill,
+completed,
+total,
+eligibleTotal,
+complete:total > 0 && completed >= total,
+canSpawnMissing:total > 0 && completed < total && eligibleTotal > completed,
+completedIds,
+missingIds:expectedIds.filter(id => !completedIds.includes(id))
+};
+});
+}
+function shopliftingStatusRowsPda(payload) {
+const raw = payload?.shoplifting;
+if (Array.isArray(raw)) return raw;
+if (!raw || typeof raw !== 'object') return [];
+return Object.entries(raw).map(([name, status]) => ({ name, status:Array.isArray(status) ? status : [] }));
+}
+function clusterRingReadyPda() {
+const cache = dataState.caches.crimeUniques || {};
+const user = cache.user?.[4];
+if (!user || clusterRingAchievedPda(user) || Number(user?.crimes?.skill || 0) < 100) return false;
+const states = shopliftingStatusRowsPda(cache.shopliftingStatus);
+if (!states.length) return false;
+const subcrimes = Array.isArray(cache?.shopliftingSubcrimes?.subcrimes) ? cache.shopliftingSubcrimes.subcrimes : [];
+const jewelry = subcrimes.find(row => /jewelry\s+store/i.test(String(row?.name || '')));
+const row = states.find(entry => (jewelry && Number(entry?.id) === Number(jewelry.id)) || /jewelry[\s_]+store/i.test(String(entry?.name || '')));
+const status = row?.status;
+if (!Array.isArray(status)) return false;
+const camera = status.find(entry => /camera/i.test(String(entry?.title || '')));
+const guard = status.find(entry => /guard/i.test(String(entry?.title || '')));
+return camera?.disabled === true && guard?.disabled === true;
+}
+function searchForCashOpportunitiesPda(skillValue, now = Date.now()) {
+const skill = Math.max(0, finite(skillValue) || 0);
+if (skill < 1) return [];
+const raw = dataState.caches.crimeUniques?.searchForCashStatus?.searchforcash;
+const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.entries(raw).map(([name, value]) => ({ name, ...(value && typeof value === 'object' ? value : {}) })) : [];
+const byId = id => rows.find(row => Number(row?.id) === id);
+const opportunities = [];
+const date = new Date(now);
+const day = date.getUTCDay();
+const time = date.getUTCHours() * 60 + date.getUTCMinutes();
+const within = (start, end) => time >= start && time < end;
+const add = (label, minimumSkill = 1) => { if (skill >= minimumSkill) opportunities.push(label); };
+if (day === 1 && within(6 * 60, 18 * 60)) add('Trash collection window');
+if (day >= 1 && day <= 5 && within(9 * 60, 16 * 60)) add('Junkyard crushing window', 5);
+if (day >= 1 && day <= 5 && within(9 * 60, 17 * 60)) add('Cemetery groundskeeping window');
+if (date.getUTCDate() === 1 && within(13 * 60, 16 * 60)) add('Fountain collection window', 75);
+const subway = byId(2);
+const subwayPercentage = finite(subway?.percentage);
+if (/rush|on[- ]?peak/i.test(String(subway?.title || ''))) add('Subway rush-hour window');
+if (subwayPercentage !== null && subwayPercentage <= 23) add('Low subway ridership');
+const junkyardPercentage = finite(byId(3)?.percentage);
+if (junkyardPercentage !== null && junkyardPercentage <= 23) add('Very low crushing rating', 5);
+const tidePercentage = finite(byId(4)?.percentage);
+if (tidePercentage !== null && (tidePercentage <= 20 || tidePercentage >= 80)) add('Extreme tide');
+return [...new Set(opportunities)];
+}
+function dailyCrimeUniqueDuePda(progress, now = Date.now()) {
+if (!progress?.canSpawnMissing) return false;
+const date = new Date(now);
+if (date.getUTCHours() === 0 && date.getUTCMinutes() < 5) return false;
+return Number(dataState.settings.alerts.crimeUniqueDoneDay?.[progress.id]) !== utcDay(now);
+}
+async function refreshCrimeUniqueProgress(force = false) {
+const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+const definitions = PDA_ALERT_TYPES.filter(definition => Number(definition.crimeId) > 0 && enabled[definition.id] !== false);
+if (!definitions.length) return dataState.caches.crimeUniques || {};
+const now = Date.now();
+const previous = dataState.caches.crimeUniques || {};
+const cache = { ...previous, user:{ ...(previous.user || {}) }, userFetchedAt:{ ...(previous.userFetchedAt || {}) } };
+if (force || !cache.catalog || Number(cache.catalogFetchedAt || 0) + 7 * 86_400_000 <= now) {
+cache.catalog = await tornJson('/v2/torn/crimes', 'SLINK PDA crime unique catalog');
+cache.catalogFetchedAt = now;
+}
+for (const definition of definitions) {
+if (!force && cache.user[definition.crimeId] && Number(cache.userFetchedAt[definition.crimeId] || 0) + 86_400_000 > now) continue;
+cache.user[definition.crimeId] = await tornJson(`/v2/user/${definition.crimeId}/crimes`, `SLINK PDA ${definition.label} progress`);
+cache.userFetchedAt[definition.crimeId] = now;
+}
+dataState.caches.crimeUniques = cache;
+for (const progress of crimeUniqueProgressRowsPda()) {
+if (!progress.complete || dataState.settings.alerts.enabledTypes[progress.id] === false) continue;
+dataState.settings.alerts.enabledTypes[progress.id] = false;
+cache.autoDisabledAt = now;
+}
+return cache;
+}
+async function refreshCrimeUniqueWindows(force = false) {
+if (crimeUniqueRefreshBusy) return;
+const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+const liveEnabled = PDA_ALERT_TYPES.some(definition => definition.mode === 'live' && enabled[definition.id] !== false);
+if (!liveEnabled || !currentApiKey() || !hasScope('slink.adhd.alerts')) return;
+const cache = dataState.caches.crimeUniques || {};
+if (!force && Number(cache.nextLiveAt || 0) > Date.now()) return;
+crimeUniqueRefreshBusy = true;
+try {
+await ensurePermissionSession(false);
+const now = Date.now();
+const progress = crimeUniqueProgressRowsPda();
+const search = progress.find(row => row.id === 'searchCashUnique');
+const cluster = progress.find(row => row.id === 'clusterRing');
+if (search && !search.complete && enabled.searchCashUnique !== false) {
+cache.searchForCashStatus = await tornJson('/v2/torn/searchforcash', 'SLINK PDA Search for Cash unique windows');
+cache.searchForCashFetchedAt = now;
+}
+if (cluster && !cluster.complete && enabled.clusterRing !== false) {
+cache.shopliftingStatus = await tornJson('/v2/torn/shoplifting', 'SLINK PDA Cluster Ring status');
+cache.shopliftingFetchedAt = now;
+if (!cache.shopliftingSubcrimes || Number(cache.shopliftingSubcrimesFetchedAt || 0) + 7 * 86_400_000 <= now) {
+cache.shopliftingSubcrimes = await tornJson('/v2/torn/4/subcrimes', 'SLINK PDA Cluster Ring map');
+cache.shopliftingSubcrimesFetchedAt = now;
+}
+}
+cache.nextLiveAt = now + 60_000;
+cache.lastError = '';
+dataState.caches.crimeUniques = cache;
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+} catch (error) {
+cache.nextLiveAt = Date.now() + 60_000;
+cache.lastError = errorMessage(error);
+dataState.caches.crimeUniques = cache;
+writeDataState();
+} finally {
+crimeUniqueRefreshBusy = false;
+}
+}
 function alertRows(snapshot) {
 const body = snapshot?.body || {};
 const fetchedAt = Number(snapshot?.at) || Date.now();
@@ -399,6 +557,9 @@ const activeRace = raceActive(body?.races, profile?.status, body?.icons);
 const racewayKnown = body?.enlistedcars !== undefined || body?.races !== undefined || body?.icons !== undefined;
 const playPoints = googlePlayPointsAccess();
 const timerEnd = Number(dataState.settings.alerts.timer24EndsAt) || 0;
+const crimeProgress = crimeUniqueProgressRowsPda();
+const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
+const searchOpportunities = searchForCashOpportunitiesPda(crimeById.searchCashUnique?.skill);
 add('timer24', timerEnd > 0 && timerEnd <= Date.now(), '24-hour timer finished', 'Your countdown has finished. Dismiss it or start another timer.');
 add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
 add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
@@ -427,6 +588,10 @@ add('stockBenefits', readyStocks.length > 0, 'Stock benefit ready', readyStocks.
 const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Array.isArray(body?.battlestats?.[name]?.modifiers) ? body.battlestats[name].modifiers : []).filter(row => /addiction/i.test(`${row?.effect || ''} ${row?.type || ''}`));
 const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
 add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
+add('searchCashUnique', crimeById.searchCashUnique?.canSpawnMissing && searchOpportunities.length > 0, 'Search for Cash unique window may be active', `${searchOpportunities.join(', ')}. ${crimeById.searchCashUnique?.completed || 0}/${crimeById.searchCashUnique?.total || 0} completed; check the starred options.`, [['Check Search for Cash','https://www.torn.com/page.php?sid=crimes#/search-for-cash']]);
+add('clusterRing', crimeById.clusterRing?.canSpawnMissing && clusterRingReadyPda(), 'Cluster Ring security window is open', 'Jewelry Store cameras and guard are disabled. Skill 100 and zero notoriety are still required.', [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']]);
+add('disposalUnique', dailyCrimeUniqueDuePda(crimeById.disposalUnique), 'Check today’s Disposal jobs for missing uniques', `${crimeById.disposalUnique?.completed || 0}/${crimeById.disposalUnique?.total || 0} completed. Jobs refresh daily; check starred options before using today’s jobs.`, [['Check Disposal','https://www.torn.com/page.php?sid=crimes#/disposal']]);
+add('arsonUnique', dailyCrimeUniqueDuePda(crimeById.arsonUnique), 'Check today’s Arson targets for missing uniques', `${crimeById.arsonUnique?.completed || 0}/${crimeById.arsonUnique?.total || 0} completed at skill ${Math.floor(crimeById.arsonUnique?.skill || 0)}. Only skill-eligible missing targets trigger this reminder.`, [['Check Arson','https://www.torn.com/page.php?sid=crimes#/arson']]);
 return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows];
 }
 function updateAlertIndicator(count, rows = []) {
@@ -540,10 +705,12 @@ const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
 dataState.settings.alerts.enabledTypes = enabled;
 const enabledCount = PDA_ALERT_TYPES.filter(definition => enabled[definition.id]).length;
 const groups = [...new Set(PDA_ALERT_TYPES.map(definition => definition.group))];
+const crimeProgress = crimeUniqueProgressRowsPda();
+const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
 return `<details class="alert-settings"><summary>Alert settings · ${enabledCount}/${PDA_ALERT_TYPES.length} enabled</summary>
 <p>Disabled alerts are removed from both the PDA alert list and phone notification flow.</p>
 <div class="alert-settings-actions"><button type="button" data-action="alerts-enable-all">Enable all</button><button type="button" data-action="alerts-disable-all">Disable all</button></div>
-<div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${PDA_ALERT_TYPES.filter(definition => definition.group === group).map(definition => `<label><input type="checkbox" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label)}</span></label>`).join('')}</fieldset>`).join('')}</div>
+<div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${PDA_ALERT_TYPES.filter(definition => definition.group === group).map(definition => { const progress = crimeById[definition.id]; const suffix = progress?.total ? ` · ${progress.completed}/${progress.total} · skill ${Math.floor(progress.skill || 0)}` : ''; return `<label><input type="checkbox" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label + suffix)}</span></label>`; }).join('')}</fieldset>`).join('')}</div>
 </details>`;
 }
 function renderAlerts() {
@@ -570,7 +737,7 @@ root.innerHTML = `<div class="grid"><article class="card full"><div class="card-
 <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
 <div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
 ${alertSettingsHtml()}
-<div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
+<div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}${['disposalUnique', 'arsonUnique'].includes(alert.id) ? `<button type="button" data-action="crime-unique-checked" data-alert-id="${escapeHtml(alert.id)}">Checked today</button>` : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
 </article></div>`;
 }
 async function refreshAlerts(force = false) {
@@ -602,6 +769,13 @@ let stockCatalog = dataState.caches.stockCatalog?.data || null;
 if (!dataState.caches.stockCatalog?.at || Date.now() - dataState.caches.stockCatalog.at >= 7 * 86_400_000) {
 stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
 dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
+}
+try {
+const crimeCache = await refreshCrimeUniqueProgress(force);
+crimeCache.nextLiveAt = 0;
+crimeCache.lastError = '';
+} catch (crimeError) {
+dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), lastError:errorMessage(crimeError), lastErrorAt:Date.now() };
 }
 current.data = dataState.caches.alerts = { at:Date.now(), energyObservedAt, body, stockCatalog, cityDay:day, cityBaselineVersion:2, cityTotal:currentBought, cityAtReset:resetBought, cityBought:Math.max(0, currentBought - resetBought) };
 endStackIfSpent(current.data);

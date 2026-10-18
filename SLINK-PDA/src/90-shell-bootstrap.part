@@ -43,6 +43,7 @@ const clock = shadow.querySelector('[data-timer24-clock]');
 if (clock) clock.textContent = timer24Label();
 }
 if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
+if (canRefreshAlerts && Number(dataState.caches.crimeUniques?.nextLiveAt || 0) <= Date.now()) void refreshCrimeUniqueWindows(false);
 const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
 if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= WEAVER_SUMMARY_REFRESH_MS) void refreshMarket(false);
 const canRefreshDollarBazaars = Boolean(currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE));
@@ -730,6 +731,16 @@ reconcileAlertNotifications(moduleState.alerts.data);
 writeDataState();
 renderAlerts();
 }
+if (action === 'crime-unique-checked') {
+const id = String(event.target.closest('[data-alert-id]')?.dataset.alertId || '');
+if (['disposalUnique', 'arsonUnique'].includes(id)) {
+dataState.settings.alerts.crimeUniqueDoneDay[id] = utcDay();
+delete dataState.settings.alerts.snoozedUntil[id];
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+}
 if (action === 'copy-war-mug-report') {
 const button = event.target.closest('button');
 const active = moduleState.war.data?.activeWar;
@@ -1068,6 +1079,9 @@ const id = String(event.target.dataset.alertType || '');
 if (PDA_ALERT_TYPES.some(definition => definition.id === id)) {
 dataState.settings.alerts.enabledTypes = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
 dataState.settings.alerts.enabledTypes[id] = event.target.checked === true;
+if (PDA_ALERT_TYPES.find(definition => definition.id === id)?.mode === 'live') {
+dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), nextLiveAt:0 };
+}
 reconcileAlertNotifications(moduleState.alerts.data);
 writeDataState();
 renderAlerts();

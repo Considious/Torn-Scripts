@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.58
+// @version      0.4.59
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.58-external-runtime';
+const BUILD = '0.4.59-external-runtime';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -45,7 +45,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.58';
+const CLIENT_VERSION = '0.4.59';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -65,8 +65,17 @@ const PDA_ALERT_TYPES = Object.freeze([
 { id:'stockBenefits', label:'Stock benefit ready', group:'Benefits' },
 { id:'playerAddiction', label:'Player addiction', group:'Benefits' },
 { id:'googlePlayPoints', label:'Weekly Google Play Points', group:'Reminders' },
-{ id:'timer24', label:'24-hour timer finished', group:'Reminders' }
+{ id:'timer24', label:'24-hour timer finished', group:'Reminders' },
+{ id:'searchCashUnique', crimeId:1, label:'Search for Cash unique windows', group:'Crime uniques', mode:'live' },
+{ id:'bootleggingUniques', crimeId:2, label:'Bootlegging unique progress', group:'Crime uniques', mode:'tracking' },
+{ id:'graffitiUniques', crimeId:3, label:'Graffiti unique progress', group:'Crime uniques', mode:'tracking' },
+{ id:'clusterRing', crimeId:4, label:'Cluster Ring window', group:'Crime uniques', mode:'live' },
+{ id:'pickpocketingUniques', crimeId:5, label:'Pickpocketing unique progress', group:'Crime uniques', mode:'tracking' },
+{ id:'burglaryUniques', crimeId:7, label:'Burglary unique progress', group:'Crime uniques', mode:'tracking' },
+{ id:'disposalUnique', crimeId:9, label:'Disposal daily unique check', group:'Crime uniques', mode:'daily' },
+{ id:'arsonUnique', crimeId:13, label:'Arson daily unique check', group:'Crime uniques', mode:'daily' }
 ]);
+const ARSON_UNIQUE_SKILL_THRESHOLDS = Object.freeze([4, 5, 48, 51, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90]);
 function normalizePdaAlertTypes(value) {
 const source = value && typeof value === 'object' ? value : {};
 return Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, source[definition.id] !== false]));
@@ -844,7 +853,7 @@ outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt
 armoryMode:'ranked-all', armoryWhitelist:[],
 ...(settingsSource?.war || {})
 },
-alerts:{ snoozedUntil:{}, cityDoneDay:null, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes) },
+alerts:{ snoozedUntil:{}, cityDoneDay:null, crimeUniqueDoneDay:{}, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes), crimeUniqueDoneDay:{ ...(settingsSource?.alerts?.crimeUniqueDoneDay || {}) } },
 market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(settingsSource?.market || {}) },
 merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(settingsSource?.merits || {}) },
 racing:normalizeRacingState(settingsSource?.racing),
