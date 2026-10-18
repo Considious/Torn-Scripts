@@ -389,16 +389,16 @@ const catalog = catalogRows.find(row => Number(row?.id) === Number(definition.cr
 const user = users[definition.crimeId] || {};
 const completedIds = [...new Set(crimeUniqueCompletedRowsPda(user).map(row => Number(row?.id)).filter(Number.isFinite))];
 const expectedIds = [...new Set((Array.isArray(catalog?.unique_outcomes_ids) ? catalog.unique_outcomes_ids : []).map(Number).filter(Number.isFinite))];
-let total = Math.max(0, Number(catalog?.unique_outcomes_count) || expectedIds.length || 0);
-let completed = total ? Math.min(total, completedIds.length) : completedIds.length;
+const total = Math.max(0, Number(catalog?.unique_outcomes_count) || expectedIds.length || 0);
+const completed = total ? Math.min(total, completedIds.length) : completedIds.length;
 const skill = Math.max(0, finite(user?.crimes?.skill) || 0);
 let eligibleTotal = skill > 0 ? total : 0;
 if (Number(definition.crimeId) === 13) eligibleTotal = ARSON_UNIQUE_SKILL_THRESHOLDS.filter(threshold => skill >= threshold).length;
-if (Number(definition.crimeId) === 4) {
-total = 1;
-completed = clusterRingAchievedPda(user) ? 1 : 0;
-eligibleTotal = skill >= 100 ? 1 : 0;
-}
+if (Number(definition.crimeId) === 4) eligibleTotal = SHOPLIFTING_UNIQUE_WINDOWS.filter(outcome => skill >= outcome.skill).length;
+const missingIds = expectedIds.filter(id => !completedIds.includes(id));
+const canSpawnMissing = Number(definition.crimeId) === 4 && expectedIds.length >= SHOPLIFTING_UNIQUE_WINDOWS.length
+? SHOPLIFTING_UNIQUE_WINDOWS.some((outcome, index) => skill >= outcome.skill && !completedIds.includes(expectedIds[index]))
+: total > 0 && completed < total && eligibleTotal > completed;
 return {
 ...definition,
 name:String(catalog?.name || definition.label.replace(/ unique.*$/i, '')),
@@ -407,9 +407,10 @@ completed,
 total,
 eligibleTotal,
 complete:total > 0 && completed >= total,
-canSpawnMissing:total > 0 && completed < total && eligibleTotal > completed,
+canSpawnMissing,
 completedIds,
-missingIds:expectedIds.filter(id => !completedIds.includes(id))
+expectedIds,
+missingIds
 };
 });
 }
@@ -418,6 +419,52 @@ const raw = payload?.shoplifting;
 if (Array.isArray(raw)) return raw;
 if (!raw || typeof raw !== 'object') return [];
 return Object.entries(raw).map(([name, status]) => ({ name, status:Array.isArray(status) ? status : [] }));
+}
+function shopliftingShopKeyPda(value) {
+const normalized = String(value || '').normalize('NFKD').replace(/[’']/g, '').replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '').toLowerCase();
+if (/sally/.test(normalized)) return 'sallys_sweet_shop';
+if (/bits.*bobs/.test(normalized)) return 'bits_n_bobs';
+if (/tc.*clothing/.test(normalized)) return 'tc_clothing';
+if (/super.*store/.test(normalized)) return 'super_store';
+if (/pharmacy/.test(normalized)) return 'pharmacy';
+if (/cyber.*force/.test(normalized)) return 'cyber_force';
+if (/jewelry/.test(normalized)) return 'jewelry_store';
+if (/big.*al/.test(normalized)) return 'big_als';
+return normalized;
+}
+function shopliftingSecurityMapPda() {
+const cache = dataState.caches.crimeUniques || {};
+const subcrimes = Array.isArray(cache?.shopliftingSubcrimes?.subcrimes) ? cache.shopliftingSubcrimes.subcrimes : [];
+const namesById = new Map(subcrimes.map(row => [Number(row?.id), row?.name]));
+return Object.fromEntries(shopliftingStatusRowsPda(cache.shopliftingStatus).map(row => {
+const key = shopliftingShopKeyPda(row?.name || namesById.get(Number(row?.id)));
+const status = Array.isArray(row?.status) ? row.status : [];
+const disabled = pattern => {
+const found = status.find(entry => pattern.test(String(entry?.title || '')));
+return found ? found.disabled === true : null;
+};
+return [key, { camerasOff:disabled(/camera/i), checkpointOff:disabled(/checkpoint/i), guardsOff:disabled(/guard/i) }];
+}).filter(([key]) => key));
+}
+function shopliftingConditionMatchesPda(outcome, state) {
+if (!state) return false;
+if (outcome.cameras && state.camerasOff !== (outcome.cameras === 'off')) return false;
+if (outcome.checkpoint && state.checkpointOff !== (outcome.checkpoint === 'off')) return false;
+if (outcome.guards && state.guardsOff !== (outcome.guards === 'off')) return false;
+return true;
+}
+function shopliftingUniqueOpportunitiesPda(progress) {
+const expectedIds = Array.isArray(progress?.expectedIds) ? progress.expectedIds : [];
+if (expectedIds.length < SHOPLIFTING_UNIQUE_WINDOWS.length) return [];
+const completed = new Set(Array.isArray(progress?.completedIds) ? progress.completedIds.map(Number) : []);
+const skill = Math.max(0, finite(progress?.skill) || 0);
+const security = shopliftingSecurityMapPda();
+return SHOPLIFTING_UNIQUE_WINDOWS.flatMap((outcome, index) => {
+const id = Number(expectedIds[index]);
+if (!Number.isFinite(id) || completed.has(id) || skill < outcome.skill || !shopliftingConditionMatchesPda(outcome, security[outcome.shop])) return [];
+const extra = outcome.notoriety ? ` · requires ${outcome.notoriety} notoriety` : '';
+return [{ ...outcome, id, detail:`${outcome.shopLabel}: ${outcome.label} (skill ${outcome.skill})${extra}` }];
+});
 }
 function clusterRingReadyPda() {
 const cache = dataState.caches.crimeUniques || {};
@@ -509,10 +556,10 @@ cache.searchForCashStatus = await tornJson('/v2/torn/searchforcash', 'SLINK PDA 
 cache.searchForCashFetchedAt = now;
 }
 if (cluster && !cluster.complete && enabled.clusterRing !== false) {
-cache.shopliftingStatus = await tornJson('/v2/torn/shoplifting', 'SLINK PDA Cluster Ring status');
+cache.shopliftingStatus = await tornJson('/v2/torn/shoplifting', 'SLINK PDA Shoplifting unique status');
 cache.shopliftingFetchedAt = now;
 if (!cache.shopliftingSubcrimes || Number(cache.shopliftingSubcrimesFetchedAt || 0) + 7 * 86_400_000 <= now) {
-cache.shopliftingSubcrimes = await tornJson('/v2/torn/4/subcrimes', 'SLINK PDA Cluster Ring map');
+cache.shopliftingSubcrimes = await tornJson('/v2/torn/4/subcrimes', 'SLINK PDA Shoplifting unique map');
 cache.shopliftingSubcrimesFetchedAt = now;
 }
 }
@@ -589,7 +636,10 @@ const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Arr
 const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
 add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
 add('searchCashUnique', crimeById.searchCashUnique?.canSpawnMissing && searchOpportunities.length > 0, 'Search for Cash unique window may be active', `${searchOpportunities.join(', ')}. ${crimeById.searchCashUnique?.completed || 0}/${crimeById.searchCashUnique?.total || 0} completed; check the starred options.`, [['Check Search for Cash','https://www.torn.com/page.php?sid=crimes#/search-for-cash']]);
-add('clusterRing', crimeById.clusterRing?.canSpawnMissing && clusterRingReadyPda(), 'Cluster Ring security window is open', 'Jewelry Store cameras and guard are disabled. Skill 100 and zero notoriety are still required.', [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']]);
+const shopliftingOpportunities = shopliftingUniqueOpportunitiesPda(crimeById.clusterRing);
+const shopliftingSummary = shopliftingOpportunities.slice(0, 6).map(row => row.detail).join('; ');
+const shopliftingExtra = shopliftingOpportunities.length > 6 ? `; +${shopliftingOpportunities.length - 6} more` : '';
+add('clusterRing', crimeById.clusterRing?.canSpawnMissing && shopliftingOpportunities.length > 0, `${shopliftingOpportunities.length} missing Shoplifting unique${shopliftingOpportunities.length === 1 ? '' : 's'} match current security`, `${shopliftingSummary}${shopliftingExtra}. ${crimeById.clusterRing?.completed || 0}/${crimeById.clusterRing?.total || 0} completed.`, [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']]);
 add('disposalUnique', dailyCrimeUniqueDuePda(crimeById.disposalUnique), 'Check today’s Disposal jobs for missing uniques', `${crimeById.disposalUnique?.completed || 0}/${crimeById.disposalUnique?.total || 0} completed. Jobs refresh daily; check starred options before using today’s jobs.`, [['Check Disposal','https://www.torn.com/page.php?sid=crimes#/disposal']]);
 add('arsonUnique', dailyCrimeUniqueDuePda(crimeById.arsonUnique), 'Check today’s Arson targets for missing uniques', `${crimeById.arsonUnique?.completed || 0}/${crimeById.arsonUnique?.total || 0} completed at skill ${Math.floor(crimeById.arsonUnique?.skill || 0)}. Only skill-eligible missing targets trigger this reminder.`, [['Check Arson','https://www.torn.com/page.php?sid=crimes#/arson']]);
 return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows];
