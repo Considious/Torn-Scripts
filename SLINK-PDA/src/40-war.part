@@ -761,7 +761,7 @@ const enabledCount = PDA_ALERT_TYPES.filter(definition => enabled[definition.id]
 const groups = [...new Set(PDA_ALERT_TYPES.map(definition => definition.group))];
 const crimeProgress = crimeUniqueProgressRowsPda();
 const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
-return `<details class="alert-settings"><summary>Alert settings · ${enabledCount}/${PDA_ALERT_TYPES.length} enabled</summary>
+return `<details class="alert-settings" data-ui-key="alerts.settings" ${state.panels?.['alerts.settings'] ? 'open' : ''}><summary>Alert settings · ${enabledCount}/${PDA_ALERT_TYPES.length} enabled</summary>
 <p>Disabled alerts are removed from both the PDA alert list and phone notification flow.</p>
 <div class="alert-settings-actions"><button type="button" data-action="alerts-enable-all">Enable all</button><button type="button" data-action="alerts-disable-all">Disable all</button></div>
 <div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${PDA_ALERT_TYPES.filter(definition => definition.group === group).map(definition => { const progress = crimeById[definition.id]; const suffix = progress?.total ? ` · ${progress.completed}/${progress.total} · skill ${Math.floor(progress.skill || 0)}` : ''; return `<label><input type="checkbox" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label + suffix)}</span></label>`; }).join('')}</fieldset>`).join('')}</div>

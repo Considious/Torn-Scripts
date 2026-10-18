@@ -80,7 +80,7 @@ if (!control?.matches?.(selector)) return '';
 const prefix = scope(control);
 if (control.id) return `${prefix}|id:${control.id}`;
 if (control.name) return `${prefix}|name:${control.name}`;
-for (const name of ['field','setting','key','scope','targetListTag','targetId','watchId','marketWatchId','alertType','action']) {
+for (const name of ['uiKey','field','setting','key','scope','targetListTag','targetId','watchId','marketWatchId','alertType','action']) {
 if (control.dataset?.[name] !== undefined) return `${prefix}|data-${name}:${control.dataset[name]}`;
 }
 const container = control.closest?.('label,.field,.setting,.control') || control.parentElement;
@@ -117,8 +117,12 @@ if (focusedKey.startsWith(`${prefix}|`)) focusedKey = '';
 }
 function restore() {
 scheduled = false;
-if (restoring || !dirty.size) return;
+if (restoring || (!dirty.size && !Object.keys(state.panels || {}).length)) return;
 restoring = true;
+for (const panel of root.querySelectorAll('details[data-ui-key]')) {
+const key = String(panel.dataset.uiKey || '');
+if (key && Object.hasOwn(state.panels || {}, key)) panel.open = Boolean(state.panels[key]);
+}
 const scrollX = Number(global.scrollX) || 0;
 const scrollY = Number(global.scrollY) || 0;
 let focusTarget = null;
@@ -139,7 +143,7 @@ global.scrollTo?.(scrollX, scrollY);
 restoring = false;
 }
 function scheduleRestore() {
-if (scheduled || !dirty.size) return;
+if (scheduled || (!dirty.size && !Object.keys(state.panels || {}).length)) return;
 scheduled = true;
 queueMicrotask(restore);
 }
@@ -149,7 +153,14 @@ if (!restoring && event.target?.matches?.(selector)) remember(event.target);
 root.addEventListener('input', onEdit, true);
 root.addEventListener('change', onEdit, true);
 root.addEventListener('toggle', event => {
-if (!restoring && event.target?.tagName === 'DETAILS') remember(event.target);
+if (restoring || event.target?.tagName !== 'DETAILS') return;
+remember(event.target);
+const key = String(event.target.dataset?.uiKey || '');
+if (key) {
+state.panels ||= {};
+state.panels[key] = event.target.open;
+writeState();
+}
 }, true);
 root.addEventListener('focusin', event => {
 if (!event.target?.matches?.(selector)) return;
@@ -178,41 +189,49 @@ function moduleHasActiveEditor(root) {
 const active = root?.getRootNode?.()?.activeElement || document.activeElement;
 return Boolean(active && root.contains(active) && active.matches?.('input,textarea,select,[contenteditable="true"]'));
 }
+function restoreKeyedPanels(root) {
+for (const panel of root?.querySelectorAll?.('details[data-ui-key]') || []) {
+const key = String(panel.dataset.uiKey || '');
+if (key && Object.hasOwn(state.panels || {}, key)) panel.open = Boolean(state.panels[key]);
+}
+}
 function installModuleRenderGuard(root) {
 if (!root || moduleRenderGuards.has(root) || !nativeInnerHtml?.get || !nativeInnerHtml?.set) return root;
-const state = { pending:null, timer:0 };
+const guard = { pending:null, timer:0 };
 Object.defineProperty(root, 'innerHTML', {
 configurable:true,
 get() { return nativeInnerHtml.get.call(root); },
 set(value) {
 const html = String(value ?? '');
 if (moduleHasActiveEditor(root)) {
-state.pending = html;
+guard.pending = html;
 root.dataset.slinkRenderPending = 'true';
 return;
 }
-state.pending = null;
+guard.pending = null;
 delete root.dataset.slinkRenderPending;
 nativeInnerHtml.set.call(root, html);
+restoreKeyedPanels(root);
 }
 });
 function flush() {
-state.timer = 0;
-if (state.pending === null || moduleHasActiveEditor(root)) return;
-const html = state.pending;
-state.pending = null;
+guard.timer = 0;
+if (guard.pending === null || moduleHasActiveEditor(root)) return;
+const html = guard.pending;
+guard.pending = null;
 delete root.dataset.slinkRenderPending;
 nativeInnerHtml.set.call(root, html);
+restoreKeyedPanels(root);
 }
 root.addEventListener('focusout', () => {
-global.clearTimeout(state.timer);
-state.timer = global.setTimeout(flush, 350);
+global.clearTimeout(guard.timer);
+guard.timer = global.setTimeout(flush, 350);
 }, true);
 root.addEventListener('focusin', () => {
-global.clearTimeout(state.timer);
-state.timer = 0;
+global.clearTimeout(guard.timer);
+guard.timer = 0;
 }, true);
-moduleRenderGuards.set(root, state);
+moduleRenderGuards.set(root, guard);
 return root;
 }
 let host = document.createElement('div');
