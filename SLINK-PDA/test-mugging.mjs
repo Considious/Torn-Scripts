@@ -4,11 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
 const source = fs.readFileSync(path.join(root, 'SLINK_PDA_Dashboard.user.js'), 'utf8');
+const combatSource = fs.readFileSync(path.join(root, 'src/30-dashboard-combat.part'), 'utf8');
 function assert(condition, message) { if (!condition) throw new Error(message); }
 try { new Function(source); }
 catch (error) { throw new Error(`PDA userscript has a parse-time syntax error: ${error.message}`); }
 
-assert(source.includes('// @version      0.4.25'), 'Unexpected PDA Phase 10 version.');
+assert(source.includes('// @version      0.4.64'), 'Unexpected PDA version.');
 assert(source.includes('// @connect      slinkmuggingworker.richard-johnson554.workers.dev'), 'Mugging Worker is not allowlisted for PDA.');
 assert(source.includes("mugging:'https://slinkmuggingworker.richard-johnson554.workers.dev'"), 'Mugging Worker URL is missing.');
 assert(source.includes('data-combat-tab="mugging" hidden'), 'Unauthorized PDA sessions can see the Mugging tab.');
@@ -16,7 +17,7 @@ assert(source.includes("['[data-combat-tab=\"mugging\"]', 'slink.mugging']"), 'M
 assert(source.includes("tab === 'mugging' && !hasScope('slink.mugging')"), 'Direct Mugging tab selection is not denied.');
 assert(source.includes("if (!hasScope('slink.mugging'))") && source.includes("root.innerHTML = '';"), 'The Mugging panel lacks a runtime permission guard.');
 assert(source.includes("await ensurePermissionSession(false)") && source.includes("Authorization:`Bearer ${session.token}`"), 'PDA assignments do not use the shared permission session.');
-assert(source.includes("tornJson('/v2/user/battlestats'") && source.includes("['strength', 'defense', 'speed', 'dexterity']"), 'PDA does not calculate the requesting player battle-stat total through the shared Torn limiter.');
+assert(combatSource.includes("tornJson('/v2/user?selections=battlestats,basic'") && source.includes("['strength', 'defense', 'speed', 'dexterity']"), 'PDA does not calculate the requesting player battle-stat total through the shared Torn limiter.');
 assert(source.includes('const MUGGING_ACTIVE_BUDGET = 10') && source.includes('const MUGGING_INACTIVE_BUDGET = 5'), 'PDA active/inactive contribution budgets are incorrect.');
 assert(source.includes('const MUGGING_INACTIVE_AFTER_MS = 5 * 60_000'), 'PDA does not reduce Mugging contribution after five minutes.');
 assert(source.includes("muggingRequest('/api/contributor/tasks'") && source.includes('runMuggingContribution'), 'PDA contributor task scheduling is missing.');
@@ -37,3 +38,6 @@ assert(source.includes('let attackMugScanTimer = null') && source.includes('}, 1
 assert(!source.includes('slinkMugPending') && !source.includes('recordMugResultNode(node); });'), 'PDA still contains the recursive attack-result refresh loop.');
 assert(source.includes('reportedMugNodes.add(node)') && source.includes('Refresh at most once'), 'PDA does not claim each attack-result node before its one optional refresh.');
 console.log('PDA Mugging Phase 10 contributor synchronization checks passed.');
+
+assert(combatSource.includes('muggingLevelBadge(target.level, cache.userLevel)'), 'PDA Mugging does not display the target level with the own-level gradient.');
+assert(!combatSource.includes('const company = [target.companyName'), 'PDA Mugging still renders company metadata.');

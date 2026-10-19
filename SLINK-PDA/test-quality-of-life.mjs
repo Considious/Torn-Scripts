@@ -16,3 +16,6 @@ assert(source.includes('class="museum-watch-controls"'), 'Museum market controls
 assert(!source.includes('market USD'), 'Museum prices must use Torn cash notation rather than USD.');
 
 console.log('PDA Quality of Life data and mobile layout wiring is verified.');
+
+const abroadSource = fs.readFileSync(path.join(root, 'src/20-quality-of-life.part'), 'utf8');
+assert(!abroadSource.includes('<input type="password" data-field="abroad-torn-intel-key"'), 'Unsupported Torn Intel client-key entry is still visible.');

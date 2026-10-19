@@ -570,7 +570,6 @@ const provider = current.providers[id] || {};
 const label = ABROAD_STOCKS.PROVIDERS[id].label;
 return `<span class="badge ${provider.ok ? 'ready' : provider.error ? 'warn' : ''}">${escapeHtml(label)}: ${provider.ok ? `${Number(provider.rows || 0).toLocaleString()} rows` : provider.error ? (id === 'tornIntel' ? 'unavailable · ' + escapeHtml(provider.error) : 'unavailable') : 'waiting'}</span>`;
 }).join('');
-const needsTornIntelKey = Boolean(current.providers.tornIntel?.needsKey || current.settings.tornIntelKey);
 root.innerHTML = `<div class="grid"><article class="card full">
 <div class="card-head"><div><h2>Abroad Stocks</h2><span class="muted">Compare public reports from YATA, Prometheus, and Torn Intel.</span></div><button type="button" data-action="refresh-abroad-stocks" ${moduleState.abroadStocks.busy ? 'disabled' : ''}>${moduleState.abroadStocks.busy ? 'Refreshing…' : 'Refresh'}</button></div>
 ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error, 'error') : ''}
@@ -587,7 +586,6 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 <button type="button" data-action="save-abroad-settings">Save settings</button>
 </div>
 </details>
-${needsTornIntelKey ? `<details class="alert-settings" open><summary>Torn Intel access</summary><p>Torn Intel requested a client key. Register or contact Torn Intel, then save the key here. YATA and Prometheus continue working without it.</p><div class="abroad-provider-key"><a href="https://torn-intel.com/contact" target="_blank" rel="noopener">Open Torn Intel</a><input type="password" data-field="abroad-torn-intel-key" value="${escapeHtml(current.settings.tornIntelKey)}" placeholder="Torn Intel client key"><button type="button" data-action="save-abroad-settings">Save key</button></div></details>` : ''}
 <div class="abroad-list">${rows.length ? rows.map(row => {
 const prediction = row.nextRestockAt
 ? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span class="abroad-leave-time">Leave at ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))}</span><span>${escapeHtml(row.predictionSource || 'reported estimate')}</span>`

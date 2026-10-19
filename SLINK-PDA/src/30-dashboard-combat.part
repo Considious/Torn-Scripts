@@ -432,9 +432,10 @@ return value;
 async function pdaOwnBattleStats() {
 const cached = dataState.caches.muggingOwnBattleStats;
 if (Number(cached?.total) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
-const statsPayload = await tornJson('/v2/user/battlestats', 'SLINK PDA Mugging rough assignment', { priority:'high' });
+const statsPayload = await tornJson('/v2/user?selections=battlestats,basic', 'SLINK PDA Mugging rough assignment', { priority:'high' });
 const total = pdaBattleStatsTotal(statsPayload);
-dataState.caches.muggingOwnBattleStats = { total, checkedAt:Date.now() };
+const level = Math.max(0, Math.trunc(Number(statsPayload?.level ?? statsPayload?.basic?.level) || 0));
+dataState.caches.muggingOwnBattleStats = { total, level, checkedAt:Date.now() };
 writeDataState();
 return total;
 }
@@ -602,6 +603,19 @@ return status;
 muggingContributionBusy = false;
 }
 }
+function muggingLevelBadge(targetLevel, userLevel) {
+const target = Math.max(0, Math.trunc(Number(targetLevel) || 0));
+const own = Math.max(0, Math.trunc(Number(userLevel) || 0));
+if (!target) return '<span class="badge">Level unknown</span>';
+if (!own) return `<span class="badge">Level ${target}</span>`;
+const difference = target - own;
+const intensity = Math.min(1, Math.abs(difference) / 50);
+const hue = difference === 0 ? 48 : difference < 0 ? 128 : 0;
+const saturation = Math.round(72 + intensity * 22);
+const lightness = Math.round(48 - intensity * 23);
+const relation = difference === 0 ? 'same as you' : difference < 0 ? `${Math.abs(difference)} below you` : `${difference} above you`;
+return `<span class="badge" style="background:hsl(${hue} ${saturation}% ${lightness}%);color:#fff;border-color:rgba(255,255,255,.24);font-weight:800" title="${escapeHtml(`Level ${target} · ${relation}`)}">Level ${target}</span>`;
+}
 function muggingCache() {
 const value = dataState.caches.mugging && typeof dataState.caches.mugging === 'object'
 ? dataState.caches.mugging
@@ -611,6 +625,7 @@ updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
 estimateKind:String((value.estimateKind ?? value.estimate_kind) || 'rough'),
 estimateSource:String((value.estimateSource ?? value.estimate_source) || 'cached battle-stat estimate'),
 userBattleStats:Math.max(0, Number(value.userBattleStats ?? value.user_battle_stats) || 0),
+userLevel:Math.max(0, Math.trunc(Number(value.userLevel ?? value.user_level) || 0)),
 pool:{
 total:Math.max(0, Number(value.pool?.total) || 0),
 estimable:Math.max(0, Number(value.pool?.estimable) || 0),
@@ -619,9 +634,7 @@ eligible:Math.max(0, Number(value.pool?.eligible) || 0)
 targets:(Array.isArray(value.targets) ? value.targets : []).map(target => ({
 ...target,
 id:validPlayerIntelligenceId(target?.id ?? target?.playerId),
-companyName:String((target?.companyName ?? target?.company_name) || ''),
-companyType:String((target?.companyType ?? target?.company_type) || ''),
-companyRating:Math.max(0, Number(target?.companyRating ?? target?.company_rating) || 0),
+level:Math.max(0, Math.trunc(Number(target?.level) || 0)),
 fairFight:finite(target?.fairFight ?? target?.fair_fight),
 battleStatsEstimate:finite(target?.battleStatsEstimate ?? target?.battle_stats_estimate),
 estimateKind:String((target?.estimateKind ?? target?.estimate_kind) || 'rough'),
@@ -658,6 +671,7 @@ limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
 });
 dataState.caches.mugging = {
 ...response,
+userLevel:Math.max(0, Math.trunc(Number(dataState.caches.muggingOwnBattleStats?.level) || 0)),
 updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
 };
 writeDataState();
@@ -699,10 +713,10 @@ const profile = `https://www.torn.com/profiles.php?XID=${target.id}`;
 const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
 const fairFight = finite(target?.fairFight);
 const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
-const company = [target.companyName, target.companyRating ? `${target.companyRating}★` : '', target.position].filter(Boolean).join(' · ');
+const levelBadge = muggingLevelBadge(target.level, cache.userLevel);
 return `<article class="target-card"><div>
 <strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
-<small>${escapeHtml(statusLabel)} · Rough FF ${fairFight === null ? '?' : number(fairFight, 2)} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${company ? ` · ${escapeHtml(company)}` : ''}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
+<small>${levelBadge} · ${escapeHtml(statusLabel)} · Rough FF ${fairFight === null ? '?' : number(fairFight, 2)} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
 </div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
 }).join('');
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
