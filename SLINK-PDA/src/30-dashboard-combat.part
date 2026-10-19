@@ -431,7 +431,7 @@ return value;
 }
 async function pdaOwnBattleStats() {
 const cached = dataState.caches.muggingOwnBattleStats;
-if (Number(cached?.total) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
+if (Number(cached?.total) > 0 && Number(cached?.level) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
 const statsPayload = await tornJson('/v2/user?selections=battlestats,basic', 'SLINK PDA Mugging rough assignment', { priority:'high' });
 const total = pdaBattleStatsTotal(statsPayload);
 const level = Math.max(0, Math.trunc(Number(statsPayload?.level ?? statsPayload?.basic?.level) || 0));
