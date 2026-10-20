@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Considious Torn Custom Chat Buttons
 // @namespace    Considious [3853023]
-// @version      0.2.4
+// @version      0.2.5
 // @description  User-defined two-click HTML messages for Torn chats and faction newsletters.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -231,6 +231,21 @@
     return bazaarPlayerFromAnchor(anchor);
   }
 
+  function currentProfile() {
+    let page;
+    try { page = new URL(window.location.href); } catch { return null; }
+    if (!/\/profiles\.php$/i.test(page.pathname)) return null;
+    const playerId = page.searchParams.get('XID');
+    if (!/^\d+$/.test(playerId || '')) return null;
+    const heading = document.querySelector('h4[class*="user"], h4[class*="name"], [class*="profile"] h4');
+    const name = String(heading?.textContent || document.title || '').replace(/\s*\|.*$/, '').trim();
+    return { playerId, label:name ? `${name} [${playerId}]` : `Player ${playerId}`, url:`${window.location.origin}/profiles.php?XID=${encodeURIComponent(playerId)}` };
+  }
+
+  function profileTokenPresent(value) {
+    return /\{\{\s*profile(?:_|\s+)link(?::[^{}]*)?\s*\}\}/i.test(String(value));
+  }
+
   function playerBazaarTokenPresent(value) {
     return /\{\{\s*player(?:_|\s+)bazaar\s*\}\}/i.test(String(value));
   }
@@ -239,7 +254,13 @@
     const pageUrl = escapeChatHtml(window.location.href);
     const pageTitle = escapeChatHtml(document.title.trim() || 'Open page');
     const playerBazaar = playerBazaarTokenPresent(template) ? findPlayerBazaar() : null;
+    const profile = profileTokenPresent(template) ? currentProfile() : null;
     return String(template)
+      .replace(/\{\{\s*profile(?:_|\s+)link(?::([^{}]*))?\s*\}\}/gi, (token, customLabel) => {
+        if (!profile) return token;
+        const label = escapeChatHtml(String(customLabel || '').trim() || profile.label);
+        return `<a href="${escapeChatHtml(profile.url)}">${label}</a>`;
+      })
       .replace(/\{\{\s*player(?:_|\s+)bazaar\s*\}\}/gi, (token) => {
         if (!playerBazaar) return token;
         return `<a href="${escapeChatHtml(playerBazaar.url)}">${escapeChatHtml(playerBazaar.label)}</a>`;
@@ -580,9 +601,22 @@
     composer.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
   }
 
+  function normalizeAnchorHrefs(value) {
+    return String(value).replace(/<a\b([^>]*?)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (_match, before, doubleQuoted, singleQuoted, bare) => {
+      const href = String(doubleQuoted ?? singleQuoted ?? bare ?? '').replaceAll('"', '&quot;');
+      return `<a${before}href="${href}"`;
+    });
+  }
+
   function armMacro(macro, root, composer) {
     clearArmed();
-    const message = expandMessageTemplate(macro.message);
+    const message = normalizeAnchorHrefs(expandMessageTemplate(macro.message));
+    if (profileTokenPresent(message)) {
+      menuStatus = 'No profile was found on this page. Open the player profile and try again.';
+      renderMenu();
+      positionMenu(root);
+      return;
+    }
     if (playerBazaarTokenPresent(message)) {
       menuStatus = 'No player bazaar was found on this page. Open a bazaar page and try again.';
       renderMenu();
@@ -782,7 +816,7 @@
     const footer = document.createElement('div');
     footer.className = 'ccb-editor-footer';
     const help = document.createElement('small');
-    help.textContent = 'Live placeholders: {{page_link}}, {{page_url}}, {{page_title}}, and {{Player Bazaar}}';
+    help.textContent = 'Live placeholders: {{page_link}}, {{page_url}}, {{page_title}}, {{profile_link}}, and {{Player Bazaar}}';
     const actions = document.createElement('div');
     const cancel = document.createElement('button');
     cancel.type = 'button';
@@ -894,8 +928,9 @@
     };
     const pageLinkButton = smallEditorButton('Insert page link', 'Insert a link to the page open when this button is used', () => insertToken('{{page_link}}'));
     const pageUrlButton = smallEditorButton('Insert raw URL', 'Insert the current page URL without an anchor tag', () => insertToken('{{page_url}}'));
+    const profileLinkButton = smallEditorButton('Insert profile link', 'Insert the profile open when this button is used', () => insertToken('{{profile_link}}'));
     const playerBazaarButton = smallEditorButton('Insert player bazaar', 'Insert the player name and bazaar link found on the page', () => insertToken('{{Player Bazaar}}'));
-    tokenButtons.append(pageLinkButton, pageUrlButton, playerBazaarButton);
+    tokenButtons.append(pageLinkButton, pageUrlButton, profileLinkButton, playerBazaarButton);
     messageHeading.append(messageTitle, tokenButtons);
     messageField.append(messageHeading, message, messageCount);
     card.appendChild(messageField);
