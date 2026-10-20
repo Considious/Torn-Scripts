@@ -26,6 +26,11 @@
       "source": "src/addons/faction-officers.addon.js",
       "output": "SLINK_PDA_Faction_Officers.js",
       "maxBytes": 30000
+    },
+    {
+      "source": "src/addons/chat.addon.js",
+      "output": "SLINK_PDA_Chat.js",
+      "maxBytes": 60000
     }
   ],
   "loaderMaxBytes": 14000,
