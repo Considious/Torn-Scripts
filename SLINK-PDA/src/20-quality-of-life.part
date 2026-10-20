@@ -310,6 +310,10 @@ travelSafetyPending.delete(button);
 }
 const PDA_ABROAD = (function pdaAbroadFactory() {
 const CACHE_MS = 60_000;
+const LANDING_LEAD_MS = 2 * 60_000;
+const LANDING_ALERT_GRACE_MS = 10 * 60_000;
+const TRAVEL_IDLE_REFRESH_MS = 5 * 60_000;
+const MARKET_CACHE_MS = 60 * 60_000;
 const ACTIVITY_MS = 5 * 60_000;
 const PROVIDER_ORDER = ['yata','prometheus','tornIntel'];
 const PROVIDER_STATUS_ORDER = [...PROVIDER_ORDER,'droqs'];
@@ -326,6 +330,7 @@ arrivalBufferMinutes:Math.min(30, Math.max(0, Number(input.arrivalBufferMinutes)
 alertLeadMinutes:Math.min(180, Math.max(0, Number(input.alertLeadMinutes) || 10)),
 alertsEnabled:input.alertsEnabled !== false,
 soundEnabled:input.soundEnabled === true,
+landingRecommendationEnabled:input.landingRecommendationEnabled !== false,
 tornIntelKey:String(input.tornIntelKey || '').trim().slice(0, 256),
 useDroqs:input.useDroqs !== false
 };
@@ -335,7 +340,7 @@ return normalized;
 function runtime() {
 const value = dataState.caches.abroadStocks;
 if (!value || typeof value !== 'object' || Array.isArray(value)) {
-dataState.caches.abroadStocks = { fetchedAt:0, activeUntil:0, snapshots:{}, providers:{}, rows:[], history:{}, watches:[], snoozes:{} };
+dataState.caches.abroadStocks = { fetchedAt:0, activeUntil:0, snapshots:{}, providers:{}, rows:[], history:{}, watches:[], snoozes:{}, travel:null, nextTravelCheckAt:0, landingCheckedArrivalAt:0, landingRecommendation:null };
 }
 const current = dataState.caches.abroadStocks;
 if (!current.snapshots || typeof current.snapshots !== 'object') current.snapshots = {};
@@ -344,6 +349,8 @@ if (!current.history || typeof current.history !== 'object') current.history = {
 if (!Array.isArray(current.rows)) current.rows = [];
 if (!Array.isArray(current.watches)) current.watches = [];
 if (!current.snoozes || typeof current.snoozes !== 'object') current.snoozes = {};
+if (!current.travel || typeof current.travel !== 'object') current.travel = null;
+if (!current.landingRecommendation || typeof current.landingRecommendation !== 'object') current.landingRecommendation = null;
 return current;
 }
 function visible() {
@@ -471,19 +478,70 @@ rows:current.rows.map(row => ({ ...row, watched:watched.has(row.key), departureA
 activeAlerts:alerts()
 };
 }
+function travelRecord(current, now = Date.now()) {
+const travel=current.travel||{};
+const destination=String(travel.destination||travel.country||travel.location||'').trim();
+let arrivalAt=Number(travel.arrival_at||travel.arrivalAt||0);
+if(arrivalAt>0&&arrivalAt<10000000000)arrivalAt*=1000;
+if(!arrivalAt){const seconds=Number(travel.time_left||travel.timeLeft||0);if(seconds>0)arrivalAt=Number(current.travelFetchedAt||now)+seconds*1000}
+const country=ABROAD_STOCKS.countryRecord(destination);
+return destination&&country&&arrivalAt>now-LANDING_ALERT_GRACE_MS?{arrivalAt,countryCode:country.code,countryName:country.name}:null;
+}
+async function refreshTravel(current,now=Date.now()){
+if(Number(current.nextTravelCheckAt||0)>now)return travelRecord(current,now);
+try{
+const response=await tornJson('/v2/user?selections=travel','SLINK PDA Abroad landing recommendation');
+current.travel=response?.travel||response?.data?.travel||null;
+current.travelFetchedAt=now;
+const context=travelRecord(current,now);
+current.nextTravelCheckAt=context&&context.arrivalAt>now?context.arrivalAt+60000:now+TRAVEL_IDLE_REFRESH_MS;
+return context;
+}catch(error){
+current.nextTravelCheckAt=now+TRAVEL_IDLE_REFRESH_MS;
+current.landingRecommendationError=errorMessage(error);
+return travelRecord(current,now);
+}
+}
+async function landingMarketPrices(now=Date.now()){
+const market=marketRuntime();
+const force=!market.catalog?.items?.length||now-Number(market.catalog.fetchedAt||0)>=MARKET_CACHE_MS;
+const catalog=await marketEnsureCatalog(market,force);
+dataState.caches.market=market;
+return Object.fromEntries((catalog.items||[]).filter(item=>Number(item.id)>0&&Number(item.marketPrice)>0).map(item=>[Number(item.id),Number(item.marketPrice)]));
+}
+function bestLandingRecommendation(rows,prices,travel,now=Date.now()){
+const candidates=[];
+for(const row of rows||[]){
+if(String(row.countryCode||'').toUpperCase()!==String(travel.countryCode||'').toUpperCase())continue;
+const marketPrice=Number(prices?.[Number(row.itemId)])||0;
+if(!marketPrice)continue;
+const sources=['yata','prometheus','tornIntel'].map(providerId=>({providerId,...(row.sources?.[providerId]||{})}))
+.filter(source=>Number(source.quantity)>0&&Number(source.cost)>0)
+.sort((left,right)=>Number(right.updatedAt||0)-Number(left.updatedAt||0));
+const source=sources[0];if(!source)continue;
+const cost=Number(source.cost),profit=marketPrice-cost,roi=profit/cost;
+if(!(profit>0)||!(roi>0))continue;
+candidates.push({itemId:Number(row.itemId)||null,itemName:String(row.itemName||'item'),countryCode:travel.countryCode,countryName:travel.countryName,arrivalAt:travel.arrivalAt,source:source.providerId,quantity:Number(source.quantity),cost,marketPrice,profit,roi,createdAt:now});
+}
+candidates.sort((left,right)=>right.roi-left.roi||right.profit-left.profit||right.quantity-left.quantity);
+return candidates[0]||null;
+}
 async function refresh(force = false) {
 const current = runtime();
 const now = Date.now();
 if (moduleState.abroadStocks.busy) return status();
-if (!force && Number(current.fetchedAt) + CACHE_MS > now) { render(); return status(); }
-if (!force && Number(current.activeUntil) <= now && !current.watches.length) return status();
+const currentSettings=settings();
+const travel=currentSettings.landingRecommendationEnabled?await refreshTravel(current,now):travelRecord(current,now);
+const landingDue=currentSettings.landingRecommendationEnabled&&travel&&now>=travel.arrivalAt-LANDING_LEAD_MS&&now<=travel.arrivalAt+LANDING_ALERT_GRACE_MS&&Number(current.landingCheckedArrivalAt||0)!==Number(travel.arrivalAt);
+if (!force && !landingDue && Number(current.fetchedAt) + CACHE_MS > now) { render(); return status(); }
+if (!force && !landingDue && Number(current.activeUntil) <= now && !current.watches.length) return status();
 moduleState.abroadStocks.busy = true;
 moduleState.abroadStocks.error = '';
 render();
 try {
-const currentSettings = await detectTravelDefault(current,settings());
-const providerIds = ['yata','prometheus','tornIntel', ...(currentSettings.useDroqs ? ['droqs'] : [])];
-const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, currentSettings)));
+const detectedSettings = await detectTravelDefault(current,currentSettings);
+const providerIds = ['yata','prometheus','tornIntel', ...(detectedSettings.useDroqs ? ['droqs'] : [])];
+const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, detectedSettings)));
 const snapshots = { ...current.snapshots };
 const providers = { ...current.providers };
 settled.forEach((result,index) => {
@@ -507,6 +565,10 @@ current.snapshots = snapshots;
 current.providers = providers;
 current.history = updateHistory(current.history, snapshots);
 current.rows = ABROAD_STOCKS.mergeSnapshots(snapshots, current.history);
+if(landingDue){
+try{const prices=await landingMarketPrices(now);current.landingRecommendation=bestLandingRecommendation(current.rows,prices,travel,now);current.landingRecommendationError='';current.landingCheckedArrivalAt=travel.arrivalAt}
+catch(error){current.landingRecommendation=null;current.landingRecommendationError=errorMessage(error);current.landingCheckedArrivalAt=travel.arrivalAt}
+}
 current.fetchedAt = now;
 moduleState.abroadStocks.data = status();
 if (!current.rows.length && settled.every(result => result.status === 'rejected')) {
@@ -524,9 +586,9 @@ render();
 function alerts(now = Date.now()) {
 const current = runtime();
 const currentSettings = settings();
-if (!currentSettings.alertsEnabled) return [];
+const rows=[];
 const byKey = new Map(current.rows.map(row => [row.key, row]));
-return current.watches.flatMap(watch => {
+if(currentSettings.alertsEnabled)rows.push(...current.watches.flatMap(watch => {
 const row = byKey.get(watch.key);
 const nextRestockAt = Number(row?.nextRestockAt) || 0;
 const leaveAt = ABROAD_STOCKS.departureAt(row, currentSettings);
@@ -541,7 +603,13 @@ title:`Leave for ${row.countryName} — ${row.itemName}`,
 detail:`Leave at ${ABROAD_STOCKS.formatTct(leaveAt)} to arrive near the estimated ${ABROAD_STOCKS.formatTct(nextRestockAt)} restock.`,
 links:[['Travel Agency','https://www.torn.com/travelagency.php']]
 }];
-});
+}));
+const recommendation=current.landingRecommendation;
+if(currentSettings.landingRecommendationEnabled&&recommendation&&Number(recommendation.arrivalAt)-LANDING_LEAD_MS<=now&&now<=Number(recommendation.arrivalAt)+LANDING_ALERT_GRACE_MS){
+const id=`abroad:landing:${Number(recommendation.arrivalAt)}:${recommendation.itemId||recommendation.itemName}`;
+if(Number(current.snoozes[id]||0)<=now){const roi=Math.round(Number(recommendation.roi||0)*100);rows.push({id,title:`Buy ${recommendation.itemName}`,detail:`Best current return in ${recommendation.countryName}: +${roi}% ROI · buy for $${Number(recommendation.cost).toLocaleString()} · market value $${Number(recommendation.marketPrice).toLocaleString()} · ${Number(recommendation.quantity).toLocaleString()} reported available.`,links:[['Travel','https://www.torn.com/index.php']]})}
+}
+return rows;
 }
 function filteredRows() {
 const current = status();
@@ -582,6 +650,8 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 <label>Alert before leave time (minutes)<input type="number" min="0" max="180" data-field="abroad-alert-lead" value="${current.settings.alertLeadMinutes}"></label>
 <label class="check-row"><input type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
 <label class="check-row"><input type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
+<label class="check-row"><input type="checkbox" data-field="abroad-landing-recommendation" ${current.settings.landingRecommendationEnabled ? 'checked' : ''}>Two-minute landing purchase recommendation</label>
+<span class="muted">Checks YATA, Prometheus, and Torn Intel, then recommends the in-stock item with the best return against Torn market value.</span>
 <label class="check-row"><input type="checkbox" data-field="abroad-use-droqs" ${current.settings.useDroqs ? 'checked' : ''}>Use optional DroqsDB enrichment</label>
 <button type="button" data-action="save-abroad-settings">Save settings</button>
 </div>
@@ -626,6 +696,7 @@ current.arrivalBufferMinutes = Math.min(30, Math.max(0, Number(root.querySelecto
 current.alertLeadMinutes = Math.min(180, Math.max(0, Number(root.querySelector('[data-field="abroad-alert-lead"]')?.value) || 0));
 current.alertsEnabled = root.querySelector('[data-field="abroad-alerts-enabled"]')?.checked !== false;
 current.soundEnabled = root.querySelector('[data-field="abroad-sound-enabled"]')?.checked === true;
+current.landingRecommendationEnabled = root.querySelector('[data-field="abroad-landing-recommendation"]')?.checked !== false;
 current.useDroqs = root.querySelector('[data-field="abroad-use-droqs"]')?.checked !== false;
 const keyField = root.querySelector('[data-field="abroad-torn-intel-key"]');
 if (keyField) current.tornIntelKey = String(keyField.value || '').trim().slice(0,256);
