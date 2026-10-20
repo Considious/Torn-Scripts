@@ -21,6 +21,11 @@
       "source": "src/addons/events.addon.js",
       "output": "SLINK_PDA_Events.js",
       "maxBytes": 30000
+    },
+    {
+      "source": "src/addons/faction-officers.addon.js",
+      "output": "SLINK_PDA_Faction_Officers.js",
+      "maxBytes": 30000
     }
   ],
   "loaderMaxBytes": 14000,
