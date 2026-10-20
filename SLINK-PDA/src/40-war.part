@@ -10,20 +10,24 @@ if (!hasScope('slink.war')) { root.innerHTML = lockedModule('slink.war', 'SLINK 
 const current = moduleState.war;
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Finding your ranked war…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
-if (!current.data?.activeWar) { root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK War</h2><span class="muted">Assigned and active ranked-war detection</span></div><span class="badge">No war</span></div>${current.error ? moduleMessage(current.error, 'error') : moduleMessage('No assigned or active ranked war was found.')}</article></div>`; return; }
+if (!current.data?.activeWar) {
+if (warArmoryOfficer() && dataState.settings.war.activeTab === 'armory') { root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Armory Recaller</h2><span class="muted">Available outside ranked wars for faction officers.</span></div><span class="badge ready">Officer</span></div><nav class="war-tabs"><button type="button" data-action="select-war-tab" data-war-tab="armory" aria-selected="true">Armory</button></nav><div class="war-tab-body">${warArmoryView({})}</div></article></div>`; return; }
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK War</h2><span class="muted">Assigned and active ranked-war detection</span></div><span class="badge">No war</span></div>${current.error ? moduleMessage(current.error, 'error') : moduleMessage('No assigned or active ranked war was found.')}</article></div>`; return;
+}
 const active = current.data.activeWar;
 const snapshot = current.data.snapshot || {};
 const members = Array.isArray(snapshot.members) ? snapshot.members : Array.isArray(snapshot.targets) ? snapshot.targets : [];
 const officer = warOfficer();
+const armoryOfficer = warArmoryOfficer();
 const settings = dataState.settings.war;
-const allowedTabs = ['targets', 'outside', 'claims', ...(officer ? ['armory', 'logs', 'settings'] : [])];
+const allowedTabs = ['targets', 'outside', 'claims', ...(armoryOfficer ? ['armory'] : []), ...(officer ? ['logs', 'settings'] : [])];
 if (!allowedTabs.includes(settings.activeTab)) settings.activeTab = 'targets';
 const tab = settings.activeTab;
 const tabBody = tab === 'targets' ? warTargetView(snapshot) : tab === 'outside' ? warOutsideView(current.data) : tab === 'claims' ? warClaimsView(snapshot) : tab === 'armory' ? warArmoryView(snapshot) : tab === 'logs' ? warLogsView(current.data) : warSettingsView(snapshot);
 const mugStats = mugStatsForWar(active.warId);
 const panelStats = current.data.panelStats || {};
 const chain = panelStats?.chain?.current ? `${number(panelStats.chain.current)}${panelStats.chain.target ? `/${number(panelStats.chain.target)}` : ''}` : 'None';
-const itemRequestCount = officer && Array.isArray(snapshot.itemRequests) ? snapshot.itemRequests.length : 0;
+const itemRequestCount = armoryOfficer && Array.isArray(snapshot.itemRequests) ? snapshot.itemRequests.length : 0;
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>${escapeHtml(active.opponentName)}</h2><span class="muted">${active.phase === 'active' ? 'Ranked war active' : `Assigned · starts ${new Date(active.start * 1000).toLocaleString()}`}</span></div><span class="badge ${officer ? 'ready' : ''}">${officer ? 'Officer' : 'Member'}</span></div><nav class="war-tabs">${allowedTabs.map(name => `<button type="button" data-action="select-war-tab" data-war-tab="${name}" aria-selected="${tab === name}">${name[0].toUpperCase()}${name.slice(1)}${name === 'armory' && itemRequestCount ? `<span class="nav-count">${itemRequestCount > 99 ? '99+' : itemRequestCount}</span>` : ''}</button>`).join('')}</nav>${tab === 'armory' ? '' : `<div class="stats"><div class="stat"><strong>${number(panelStats.attacks || 0)}</strong><span>Attacks</span></div><div class="stat"><strong>${number(panelStats.warAttacks || 0)}${Number(snapshot?.config?.insideHitCap) ? `/${number(snapshot.config.insideHitCap)}` : ''}</strong><span>War / cap</span></div><div class="stat"><strong>${number(mugStats.count)}</strong><span>Mugs</span></div><div class="stat"><strong>${chain}</strong><span>Chain</span></div></div><article class="mug-report"><div><strong>Mug report</strong><span>${mugStats.count ? `${number(mugStats.count)} mugs · ${money(mugStats.total)} total · ${money(mugStats.average)} average · ${money(mugStats.min)} min · ${money(mugStats.max)} max` : 'No completed war mugs captured on this device yet.'}</span></div><button type="button" data-action="copy-war-mug-report" ${mugStats.count ? '' : 'disabled'}>Copy report</button></article>${warItemRequests(snapshot)}${warRetalCards(snapshot, active)}`}<div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · ${members.length} ranked-war opponents${current.busy ? ' · refreshing…' : ''}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}<div class="war-tab-body">${tabBody}</div></article></div>`;
 }
 function warAttackRows(payload) {
@@ -1008,3 +1012,4 @@ const score = numeric && Number(item.id) === numeric ? 0 : name.startsWith(needl
 return { item, score };
 }).filter(row => row.score < 99).sort((a, b) => a.score - b.score || String(a.item.name).localeCompare(String(b.item.name))).slice(0, MARKET_SUGGESTION_LIMIT).map(row => row.item);
 }
+

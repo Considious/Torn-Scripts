@@ -1,292 +1,46 @@
-(function installFactionOfficersPda(global) {
+(function installFactionOfficersPda(global){
 'use strict';
-const api = global.SLINK_PDA_PLUGIN_API;
-if (!api) throw new Error('SLINK PDA plugin API is unavailable.');
-const ID = 'factionOfficers';
-const SCOPE = 'slink.war.officer';
-const ADMIN_SCOPE = 'admin.*';
-const BASE_URL = 'https://slinkcontributionworker.richard-johnson554.workers.dev';
-const REFRESH_MS = 5 * 60_000;
-const defaults = Object.freeze({ enabled:true, dismissed:{} });
-let busy = false;
-let error = '';
-let notice = '';
-let timer = null;
-let alertObserver = null;
-
-function settings() {
-  const value = api.settings(ID, defaults);
-  value.enabled = value.enabled !== false;
-  value.dismissed = value.dismissed && typeof value.dismissed === 'object' ? value.dismissed : {};
-  return value;
-}
-function cache() {
-  const value = api.cache(ID, {});
-  value.alerts = Array.isArray(value.alerts) ? value.alerts : [];
-  value.roles = Array.isArray(value.roles) ? value.roles : [];
-  return value;
-}
-function rows(value) {
-  return Array.isArray(value) ? value : value && typeof value === 'object' ? Object.values(value) : [];
-}
-function normalizeMembers(payload) {
-  const source = payload?.members ?? payload?.faction?.members ?? [];
-  return rows(source).map(row => {
-    const id = Number(row?.id ?? row?.user_id ?? row?.player_id);
-    if (!Number.isInteger(id) || id <= 0) return null;
-    const position = row?.position;
-    return {
-      id,
-      name:String(row?.name || ('Player ' + id)),
-      position:String(position?.name ?? row?.position_name ?? position ?? row?.rank ?? 'Member').trim() || 'Member',
-      level:Math.max(0, Math.trunc(Number(row?.level) || 0))
-    };
-  }).filter(Boolean);
-}
-async function http(path, options = {}) {
-  const session = await api.ensurePermission(false);
-  const url = BASE_URL + path;
-  const method = String(options.method || 'GET').toUpperCase();
-  const headers = { Accept:'application/json', Authorization:'Bearer ' + session.token, ...(options.headers || {}) };
-  const body = options.body === undefined ? undefined : typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
-  if (body !== undefined && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
-  const direct = method === 'POST' ? global.PDA_httpPost : global.PDA_httpGet;
-  if (typeof direct === 'function') {
-    const response = await direct(url, headers, ...(body === undefined ? [] : [body]));
-    const status = Number(response?.status ?? response?.statusCode) || 0;
-    const text = typeof response === 'string' ? response : String(response?.responseText ?? response?.body ?? response?.data ?? '');
-    let parsed = null;
-    try { parsed = JSON.parse(text || 'null'); } catch {}
-    if (status && (status < 200 || status >= 300)) throw new Error(parsed?.error || ('HTTP ' + status));
-    return parsed || {};
-  }
-  if (typeof global.GM_xmlhttpRequest === 'function') {
-    return new Promise((resolve,reject) => global.GM_xmlhttpRequest({
-      method,url,headers,data:body,timeout:30000,
-      onload(response) {
-        let parsed = null;
-        try { parsed = JSON.parse(String(response.responseText || 'null')); } catch {}
-        if (Number(response.status) < 200 || Number(response.status) >= 300) return reject(new Error(parsed?.error || ('HTTP ' + response.status)));
-        resolve(parsed || {});
-      },
-      onerror:() => reject(new Error('Faction onboarding request failed.')),
-      ontimeout:() => reject(new Error('Faction onboarding request timed out.'))
-    }));
-  }
-  const response = await global.fetch(url,{method,headers,body,cache:'no-store',credentials:'omit'});
-  let parsed = null;
-  try { parsed = await response.json(); } catch {}
-  if (!response.ok) throw new Error(parsed?.error || ('HTTP ' + response.status));
-  return parsed || {};
-}
-function checklist(row) {
-  const level = Math.max(0, Number(row?.level) || 0);
-  const position = String(row?.position || 'Member');
-  const items = [
-    ...(level > 0 && level < 15 ? ['proficiency weapon'] : []),
-    'armor',
-    '20 Pepper Spray',
-    '20 Morphine',
-    ...(position.toLowerCase().includes('recruit') ? ['4 Xanax only if stacking and still recruit'] : [])
-  ];
-  return position + (level ? ' · Level ' + level : '') + ' · Check: ' + items.join('; ') + '.';
-}
-function alertId(row) {
-  return 'factionOnboarding:' + Number(row?.user_id) + ':' + (Number(row?.joined_at) || 0);
-}
-function visibleAlerts() {
-  const config = settings();
-  if (!config.enabled) return [];
-  return cache().alerts.filter(row => Number(config.dismissed[row.user_id]) !== Number(row.joined_at));
-}
-function alerts() {
-  return visibleAlerts().map(row => ({
-    id:alertId(row),
-    title:'New faction member: ' + String(row.user_name || ('Player ' + row.user_id)) + ' [' + Number(row.user_id) + ']',
-    detail:checklist(row),
-    links:[['Profile','https://www.torn.com/profiles.php?XID=' + Number(row.user_id)]]
-  }));
-}
-async function loadRoles(members) {
-  if (!api.hasScope(ADMIN_SCOPE)) return [];
-  const session = await api.ensurePermission(false);
-  const factionId = Number(session?.factionId) || 0;
-  if (!factionId) throw new Error('Your authenticated Torn account is not in a faction.');
-  const response = await http('/api/admin/factions/' + factionId + '/officer-roles');
-  const configured = new Set((Array.isArray(response?.roles) ? response.roles : []).filter(role => role?.active).map(role => String(role.name || '').trim()));
-  return [...new Set(members.map(member => member.position).filter(Boolean))].sort((a,b) => a.localeCompare(b)).map(name => ({
-    name,
-    memberCount:members.filter(member => member.position === name).length,
-    selected:configured.has(name)
-  }));
-}
-async function refresh(force = false) {
-  const current = cache();
-  if (busy) return current;
-  if (!force && current.fetchedAt && Date.now() - Number(current.fetchedAt) < REFRESH_MS) {
-    render();
-    enhanceAlertActions();
-    return current;
-  }
-  busy = true;
-  error = '';
-  render();
-  try {
-    await api.ensurePermission(false);
-    if (!api.hasScope(SCOPE)) throw new Error('Your SLINK account does not have faction officer permission.');
-    const members = normalizeMembers(await api.tornJson('/v2/faction/members','SLINK PDA faction onboarding'));
-    if (!members.length) throw new Error('Torn returned no faction members.');
-    const response = await http('/api/faction/onboarding/sync',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:{members}
-    });
-    current.alerts = Array.isArray(response?.alerts) ? response.alerts : [];
-    current.viewerIsAdmin = response?.viewer_is_admin === true;
-    current.factionId = Number(response?.faction_id) || 0;
-    current.initialized = response?.initialized === true;
-    current.rosterCount = Number(response?.roster_count) || members.length;
-    current.roles = api.hasScope(ADMIN_SCOPE) ? await loadRoles(members) : [];
-    current.fetchedAt = Date.now();
-    current.lastError = '';
-    api.save();
-    api.alertsChanged();
-    return current;
-  } catch (caught) {
-    error = api.errorMessage(caught);
-    current.lastError = error;
-    current.fetchedAt = Date.now();
-    api.save();
-    throw caught;
-  } finally {
-    busy = false;
-    render();
-    enhanceAlertActions();
-  }
-}
-async function verify(memberId) {
-  const response = await http('/api/faction/onboarding/' + Number(memberId) + '/verify',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:{}
-  });
-  const current = cache();
-  current.alerts = Array.isArray(response?.alerts) ? response.alerts : [];
-  current.viewerIsAdmin = response?.viewer_is_admin === true;
-  current.fetchedAt = Date.now();
-  notice = response?.verification === 'admin'
-    ? 'Admin verification saved. This onboarding check is now complete.'
-    : 'Officer verification saved and removed from every officer profile.';
-  api.save();
-  api.alertsChanged();
-  render();
-}
-function dismiss(memberId, joinedAt) {
-  settings().dismissed[memberId] = Number(joinedAt) || 0;
-  notice = 'Alert dismissed on this device only.';
-  api.save();
-  api.alertsChanged();
-  render();
-}
-async function saveRoles(root) {
-  if (!api.hasScope(ADMIN_SCOPE)) return;
-  const session = await api.ensurePermission(false);
-  const factionId = Number(session?.factionId) || 0;
-  const roles = [...root.querySelectorAll('[data-fo-role]:checked')].map(input => String(input.dataset.foRole || '')).filter(Boolean);
-  await http('/api/admin/factions/' + factionId + '/officer-roles',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:{roles}
-  });
-  await api.ensurePermission(true);
-  notice = 'Officer roles saved. Matching faction members receive officer access at their next permission refresh.';
-  cache().fetchedAt = 0;
-  await refresh(true);
-}
-function render() {
-  const root = api.root(ID);
-  if (!root) return;
-  const current = cache();
-  const pending = visibleAlerts();
-  const admin = api.hasScope(ADMIN_SCOPE);
-  const roleHtml = admin
-    ? '<article class="card wide"><div class="card-head"><div><h2>Automatic officer access</h2><span class="muted">Selected Torn faction roles inherit the existing SLINK faction officer permission.</span></div><button type="button" data-fo-action="save-roles">Save roles</button></div><div class="alert-settings-groups"><fieldset><legend>Faction roles</legend>' +
-      (current.roles.length ? current.roles.map(role => '<label><input type="checkbox" data-fo-role="' + api.escapeHtml(role.name) + '" ' + (role.selected ? 'checked' : '') + '><span>' + api.escapeHtml(role.name) + ' · ' + Number(role.memberCount) + ' member' + (Number(role.memberCount) === 1 ? '' : 's') + '</span></label>').join('') : '<p>Refresh to load the current faction roles.</p>') +
-      '</fieldset></div></article>'
-    : '<article class="card wide"><h2>Officer access</h2><p>Faction roles are configured by an SLINK administrator. You currently have faction officer access.</p></article>';
-  root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Faction onboarding</h2><span class="muted">Shared equipment checks for new faction members.</span></div><button type="button" data-fo-action="refresh">' + (busy ? 'Checking…' : 'Refresh') + '</button></div>' +
-    (error ? api.moduleMessage(error,'error') : '') + (notice ? api.moduleMessage(notice,'ready') : '') +
-    '<label class="check-row"><input type="checkbox" data-fo-enabled ' + (settings().enabled ? 'checked' : '') + '>Show new-member equipment alerts</label>' +
-    '<p>' + pending.length + ' pending for this profile · roster ' + Number(current.rosterCount || 0) + ' · updated ' + api.relativeTime(current.fetchedAt) + '</p>' +
-    (pending.length ? '<div class="alert-list">' + pending.map(row => '<article class="alert"><div><strong>' + api.escapeHtml(String(row.user_name || ('Player ' + row.user_id))) + ' [' + Number(row.user_id) + ']</strong><span>' + api.escapeHtml(checklist(row)) + '</span></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=' + Number(row.user_id) + '">Profile</a><button type="button" data-fo-action="verify" data-fo-member="' + Number(row.user_id) + '">' + (current.viewerIsAdmin ? 'Admin verified' : 'Verified') + '</button><button type="button" data-fo-action="dismiss" data-fo-member="' + Number(row.user_id) + '" data-fo-joined="' + Number(row.joined_at || 0) + '">Dismiss</button></div></article>').join('') + '</div>' : '<p>No new members are waiting for an equipment check.</p>') +
-    '</article>' + roleHtml + '</div>';
-  bind(root);
-}
-function bind(root) {
-  if (root.dataset.factionOfficersBound === 'true') return;
-  root.dataset.factionOfficersBound = 'true';
-  root.addEventListener('change', event => {
-    if (!event.target.matches('[data-fo-enabled]')) return;
-    settings().enabled = event.target.checked === true;
-    api.save();
-    api.alertsChanged();
-  });
-  root.addEventListener('click', event => {
-    const control = event.target.closest('[data-fo-action]');
-    if (!control) return;
-    const action = control.dataset.foAction;
-    if (action === 'refresh') void refresh(true).catch(() => undefined);
-    if (action === 'save-roles') void saveRoles(root).catch(caught => { error=api.errorMessage(caught); render(); });
-    if (action === 'verify') void verify(Number(control.dataset.foMember)).catch(caught => { error=api.errorMessage(caught); render(); });
-    if (action === 'dismiss') dismiss(Number(control.dataset.foMember),Number(control.dataset.foJoined));
-  });
-}
-function enhanceAlertActions() {
-  const root = api.root('alerts');
-  if (!root) return;
-  for (const snooze of root.querySelectorAll('[data-alert-id^="factionOnboarding:"]')) {
-    const card = snooze.closest('article.alert');
-    const actions = snooze.closest('.target-actions');
-    if (!card || !actions || actions.querySelector('[data-fo-alert-action]')) continue;
-    const parts = String(snooze.dataset.alertId || '').split(':');
-    const memberId = Number(parts[1]) || 0;
-    const joinedAt = Number(parts[2]) || 0;
-    const verifyButton = document.createElement('button');
-    verifyButton.type = 'button';
-    verifyButton.dataset.foAlertAction = 'verify';
-    verifyButton.dataset.foMember = String(memberId);
-    verifyButton.textContent = cache().viewerIsAdmin ? 'Admin verified' : 'Verified';
-    const dismissButton = document.createElement('button');
-    dismissButton.type = 'button';
-    dismissButton.dataset.foAlertAction = 'dismiss';
-    dismissButton.dataset.foMember = String(memberId);
-    dismissButton.dataset.foJoined = String(joinedAt);
-    dismissButton.textContent = 'Dismiss';
-    actions.prepend(dismissButton);
-    actions.prepend(verifyButton);
-  }
-}
-function bindAlertActions() {
-  const root = api.root('alerts');
-  if (!root || root.dataset.factionOfficersBound === 'true') return;
-  root.dataset.factionOfficersBound = 'true';
-  root.addEventListener('click', event => {
-    const control = event.target.closest('[data-fo-alert-action]');
-    if (!control) return;
-    const action = control.dataset.foAlertAction;
-    if (action === 'verify') void verify(Number(control.dataset.foMember)).catch(caught => { error=api.errorMessage(caught); render(); });
-    if (action === 'dismiss') dismiss(Number(control.dataset.foMember),Number(control.dataset.foJoined));
-  });
-  alertObserver = new MutationObserver(() => queueMicrotask(enhanceAlertActions));
-  alertObserver.observe(root,{childList:true,subtree:true});
-  enhanceAlertActions();
-}
-function start() {
-  bindAlertActions();
-  if (api.hasScope(SCOPE)) void refresh(false).catch(() => undefined);
-  timer = global.setInterval(() => {
-    if (api.hasScope(SCOPE) && Date.now() - Number(cache().fetchedAt || 0) >= REFRESH_MS) void refresh(false).catch(() => undefined);
-  },60000);
-}
-api.register({id:ID,title:'Faction Officers',shortTitle:'Officers',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({normalizeMembers,checklist,alertId})});
+const api=global.SLINK_PDA_PLUGIN_API;if(!api)throw new Error('SLINK PDA plugin API is unavailable.');
+const ID='factionOfficers',OFFICER='slink.war.officer',ARMORY='slink.officer.armory',OC='slink.officer.oc',ADMIN='admin.*',SCOPES=[OFFICER,ARMORY,OC];
+const LABELS={[OFFICER]:'Onboarding',[ARMORY]:'Armory',[OC]:'OC'},BASE_URL='https://slinkcontributionworker.richard-johnson554.workers.dev',DAY=86400000,REFRESH=300000;
+const ARMORY_URL='https://www.torn.com/factions.php?step=your#/tab=armoury',CRIMES_URL='https://www.torn.com/factions.php?step=your#/tab=crimes';
+const CATEGORIES=['weapons','temporary','medical','consumables','drugs','boosters','utilities'];
+function def(key,name,category,aliases=[]){return{key,name,category,aliases};}
+const ARMORY_ITEMS=[def('blood-a-pos','Blood Bag : A+','medical'),def('blood-a-neg','Blood Bag : A-','medical'),def('blood-b-pos','Blood Bag : B+','medical'),def('blood-b-neg','Blood Bag : B-','medical'),def('blood-ab-pos','Blood Bag : AB+','medical'),def('blood-ab-neg','Blood Bag : AB-','medical'),def('blood-o-pos','Blood Bag : O+','medical'),def('blood-o-neg','Blood Bag : O-','medical'),def('blood-irradiated','Blood Bag : Irradiated','medical'),def('empty-blood-bag','Empty Blood Bag','medical',['Empty Blood Bags']),def('morphine','Morphine','medical'),def('small-first-aid-kit','Small First Aid Kit','medical',['Small First Aid Kits']),def('first-aid-kit','First Aid Kit','medical'),def('xanax','Xanax','drugs'),def('pepper-spray','Pepper Spray','temporary'),def('points','Points','points')];
+const OC_ITEMS=[def('blank-casino-chips','Blank Casino Chips','consumables'),def('id-badge','ID Badge','utilities'),def('tunneling-virus','Tunneling Virus','utilities'),def('zip-ties','Zip Ties','consumables'),def('dog-treats','Dog Treats','consumables'),def('pcp','PCP','drugs'),def('cell-phone','Cell Phone','utilities'),def('shaving-foam','Shaving Foam','consumables'),def('atm-key','ATM Key','utilities'),def('gasoline','Gasoline','consumables'),def('polymorphic-virus','Polymorphic Virus','utilities'),def('black-spray-paint','Spray Paint : Black','consumables',['Black Spray Paint']),def('chloroform','Chloroform','medical'),def('c4-explosive','C4 Explosive','utilities'),def('flash-grenade','Flash Grenade','temporary'),def('ipecac-syrup','Ipecac Syrup','medical'),def('thermite','Thermite','consumables'),def('firewalk-virus','Firewalk Virus','utilities'),def('shaped-charge','Shaped Charge','utilities'),def('razor-wire','Razor Wire','utilities'),def('floor-cleaner','Floor Cleaner','consumables'),def('single-red-rose','Single Red Rose','consumables'),def('syringe','Syringe','medical'),def('smoke-grenade','Smoke Grenade','temporary'),def('stealth-virus','Stealth Virus','utilities'),def('ecstasy','Ecstasy','drugs'),def('lubricant','Lubricant','consumables'),def('armored-virus','Armored Virus','utilities'),def('psu','PSU','utilities'),def('hard-drive','Hard Drive','utilities'),def('igniter-cord','Igniter Cord','utilities'),def('nail-bomb','Nail Bomb','temporary'),def('tear-gas','Tear Gas','temporary'),def('lockpicks','Lockpicks','utilities'),def('jemmy','Jemmy','utilities'),def('net','Net','utilities'),def('cassock','Cassock','utilities'),def('police-badge','Police Badge','utilities'),def('rf-detector','RF Detector','utilities'),def('dslr-camera','DSLR Camera','utilities'),def('construction-helmet','Construction Helmet','utilities'),def('wire-cutters','Wire Cutters','utilities'),def('billfold','Billfold','utilities'),def('bolt-cutters','Bolt Cutters','utilities'),def('dental-mirror','Dental Mirror','utilities'),def('core-drill','Core Drill','utilities'),def('ladder','Ladder','utilities'),def('angle-grinder','Angle Grinder','utilities'),def('large-suitcase','Large Suitcase','utilities'),def('hand-drill','Hand Drill','utilities'),def('tracking-device','Tracking Device','utilities'),def('bone-saw','Bone Saw','utilities'),def('wireless-dongle','Wireless Dongle','utilities'),def('cut-throat-razor','Cut-Throat Razor','utilities'),def('china-lake','China Lake','weapons'),def('binoculars','Binoculars','utilities'),def('remote-detonator','Remote Detonator','utilities'),def('car-battery','Car Battery','utilities'),def('cigar-cutter','Cigar Cutter','utilities')];
+let busy=false,error='',notice='',timer=null,observer=null;
+function n(value,fallback=0){const parsed=Number(value);return Number.isFinite(parsed)?parsed:fallback;}
+function thresholds(input,defs){const source=input&&typeof input==='object'?input:{};return Object.fromEntries(defs.map(row=>[row.key,Math.max(0,Math.trunc(n(source[row.key],0)))]));}
+function settings(){const value=api.settings(ID,{});value.enabled=value.enabled!==false;value.dismissed=value.dismissed&&typeof value.dismissed==='object'?value.dismissed:{};value.snoozed=value.snoozed&&typeof value.snoozed==='object'?value.snoozed:{};value.armory={checksPerDay:Math.min(24,Math.max(0,Math.trunc(n(value.armory?.checksPerDay,4)))),soundEnabled:value.armory?.soundEnabled!==false,thresholds:thresholds(value.armory?.thresholds,ARMORY_ITEMS)};value.oc={checksPerDay:Math.min(24,Math.max(0,Math.trunc(n(value.oc?.checksPerDay,0)))),soundEnabled:value.oc?.soundEnabled!==false,thresholds:thresholds(value.oc?.thresholds,OC_ITEMS)};return value;}
+function cache(){const value=api.cache(ID,{});for(const key of ['alerts','roles','users','inventory','armoryShortages','ocShortages','missingCrimeItems','itemCatalog'])value[key]=Array.isArray(value[key])?value[key]:[];return value;}
+function rows(value){return Array.isArray(value)?value:value&&typeof value==='object'?Object.values(value):[];}
+function normalizeMembers(payload){const source=payload?.members??payload?.faction?.members??[];return rows(source).map(row=>{const id=Number(row?.id??row?.user_id??row?.player_id);if(!Number.isInteger(id)||id<=0)return null;const position=row?.position;return{id,name:String(row?.name||('Player '+id)),position:String(position?.name??row?.position_name??position??row?.rank??'Member').trim()||'Member',level:Math.max(0,Math.trunc(Number(row?.level)||0))};}).filter(Boolean);}
+async function http(path,options={}){const session=await api.ensurePermission(false),url=BASE_URL+path,method=String(options.method||'GET').toUpperCase(),headers={Accept:'application/json',Authorization:'Bearer '+session.token,...(options.headers||{})},body=options.body===undefined?undefined:typeof options.body==='string'?options.body:JSON.stringify(options.body);if(body!==undefined&&!headers['Content-Type'])headers['Content-Type']='application/json';const direct=method==='POST'?global.PDA_httpPost:global.PDA_httpGet;if(typeof direct==='function'){const response=await direct(url,headers,...(body===undefined?[]:[body]));const status=Number(response?.status??response?.statusCode)||0,text=typeof response==='string'?response:String(response?.responseText??response?.body??response?.data??'');let parsed=null;try{parsed=JSON.parse(text||'null');}catch{}if(status&&(status<200||status>=300))throw new Error(parsed?.error||('HTTP '+status));return parsed||{};}if(typeof global.GM_xmlhttpRequest==='function')return new Promise((resolve,reject)=>global.GM_xmlhttpRequest({method,url,headers,data:body,timeout:30000,onload(response){let parsed=null;try{parsed=JSON.parse(String(response.responseText||'null'));}catch{}if(Number(response.status)<200||Number(response.status)>=300)return reject(new Error(parsed?.error||('HTTP '+response.status)));resolve(parsed||{});},onerror:()=>reject(new Error('Faction officer request failed.')),ontimeout:()=>reject(new Error('Faction officer request timed out.'))}));const response=await global.fetch(url,{method,headers,body,cache:'no-store',credentials:'omit'});let parsed=null;try{parsed=await response.json();}catch{}if(!response.ok)throw new Error(parsed?.error||('HTTP '+response.status));return parsed||{};}
+function normalizeName(value){return String(value||'').trim().replace(/\s+/g,' ').toLowerCase();}
+function shortages(defs,targets,inventory,points){const totals=new Map();for(const row of inventory){const key=normalizeName(row?.name);if(key)totals.set(key,(totals.get(key)||0)+Math.max(0,Math.trunc(n(row?.amount,0))));}totals.set('points',Math.max(0,Math.trunc(n(points,0))));return defs.flatMap(row=>{const target=Math.max(0,Math.trunc(n(targets[row.key],0)));if(!target)return[];const current=Math.max(0,...[row.name,...row.aliases].map(name=>n(totals.get(normalizeName(name)),0)));return current<target?[{...row,current,target}]:[];});}
+function restockMessage(title,list){return[title,...list.map(row=>row.name+' '+row.current+'/'+row.target)].join('\n');}
+function due(lastAt,count){return count>0&&Date.now()-n(lastAt,0)>=DAY/count;}
+async function inventory(){const items=[];for(const category of CATEGORIES){for(let offset=0;offset<1000;offset+=100){const body=await api.tornJson('/v2/faction/inventory?cat='+encodeURIComponent(category)+'&limit=100&offset='+offset,'SLINK PDA armory thresholds');const page=Array.isArray(body?.inventory)?body.inventory:[];items.push(...page);if(page.length<100)break;}}const balance=await api.tornJson('/v2/faction/balance','SLINK PDA armory points');return{items,points:Math.max(0,n(balance?.balance?.faction?.points??balance?.faction?.points,0))};}
+async function crimes(){const list=[];for(let offset=0;offset<500;offset+=100){const body=await api.tornJson('/v2/faction/crimes?cat=current&limit=100&offset='+offset,'SLINK PDA OC item check');const page=Array.isArray(body?.crimes)?body.crimes:[];list.push(...page);if(page.length<100)break;}return list;}
+function missingItems(crimeRows,itemMap,memberMap){const list=[];for(const crime of crimeRows){if(!['Recruiting','Planning'].includes(String(crime?.status||'')))continue;for(const slot of Array.isArray(crime?.slots)?crime.slots:[]){const req=slot?.item_requirement,userId=Number(slot?.user?.id),itemId=Number(req?.id);if(!userId||!itemId||req?.is_available!==false)continue;list.push({crimeId:Number(crime?.id)||0,crimeName:String(crime?.name||'Organized Crime'),position:String(slot?.position_info?.label||slot?.position||'Assigned slot'),userId,userName:memberMap.get(userId)||String(slot?.user?.name||('Player '+userId)),itemId,itemName:itemMap.get(itemId)||('Item '+itemId),reusable:req?.is_reusable===true});}}return list;}
+function checklist(row){const level=Math.max(0,n(row?.level,0)),position=String(row?.position||'Member'),items=[...(level>0&&level<15?['proficiency weapon']:[]),'armor','20 Pepper Spray','20 Morphine',...(position.toLowerCase().includes('recruit')?['4 Xanax only if stacking and still recruit']:[])];return position+(level?' · Level '+level:'')+' · Check: '+items.join('; ')+'.';}
+function visibleOnboarding(){const config=settings();return config.enabled?cache().alerts.filter(row=>Number(config.dismissed[row.user_id])!==Number(row.joined_at)):[];}
+function allAlerts(){const config=settings(),current=cache(),out=visibleOnboarding().map(row=>({id:'factionOnboarding:'+Number(row.user_id)+':'+(Number(row.joined_at)||0),title:'New faction member: '+String(row.user_name||('Player '+row.user_id))+' ['+Number(row.user_id)+']',detail:checklist(row),links:[['Profile','https://www.torn.com/profiles.php?XID='+Number(row.user_id)]]}));if(api.hasScope(ARMORY)&&current.armoryShortages.length&&n(config.snoozed.factionArmory,0)<=Date.now())out.push({id:'factionArmory',title:'Faction armory restock needed',detail:current.armoryShortages.length+' configured item'+(current.armoryShortages.length===1?' is':'s are')+' below target.',links:[['Faction Armory',ARMORY_URL]],shareText:restockMessage('Restock Needed:',current.armoryShortages)});if(api.hasScope(OC)&&current.ocShortages.length&&n(config.snoozed.factionOcStock,0)<=Date.now())out.push({id:'factionOcStock',title:'Organized crime supplies need restocking',detail:current.ocShortages.length+' configured OC item'+(current.ocShortages.length===1?' is':'s are')+' below target.',links:[['Faction Armory',ARMORY_URL]],shareText:restockMessage('OC Restock Needed:',current.ocShortages)});if(api.hasScope(OC)&&current.missingCrimeItems.length&&n(config.snoozed.factionOcMissing,0)<=Date.now())out.push({id:'factionOcMissing',title:'Active organized crimes are missing items',detail:current.missingCrimeItems.length+' assigned slot'+(current.missingCrimeItems.length===1?' is':'s are')+' missing a required item.',links:[['Faction Armory',ARMORY_URL],['Organized Crimes',CRIMES_URL]],shareText:['OC Items Missing:',...current.missingCrimeItems.map(row=>row.userName+' ['+row.userId+'] — '+row.itemName+' for '+row.crimeName)].join('\n')});return out;}
+async function refreshOnboarding(force=false,members=null){if(!api.hasScope(OFFICER))return;const current=cache();if(!force&&current.fetchedAt&&Date.now()-n(current.fetchedAt,0)<REFRESH)return;members=members||normalizeMembers(await api.tornJson('/v2/faction/members','SLINK PDA faction onboarding'));if(!members.length)throw new Error('Torn returned no faction members.');const response=await http('/api/faction/onboarding/sync',{method:'POST',body:{members}});current.alerts=Array.isArray(response?.alerts)?response.alerts:[];current.viewerIsAdmin=response?.viewer_is_admin===true;current.factionId=Number(response?.faction_id)||0;current.rosterCount=Number(response?.roster_count)||members.length;current.fetchedAt=Date.now();}
+async function refreshStock(kind='all',force=false){const current=cache(),config=settings(),runArmory=api.hasScope(ARMORY)&&(kind==='all'||kind==='armory')&&(force||due(current.lastArmoryCheckAt,config.armory.checksPerDay)),runOc=api.hasScope(OC)&&(kind==='all'||kind==='oc')&&(force||due(current.lastOcCheckAt,config.oc.checksPerDay));if(!runArmory&&!runOc)return;const stock=await inventory();current.inventory=stock.items;current.points=stock.points;if(runArmory){current.armoryShortages=shortages(ARMORY_ITEMS,config.armory.thresholds,current.inventory,current.points);current.lastArmoryCheckAt=Date.now();current.armoryError='';}if(runOc){current.ocShortages=shortages(OC_ITEMS,config.oc.thresholds,current.inventory,current.points);try{const [crimeRows,memberPayload]=await Promise.all([crimes(),api.tornJson('/v2/faction/members','SLINK PDA OC member names')]);if(!current.itemCatalog.length||Date.now()-n(current.itemCatalogAt,0)>DAY){const catalog=await api.tornJson('/v2/torn/items','SLINK PDA OC item names');current.itemCatalog=rows(catalog?.items);current.itemCatalogAt=Date.now();}const itemMap=new Map(current.itemCatalog.map(row=>[Number(row?.id),String(row?.name||('Item '+row?.id))])),memberMap=new Map(normalizeMembers(memberPayload).map(row=>[row.id,row.name]));current.missingCrimeItems=missingItems(crimeRows,itemMap,memberMap);current.lastOcCheckAt=Date.now();current.ocError='';}catch(caught){current.ocError=api.errorMessage(caught);throw caught;}}}
+async function loadAccess(members){if(!api.hasScope(ADMIN))return;const session=await api.ensurePermission(false),factionId=Number(session?.factionId)||0;if(!factionId)throw new Error('Your authenticated Torn account is not in a faction.');const response=await http('/api/admin/factions/'+factionId+'/officer-access'),assignments=response?.assignments||{},current=cache();current.roles=[...new Set(members.map(member=>member.position).filter(Boolean))].sort((a,b)=>a.localeCompare(b)).map(name=>({name,memberCount:members.filter(member=>member.position===name).length,scopes:Object.fromEntries(SCOPES.map(scope=>[scope,(assignments[scope]?.roles||[]).includes(name)]))}));current.users=members.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(member=>({...member,scopes:Object.fromEntries(SCOPES.map(scope=>[scope,(assignments[scope]?.users||[]).some(user=>Number(user.id)===member.id)]))}));current.factionId=factionId;}
+async function refresh(force=false){if(busy)return;busy=true;error='';render();try{await api.ensurePermission(false);let members=null;if(api.hasScope(OFFICER)||api.hasScope(ADMIN)){members=normalizeMembers(await api.tornJson('/v2/faction/members','SLINK PDA faction officers'));if(api.hasScope(OFFICER))await refreshOnboarding(force,members);if(api.hasScope(ADMIN))await loadAccess(members);}await refreshStock('all',force);api.save();api.alertsChanged();}catch(caught){error=api.errorMessage(caught);throw caught;}finally{busy=false;render();enhanceAlerts();}}
+async function verify(memberId){const response=await http('/api/faction/onboarding/'+Number(memberId)+'/verify',{method:'POST',body:{}}),current=cache();current.alerts=Array.isArray(response?.alerts)?response.alerts:[];current.viewerIsAdmin=response?.viewer_is_admin===true;notice=response?.verification==='admin'?'Admin verification saved.':'Officer verification saved for every officer.';api.save();api.alertsChanged();render();}
+function dismiss(memberId,joinedAt){settings().dismissed[memberId]=Number(joinedAt)||0;notice='Alert dismissed on this device only.';api.save();api.alertsChanged();render();}
+async function saveAccess(root){const assignments=Object.fromEntries(SCOPES.map(scope=>[scope,{roles:[],users:[]}])) ;root.querySelectorAll('[data-fo-grant]:checked').forEach(input=>{const target=assignments[input.dataset.foScope];if(input.dataset.foGrant==='role')target.roles.push(input.dataset.foId);else target.users.push({id:Number(input.dataset.foId),name:input.dataset.foName});});await http('/api/admin/factions/'+Number(cache().factionId)+'/officer-access',{method:'POST',body:{assignments}});await api.ensurePermission(true);notice='Officer access assignments saved.';await refresh(true);}
+function saveConfig(root,kind){const config=settings(),defs=kind==='armory'?ARMORY_ITEMS:OC_ITEMS,target=config[kind];target.checksPerDay=Math.min(24,Math.max(0,Math.trunc(n(root.querySelector('[data-fo-frequency="'+kind+'"]')?.value,0))));target.soundEnabled=root.querySelector('[data-fo-sound="'+kind+'"]')?.checked!==false;for(const row of defs)target.thresholds[row.key]=Math.max(0,Math.trunc(n(root.querySelector('[data-fo-threshold="'+kind+'"][data-fo-key="'+row.key+'"]')?.value,0)));notice=(kind==='oc'?'OC':'Armory')+' settings saved.';api.save();api.alertsChanged();render();}
+function thresholdCard(kind,title,description){if(!api.hasScope(kind==='armory'?ARMORY:OC))return'';const config=settings()[kind],current=cache(),defs=kind==='armory'?ARMORY_ITEMS:OC_ITEMS,lastAt=kind==='armory'?current.lastArmoryCheckAt:current.lastOcCheckAt,short=kind==='armory'?current.armoryShortages:current.ocShortages,missing=kind==='oc'?current.missingCrimeItems:[],failure=kind==='armory'?current.armoryError:current.ocError;return'<article class="card full"><div class="card-head"><div><h2>'+title+'</h2><span class="muted">'+description+'</span></div></div><div class="module-toolbar"><label>Checks per day <input type="number" min="0" max="24" step="1" data-fo-frequency="'+kind+'" value="'+config.checksPerDay+'"></label><span>'+(kind==='oc'?'0 = manual only · ':'')+'Last check '+(lastAt?api.relativeTime(lastAt):'never')+'</span></div><div class="alert-settings-groups"><fieldset><legend>Configured minimums</legend>'+defs.map(row=>'<label><span>'+api.escapeHtml(row.name)+'</span><input type="number" min="0" step="1" data-fo-threshold="'+kind+'" data-fo-key="'+row.key+'" value="'+(config.thresholds[row.key]||0)+'"></label>').join('')+'</fieldset></div><label class="check-row"><input type="checkbox" data-fo-sound="'+kind+'" '+(config.soundEnabled?'checked':'')+'>Play alert sound</label><div class="target-actions"><button type="button" data-fo-action="save-'+kind+'">Save settings</button><button type="button" data-fo-action="run-'+kind+'" '+(busy?'disabled':'')+'>Run '+(kind==='oc'?'OC':'armory')+' check now</button></div><p>'+(failure?'Error: '+api.escapeHtml(failure):(short.length+' stock thresholds below target'+(kind==='oc'?' · '+missing.length+' active crime slots missing items':'')+'.'))+'</p></article>';}
+function accessCard(){if(!api.hasScope(ADMIN))return'';const current=cache(),heads=SCOPES.map(scope=>'<th>'+LABELS[scope]+'</th>').join(''),roleRows=current.roles.map(row=>'<tr><td><strong>'+api.escapeHtml(row.name)+'</strong><small>'+row.memberCount+' members</small></td>'+SCOPES.map(scope=>'<td><input type="checkbox" data-fo-grant="role" data-fo-id="'+api.escapeHtml(row.name)+'" data-fo-scope="'+scope+'" '+(row.scopes[scope]?'checked':'')+'></td>').join('')+'</tr>').join(''),userRows=current.users.map(row=>'<tr><td>'+api.escapeHtml(row.name)+' ['+row.id+']<small>'+api.escapeHtml(row.position)+'</small></td>'+SCOPES.map(scope=>'<td><input type="checkbox" data-fo-grant="user" data-fo-id="'+row.id+'" data-fo-name="'+api.escapeHtml(row.name)+'" data-fo-scope="'+scope+'" '+(row.scopes[scope]?'checked':'')+'></td>').join('')+'</tr>').join('');return'<article class="card full"><div class="card-head"><div><h2>Officer access assignments</h2><span class="muted">Grant each feature by Torn faction role or named member.</span></div></div><div class="table-scroll"><table><thead><tr><th>Faction role</th>'+heads+'</tr></thead><tbody>'+roleRows+'</tbody></table><table><thead><tr><th>Named member</th>'+heads+'</tr></thead><tbody>'+userRows+'</tbody></table></div><div class="target-actions"><button type="button" data-fo-action="save-access">Save access assignments</button></div></article>';}
+function render(){const root=api.root(ID);if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,textarea,select,[contenteditable="true"]'))return;const current=cache(),pending=visibleOnboarding();root.innerHTML='<div class="grid">'+(api.hasScope(OFFICER)?'<article class="card full"><div class="card-head"><div><h2>Faction onboarding</h2><span class="muted">Shared equipment checks for new members.</span></div><button type="button" data-fo-action="refresh">'+(busy?'Checking…':'Refresh')+'</button></div>'+(error?api.moduleMessage(error,'error'):'')+(notice?api.moduleMessage(notice,'ready'):'')+'<label class="check-row"><input type="checkbox" data-fo-enabled '+(settings().enabled?'checked':'')+'>Show new-member equipment alerts</label><p>'+pending.length+' pending · roster '+n(current.rosterCount,0)+'</p>'+(pending.length?'<div class="alert-list">'+pending.map(row=>'<article class="alert"><div><strong>'+api.escapeHtml(String(row.user_name||('Player '+row.user_id)))+' ['+Number(row.user_id)+']</strong><span>'+api.escapeHtml(checklist(row))+'</span></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID='+Number(row.user_id)+'">Profile</a><button type="button" data-fo-action="verify" data-fo-member="'+Number(row.user_id)+'">'+(current.viewerIsAdmin?'Admin verified':'Verified')+'</button><button type="button" data-fo-action="dismiss" data-fo-member="'+Number(row.user_id)+'" data-fo-joined="'+Number(row.joined_at||0)+'">Dismiss</button></div></article>').join('')+'</div>':'<p>No new members are waiting for an equipment check.</p>')+'</article>':'')+(api.hasScope(ARMORY)?'<article class="card full"><div class="card-head"><div><h2>Armory Recaller</h2><span class="muted">Manual ranked-item retrieval, available with the faction officer Armory permission.</span></div></div><div class="target-actions"><button type="button" data-fo-action="open-recaller">Open Armory Recaller</button><a class="action-link" href="'+ARMORY_URL+'">Open faction armory</a></div></article>':'')+thresholdCard('armory','Faction armory thresholds','One consolidated alert lists every configured item below target.')+thresholdCard('oc','Organized crime supplies','Tracks OC stock and assigned members missing required items.')+accessCard()+'</div>';bind(root);}
+function bind(root){if(root.dataset.factionOfficersBound==='true')return;root.dataset.factionOfficersBound='true';root.addEventListener('change',event=>{if(event.target.matches('[data-fo-enabled]')){settings().enabled=event.target.checked===true;api.save();api.alertsChanged();}});root.addEventListener('click',event=>{const button=event.target.closest('[data-fo-action]');if(!button)return;const action=button.dataset.foAction;if(action==='refresh')void refresh(true).catch(caught=>{error=api.errorMessage(caught);render();});if(action==='open-recaller')api.openArmoryRecaller?.();if(action==='save-access')void saveAccess(root).catch(caught=>{error=api.errorMessage(caught);render();});if(action==='save-armory')saveConfig(root,'armory');if(action==='save-oc')saveConfig(root,'oc');if(action==='run-armory'||action==='run-oc')void(async()=>{busy=true;render();try{await refreshStock(action.endsWith('oc')?'oc':'armory',true);notice=(action.endsWith('oc')?'OC':'Armory')+' check completed.';api.save();api.alertsChanged();}catch(caught){error=api.errorMessage(caught);}finally{busy=false;render();}})();if(action==='verify')void verify(Number(button.dataset.foMember)).catch(caught=>{error=api.errorMessage(caught);render();});if(action==='dismiss')dismiss(Number(button.dataset.foMember),Number(button.dataset.foJoined));});}
+function enhanceAlerts(){const root=api.root('alerts');if(!root)return;const lookup=new Map(allAlerts().map(row=>[row.id,row]));for(const snooze of root.querySelectorAll('[data-alert-id]')){const alert=lookup.get(String(snooze.dataset.alertId||'')),actions=snooze.closest('.target-actions');if(!alert||!actions)continue;if(alert.id.startsWith('factionOnboarding:')&&!actions.querySelector('[data-fo-alert-action]')){const parts=alert.id.split(':'),verifyButton=document.createElement('button'),dismissButton=document.createElement('button');verifyButton.type='button';verifyButton.dataset.foAlertAction='verify';verifyButton.dataset.foMember=parts[1];verifyButton.textContent=cache().viewerIsAdmin?'Admin verified':'Verified';dismissButton.type='button';dismissButton.dataset.foAlertAction='dismiss';dismissButton.dataset.foMember=parts[1];dismissButton.dataset.foJoined=parts[2];dismissButton.textContent='Dismiss';actions.prepend(dismissButton);actions.prepend(verifyButton);}if(alert.shareText&&!actions.querySelector('[data-fo-share]')){const copy=document.createElement('button'),send=document.createElement('button');copy.type=send.type='button';copy.dataset.foShare='copy';send.dataset.foShare='send';copy.dataset.foAlertId=send.dataset.foAlertId=alert.id;copy.textContent='Copy';send.textContent='Send to Faction';actions.prepend(send);actions.prepend(copy);}}}
+function bindAlertActions(){const root=api.root('alerts');if(!root||root.dataset.factionOfficersBound==='true')return;root.dataset.factionOfficersBound='true';root.addEventListener('click',event=>{const action=event.target.closest('[data-fo-alert-action]'),share=event.target.closest('[data-fo-share]');if(action){if(action.dataset.foAlertAction==='verify')void verify(Number(action.dataset.foMember)).catch(()=>undefined);else dismiss(Number(action.dataset.foMember),Number(action.dataset.foJoined));}if(share){const alert=allAlerts().find(row=>row.id===share.dataset.foAlertId);if(!alert?.shareText)return;void(async()=>{share.disabled=true;const key='officer:'+alert.id,result=share.dataset.foShare==='copy'?await api.primeFactionMessage(alert.shareText,key):await api.sendPrimedFactionMessage(key);share.textContent=result.label;share.disabled=false;})();}});observer=new MutationObserver(()=>queueMicrotask(enhanceAlerts));observer.observe(root,{childList:true,subtree:true});enhanceAlerts();}
+function start(){bindAlertActions();if(SCOPES.some(api.hasScope)||api.hasScope(ADMIN))void refresh(false).catch(()=>undefined);timer=global.setInterval(()=>{if(!busy&&(SCOPES.some(api.hasScope)||api.hasScope(ADMIN)))void refresh(false).catch(()=>undefined);},60000);}
+api.register({id:ID,title:'Faction Officers',shortTitle:'Officers',scopes:[OFFICER,ARMORY,OC,ADMIN],render,refresh,alerts:allAlerts,start,test:Object.freeze({normalizeMembers,shortages,missingItems})});
 })(globalThis);
+

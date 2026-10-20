@@ -82,6 +82,7 @@ museums:MUSEUM_SCOPE
 function canAccessModule(name) {
 if (name === 'market') return marketWatchLimit() > 0;
 const plugin = pdaPlugins.get(name);
+if (Array.isArray(plugin?.scopes) && plugin.scopes.length) return plugin.scopes.some(hasScope);
 if (plugin?.scope) return hasScope(plugin.scope);
 const required = MODULE_SCOPES[name];
 return !required || hasScope(required);
@@ -100,7 +101,7 @@ const allowed = canAccessModule(moduleName);
 if (tab) {
 tab.hidden = !allowed;
 tab.classList.toggle('permission-lock', !allowed);
-tab.title = allowed ? '' : `Requires ${MODULE_SCOPES[moduleName] || 'a Market Watch tier'}`;
+tab.title = allowed ? '' : `Requires ${pdaPlugins.get(moduleName)?.scopes?.join(' or ') || MODULE_SCOPES[moduleName] || 'a Market Watch tier'}`;
 }
 if (panel && !allowed) panel.hidden = true;
 }
@@ -1084,6 +1085,9 @@ document.querySelectorAll('div[class*="dialog___"] div[class*="title___"],div[cl
 function warOfficer() {
 return hasScope('slink.war.officer') || hasScope('admin.*');
 }
+function warArmoryOfficer() {
+return warOfficer() || hasScope('slink.officer.armory');
+}
 function warMemberId(member) {
 return Math.trunc(Number(member?.id ?? member?.user_id ?? member?.player_id ?? member?.attackerId) || 0);
 }
@@ -1458,3 +1462,4 @@ const config = snapshot?.config || {};
 const settings = dataState.settings.war;
 return `<div class="war-settings"><label>Faction War mode<select data-field="war-mode"><option value="war" ${(config.mode || settings.mode) === 'war' ? 'selected' : ''}>Real war</option><option value="termed" ${(config.mode || settings.mode) === 'termed' ? 'selected' : ''}>Termed war</option></select></label><label>Faction idle filter<input type="number" min="0" max="60" data-field="war-idle" value="${Number(config.idleMinutes ?? settings.idleMinutes) || 0}"></label><label>Inside-hit cap<input type="number" min="0" max="9999" data-field="war-inside-cap" value="${Number(config.insideHitCap ?? settings.insideHitCap) || 0}"></label><label>Major-window inside gate<select data-field="war-inside-mode"><option value="off" ${(config.insideBlockMode || settings.insideBlockMode) === 'off' ? 'selected' : ''}>Off</option><option value="warn" ${(config.insideBlockMode || settings.insideBlockMode || 'warn') === 'warn' ? 'selected' : ''}>Warning with override</option><option value="block" ${(config.insideBlockMode || settings.insideBlockMode) === 'block' ? 'selected' : ''}>Hard block</option></select></label><div class="war-settings-note">These faction-wide controls apply to every SLINK War user. Major-window gating only activates in Termed mode.</div><button type="button" data-action="save-war-settings">Save War settings</button></div>`;
 }
+

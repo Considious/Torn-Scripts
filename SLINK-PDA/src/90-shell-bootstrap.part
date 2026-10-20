@@ -11,7 +11,7 @@ const plugin = pdaPlugins.get(name);
 if (plugin) {
 try {
 plugin.render?.();
-if (!plugin.scope || hasScope(plugin.scope)) await plugin.refresh?.(force);
+if (canAccessModule(name)) await plugin.refresh?.(force);
 } catch (error) { console.warn('[SLINK PDA] Plugin refresh:', name, error); }
 return;
 }
@@ -774,7 +774,7 @@ button.disabled = false;
 }
 if (action === 'select-war-tab') {
 const tab = String(event.target.closest('[data-war-tab]')?.dataset.warTab || 'targets');
-const officerTabs = warOfficer() ? ['armory', 'logs', 'settings'] : [];
+const officerTabs = [...(warArmoryOfficer() ? ['armory'] : []), ...(warOfficer() ? ['logs', 'settings'] : [])];
 if (['targets', 'outside', 'claims', ...officerTabs].includes(tab)) {
 dataState.settings.war.activeTab = tab;
 writeDataState();
@@ -1375,6 +1375,19 @@ actionLink,
 lockedModule,
 errorMessage,
 alertsChanged:() => { writeDataState(); renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
+,
+primeFactionMessage,
+sendPrimedFactionMessage
+,
+openArmoryRecaller:() => {
+dataState.settings.war.activeTab = 'armory';
+writeDataState();
+selectPage('combat', false);
+selectSubpage('combat', 'war', false);
+writeState();
+renderWar(true);
+openDashboard();
+}
 });
 global.SLINK_PDA_DASHBOARD = Object.freeze({
 build:BUILD,
@@ -1407,3 +1420,4 @@ refresh:refreshPlayerIntelligence
 });
 host.dataset.slinkReady = 'true';
 })(globalThis);
+
