@@ -8,6 +8,7 @@
     "src/30-dashboard-combat.part",
     "src/40-war.part",
     "src/50-market-dom.part",
+    "src/60-xanax-safety.part",
     "src/90-shell-bootstrap.part"
   ],
   "runtimeOutput": "SLINK_PDA_Runtime.js",
@@ -36,4 +37,3 @@
   "loaderMaxBytes": 14000,
   "runtimeMaxBytes": 500000
 }
-

@@ -1,0 +1,109 @@
+if (!global.__SLINK_XANAX_SAFETY_INSTALLED__) {
+Object.defineProperty(global, '__SLINK_XANAX_SAFETY_INSTALLED__', { value:true });
+const XANAX_SAFETY_ITEM_ID = '206';
+const XANAX_SAFETY_GAIN = 250;
+const XANAX_SAFETY_LIMIT = 750;
+const XANAX_SAFETY_CAP = 1000;
+const XANAX_SAFETY_ATTRIBUTE = 'data-slink-xanax-warning';
+const XANAX_SAFETY_SELECTOR = [
+'button.option-use[aria-label="Take Xanax"]',
+'button[aria-label="Take Xanax"]',
+'a.use[data-role="use"][aria-label^="Xanax"]',
+'a[data-role="use"][aria-label^="Xanax"]',
+`[data-id="${XANAX_SAFETY_ITEM_ID}"][title="Xanax"]`
+].join(',');
+function xanaxSafetyInteger(value) {
+const parsed = Number(String(value ?? '').replace(/,/g, ''));
+return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
+}
+function xanaxSafetyEnergyPair(value) {
+const match = String(value || '').replace(/\u00a0/g, ' ').match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
+if (!match) return null;
+const current = xanaxSafetyInteger(match[1]);
+const maximum = xanaxSafetyInteger(match[2]);
+return current === null || maximum === null || maximum <= 0 ? null : { current, maximum };
+}
+function xanaxSafetyEnergyFrom(node) {
+if (!node) return null;
+for (const value of [node.getAttribute?.('aria-label'), node.getAttribute?.('title'), node.textContent]) {
+const pair = xanaxSafetyEnergyPair(value);
+if (pair) return pair;
+}
+return null;
+}
+function xanaxSafetyCurrentEnergy() {
+const candidates = new Set();
+const selectors = [
+'#barEnergy',
+'[id^="barEnergy"]',
+'[id*="barEnergy"]',
+'[data-stat="energy"]',
+'[data-testid*="energy" i]',
+'[aria-label*="energy" i]',
+'[class*="barEnergy"]',
+'a[href*="gym.php"]'
+];
+for (const selector of selectors) {
+for (const node of document.querySelectorAll(selector)) {
+candidates.add(node);
+const container = node.closest?.('li,[class*="bar" i],[class*="stat" i]');
+if (container) candidates.add(container);
+}
+}
+for (const node of candidates) {
+const pair = xanaxSafetyEnergyFrom(node);
+if (pair) return pair.current;
+}
+return null;
+}
+function xanaxSafetyAction(target) {
+const node = target?.nodeType === 1 ? target : target?.parentElement;
+if (!node?.closest || node.closest('.tt-close-icon')) return null;
+const action = node.closest(XANAX_SAFETY_SELECTOR);
+if (!action) return null;
+if (action.matches(`[data-id="${XANAX_SAFETY_ITEM_ID}"]`) && node.closest('.tt-close-icon')) return null;
+return action;
+}
+function xanaxSafetyMessage(current) {
+const wasted = Math.max(0, current + XANAX_SAFETY_GAIN - XANAX_SAFETY_CAP);
+return `You currently have ${current.toLocaleString()} energy.\n\nBy using this Xanax you will waste ${wasted.toLocaleString()} energy.\n\nAre you sure you want to use it?`;
+}
+function handleXanaxSafetyClick(event) {
+const action = xanaxSafetyAction(event.target);
+if (!action) return;
+const energy = xanaxSafetyCurrentEnergy();
+if (energy === null || energy <= XANAX_SAFETY_LIMIT) return;
+if (global.confirm(xanaxSafetyMessage(energy))) return;
+event.preventDefault();
+event.stopPropagation();
+event.stopImmediatePropagation();
+}
+let xanaxSafetyDecorationScheduled = false;
+function decorateXanaxSafetyActions() {
+xanaxSafetyDecorationScheduled = false;
+const energy = xanaxSafetyCurrentEnergy();
+const guarded = energy !== null && energy > XANAX_SAFETY_LIMIT;
+for (const action of document.querySelectorAll(XANAX_SAFETY_SELECTOR)) {
+action.toggleAttribute(XANAX_SAFETY_ATTRIBUTE, guarded);
+if (guarded) action.setAttribute('aria-description', `SLINK safety confirmation required. Current energy: ${energy}.`);
+else action.removeAttribute('aria-description');
+}
+}
+function scheduleXanaxSafetyDecoration() {
+if (xanaxSafetyDecorationScheduled) return;
+xanaxSafetyDecorationScheduled = true;
+global.requestAnimationFrame(decorateXanaxSafetyActions);
+}
+const xanaxSafetyStyle = document.createElement('style');
+xanaxSafetyStyle.id = 'slink-xanax-safety-style';
+xanaxSafetyStyle.textContent = `[${XANAX_SAFETY_ATTRIBUTE}="true"]{outline:2px solid #f59e0b!important;outline-offset:2px!important}`;
+(document.head || document.documentElement).appendChild(xanaxSafetyStyle);
+document.addEventListener('click', handleXanaxSafetyClick, true);
+const xanaxSafetyObserver = new MutationObserver(scheduleXanaxSafetyDecoration);
+xanaxSafetyObserver.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
+scheduleXanaxSafetyDecoration();
+global.addEventListener('pagehide', () => {
+xanaxSafetyObserver.disconnect();
+document.removeEventListener('click', handleXanaxSafetyClick, true);
+}, { once:true });
+}
