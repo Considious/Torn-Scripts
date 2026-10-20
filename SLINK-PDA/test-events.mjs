@@ -46,7 +46,7 @@ assert.equal(calendar.next.name, 'Halloween');
 assert.equal(calendar.next.personalized, true);
 assert.equal(calendar.next.startAt, now + 2 * 86_400_000);
 storedSettings.events = { selectedId:'christmas' };
-assert.equal(plugin.test.selectedEvent(calendar).name, 'Christmas Town');
+assert.equal(plugin.test.selectedEvent(calendar).name, 'Halloween', 'A fresh load must default to the next scheduled event instead of a previously viewed event.');
 
 assert.equal(plugin.test.UPGRADE_ORDER.length, 20);
 assert.deepEqual(Array.from(plugin.test.UPGRADE_ORDER.slice(0,8), entry => entry.name), [
