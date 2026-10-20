@@ -31,10 +31,35 @@ if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 function renderAllModules() {
 renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderCompany(); renderMuseums(); PDA_ABROAD.render(); for (const plugin of pdaPlugins.values()) { try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', plugin.id, error); } } renderThemeChoices(); applyPermissionGates();
 }
+let permissionRecoveryBusy = false;
+let nextPermissionRecoveryAt = 0;
+async function ensureAutomaticPermissionSession(force = false) {
+if (permissionRecoveryBusy || !currentApiKey() || !termsAccepted('permission')) return validSession('permission');
+if (!force && validSession('permission')) return validSession('permission');
+if (!force && Date.now() < nextPermissionRecoveryAt) return null;
+permissionRecoveryBusy = true;
+try {
+const session = await ensurePermissionSession(false);
+nextPermissionRecoveryAt = 0;
+renderAllModules();
+if (hasScope('slink.adhd.alerts') && !moduleState.alerts.busy) global.setTimeout(() => void refreshAlerts(false), 0);
+for (const plugin of pdaPlugins.values()) {
+try { if (!plugin.scope || hasScope(plugin.scope)) void plugin.refresh?.(false); } catch {}
+}
+return session;
+} catch (error) {
+nextPermissionRecoveryAt = Date.now() + 5 * 60_000;
+console.warn('[SLINK PDA] Automatic authentication:', errorMessage(error));
+return null;
+} finally {
+permissionRecoveryBusy = false;
+}
+}
 function startScheduler() {
 if (schedulerTimer) return;
 schedulerTimer = global.setInterval(() => {
-const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission')));
+if (currentApiKey() && termsAccepted('permission') && !validSession('permission')) void ensureAutomaticPermissionSession(false);
+const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
 if (canRefreshAlerts) {
 const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
@@ -278,7 +303,7 @@ button:active{filter:brightness(1.25);transform:translateY(1px)}
 .page[hidden],.subpage[hidden]{display:none}
 .page-head{display:flex;align-items:start;gap:12px;margin:2px 0 12px}.page-head>div{min-width:0;flex:1}.page-head h1{margin:0;font-size:22px}.page-head p{margin:3px 0 0;color:var(--s-muted)}
 .page-actions{display:flex;gap:7px}.page-actions button{padding:6px 12px}
-.subnav{display:flex;gap:6px;margin-bottom:11px;overflow:auto;scrollbar-width:none}.subnav::-webkit-scrollbar{display:none}.subnav button{flex:0 0 auto;min-width:max-content;padding:6px 12px;color:var(--s-muted);white-space:nowrap}.subnav button[aria-selected="true"]{background:var(--s-accent);color:var(--s-text)}
+.subnav{display:flex;flex-wrap:wrap;gap:6px;width:100%;min-width:0;margin-bottom:11px;overflow:visible}.subnav button{flex:0 0 auto;min-width:max-content;padding:6px 12px;color:var(--s-muted);white-space:nowrap}.subnav button[aria-selected="true"]{background:var(--s-accent);color:var(--s-text)}
 .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:11px}.card{grid-column:span 4;min-width:0;padding:13px;border:1px solid var(--s-border);border-radius:11px;background:color-mix(in srgb,var(--s-panel) 96%,transparent);box-shadow:0 8px 20px var(--s-shadow)}.card.wide{grid-column:span 8}.card.full{grid-column:1/-1}.card h2,.card h3{margin:0}.card h2{font-size:15px}.card h3{font-size:12px}.muted{color:var(--s-muted)}
 .card-head{display:flex;align-items:start;gap:9px;margin-bottom:10px}.card-head>div{min-width:0;flex:1}.card-head h2,.card-head h3,.card-head .muted,.card-head>div>span{display:block}.card-head .muted,.card-head>div>span{margin-top:3px;line-height:1.35}.badge{display:inline-block;padding:3px 7px;border:1px solid var(--s-soft);border-radius:999px;color:var(--s-muted);font-size:9px;white-space:nowrap}.badge.ready{border-color:var(--s-ready);color:var(--s-ready)}.badge.warn{border-color:var(--s-warning);color:var(--s-warning)}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.stat{min-width:0;padding:9px 5px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);text-align:center}.stat strong,.stat span{display:block}.stat strong{font-size:17px;overflow-wrap:anywhere}.stat span{color:var(--s-muted);font-size:9px}
@@ -1298,6 +1323,7 @@ reconcileAlertNotifications(moduleState.alerts.data);
 writeDataState();
 }
 startScheduler();
+if (currentApiKey() && termsAccepted('permission')) global.setTimeout(() => void ensureAutomaticPermissionSession(false), 1_000);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) global.setTimeout(() => void runMuggingContribution(true), 3_000);
 global.setTimeout(() => void loadThemeCatalog(false), 2_000);
 global.setTimeout(() => void uploadDataBackup(false), 12_000);
