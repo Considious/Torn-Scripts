@@ -194,4 +194,3 @@
   installStorageBridge();
   await loadRuntime();
 })();
-
