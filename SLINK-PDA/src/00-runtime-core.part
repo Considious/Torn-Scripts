@@ -723,7 +723,7 @@ qualityOfLifeTab:typeof source.qualityOfLifeTab === 'string' && /^[A-Za-z][A-Za-
 theme:String(source.theme || defaults.theme),
 minimizedMode:source.minimizedMode === 'bubble' ? 'bubble' : defaults.minimizedMode,
 launcherOpacity:Math.min(100, Math.max(35, Math.round(Number(source.launcherOpacity) || defaults.launcherOpacity))),
-themePanelOpacity:Math.min(100, Math.max(35, Math.round(Number(source.themePanelOpacity) || defaults.themePanelOpacity))),
+themePanelOpacity:Number.isFinite(Number(source.themePanelOpacity)) ? Math.min(100, Math.max(0, Math.round(Number(source.themePanelOpacity)))) : defaults.themePanelOpacity,
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null,
 panels:source.panels && typeof source.panels === 'object' && !Array.isArray(source.panels) ? { ...source.panels } : {}
 };
@@ -919,6 +919,7 @@ if (typeof restoredUi.qualityOfLifeTab === 'string') state.qualityOfLifeTab = re
 if (typeof restoredUi.theme === 'string') state.theme = restoredUi.theme;
 if (['bar','bubble'].includes(restoredUi.minimizedMode)) state.minimizedMode = restoredUi.minimizedMode;
 if (Number.isFinite(Number(restoredUi.launcherOpacity))) state.launcherOpacity = Math.min(100, Math.max(35, Number(restoredUi.launcherOpacity)));
+if (Number.isFinite(Number(restoredUi.themePanelOpacity))) state.themePanelOpacity = Math.min(100, Math.max(0, Number(restoredUi.themePanelOpacity)));
 if (storedRecord(restoredUi.bubblePosition) || restoredUi.bubblePosition === null) state.bubblePosition = restoredUi.bubblePosition;
 if (storedRecord(restoredUi.panels)) state.panels = { ...state.panels, ...restoredUi.panels };
 writeState();
