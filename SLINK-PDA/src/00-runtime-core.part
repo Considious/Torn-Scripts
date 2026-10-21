@@ -710,6 +710,7 @@ qualityOfLifeTab: 'racing',
 theme: 'slink-dark',
 minimizedMode: 'bar',
 launcherOpacity: 85,
+themePanelOpacity: 87,
 bubblePosition: null
 });
 function normalizeUiState(value) {
@@ -722,6 +723,7 @@ qualityOfLifeTab:typeof source.qualityOfLifeTab === 'string' && /^[A-Za-z][A-Za-
 theme:String(source.theme || defaults.theme),
 minimizedMode:source.minimizedMode === 'bubble' ? 'bubble' : defaults.minimizedMode,
 launcherOpacity:Math.min(100, Math.max(35, Math.round(Number(source.launcherOpacity) || defaults.launcherOpacity))),
+themePanelOpacity:Math.min(100, Math.max(35, Math.round(Number(source.themePanelOpacity) || defaults.themePanelOpacity))),
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null,
 panels:source.panels && typeof source.panels === 'object' && !Array.isArray(source.panels) ? { ...source.panels } : {}
 };
@@ -748,6 +750,7 @@ qualityOfLifeTab:state.qualityOfLifeTab,
 theme:state.theme,
 minimizedMode:state.minimizedMode,
 launcherOpacity:state.launcherOpacity,
+themePanelOpacity:state.themePanelOpacity,
 bubblePosition:state.bubblePosition,
 panels:{ ...(state.panels || {}) }
 };
@@ -895,6 +898,7 @@ qualityOfLifeTab:state.qualityOfLifeTab,
 theme:state.theme,
 minimizedMode:state.minimizedMode,
 launcherOpacity:state.launcherOpacity,
+themePanelOpacity:state.themePanelOpacity,
 bubblePosition:state.bubblePosition,
 panels:{ ...(state.panels || {}) }
 }
