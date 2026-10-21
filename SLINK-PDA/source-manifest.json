@@ -1,5 +1,7 @@
 {
-  "schema": 3,
+  "schema": 4,
+  "mode": "direct-source",
+  "revision": "0.4.72",
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
     "src/00-runtime-core.part",
@@ -11,29 +13,19 @@
     "src/60-xanax-safety.part",
     "src/90-shell-bootstrap.part"
   ],
-  "runtimeOutput": "SLINK_PDA_Runtime.js",
   "startupAddons": [
     {
-      "source": "src/addons/money-property.addon.js",
-      "output": "SLINK_PDA_Money_Property.js",
-      "maxBytes": 60000
+      "source": "src/addons/money-property.addon.js"
     },
     {
-      "source": "src/addons/events.addon.js",
-      "output": "SLINK_PDA_Events.js",
-      "maxBytes": 60000
+      "source": "src/addons/events.addon.js"
     },
     {
-      "source": "src/addons/faction-officers.addon.js",
-      "output": "SLINK_PDA_Faction_Officers.js",
-      "maxBytes": 30000
+      "source": "src/addons/faction-officers.addon.js"
     },
     {
-      "source": "src/addons/chat.addon.js",
-      "output": "SLINK_PDA_Chat.js",
-      "maxBytes": 60000
+      "source": "src/addons/chat.addon.js"
     }
   ],
-  "loaderMaxBytes": 14000,
-  "runtimeMaxBytes": 500000
+  "loaderMaxBytes": 18000
 }

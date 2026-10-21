@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.71
+// @version      0.4.72
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,12 +29,15 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const RUNTIME_URL = "https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Runtime.js?v=0.4.71";
-  const ADDON_URLS = ["https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Money_Property.js?v=0.4.71","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Events.js?v=0.4.71","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Faction_Officers.js?v=0.4.71","https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Chat.js?v=0.4.71"];
+  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/';
+  const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
+  const HOST_ID = 'slink-pda-dashboard-host';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
   const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
+  const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';
+  const CACHE_RETRY_KEY = 'slink-pda-dashboard:runtime-cache-retry:v1';
   const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
 
   function showFailure(error) {
@@ -117,36 +120,99 @@
     });
   }
 
+  async function gmRead(key, fallback = null) {
+    try {
+      if (typeof globalThis.GM_getValue !== 'function') return fallback;
+      return await Promise.resolve(globalThis.GM_getValue(key, fallback));
+    } catch { return fallback; }
+  }
+
+  async function gmWrite(key, value) {
+    try {
+      if (typeof globalThis.GM_setValue === 'function') await Promise.resolve(globalThis.GM_setValue(key, value));
+    } catch {}
+  }
+
+  function validBundle(value) {
+    return Boolean(
+      isRecord(value) &&
+      value.schema === 1 &&
+      typeof value.runtimeSource === 'string' &&
+      value.runtimeSource.length > 1000 &&
+      Array.isArray(value.addonSources) &&
+      value.addonSources.every(source => typeof source === 'string' && source.length > 100)
+    );
+  }
+
   async function fetchSource(url) {
     if (typeof globalThis.PDA_httpGet === 'function') {
       const response = await globalThis.PDA_httpGet(url);
+      const status = Number(response?.status || response?.statusCode || 200);
+      if (status < 200 || status >= 300) throw new Error('SLINK source download returned HTTP ' + status + '.');
       return String(response?.data ?? response?.responseText ?? '');
     }
     if (typeof globalThis.GM_xmlhttpRequest === 'function') {
       return await new Promise((resolve, reject) => {
         globalThis.GM_xmlhttpRequest({
           method:'GET',
-          url:url,
-          timeout:15000,
-          onload:response => response.status >= 200 && response.status < 300 ? resolve(String(response.responseText || '')) : reject(new Error('Runtime download returned HTTP ' + response.status + '.')),
-          onerror:() => reject(new Error('Runtime download failed.')),
-          ontimeout:() => reject(new Error('Runtime download timed out.'))
+          url,
+          timeout:20000,
+          onload:response => response.status >= 200 && response.status < 300
+            ? resolve(String(response.responseText || ''))
+            : reject(new Error('SLINK source download returned HTTP ' + response.status + '.')),
+          onerror:() => reject(new Error('SLINK source download failed.')),
+          ontimeout:() => reject(new Error('SLINK source download timed out.'))
         });
       });
     }
     throw new Error('PDA_httpGet is unavailable.');
   }
 
-  async function fetchRuntime() {
-    const [runtimeSource, ...addonSources] = await Promise.all([
-      fetchSource(RUNTIME_URL),
-      ...ADDON_URLS.map(url => fetchSource(url))
-    ]);
-    if (runtimeSource.length < 1000) throw new Error('Downloaded runtime was empty or incomplete.');
-    addonSources.forEach((source, index) => {
-      if (source.length < 100) throw new Error('Downloaded startup add-on ' + (index + 1) + ' was empty or incomplete.');
-    });
-    return { runtimeSource, addonSources };
+  function safeSourcePath(value) {
+    const path = String(value || '').trim();
+    if (!/^src\/[A-Za-z0-9._/-]+$/.test(path) || path.includes('..')) throw new Error('The SLINK source manifest contains an invalid path.');
+    return path;
+  }
+
+  async function signatureFor(runtimeSource, addonSources) {
+    const joined = [runtimeSource, ...addonSources].join('\n;\n');
+    try {
+      const bytes = new TextEncoder().encode(joined);
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+      return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    } catch {
+      let hash = 2166136261;
+      for (let index = 0; index < joined.length; index += 1) {
+        hash ^= joined.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return joined.length + ':' + (hash >>> 0).toString(16);
+    }
+  }
+
+  async function fetchBundle() {
+    const nonce = Date.now();
+    const manifestText = await fetchSource(MANIFEST_URL + '?t=' + nonce);
+    let manifest;
+    try { manifest = JSON.parse(manifestText); }
+    catch { throw new Error('The SLINK source manifest was not valid JSON.'); }
+    if (manifest?.mode !== 'direct-source' || !Array.isArray(manifest.fragments) || !manifest.fragments.length) {
+      throw new Error('The SLINK source manifest is incomplete.');
+    }
+    const fragmentPaths = manifest.fragments.map(safeSourcePath);
+    const addonPaths = (manifest.startupAddons || []).map(addon => safeSourcePath(addon?.source));
+    const revision = String(manifest.revision || 'unversioned');
+    const query = '?v=' + encodeURIComponent(revision) + '&t=' + nonce;
+    const sources = await Promise.all(
+      [...fragmentPaths, ...addonPaths].map(path => fetchSource(SOURCE_ROOT + path + query))
+    );
+    const fragmentSources = sources.slice(0, fragmentPaths.length);
+    const addonSources = sources.slice(fragmentPaths.length);
+    if (fragmentSources.some(source => source.length < 100)) throw new Error('A SLINK runtime source file was empty or incomplete.');
+    if (addonSources.some(source => source.length < 100)) throw new Error('A SLINK startup add-on was empty or incomplete.');
+    const runtimeSource = fragmentSources.join('');
+    const signature = await signatureFor(runtimeSource, addonSources);
+    return { schema:1, revision, signature, runtimeSource, addonSources, savedAt:Date.now() };
   }
 
   async function executeRuntime(source) {
@@ -157,37 +223,68 @@
     (0, eval)(source);
   }
 
-  async function loadRuntime() {
-    try {
-      const currentHost = document.getElementById('slink-pda-dashboard-host');
-      const runtimeReady = currentHost?.dataset?.slinkReady === 'true';
-      if (runtimeReady && globalThis.__SLINK_PDA_ADDONS_READY__ === true) {
+  async function waitUntilReady() {
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const host = document.getElementById(HOST_ID);
+      if (host?.dataset?.slinkReady === 'true' && globalThis.__SLINK_PDA_ADDONS_READY__ === true) {
         document.getElementById(ERROR_ID)?.remove();
         return;
       }
-      const { runtimeSource, addonSources } = await fetchRuntime();
-      const bootstrapSource = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(collectBootstrap()) + ';';
-      const executableSources = ['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];
-      if (!runtimeReady) {
-        executableSources.push(bootstrapSource + runtimeSource.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Runtime.js\n');
-      }
-      addonSources.forEach((source, index) => {
-        executableSources.push(source.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Addon_' + (index + 1) + '.js\n');
-      });
-      executableSources.push('globalThis.__SLINK_PDA_ADDONS_READY__=true;');
-      await executeRuntime(executableSources.join('\n;\n'));
-      const readyDeadline = Date.now() + 15_000;
-      while (Date.now() < readyDeadline) {
-        const readyHost = document.getElementById('slink-pda-dashboard-host');
-        if (readyHost?.dataset?.slinkReady === 'true' && globalThis.__SLINK_PDA_ADDONS_READY__ === true) {
-          document.getElementById(ERROR_ID)?.remove();
+      await new Promise(resolve => globalThis.setTimeout(resolve, 100));
+    }
+    throw new Error('Runtime did not signal readiness within 20 seconds.');
+  }
+
+  async function executeBundle(bundle) {
+    const currentHost = document.getElementById(HOST_ID);
+    const runtimeReady = currentHost?.dataset?.slinkReady === 'true';
+    if (runtimeReady && globalThis.__SLINK_PDA_ADDONS_READY__ === true) return;
+    const sources = ['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];
+    if (!runtimeReady) {
+      const bootstrap = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(collectBootstrap()) + ';';
+      sources.push(bootstrap + '\n' + bundle.runtimeSource.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Direct_Runtime.js\n');
+    }
+    bundle.addonSources.forEach((source, index) => {
+      sources.push(source.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Direct_Addon_' + (index + 1) + '.js\n');
+    });
+    sources.push('globalThis.__SLINK_PDA_ADDONS_READY__=true;');
+    await executeRuntime(sources.join('\n;\n'));
+    await waitUntilReady();
+  }
+
+  async function loadRuntime() {
+    const cached = await gmRead(RUNTIME_CACHE_KEY, null);
+    const retryCached = globalThis.sessionStorage?.getItem(CACHE_RETRY_KEY) === '1';
+    if (retryCached) {
+      globalThis.sessionStorage?.removeItem(CACHE_RETRY_KEY);
+      if (!validBundle(cached)) return showFailure(new Error('No known-working SLINK runtime is cached yet.'));
+      try { await executeBundle(cached); return; }
+      catch (error) { return showFailure(error); }
+    }
+
+    let fresh;
+    try {
+      fresh = await fetchBundle();
+    } catch (downloadError) {
+      if (!validBundle(cached)) return showFailure(downloadError);
+      console.warn('[SLINK PDA] Source download failed; using the last-known-working runtime.', downloadError);
+      try { await executeBundle(cached); return; }
+      catch (cachedError) { return showFailure(cachedError); }
+    }
+
+    try {
+      await executeBundle(fresh);
+      await gmWrite(RUNTIME_CACHE_KEY, fresh);
+    } catch (runtimeError) {
+      if (validBundle(cached) && cached.signature !== fresh.signature) {
+        try {
+          globalThis.sessionStorage?.setItem(CACHE_RETRY_KEY, '1');
+          globalThis.location.reload();
           return;
-        }
-        await new Promise(resolve => globalThis.setTimeout(resolve, 100));
+        } catch {}
       }
-      throw new Error('Runtime did not signal readiness within 15 seconds.');
-    } catch (error) {
-      showFailure(error);
+      showFailure(runtimeError);
     }
   }
 

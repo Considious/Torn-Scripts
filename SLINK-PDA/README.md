@@ -1,5 +1,21 @@
 # SLINK PDA Dashboard
 
+## 0.4.72 — direct startup source loading
+
+The installed userscript is now a small startup launcher. On each page start it
+downloads the authored files listed in `source-manifest.json` directly from
+GitHub, assembles them in the declared order, and starts SLINK without waiting
+for a generated runtime bundle. The files are requested in parallel.
+
+After a successful start, the exact source bundle is saved locally as the
+last-known-working runtime. Download failures use that cached copy. If a newly
+downloaded runtime fails before becoming ready, PDA reloads once into the cached
+working copy instead of repeatedly attempting the broken update.
+
+The generated `SLINK_PDA_Runtime.js` and add-on bundles remain only so older
+installed launchers continue working until they update. New launchers do not use
+them. The former build-and-publish GitHub Action has been removed.
+
 ## 0.4.42 — PDA loader recovery
 
 The published userscript is now compressed during the repository build so PDA
@@ -63,7 +79,7 @@ userscript so a syntax failure cannot pass unnoticed again.
 The pre-Phase-9 rollback point is branch
 `backup/pre-mugging-contributors-phase9-2026-10-05`.
 
-This is the mobile-first, self-contained SLINK dashboard for Torn PDA. It uses
+This is the mobile-first SLINK dashboard for Torn PDA, installed as a small startup launcher. It uses
 the existing SLINK Cloudflare permission gateway and product sessions while
 sharing one locally coordinated Torn API budget across its modules.
 
@@ -221,7 +237,7 @@ commit `4c52c14651115b8e9509cd602787a73d2554c713`, preserved on
 
 ## Safety and usage boundaries
 
-- no `@require` dependency or runtime GitHub download;
+- no `@require` dependency; the small launcher explicitly downloads the ordered authored sources from GitHub at startup and retains a last-known-working local cache;
 - no Torn navigation or reload; the optional SLINK Buy button only acts after a
   trusted user tap and forwards that tap to Torn's own highlighted buy/cart
   control;
