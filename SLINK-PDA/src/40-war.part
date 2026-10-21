@@ -588,10 +588,12 @@ crimeUniqueRefreshBusy = false;
 }
 function alertRows(snapshot) {
 const body = snapshot?.body || {};
-const fetchedAt = Number(snapshot?.at) || Date.now();
+const fetchedAt = Number(snapshot?.at) || 0;
+const snapshotFresh = fetchedAt > 0 && Date.now() - fetchedAt <= 15 * 60_000;
 const snoozed = dataState.settings.alerts.snoozedUntil || {};
 const rows = [];
 const add = (id, active, title, detail, links = []) => {
+if (id !== 'timer24' && !snapshotFresh) return;
 if (dataState.settings.alerts.enabledTypes?.[id] === false) return;
 if (Number(dataState.settings.alerts.stackModeSince) > 0 && ['energyFull', 'energyRefill'].includes(id)) return;
 if (active && Number(snoozed[id] || 0) <= Date.now()) rows.push({ id, title, detail, links });
@@ -1012,4 +1014,6 @@ const score = numeric && Number(item.id) === numeric ? 0 : name.startsWith(needl
 return { item, score };
 }).filter(row => row.score < 99).sort((a, b) => a.score - b.score || String(a.item.name).localeCompare(String(b.item.name))).slice(0, MARKET_SUGGESTION_LIMIT).map(row => row.item);
 }
+
+
 

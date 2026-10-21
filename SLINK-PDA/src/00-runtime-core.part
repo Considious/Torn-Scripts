@@ -2065,7 +2065,7 @@ return { schemaVersion:1, revision:String(value.revision || ''), updatedAt:Strin
 }
 async function loadThemeCatalog(force = false) {
 const cached = dataState.caches.themeCatalog;
-if (!force && cached?.catalog && Date.now() - Number(cached.fetchedAt) < 12 * 60 * 60_000) { renderThemeChoices(); return cached.catalog; }
+if (!force && cached?.catalog && Date.now() - Number(cached.fetchedAt) < 15 * 60_000) { renderThemeChoices(); return cached.catalog; }
 try {
 const response = await requestJson(`${URLS.war}/api/themes`);
 const catalog = validateThemeCatalog(response?.catalog);
@@ -2100,3 +2100,6 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
+
+
+
