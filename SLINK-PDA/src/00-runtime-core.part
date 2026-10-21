@@ -2017,6 +2017,18 @@ const THEME_TOKEN_MAP = Object.freeze({
 '--slink-text':'--s-text', '--slink-muted':'--s-muted', '--slink-accent':'--s-accent', '--slink-accent-alt':'--s-alt',
 '--slink-ready':'--s-ready', '--slink-warning':'--s-warning', '--slink-error':'--s-error', '--slink-shadow':'--s-shadow', '--slink-page-bg':'--s-page'
 });
+const THEME_ASSET_ORIGIN='https://raw.githubusercontent.com/Considious/SLINK-Cloudflare-Services/main/themes/assets/';
+function validateThemeAsset(raw,id,kind){
+const value=String(raw||'').trim();if(!value)return '';
+let parsed;try{parsed=new URL(value)}catch{throw new Error(`Theme ${id} has an invalid ${kind} asset URL.`)}
+if(!value.startsWith(THEME_ASSET_ORIGIN)||parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.search||parsed.hash||!/\.(?:png|jpe?g|webp)$/i.test(parsed.pathname))throw new Error(`Theme ${id} has a disallowed ${kind} asset URL.`);
+return value;
+}
+function normalizeThemeAssets(entry,id){
+if(entry?.assets==null)return{background:'',iconSheet:''};
+if(typeof entry.assets!=='object'||Array.isArray(entry.assets))throw new Error(`Theme ${id} has invalid assets.`);
+return{background:validateThemeAsset(entry.assets.background,id,'background'),iconSheet:validateThemeAsset(entry.assets.iconSheet,id,'icon sheet')};
+}
 function bundledThemes() {
 return [
 { id:'slink-dark', label:'Dark', description:'The standard free SLINK interface.', scope:null, swatch:['#162331','#2f74ad','#8fc9ff'], tokens:{} },
@@ -2045,7 +2057,8 @@ tokens[name] = token;
 }
 const swatch = Array.isArray(entry.swatch) ? entry.swatch.slice(0, 3).map(String) : [];
 if (swatch.length !== 3 || !swatch.every(color => /^#[0-9a-fA-F]{6}$/.test(color))) throw new Error(`Theme ${id} has invalid swatches.`);
-seen.add(id); return { id, label, description, scope, swatch, tokens };
+const ornament=['coil','halloween'].includes(entry.ornament)?entry.ornament:'none';
+seen.add(id); return { id, label, description, scope, ornament, swatch, assets:normalizeThemeAssets(entry,id), tokens };
 });
 if (!themes.some(theme => theme.id === 'slink-dark' && !theme.scope)) throw new Error('Theme catalog is missing the free fallback.');
 return { schemaVersion:1, revision:String(value.revision || ''), updatedAt:String(value.updatedAt || ''), themes };
@@ -2067,9 +2080,15 @@ const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
 row.innerHTML = themeCatalog().map(theme => {
 const unlocked = !theme.scope || hasThemeScope(theme.scope);
 const colors = Array.isArray(theme.swatch) && theme.swatch.length === 3 ? theme.swatch : ['#111827','#3b82f6','#dbeafe'];
-return `<button type="button" data-theme-choice="${escapeHtml(theme.id)}" title="${escapeHtml(unlocked ? theme.description : `Requires ${theme.scope}`)}" class="${unlocked ? '' : 'permission-lock'}"><i class="theme-swatch" style="--c1:${escapeHtml(colors[0])};--c2:${escapeHtml(colors[1])};--c3:${escapeHtml(colors[2])}"></i>${escapeHtml(theme.label)}${unlocked ? '' : ' 🔒'}</button>`;
+return `<button type="button" data-theme-choice="${escapeHtml(theme.id)}" title="${escapeHtml(unlocked ? theme.description : `Requires ${theme.scope}`)}" class="${unlocked ? '' : 'permission-lock'}"><i class="theme-swatch"></i>${escapeHtml(theme.label)}${unlocked ? '' : ' 🔒'}</button>`;
 }).join('');
-row.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === state.theme)));
+row.querySelectorAll('[data-theme-choice]').forEach(button => {
+const theme=themeCatalog().find(item=>item.id===button.dataset.themeChoice);
+const swatch=button.querySelector('.theme-swatch');
+if(theme?.assets?.background){swatch.classList.add('image');swatch.style.setProperty('--s-theme-preview',`url("${theme.assets.background}")`)}
+else{const colors=Array.isArray(theme?.swatch)&&theme.swatch.length===3?theme.swatch:['#111827','#3b82f6','#dbeafe'];swatch.style.cssText=`--c1:${colors[0]};--c2:${colors[1]};--c3:${colors[2]}`}
+button.setAttribute('aria-selected', String(button.dataset.themeChoice === state.theme));
+});
 }
 function marketWatchLimit() {
 const session = validSession('permission');
@@ -2081,4 +2100,3 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
-
