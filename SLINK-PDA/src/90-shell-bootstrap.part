@@ -271,7 +271,7 @@ style.textContent = `
 --s-text:#edf7ff;--s-muted:#9fb2c4;--s-accent:#3b8cca;--s-alt:#75c1ff;
 --s-ready:#91e2a8;--s-warning:#ffd174;--s-error:#ff9c9c;
 --s-shadow:rgba(0,0,0,.72);--s-page:radial-gradient(circle at 50% -20%,#203950 0,#0b1118 48%,#070b10 100%);
---s-theme-background-image:none;--s-theme-icon-sheet:none;--s-theme-panel-opacity:87%;--s-theme-panel-blur:7px;--s-theme-veil-top:25%;--s-theme-veil-bottom:48%;
+--s-theme-background-image:none;--s-theme-icon-sheet:none;--s-theme-panel-opacity:87%;--s-theme-panel-blur:7px;--s-theme-item-opacity:82%;--s-theme-item-blur:3px;--s-theme-veil-top:25%;--s-theme-veil-bottom:48%;
 all:initial;color-scheme:dark;font-family:Arial,sans-serif;
 }
 :host([data-theme="slinky-pursuit"]){--s-bg:#03070c;--s-panel:#080e16;--s-card:#0e1621;--s-control:#172334;--s-border:rgba(232,239,246,.68);--s-text:#f7fbff;--s-muted:#adbac8;--s-accent:#167fe8;--s-alt:#ef3333;--s-ready:#7dd8ff;--s-warning:#ffca57;--s-page:radial-gradient(circle at 4% 0,rgba(220,25,25,.34),transparent 34%),radial-gradient(circle at 96% 0,rgba(20,115,255,.36),transparent 36%),#02050a}
@@ -313,7 +313,7 @@ button:active{filter:brightness(1.25);transform:translateY(1px)}
 .two-column{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.mini{padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mini span,.mini strong{display:block}.mini span{color:var(--s-muted);font-size:9px}
 .meter{height:6px;overflow:hidden;border-radius:99px;background:#05080b}.meter i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--s-accent),var(--s-alt))}
 .later{color:var(--s-muted);font-size:10px}.theme-row{display:flex;gap:7px;flex-wrap:wrap}.theme-row button{display:flex;align-items:center;gap:7px;padding:7px 11px}.theme-row button[aria-selected="true"]{outline:2px solid var(--s-alt);outline-offset:1px}.theme-swatch{width:29px;height:15px;border:1px solid var(--s-soft);border-radius:999px;background:linear-gradient(90deg,var(--c1) 0 33%,var(--c2) 33% 67%,var(--c3) 67%);box-shadow:0 0 5px var(--s-shadow)}
-.recovery{display:grid;gap:8px}.recovery code{padding:3px 5px;border-radius:4px;background:var(--s-bg);color:var(--s-alt)}.launcher-opacity-control{display:grid;gap:5px;padding:9px 10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.launcher-opacity-control span{display:flex;justify-content:space-between;gap:10px}.launcher-opacity-control input{width:100%;min-height:28px;margin:0;accent-color:var(--s-accent)}.theme-panel-opacity-control{display:none;margin-top:10px}:host([data-theme-image="true"]) .theme-panel-opacity-control{display:grid}.theme-panel-opacity-control input{cursor:ew-resize;touch-action:none}
+.recovery{display:grid;gap:8px}.recovery code{padding:3px 5px;border-radius:4px;background:var(--s-bg);color:var(--s-alt)}.launcher-opacity-control{display:grid;gap:5px;padding:9px 10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.launcher-opacity-control span{display:flex;justify-content:space-between;gap:10px}.launcher-opacity-control input{width:100%;min-height:28px;margin:0;accent-color:var(--s-accent)}.theme-panel-opacity-control,.theme-item-opacity-control{display:none;margin-top:10px}:host([data-theme-image="true"]) .theme-panel-opacity-control,:host([data-theme-image="true"]) .theme-item-opacity-control{display:grid}.theme-panel-opacity-control input,.theme-item-opacity-control input{cursor:ew-resize;touch-action:none}
 .module-message{padding:11px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.module-message.error{border-color:var(--s-error);color:var(--s-error)}.module-message.locked{border-color:var(--s-warning);color:var(--s-warning)}
 .module-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:10px}.module-toolbar>span{min-width:0;flex:1;color:var(--s-muted)}.module-toolbar button{padding:6px 12px}
 .access-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.access-form label{display:grid;gap:4px;color:var(--s-muted)}.access-form .wide{grid-column:1/-1}.access-form input,.access-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.access-form input[type="checkbox"]{width:20px;min-height:20px;margin:1px 0}.check-row{display:flex!important;grid-template-columns:none!important;align-items:flex-start;gap:8px!important;color:var(--s-text)!important}.access-actions{display:flex;flex-wrap:wrap;gap:7px}.access-actions button{padding:7px 12px}.danger{border-color:var(--s-error);color:var(--s-error)}
@@ -342,8 +342,10 @@ button:active{filter:brightness(1.25);transform:translateY(1px)}
 @media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.abroad-summary{grid-template-columns:1fr}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
 :host([data-theme-image="true"]) .overlay{background-color:var(--s-bg);background-image:linear-gradient(color-mix(in srgb,rgb(5 3 9) var(--s-theme-veil-top),transparent),color-mix(in srgb,rgb(5 3 9) var(--s-theme-veil-bottom),transparent)),var(--s-theme-background-image);background-position:center top;background-size:cover}
 :host([data-theme-image="true"]) .topbar,:host([data-theme-image="true"]) .primary-nav{background:color-mix(in srgb,var(--s-bg) 78%,transparent);backdrop-filter:blur(9px) saturate(1.12)}
-:host([data-theme-image="true"]) .card,:host([data-theme-image="true"]) .stat,:host([data-theme-image="true"]) .target,:host([data-theme-image="true"]) .alert{border-color:var(--s-border);background:color-mix(in srgb,var(--s-card) var(--s-theme-panel-opacity),transparent);box-shadow:-3px 0 12px color-mix(in srgb,var(--s-alt) 26%,transparent),3px 0 14px color-mix(in srgb,var(--s-accent) 32%,transparent);backdrop-filter:blur(var(--s-theme-panel-blur)) saturate(1.08)}
-:host([data-theme-image="true"]) .primary-nav button[aria-selected="true"],:host([data-theme-image="true"]) .subnav button[aria-selected="true"]{border-color:var(--s-alt);background:linear-gradient(135deg,var(--s-accent),var(--s-bg) 57%,var(--s-alt));box-shadow:-3px 0 11px color-mix(in srgb,var(--s-alt) 34%,transparent),3px 0 13px color-mix(in srgb,var(--s-accent) 44%,transparent)}
+:host([data-theme-image="true"]) .card{border-color:var(--s-border);background:color-mix(in srgb,var(--s-card) var(--s-theme-panel-opacity),transparent);box-shadow:-3px 0 12px color-mix(in srgb,var(--s-alt) 26%,transparent),3px 0 14px color-mix(in srgb,var(--s-accent) 32%,transparent);backdrop-filter:blur(var(--s-theme-panel-blur)) saturate(1.08)}
+:host([data-theme-image="true"]) button{background:color-mix(in srgb,var(--s-control) var(--s-theme-item-opacity),transparent);backdrop-filter:blur(var(--s-theme-item-blur))}
+:host([data-theme-image="true"]) .stat,:host([data-theme-image="true"]) .status,:host([data-theme-image="true"]) .target,:host([data-theme-image="true"]) .alert,:host([data-theme-image="true"]) .merit,:host([data-theme-image="true"]) .mini,:host([data-theme-image="true"]) .module-message,:host([data-theme-image="true"]) .target-card,:host([data-theme-image="true"]) .mug-report,:host([data-theme-image="true"]) .war-card,:host([data-theme-image="true"]) .war-pill,:host([data-theme-image="true"]) .war-log,:host([data-theme-image="true"]) .target-list-form,:host([data-theme-image="true"]) .bounty-form,:host([data-theme-image="true"]) .market-watch,:host([data-theme-image="true"]) .market-deal,:host([data-theme-image="true"]) .dollar-bazaar-row,:host([data-theme-image="true"]) .alert-settings,:host([data-theme-image="true"]) .racing-assistant,:host([data-theme-image="true"]) .racing-card,:host([data-theme-image="true"]) .abroad-summary>div,:host([data-theme-image="true"]) .museum-item,:host([data-theme-image="true"]) .abroad-leave-time{border-color:var(--s-border);background:color-mix(in srgb,var(--s-bg) var(--s-theme-item-opacity),transparent);backdrop-filter:blur(var(--s-theme-item-blur)) saturate(1.04)}
+:host([data-theme-image="true"]) .primary-nav button[aria-selected="true"],:host([data-theme-image="true"]) .subnav button[aria-selected="true"]{border-color:var(--s-alt);background:linear-gradient(135deg,color-mix(in srgb,var(--s-accent) var(--s-theme-item-opacity),transparent),color-mix(in srgb,var(--s-bg) var(--s-theme-item-opacity),transparent) 57%,color-mix(in srgb,var(--s-alt) var(--s-theme-item-opacity),transparent));box-shadow:-3px 0 11px color-mix(in srgb,var(--s-alt) 34%,transparent),3px 0 13px color-mix(in srgb,var(--s-accent) 44%,transparent)}
 :host([data-theme-icons="true"]) .primary-nav button::before,:host([data-theme-icons="true"]) .subnav button::before,:host([data-theme-icons="true"]) .page-actions button::before{position:absolute;left:6px;top:50%;display:inline-block;width:18px;height:18px;margin:0;background-image:var(--s-theme-icon-sheet);background-repeat:no-repeat;background-size:400% 500%;filter:drop-shadow(0 0 4px color-mix(in srgb,var(--s-accent) 55%,transparent));transform:translateY(-50%);content:""}
 :host([data-theme-icons="true"]) .primary-nav button[data-page="combat"]::before{background-position:66.666% 75%}
 :host([data-theme-icons="true"]) .primary-nav button[data-page="efficiency"]::before{background-position:0 25%}
@@ -424,7 +426,7 @@ overlay.innerHTML = `
 <section class="page" data-page-panel="access" hidden>
 <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
 <div data-module-root="access"></div>
-<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The alert bar anchors flush above Torn/PDA chat controls and stays behind Torn overlays.</span><span data-minimized-mode-label>Minimized view: alert bar.</span><button type="button" data-action="toggle-minimized-mode">Use movable bubble</button><label class="launcher-opacity-control"><span>Alert bar opacity <strong data-launcher-opacity-label>85%</strong></span><input type="range" min="35" max="100" step="5" value="85" data-launcher-opacity aria-label="Alert bar opacity"></label><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Loaded from the same permission-gated catalog as the extension.</span></div><button type="button" data-action="refresh-themes">Refresh</button></div><div class="theme-row"></div><label class="launcher-opacity-control theme-panel-opacity-control"><span>Panel opacity <strong data-theme-panel-opacity-label>87%</strong></span><input type="range" min="0" max="100" step="1" value="87" data-theme-panel-opacity aria-label="Image theme panel opacity"></label></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
+<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The alert bar anchors flush above Torn/PDA chat controls and stays behind Torn overlays.</span><span data-minimized-mode-label>Minimized view: alert bar.</span><button type="button" data-action="toggle-minimized-mode">Use movable bubble</button><label class="launcher-opacity-control"><span>Alert bar opacity <strong data-launcher-opacity-label>85%</strong></span><input type="range" min="35" max="100" step="5" value="85" data-launcher-opacity aria-label="Alert bar opacity"></label><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Loaded from the same permission-gated catalog as the extension.</span></div><button type="button" data-action="refresh-themes">Refresh</button></div><div class="theme-row"></div><label class="launcher-opacity-control theme-panel-opacity-control"><span>Panel opacity <strong data-theme-panel-opacity-label>87%</strong></span><input type="range" min="0" max="100" step="1" value="87" data-theme-panel-opacity aria-label="Image theme panel opacity"></label><label class="launcher-opacity-control theme-item-opacity-control"><span>Alert &amp; item opacity <strong data-theme-item-opacity-label>82%</strong></span><input type="range" min="0" max="100" step="1" value="82" data-theme-item-opacity aria-label="Image theme alert and item opacity"></label></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
 </section>
 </main>`;
 shadow.append(style, overlay, launcher);
@@ -476,6 +478,16 @@ host.style.setProperty('--s-theme-veil-top', `${(value * 25 / 87).toFixed(2)}%`)
 host.style.setProperty('--s-theme-veil-bottom', `${(value * 48 / 87).toFixed(2)}%`);
 const opacity = shadow.querySelector('[data-theme-panel-opacity]');
 const label = shadow.querySelector('[data-theme-panel-opacity-label]');
+if (opacity) opacity.value = String(value);
+if (label) label.textContent = `${Math.round(value)}%`;
+}
+function syncThemeItemOpacityControls() {
+const value = clamp(state.themeItemOpacity, 0, 100);
+state.themeItemOpacity = value;
+host.style.setProperty('--s-theme-item-opacity', `${value}%`);
+host.style.setProperty('--s-theme-item-blur', `${(value * 3 / 82).toFixed(2)}px`);
+const opacity = shadow.querySelector('[data-theme-item-opacity]');
+const label = shadow.querySelector('[data-theme-item-opacity-label]');
 if (opacity) opacity.value = String(value);
 if (label) label.textContent = `${Math.round(value)}%`;
 }
@@ -576,6 +588,7 @@ if(definition.assets?.background)host.style.setProperty('--s-theme-background-im
 if(definition.assets?.iconSheet)host.style.setProperty('--s-theme-icon-sheet',`url("${definition.assets.iconSheet}")`);
 shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
 syncThemePanelOpacityControls();
+syncThemeItemOpacityControls();
 if (persist) writeState();
 }
 function lockTornScroll() {
@@ -624,6 +637,7 @@ state.theme = defaults.theme;
 state.minimizedMode = defaults.minimizedMode;
 state.launcherOpacity = defaults.launcherOpacity;
 state.themePanelOpacity = defaults.themePanelOpacity;
+state.themeItemOpacity = defaults.themeItemOpacity;
 state.bubblePosition = null;
 setTheme(state.theme, false);
 applyMinimizedMode(state.minimizedMode, false);
@@ -676,37 +690,44 @@ else if (target.closest('[data-combat-panel="mugging"]')) touchModuleActivity('m
 else if (target.closest('[data-efficiency-panel="market"]')) touchModuleActivity('market');
 else if (target.closest('[data-quality-of-life-panel="abroadStocks"]')) PDA_ABROAD.touch();
 }
-let themePanelOpacityDrag = null;
-function setThemePanelOpacityFromPointer(input, clientX) {
+let themeOpacityDrag = null;
+function opacityStateKey(input) {
+return input.matches('[data-theme-item-opacity]') ? 'themeItemOpacity' : 'themePanelOpacity';
+}
+function syncThemeOpacityControls(input) {
+if (input.matches('[data-theme-item-opacity]')) syncThemeItemOpacityControls();
+else syncThemePanelOpacityControls();
+}
+function setThemeOpacityFromPointer(input, clientX) {
 const box = input.getBoundingClientRect();
 if (!box.width) return;
 const ratio = clamp((Number(clientX) - box.left) / box.width, 0, 1);
-state.themePanelOpacity = Math.round(ratio * 100);
-syncThemePanelOpacityControls();
+state[opacityStateKey(input)] = Math.round(ratio * 100);
+syncThemeOpacityControls(input);
 }
-function finishThemePanelOpacityDrag(event) {
-if (!themePanelOpacityDrag || event.pointerId !== themePanelOpacityDrag.id) return;
-setThemePanelOpacityFromPointer(themePanelOpacityDrag.input, event.clientX);
-try { themePanelOpacityDrag.input.releasePointerCapture?.(event.pointerId); } catch {}
-themePanelOpacityDrag = null;
+function finishThemeOpacityDrag(event) {
+if (!themeOpacityDrag || event.pointerId !== themeOpacityDrag.id) return;
+setThemeOpacityFromPointer(themeOpacityDrag.input, event.clientX);
+try { themeOpacityDrag.input.releasePointerCapture?.(event.pointerId); } catch {}
+themeOpacityDrag = null;
 writeState();
 event.preventDefault();
 }
 overlay.addEventListener('pointerdown', event => {
-const input = event.target.closest?.('[data-theme-panel-opacity]');
+const input = event.target.closest?.('[data-theme-panel-opacity],[data-theme-item-opacity]');
 if (!input || event.button !== 0) return;
-themePanelOpacityDrag = { id:event.pointerId, input };
+themeOpacityDrag = { id:event.pointerId, input };
 try { input.setPointerCapture?.(event.pointerId); } catch {}
-setThemePanelOpacityFromPointer(input, event.clientX);
+setThemeOpacityFromPointer(input, event.clientX);
 event.preventDefault();
 }, true);
 overlay.addEventListener('pointermove', event => {
-if (!themePanelOpacityDrag || event.pointerId !== themePanelOpacityDrag.id) return;
-setThemePanelOpacityFromPointer(themePanelOpacityDrag.input, event.clientX);
+if (!themeOpacityDrag || event.pointerId !== themeOpacityDrag.id) return;
+setThemeOpacityFromPointer(themeOpacityDrag.input, event.clientX);
 event.preventDefault();
 }, true);
-overlay.addEventListener('pointerup', finishThemePanelOpacityDrag, true);
-overlay.addEventListener('pointercancel', finishThemePanelOpacityDrag, true);
+overlay.addEventListener('pointerup', finishThemeOpacityDrag, true);
+overlay.addEventListener('pointercancel', finishThemeOpacityDrag, true);
 overlay.addEventListener('input', event => {
 trackModuleInteraction(event.target);
 const opacity = event.target.closest?.('[data-launcher-opacity]');
@@ -716,10 +737,10 @@ syncMinimizedModeControls();
 writeState();
 return;
 }
-const themePanelOpacity = event.target.closest?.('[data-theme-panel-opacity]');
-if (themePanelOpacity) {
-state.themePanelOpacity = clamp(themePanelOpacity.value, 0, 100);
-syncThemePanelOpacityControls();
+const themeOpacity = event.target.closest?.('[data-theme-panel-opacity],[data-theme-item-opacity]');
+if (themeOpacity) {
+state[opacityStateKey(themeOpacity)] = clamp(themeOpacity.value, 0, 100);
+syncThemeOpacityControls(themeOpacity);
 writeState();
 }
 }, true);
