@@ -440,7 +440,7 @@ const id = 'slink-pda-chat-button-style';
 if (document.getElementById(id)) return;
 const element = document.createElement('style');
 element.id = id;
-element.textContent = '#slink_pda_chat_button{position:relative;color:var(--slink-chat-accent,#2f74ad)!important}#slink_pda_chat_button[hidden],#slink_pda_chat_button .slink-chat-alert-count[hidden]{display:none!important}#slink_pda_chat_button .slink-chat-coil{display:block;width:24px;height:24px;filter:drop-shadow(0 0 3px var(--slink-chat-accent-alt,#69b5f4));pointer-events:none}#slink_pda_chat_button .slink-chat-coil ellipse{fill:none;stroke:currentColor;stroke-width:1.8}#slink_pda_chat_button .slink-chat-alert-count{position:absolute;right:-4px;top:-5px;z-index:2;display:grid;min-width:17px;height:17px;padding:0 4px;place-items:center;border:2px solid #202020;border-radius:999px;background:#d72638;color:#fff;font:bold 10px/1 Arial,sans-serif;box-sizing:border-box;pointer-events:none}';
+element.textContent = '#slink_pda_chat_button{position:relative;background:var(--slink-chat-button,#2f74ad)!important;background-color:var(--slink-chat-button,#2f74ad)!important;border-color:var(--slink-chat-icon,#fff)!important;color:var(--slink-chat-icon,#fff)!important}#slink_pda_chat_button[hidden],#slink_pda_chat_button .messageCount___EWpiR[hidden]{display:none!important}#slink_pda_chat_button .slink-chat-coil{display:block;width:24px;height:24px;filter:drop-shadow(0 0 3px var(--slink-chat-icon,#fff));pointer-events:none}#slink_pda_chat_button .slink-chat-coil ellipse{fill:none;stroke:currentColor;stroke-width:1.8}';
 (document.head || document.documentElement).appendChild(element);
 }
 function createPdaChatButton() {
@@ -450,18 +450,18 @@ button.id = 'slink_pda_chat_button';
 button.type = 'button';
 button.title = 'SLINK';
 button.dataset.preventFlyoutSwipe = 'true';
-button.innerHTML = '<svg class="slink-chat-coil" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="9.5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="14" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="18.5" rx="7.5" ry="3"></ellipse></svg><div class="messageCount___EWpiR slink-chat-alert-count" hidden><span>0</span></div>';
+button.innerHTML = '<svg class="slink-chat-coil" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="9.5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="14" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="18.5" rx="7.5" ry="3"></ellipse></svg><div class="messageCount___EWpiR" hidden><span class="root___XpplE headingH1___VK9XQ root____FDYX oneDigit___FJ3vn" style="color: white;">0</span></div>';
 button.addEventListener('click', openDashboard);
 return button;
 }
 function syncPdaChatButtonTheme() {
 if (!pdaChatButton) return;
-pdaChatButton.style.setProperty('--slink-chat-accent', host.style.getPropertyValue('--s-accent') || '#2f74ad');
-pdaChatButton.style.setProperty('--slink-chat-accent-alt', host.style.getPropertyValue('--s-alt') || '#69b5f4');
+pdaChatButton.style.setProperty('--slink-chat-button', host.style.getPropertyValue('--s-accent') || '#2f74ad');
+pdaChatButton.style.setProperty('--slink-chat-icon', host.style.getPropertyValue('--s-text') || '#fff');
 }
 function syncPdaChatButtonAlert() {
 if (!pdaChatButton) return;
-const badge = pdaChatButton.querySelector('.slink-chat-alert-count');
+const badge = pdaChatButton.querySelector('.messageCount___EWpiR');
 badge.hidden = pdaChatButtonAlertCount === 0;
 badge.querySelector('span').textContent = pdaChatButtonAlertCount > 99 ? '99+' : String(pdaChatButtonAlertCount || 0);
 pdaChatButton.setAttribute('aria-label', pdaChatButtonAlertCount ? 'Open SLINK, ' + pdaChatButtonAlertCount + ' active alert' + (pdaChatButtonAlertCount === 1 ? '' : 's') : 'Open SLINK');
