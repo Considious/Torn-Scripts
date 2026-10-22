@@ -658,6 +658,8 @@ function updateAlertIndicator(count, rows = []) {
 const alertTotal = Math.max(0, Number(count) || 0);
 const marketTotal = marketWatchLimit() > 0 ? marketOpportunities(moduleState.market.data || marketRuntime()).length : 0;
 const total = alertTotal + marketTotal;
+pdaChatButtonAlertCount = total;
+syncPdaChatButtonAlert();
 const badge = shadow?.querySelector?.('.launcher-alert-count');
 const summary = shadow?.querySelector?.('.launcher-summary');
 if (!badge) return;

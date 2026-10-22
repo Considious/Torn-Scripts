@@ -426,11 +426,65 @@ overlay.innerHTML = `
 <section class="page" data-page-panel="access" hidden>
 <div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
 <div data-module-root="access"></div>
-<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The alert bar anchors flush above Torn/PDA chat controls and stays behind Torn overlays.</span><span data-minimized-mode-label>Minimized view: alert bar.</span><button type="button" data-action="toggle-minimized-mode">Use movable bubble</button><label class="launcher-opacity-control"><span>Alert bar opacity <strong data-launcher-opacity-label>85%</strong></span><input type="range" min="35" max="100" step="5" value="85" data-launcher-opacity aria-label="Alert bar opacity"></label><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Loaded from the same permission-gated catalog as the extension.</span></div><button type="button" data-action="refresh-themes">Refresh</button></div><div class="theme-row"></div><label class="launcher-opacity-control theme-panel-opacity-control"><span>Panel opacity <strong data-theme-panel-opacity-label>87%</strong></span><input type="range" min="0" max="100" step="1" value="87" data-theme-panel-opacity aria-label="Image theme panel opacity"></label><label class="launcher-opacity-control theme-item-opacity-control"><span>Alert &amp; item opacity <strong data-theme-item-opacity-label>82%</strong></span><input type="range" min="0" max="100" step="1" value="82" data-theme-item-opacity aria-label="Image theme alert and item opacity"></label></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
+<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The alert bar anchors flush above Torn/PDA chat controls and stays behind Torn overlays.</span><span data-minimized-mode-label>Minimized view: alert bar.</span><button type="button" data-action="toggle-minimized-mode">Use movable bubble</button><span>The optional Torn chat-button mode places SLINK immediately left of Torn Settings and shows active alerts on the button.</span><label class="launcher-opacity-control"><span>Alert bar opacity <strong data-launcher-opacity-label>85%</strong></span><input type="range" min="35" max="100" step="5" value="85" data-launcher-opacity aria-label="Alert bar opacity"></label><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Loaded from the same permission-gated catalog as the extension.</span></div><button type="button" data-action="refresh-themes">Refresh</button></div><div class="theme-row"></div><label class="launcher-opacity-control theme-panel-opacity-control"><span>Panel opacity <strong data-theme-panel-opacity-label>87%</strong></span><input type="range" min="0" max="100" step="1" value="87" data-theme-panel-opacity aria-label="Image theme panel opacity"></label><label class="launcher-opacity-control theme-item-opacity-control"><span>Alert &amp; item opacity <strong data-theme-item-opacity-label>82%</strong></span><input type="range" min="0" max="100" step="1" value="82" data-theme-item-opacity aria-label="Image theme alert and item opacity"></label></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
 </section>
 </main>`;
 shadow.append(style, overlay, launcher);
 document.documentElement.appendChild(host);
+document.getElementById('slink_pda_chat_button')?.remove();
+let pdaChatButton = null;
+let pdaChatButtonAlertCount = 0;
+
+function installPdaChatButtonStyle() {
+const id = 'slink-pda-chat-button-style';
+if (document.getElementById(id)) return;
+const element = document.createElement('style');
+element.id = id;
+element.textContent = '#slink_pda_chat_button{position:relative;color:var(--slink-chat-accent,#2f74ad)!important}#slink_pda_chat_button[hidden],#slink_pda_chat_button .slink-chat-alert-count[hidden]{display:none!important}#slink_pda_chat_button .slink-chat-coil{display:block;width:24px;height:24px;filter:drop-shadow(0 0 3px var(--slink-chat-accent-alt,#69b5f4));pointer-events:none}#slink_pda_chat_button .slink-chat-coil ellipse{fill:none;stroke:currentColor;stroke-width:1.8}#slink_pda_chat_button .slink-chat-alert-count{position:absolute;right:-4px;top:-5px;z-index:2;display:grid;min-width:17px;height:17px;padding:0 4px;place-items:center;border:2px solid #202020;border-radius:999px;background:#d72638;color:#fff;font:bold 10px/1 Arial,sans-serif;box-sizing:border-box;pointer-events:none}';
+(document.head || document.documentElement).appendChild(element);
+}
+function createPdaChatButton() {
+installPdaChatButtonStyle();
+const button = document.createElement('button');
+button.id = 'slink_pda_chat_button';
+button.type = 'button';
+button.title = 'SLINK';
+button.dataset.preventFlyoutSwipe = 'true';
+button.innerHTML = '<svg class="slink-chat-coil" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="9.5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="14" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="18.5" rx="7.5" ry="3"></ellipse></svg><div class="messageCount___EWpiR slink-chat-alert-count" hidden><span>0</span></div>';
+button.addEventListener('click', openDashboard);
+return button;
+}
+function syncPdaChatButtonTheme() {
+if (!pdaChatButton) return;
+pdaChatButton.style.setProperty('--slink-chat-accent', host.style.getPropertyValue('--s-accent') || '#2f74ad');
+pdaChatButton.style.setProperty('--slink-chat-accent-alt', host.style.getPropertyValue('--s-alt') || '#69b5f4');
+}
+function syncPdaChatButtonAlert() {
+if (!pdaChatButton) return;
+const badge = pdaChatButton.querySelector('.slink-chat-alert-count');
+badge.hidden = pdaChatButtonAlertCount === 0;
+badge.querySelector('span').textContent = pdaChatButtonAlertCount > 99 ? '99+' : String(pdaChatButtonAlertCount || 0);
+pdaChatButton.setAttribute('aria-label', pdaChatButtonAlertCount ? 'Open SLINK, ' + pdaChatButtonAlertCount + ' active alert' + (pdaChatButtonAlertCount === 1 ? '' : 's') : 'Open SLINK');
+}
+function ensurePdaChatButton() {
+if (state.minimizedMode !== 'chat') return;
+const settingsButton = document.getElementById('notes_settings_button');
+const peopleButton = document.getElementById('people_panel_button');
+const row = settingsButton?.parentElement;
+if (!row) return;
+if (!pdaChatButton) pdaChatButton = createPdaChatButton();
+pdaChatButton.className = peopleButton?.className || settingsButton.className;
+if (pdaChatButton.parentElement !== row || pdaChatButton.nextElementSibling !== settingsButton) row.insertBefore(pdaChatButton, settingsButton);
+syncPdaChatButtonTheme();
+syncPdaChatButtonAlert();
+}
+function syncPdaChatButtonVisibility() {
+const shouldShow = state.minimizedMode === 'chat' && !dashboardOpen;
+if (shouldShow) ensurePdaChatButton();
+if (pdaChatButton) pdaChatButton.hidden = !shouldShow;
+launcher.hidden = dashboardOpen || state.minimizedMode === 'chat';
+}
+
 function keyboardEditable(node) {
 if (!node?.matches) return false;
 if (node.matches('textarea,[contenteditable="true"]')) return true;
@@ -498,21 +552,22 @@ const label = shadow.querySelector('[data-minimized-mode-label]');
 const button = shadow.querySelector('[data-action="toggle-minimized-mode"]');
 const opacity = shadow.querySelector('[data-launcher-opacity]');
 const opacityLabel = shadow.querySelector('[data-launcher-opacity-label]');
-if (label) label.textContent = state.minimizedMode === 'bar' ? 'Minimized view: alert bar.' : 'Minimized view: movable bubble.';
-if (button) button.textContent = state.minimizedMode === 'bar' ? 'Use movable bubble' : 'Use alert bar';
+if (label) label.textContent = state.minimizedMode === 'bar' ? 'Minimized view: alert bar.' : state.minimizedMode === 'bubble' ? 'Minimized view: movable bubble.' : 'Minimized view: Torn chat button.';
+if (button) button.textContent = state.minimizedMode === 'bar' ? 'Use movable bubble' : state.minimizedMode === 'bubble' ? 'Use Torn chat button' : 'Use alert bar';
 if (opacity) { opacity.value = String(state.launcherOpacity); opacity.disabled = state.minimizedMode !== 'bar'; }
 if (opacityLabel) opacityLabel.textContent = `${state.launcherOpacity}%`;
 }
 function applyMinimizedMode(mode, persist = true) {
-state.minimizedMode = mode === 'bubble' ? 'bubble' : 'bar';
-if (state.minimizedMode === 'bar') state.bubblePosition = null;
+state.minimizedMode = ['bar', 'bubble', 'chat'].includes(mode) ? mode : 'bar';
+if (state.minimizedMode !== 'bubble') state.bubblePosition = null;
 syncMinimizedModeControls();
 clampLauncher(false);
+syncPdaChatButtonVisibility();
 if (persist) writeState();
 }
 function clampLauncher(persist = false) {
 launcher.dataset.mode = state.minimizedMode;
-if (state.minimizedMode === 'bar') {
+if (state.minimizedMode === 'bar' || state.minimizedMode === 'chat') {
 delete launcher.dataset.positioned;
 launcher.style.removeProperty('left');
 launcher.style.removeProperty('top');
@@ -586,6 +641,7 @@ host.style.removeProperty('--s-theme-icon-sheet');
 for (const [name, value] of Object.entries(definition.tokens || {})) if (THEME_TOKEN_MAP[name]) host.style.setProperty(THEME_TOKEN_MAP[name], value);
 if(definition.assets?.background)host.style.setProperty('--s-theme-background-image',`url("${definition.assets.background}")`);
 if(definition.assets?.iconSheet)host.style.setProperty('--s-theme-icon-sheet',`url("${definition.assets.iconSheet}")`);
+syncPdaChatButtonTheme();
 shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
 syncThemePanelOpacityControls();
 syncThemeItemOpacityControls();
@@ -606,6 +662,7 @@ function openDashboard() {
 dashboardOpen = true;
 overlay.hidden = false;
 launcher.hidden = true;
+syncPdaChatButtonVisibility();
 lockTornScroll();
 selectPage(state.page, false);
 renderAllModules();
@@ -616,14 +673,16 @@ function closeDashboard() {
 dashboardOpen = false;
 host.removeAttribute('data-keyboard-open');
 overlay.hidden = true;
-launcher.hidden = false;
+launcher.hidden = state.minimizedMode === 'chat';
+syncPdaChatButtonVisibility();
 launcher.setAttribute('aria-label', 'Open SLINK dashboard');
 launcher.querySelector('.launcher-label').textContent = 'Open SLINK';
 const minimizedAlerts = alertRows(moduleState.alerts.data || dataState.caches.alerts);
 updateAlertIndicator(minimizedAlerts.length, minimizedAlerts);
 unlockTornScroll();
 clampLauncher(true);
-launcher.focus({ preventScroll: true });
+if (state.minimizedMode === 'chat') pdaChatButton?.focus({ preventScroll:true });
+else launcher.focus({ preventScroll: true });
 }
 function toggleDashboard() {
 if (dashboardOpen) closeDashboard(); else openDashboard();
@@ -776,7 +835,7 @@ renderRacing();
 scheduleRacingScan(0);
 }
 if (action === 'close') closeDashboard();
-if (action === 'toggle-minimized-mode') applyMinimizedMode(state.minimizedMode === 'bar' ? 'bubble' : 'bar');
+if (action === 'toggle-minimized-mode') applyMinimizedMode(state.minimizedMode === 'bar' ? 'bubble' : state.minimizedMode === 'bubble' ? 'chat' : 'bar');
 if (action === 'reset-layout') resetLayout();
 if (action === 'refresh-active') void loadActiveModule(true);
 if (action === 'refresh-mugging') void refreshMugging(true);
@@ -1399,6 +1458,7 @@ clearMarketPurchaseFormatting();
 }, { once:true });
 const guardian = new MutationObserver(() => {
 if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
+if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaChatButton.isConnected)) ensurePdaChatButton();
 });
 guardian.observe(document, { childList:true, subtree:true });
 marketObserver = new MutationObserver(() => {
