@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.72
+// @version      0.4.84
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,12 +29,13 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.83-direct-source';
+const BUILD = '0.4.84-direct-source';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
 const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
 const SETTINGS_STORAGE_KEY = 'slink-pda-dashboard:settings:v1';
+const ALERT_SNOOZE_STORAGE_KEY = 'slink-pda-dashboard:alert-snoozes:v1';
 const DATA_BACKUP_INTERVAL_MS = 12 * 60 * 60_000;
 const SHARED_API_LEDGER_KEY = 'considious:torn-api-ledger:v1';
 const SHARED_API_LOCK = 'considious-torn-api-limiter-v1';
@@ -45,7 +46,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.83';
+const CLIENT_VERSION = '0.4.84';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -842,6 +843,34 @@ global.localStorage.removeItem(key);
 if (key === DATA_STORAGE_KEY) global.localStorage.removeItem(DATA_MIRROR_KEY);
 } catch {}
 }
+function normalizeAlertSnoozes(value, now = Date.now()) {
+const source = storedRecord(value?.snoozedUntil) || storedRecord(value) || {};
+const result = {};
+for (const [id, rawUntil] of Object.entries(source)) {
+const until = Number(rawUntil) || 0;
+if (until > now) result[String(id)] = until;
+}
+return result;
+}
+function readAlertSnoozes() {
+return normalizeAlertSnoozes(storageRead(ALERT_SNOOZE_STORAGE_KEY, {}));
+}
+function writeAlertSnoozes(value) {
+storageWrite(ALERT_SNOOZE_STORAGE_KEY, {
+schema:1,
+savedAt:Date.now(),
+snoozedUntil:normalizeAlertSnoozes(value)
+});
+}
+function mergeAlertSnoozes(...sources) {
+const merged = {};
+for (const source of sources) {
+for (const [id, until] of Object.entries(normalizeAlertSnoozes(source))) {
+merged[id] = Math.max(Number(merged[id]) || 0, Number(until) || 0);
+}
+}
+return merged;
+}
 function readDataState() {
 const saved = storageRead(DATA_STORAGE_KEY, {});
 const value = saved && typeof saved === 'object' ? saved : {};
@@ -857,6 +886,10 @@ const valueSavedAt = storedRecordSavedAt(value);
 const settingsSource = recordHasData(safeSettings) && (!recordHasData(valueSettings) || safeSettingsAt > valueSavedAt)
 ? safeSettings
 : valueSettings || {};
+const alertSnoozes = mergeAlertSnoozes(
+settingsSource?.alerts?.snoozedUntil,
+readAlertSnoozes()
+);
 return {
 apiKey:String(value.apiKey || ''),
 ffKey:String(value.ffKey || ''),
@@ -877,7 +910,7 @@ outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt
 armoryMode:'ranked-all', armoryWhitelist:[],
 ...(settingsSource?.war || {})
 },
-alerts:{ snoozedUntil:{}, cityDoneDay:null, crimeUniqueDoneDay:{}, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes), crimeUniqueDoneDay:{ ...(settingsSource?.alerts?.crimeUniqueDoneDay || {}) } },
+alerts:{ snoozedUntil:{}, cityDoneDay:null, crimeUniqueDoneDay:{}, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), snoozedUntil:alertSnoozes, enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes), crimeUniqueDoneDay:{ ...(settingsSource?.alerts?.crimeUniqueDoneDay || {}) } },
 market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(settingsSource?.market || {}) },
 merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(settingsSource?.merits || {}) },
 racing:normalizeRacingState(settingsSource?.racing),
@@ -985,6 +1018,7 @@ return runtime;
 
 function writeDataState() {
 dataState._savedAt = Math.max(Date.now(), Number(dataState._savedAt || 0) + 1);
+writeAlertSnoozes(dataState.settings?.alerts?.snoozedUntil);
 try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings })); } catch {}
 storageWrite(DATA_STORAGE_KEY, dataState);
 }

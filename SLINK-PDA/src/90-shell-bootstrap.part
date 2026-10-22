@@ -935,6 +935,7 @@ PDA_ABROAD.snooze(id, minutes);
 return;
 }
 dataState.settings.alerts.snoozedUntil[id] = Date.now() + minutes * 60_000;
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 writeDataState();
 renderAlerts();
 }
