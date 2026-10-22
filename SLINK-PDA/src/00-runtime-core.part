@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.82-direct-source';
+const BUILD = '0.4.83-direct-source';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -45,7 +45,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.82';
+const CLIENT_VERSION = '0.4.83';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -2078,11 +2078,18 @@ seen.add(id); return { id, label, description, scope, ornament, swatch, assets:n
 if (!themes.some(theme => theme.id === 'slink-dark' && !theme.scope)) throw new Error('Theme catalog is missing the free fallback.');
 return { schemaVersion:1, revision:String(value.revision || ''), updatedAt:String(value.updatedAt || ''), themes };
 }
+function themeCatalogHasCurrentAssets(catalog) {
+return Array.isArray(catalog?.themes) && catalog.themes.every(theme => {
+const assets=theme?.assets;
+return assets&&typeof assets==='object'&&Object.hasOwn(assets,'brandIcon')&&Object.hasOwn(assets,'chatIcon');
+});
+}
 async function loadThemeCatalog(force = false) {
 const cached = dataState.caches.themeCatalog;
-if (!force && cached?.catalog && Date.now() - Number(cached.fetchedAt) < 15 * 60_000) { renderThemeChoices(); return cached.catalog; }
+const refreshAssets=Boolean(cached?.catalog&&!themeCatalogHasCurrentAssets(cached.catalog));
+if (!force && !refreshAssets && cached?.catalog && Date.now() - Number(cached.fetchedAt) < 15 * 60_000) { renderThemeChoices(); return cached.catalog; }
 try {
-const response = await requestJson(`${URLS.war}/api/themes${force ? '?refresh=1' : ''}`);
+const response = await requestJson(`${URLS.war}/api/themes${force || refreshAssets ? '?refresh=1' : ''}`);
 const catalog = validateThemeCatalog(response?.catalog);
 dataState.caches.themeCatalog = { catalog, fetchedAt:Date.now(), source:String(response?.source || 'worker') }; writeDataState(); renderThemeChoices(); setTheme(state.theme, false); return catalog;
 } catch (error) {
