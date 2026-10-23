@@ -10,7 +10,7 @@ const shell = fs.readFileSync(path.join(directory, 'src/90-shell-bootstrap.part'
 const source = core + alerts + shell;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(core.includes('@version      0.4.96'), 'PDA alert-settings version is missing.');
+assert(core.includes('@version      0.4.97'), 'PDA alert-settings version is missing.');
 assert(source.includes('class="alert-settings"'), 'Alert settings UI is missing.');
 assert(source.includes('data-alert-type='), 'Alert-type controls are missing.');
 assert(source.includes("dataState.settings.alerts.enabledTypes?.[id] === false"), 'Alert generation does not respect disabled types.');
@@ -37,5 +37,6 @@ assert(disabled.energyFull === true, 'Unspecified alert types must remain enable
 assert(alerts.includes('cityShopTargetStockPda(snapshot?.cityShops)'), 'PDA city stock alerts are not generated from Torn cityshops data.');
 assert(alerts.includes("tornJson('/v2/torn/cityshops'"), 'PDA city stock alerts do not fetch Torn cityshops data.');
 assert(shell.includes("dataState.settings.alerts.enabledTypes[id] = event.target.checked === true"), 'Individual alert choices are not persisted from their own checkbox.');
+assert(alerts.includes('data-ui-autosave="true" data-alert-type='), 'Alert checkboxes must not be overwritten by the draft restoration guard.');
 
 console.log('PDA alert settings validation passed.');

@@ -104,6 +104,10 @@ return 'root';
 }
 function identity(control) {
 if (!control?.matches?.(selector)) return '';
+// Auto-saved controls are already committed to dataState by their owning
+// module.  Keeping a second "draft" copy here can overwrite the freshly
+// rendered model value after bulk actions such as Enable all / Disable all.
+if (control.matches('[data-ui-autosave="true"]')) return '';
 const prefix = scope(control);
 if (control.id) return `${prefix}|id:${control.id}`;
 if (control.name) return `${prefix}|name:${control.name}`;
@@ -174,6 +178,12 @@ if (scheduled || (!dirty.size && !Object.keys(state.panels || {}).length)) retur
 scheduled = true;
 queueMicrotask(restore);
 }
+function mutationNeedsRestore(mutations) {
+const restorable = `${selector},details[data-ui-key]`;
+return mutations.some(mutation => [...mutation.addedNodes].some(node =>
+node?.nodeType === 1 && (node.matches?.(restorable) || node.querySelector?.(restorable))
+));
+}
 function onEdit(event) {
 if (!restoring && event.target?.matches?.(selector)) remember(event.target);
 }
@@ -206,7 +216,12 @@ const action = event.target?.closest?.('button,input[type="submit"],input[type="
 const signature = action ? [action.id,action.name,action.dataset?.action,action.value,action.textContent].filter(Boolean).join(' ') : '';
 if (signature && commitAction.test(signature)) global.setTimeout(() => clearScope(action), 0);
 }, true);
-const observer = new MutationObserver(scheduleRestore);
+// Ignore ordinary text-only updates (countdowns, "updated ago" labels, and
+// similar).  They do not replace an editor and must not cause a full control
+// restore/repaint on every dashboard tick.
+const observer = new MutationObserver(mutations => {
+if (mutationNeedsRestore(mutations)) scheduleRestore();
+});
 observer.observe(root, { childList:true, subtree:true });
 return Object.freeze({ clear:clearScope, restore, stop:() => observer.disconnect() });
 }
@@ -1725,7 +1740,6 @@ refresh:refreshPlayerIntelligence
 });
 host.dataset.slinkReady = 'true';
 })(globalThis);
-
 
 
 
