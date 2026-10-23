@@ -402,10 +402,14 @@ const completed = total ? Math.min(total, completedIds.length) : completedIds.le
 const skill = Math.max(0, finite(user?.crimes?.skill) || 0);
 let eligibleTotal = skill > 0 ? total : 0;
 if (Number(definition.crimeId) === 13) eligibleTotal = ARSON_UNIQUE_SKILL_THRESHOLDS.filter(threshold => skill >= threshold).length;
-if (Number(definition.crimeId) === 4) eligibleTotal = SHOPLIFTING_UNIQUE_WINDOWS.filter(outcome => skill >= outcome.skill).length;
+const expectedIdSet = new Set(expectedIds);
+const knownShopliftingOutcomes = Number(definition.crimeId) === 4
+? SHOPLIFTING_UNIQUE_WINDOWS.filter(outcome => expectedIdSet.has(outcome.id))
+: [];
+if (Number(definition.crimeId) === 4) eligibleTotal = knownShopliftingOutcomes.filter(outcome => skill >= outcome.skill).length;
 const missingIds = expectedIds.filter(id => !completedIds.includes(id));
-const canSpawnMissing = Number(definition.crimeId) === 4 && expectedIds.length >= SHOPLIFTING_UNIQUE_WINDOWS.length
-? SHOPLIFTING_UNIQUE_WINDOWS.some((outcome, index) => skill >= outcome.skill && !completedIds.includes(expectedIds[index]))
+const canSpawnMissing = Number(definition.crimeId) === 4 && knownShopliftingOutcomes.length
+? knownShopliftingOutcomes.some(outcome => skill >= outcome.skill && !completedIds.includes(outcome.id))
 : total > 0 && completed < total && eligibleTotal > completed;
 return {
 ...definition,
@@ -462,14 +466,14 @@ if (outcome.guards && state.guardsOff !== (outcome.guards === 'off')) return fal
 return true;
 }
 function shopliftingUniqueOpportunitiesPda(progress) {
-const expectedIds = Array.isArray(progress?.expectedIds) ? progress.expectedIds : [];
-if (expectedIds.length < SHOPLIFTING_UNIQUE_WINDOWS.length) return [];
+const expectedIds = new Set(Array.isArray(progress?.expectedIds) ? progress.expectedIds.map(Number) : []);
+if (!expectedIds.size) return [];
 const completed = new Set(Array.isArray(progress?.completedIds) ? progress.completedIds.map(Number) : []);
 const skill = Math.max(0, finite(progress?.skill) || 0);
 const security = shopliftingSecurityMapPda();
-return SHOPLIFTING_UNIQUE_WINDOWS.flatMap((outcome, index) => {
-const id = Number(expectedIds[index]);
-if (!Number.isFinite(id) || completed.has(id) || skill < outcome.skill || !shopliftingConditionMatchesPda(outcome, security[outcome.shop])) return [];
+return SHOPLIFTING_UNIQUE_WINDOWS.flatMap(outcome => {
+const id = Number(outcome.id);
+if (!expectedIds.has(id) || completed.has(id) || skill < outcome.skill || !shopliftingConditionMatchesPda(outcome, security[outcome.shop])) return [];
 const extra = outcome.notoriety ? ` · requires ${outcome.notoriety} notoriety` : '';
 return [{ ...outcome, id, detail:`${outcome.shopLabel}: ${outcome.label} (skill ${outcome.skill})${extra}` }];
 });
