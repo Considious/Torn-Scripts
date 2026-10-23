@@ -6,8 +6,8 @@ const shell = fs.readFileSync(new URL('./src/90-shell-bootstrap.part', import.me
 const manifest = JSON.parse(fs.readFileSync(new URL('./source-manifest.json', import.meta.url), 'utf8'));
 const launcher = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 
-assert.equal(manifest.revision, '0.4.89');
-assert.match(launcher, /@version\s+0\.4\.89/);
+assert.equal(manifest.revision, '0.4.90');
+assert.match(launcher, /@version\s+0\.4\.90/);
 assert.match(core, /THEME_ASSET_ORIGIN/);
 assert.match(core, /normalizeThemeAssets/);
 assert.match(core, /THEME_HEALTH_STATES/);
@@ -41,6 +41,15 @@ assert.match(shell, /themeHealthState/);
 assert.match(shell, /syncThemeHealthAssets/);
 assert.match(shell, /--s-theme-health-roses-image/);
 assert.match(shell, /--s-theme-health-blood-image/);
+assert.match(core, /gothic-valentines-rose-corner\.png/);
+assert.match(core, /gothic-valentines-badge-ivory\.svg/);
+assert.match(core, /Re-normalize the saved Gothic Valentines entry/);
+assert.match(shell, /--s-theme-rose-corner-image/);
+assert.match(shell, /--s-theme-badge-ivory-image/);
+assert.match(shell, /height:64px/);
+assert.match(shell, /var\(--s-theme-panel-smoke-image\)/);
+assert.match(shell, /var\(--s-theme-panel-damask-image\)/);
+assert.match(shell, /var\(--s-theme-panel-crimson-image\)/);
 
 console.log('SLINK PDA image-backed theme checks passed.');
 
