@@ -631,10 +631,17 @@ else if (persist) writeState();
 if (dashboardOpen) void loadActiveModule(false);
 }
 function setTheme(theme, persist = true) {
-let definition = themeCatalog().find(item => item.id === theme) || themeCatalog().find(item => item.id === 'slink-dark') || bundledThemes()[0];
-if (definition.scope && !hasThemeScope(definition.scope)) definition = themeCatalog().find(item => item.id === 'slink-dark') || bundledThemes()[0];
+const requestedTheme = String(theme || defaults.theme);
+const requestedDefinition = themeCatalog().find(item => item.id === requestedTheme) || null;
+const requestedUnlocked = Boolean(requestedDefinition && (!requestedDefinition.scope || hasThemeScope(requestedDefinition.scope)));
+let definition = requestedUnlocked
+? requestedDefinition
+: themeCatalog().find(item => item.id === 'slink-dark') || bundledThemes()[0];
 theme = definition.id;
-state.theme = theme;
+// The remote theme catalog arrives after the shell starts. Keep the saved
+// request while the catalog/permission snapshot is still loading so the
+// temporary fallback cannot replace the user's selected theme in memory.
+state.theme = persist || requestedUnlocked ? theme : requestedTheme;
 host.dataset.theme = theme;
 host.dataset.themeOrnament = definition.ornament || 'none';
 host.dataset.themeImage = definition.assets?.background ? 'true' : 'false';
