@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.85
+// @version      0.4.86
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -227,7 +227,7 @@
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       const host = document.getElementById(HOST_ID);
-      if (host?.dataset?.slinkReady === 'true' && globalThis.__SLINK_PDA_ADDONS_READY__ === true) {
+      if (host?.dataset?.slinkReady === 'true' && host?.dataset?.slinkAddonsReady === 'true') {
         document.getElementById(ERROR_ID)?.remove();
         return;
       }
@@ -239,7 +239,9 @@
   async function executeBundle(bundle) {
     const currentHost = document.getElementById(HOST_ID);
     const runtimeReady = currentHost?.dataset?.slinkReady === 'true';
-    if (runtimeReady && globalThis.__SLINK_PDA_ADDONS_READY__ === true) return;
+    const addonsReady = currentHost?.dataset?.slinkAddonsReady === 'true';
+    if (runtimeReady && addonsReady) return;
+    if (currentHost) currentHost.dataset.slinkAddonsReady = 'false';
     const sources = ['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];
     if (!runtimeReady) {
       const bootstrap = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(collectBootstrap()) + ';';
@@ -248,7 +250,11 @@
     bundle.addonSources.forEach((source, index) => {
       sources.push(source.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Direct_Addon_' + (index + 1) + '.js\n');
     });
-    sources.push('globalThis.__SLINK_PDA_ADDONS_READY__=true;');
+    sources.push(`globalThis.__SLINK_PDA_ADDONS_READY__=true;
+(() => {
+const slinkReadyHost=document.getElementById(${JSON.stringify(HOST_ID)});
+if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
+})();`);
     await executeRuntime(sources.join('\n;\n'));
     await waitUntilReady();
   }
