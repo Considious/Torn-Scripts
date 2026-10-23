@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.88
+// @version      0.4.89
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.88-direct-source';
+const BUILD = '0.4.89-direct-source';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -46,7 +46,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.88';
+const CLIENT_VERSION = '0.4.89';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
@@ -2150,6 +2150,8 @@ const THEME_TOKEN_MAP = Object.freeze({
 '--slink-ready':'--s-ready', '--slink-warning':'--s-warning', '--slink-error':'--s-error', '--slink-shadow':'--s-shadow', '--slink-page-bg':'--s-page'
 });
 const THEME_ASSET_ORIGIN='https://raw.githubusercontent.com/Considious/SLINK-Cloudflare-Services/main/themes/assets/';
+const THEME_DIRECT_ASSETS=Object.freeze(['background','iconSheet','brandIcon','chatIcon','frame','panelSmoke','panelDamask','panelCrimson','dividerLeft','dividerMiddle','dividerRight']);
+const THEME_HEALTH_STATES=Object.freeze(['100','075','050','025','004']);
 function validateThemeAsset(raw,id,kind){
 const value=String(raw||'').trim();if(!value)return '';
 let parsed;try{parsed=new URL(value)}catch{throw new Error(`Theme ${id} has an invalid ${kind} asset URL.`)}
@@ -2157,14 +2159,15 @@ if(!value.startsWith(THEME_ASSET_ORIGIN)||parsed.protocol!=='https:'||parsed.use
 return value;
 }
 function normalizeThemeAssets(entry,id){
-if(entry?.assets==null)return{background:'',iconSheet:'',brandIcon:'',chatIcon:''};
+if(entry?.assets==null)return{...Object.fromEntries(THEME_DIRECT_ASSETS.map(kind=>[kind,''])),healthRoses:Object.fromEntries(THEME_HEALTH_STATES.map(state=>[state,''])),healthBlood:Object.fromEntries(THEME_HEALTH_STATES.map(state=>[state,'']))};
 if(typeof entry.assets!=='object'||Array.isArray(entry.assets))throw new Error(`Theme ${id} has invalid assets.`);
-return{
-background:validateThemeAsset(entry.assets.background,id,'background'),
-iconSheet:validateThemeAsset(entry.assets.iconSheet,id,'icon sheet'),
-brandIcon:validateThemeAsset(entry.assets.brandIcon,id,'brand icon'),
-chatIcon:validateThemeAsset(entry.assets.chatIcon,id,'chat icon')
+const direct=Object.fromEntries(THEME_DIRECT_ASSETS.map(kind=>[kind,validateThemeAsset(entry.assets[kind],id,kind)]));
+const healthAssets=(raw,kind)=>{
+if(raw==null)return Object.fromEntries(THEME_HEALTH_STATES.map(state=>[state,'']));
+if(typeof raw!=='object'||Array.isArray(raw))throw new Error(`Theme ${id} has invalid ${kind} assets.`);
+return Object.fromEntries(THEME_HEALTH_STATES.map(state=>[state,validateThemeAsset(raw[state],id,`${kind} ${state}`)]));
 };
+return{...direct,healthRoses:healthAssets(entry.assets.healthRoses,'health roses'),healthBlood:healthAssets(entry.assets.healthBlood,'health blood')};
 }
 function bundledThemes() {
 return [
@@ -2194,7 +2197,7 @@ tokens[name] = token;
 }
 const swatch = Array.isArray(entry.swatch) ? entry.swatch.slice(0, 3).map(String) : [];
 if (swatch.length !== 3 || !swatch.every(color => /^#[0-9a-fA-F]{6}$/.test(color))) throw new Error(`Theme ${id} has invalid swatches.`);
-const ornament=['coil','halloween'].includes(entry.ornament)?entry.ornament:'none';
+const ornament=['coil','halloween','gothic'].includes(entry.ornament)?entry.ornament:'none';
 seen.add(id); return { id, label, description, scope, ornament, swatch, assets:normalizeThemeAssets(entry,id), tokens };
 });
 if (!themes.some(theme => theme.id === 'slink-dark' && !theme.scope)) throw new Error('Theme catalog is missing the free fallback.');

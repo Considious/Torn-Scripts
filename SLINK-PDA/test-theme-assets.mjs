@@ -6,10 +6,11 @@ const shell = fs.readFileSync(new URL('./src/90-shell-bootstrap.part', import.me
 const manifest = JSON.parse(fs.readFileSync(new URL('./source-manifest.json', import.meta.url), 'utf8'));
 const launcher = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 
-assert.equal(manifest.revision, '0.4.88');
-assert.match(launcher, /@version\s+0\.4\.79/);
+assert.equal(manifest.revision, '0.4.89');
+assert.match(launcher, /@version\s+0\.4\.89/);
 assert.match(core, /THEME_ASSET_ORIGIN/);
 assert.match(core, /normalizeThemeAssets/);
+assert.match(core, /THEME_HEALTH_STATES/);
 assert.match(core, /Theme .* disallowed .* asset URL/);
 assert.match(core, /15 \* 60_000/);
 assert.match(shell, /data-theme-image="true"/);
@@ -35,6 +36,11 @@ assert.match(shell, /--s-theme-panel-blur/);
 assert.match(shell, /--s-theme-veil-top/);
 assert.match(shell, /const requestedTheme = String\(theme \|\| defaults\.theme\)/);
 assert.match(shell, /state\.theme = persist \|\| requestedUnlocked \? theme : requestedTheme/);
+assert.match(shell, /data-theme-ornament="gothic"/);
+assert.match(shell, /themeHealthState/);
+assert.match(shell, /syncThemeHealthAssets/);
+assert.match(shell, /--s-theme-health-roses-image/);
+assert.match(shell, /--s-theme-health-blood-image/);
 
 console.log('SLINK PDA image-backed theme checks passed.');
 
