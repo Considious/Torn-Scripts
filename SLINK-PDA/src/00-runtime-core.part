@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.95
+// @version      0.4.96
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.95-direct-source';
+const BUILD = '0.4.96-direct-source';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -46,8 +46,16 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.95';
+const CLIENT_VERSION = '0.4.96';
 const WEEK_MS = 7 * 86_400_000;
+const PDA_CITY_SHOP_TARGETS = Object.freeze([
+Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
+Object.freeze({ id:731, label:'Empty Blood Bags', shop:'Pharmacy', href:'https://www.torn.com/shops.php?step=pharmacy' }),
+Object.freeze({ id:10, label:'Chainsaws', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
+Object.freeze({ id:180, label:'Beer', shop:"Bits 'n' Bobs", href:'https://www.torn.com/shops.php?step=bitsnbobs' }),
+Object.freeze({ id:310, label:'Lollipops', shop:"Sally's Sweet Shop", href:'https://www.torn.com/shops.php?step=candy' }),
+Object.freeze({ id:956, label:'Blank DVDs', shop:'Cyber Force', href:'https://www.torn.com/shops.php?step=cyberforce' })
+]);
 const PDA_ALERT_TYPES = Object.freeze([
 { id:'drugCooldown', label:'Drug cooldown clear', group:'Cooldowns' },
 { id:'medicalCooldown', label:'Medical cooldown clear', group:'Cooldowns' },
@@ -74,14 +82,15 @@ const PDA_ALERT_TYPES = Object.freeze([
 { id:'pickpocketingUniques', crimeId:5, label:'Pickpocketing unique progress', group:'Crime uniques', mode:'tracking' },
 { id:'burglaryUniques', crimeId:7, label:'Burglary unique progress', group:'Crime uniques', mode:'tracking' },
 { id:'disposalUnique', crimeId:9, label:'Disposal daily unique check', group:'Crime uniques', mode:'daily' },
-{ id:'arsonUnique', crimeId:13, label:'Arson daily unique check', group:'Crime uniques', mode:'daily' }
+{ id:'arsonUnique', crimeId:13, label:'Arson daily unique check', group:'Crime uniques', mode:'daily' },
+...PDA_CITY_SHOP_TARGETS.map(target => Object.freeze({ id:`cityStock:${target.id}`, label:`${target.label} in stock · ${target.shop}`, group:'City stock', defaultEnabled:false }))
 ]);
 const ARSON_UNIQUE_SKILL_THRESHOLDS = Object.freeze([4, 5, 48, 51, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90]);
 // Ordered to match Torn's crime 4 unique_outcomes_ids catalog.
 const SHOPLIFTING_UNIQUE_WINDOWS = Object.freeze([{"id":12531,"shop":"sallys_sweet_shop","shopLabel":"Sally's Sweet Shop","label":"Jawbreaker","skill":20,"cameras":"off"},{"id":13023,"shop":"sallys_sweet_shop","shopLabel":"Sally's Sweet Shop","label":"Chocolate Truffles bundle","skill":40,"cameras":"on"},{"id":12530,"shop":"sallys_sweet_shop","shopLabel":"Sally's Sweet Shop","label":"Pixie Sticks","skill":60,"cameras":"off"},{"id":13024,"shop":"sallys_sweet_shop","shopLabel":"Sally's Sweet Shop","label":"Bags of Sherbet","skill":70,"cameras":"on"},{"id":12529,"shop":"sallys_sweet_shop","shopLabel":"Sally's Sweet Shop","label":"Tin of Treats","skill":80,"cameras":"off"},{"id":12616,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Bottles of Champagne","skill":1,"cameras":"off"},{"id":13316,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Cut-Throat Razor + Shaving Foam","skill":1,"cameras":"on"},{"id":13356,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Flashlight","skill":1,"cameras":"off"},{"id":12614,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Duct Tape","skill":30,"cameras":"off"},{"id":13036,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Bottles of Beer","skill":60,"cameras":"on"},{"id":12617,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Cash unique","skill":80,"cameras":"off"},{"id":12615,"shop":"bits_n_bobs","shopLabel":"Bits 'n' Bobs","label":"Mountain Bike","skill":90,"cameras":"on"},{"id":12706,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Raincoat","skill":20,"cameras":"on","checkpoint":"off"},{"id":12709,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Fisherman Hat + Fishing Rod","skill":30,"cameras":"on","checkpoint":"on"},{"id":12705,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Tailor's Dummy + Scissors","skill":40,"cameras":"off","checkpoint":"on"},{"id":12708,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Trench Coat","skill":50,"cameras":"on","checkpoint":"on"},{"id":12704,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Mackintosh","skill":60,"cameras":"on","checkpoint":"off"},{"id":12711,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Coat Hanger","skill":70,"cameras":"on","checkpoint":"on","notoriety":"100%"},{"id":12707,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Bush Hat","skill":80,"cameras":"off","checkpoint":"on"},{"id":12710,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Crop Top + Coin Purse + Lipstick","skill":90,"cameras":"on","checkpoint":"on"},{"id":12712,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Poncho","skill":100,"checkpoint":"off"},{"id":24520,"shop":"tc_clothing","shopLabel":"TC Clothing","label":"Cassock","skill":100,"cameras":"off","checkpoint":"on"},{"id":13037,"shop":"super_store","shopLabel":"Super Store","label":"DVD Player + Erotic DVD","skill":1,"cameras":"off","checkpoint":"off"},{"id":18851,"shop":"super_store","shopLabel":"Super Store","label":"DSLR Camera","skill":1,"cameras":"on","checkpoint":"off"},{"id":12801,"shop":"super_store","shopLabel":"Super Store","label":"Tracking Device","skill":20,"cameras":"off","checkpoint":"on"},{"id":12800,"shop":"super_store","shopLabel":"Super Store","label":"Wireless Dongle","skill":40,"cameras":"off","checkpoint":"on"},{"id":12799,"shop":"super_store","shopLabel":"Super Store","label":"Ergonomic Keyboard","skill":60,"cameras":"on","checkpoint":"off"},{"id":12802,"shop":"super_store","shopLabel":"Super Store","label":"High-Speed Drive","skill":80,"cameras":"on","checkpoint":"on"},{"id":12798,"shop":"super_store","shopLabel":"Super Store","label":"Laptop","skill":100,"cameras":"on","checkpoint":"on"},{"id":24518,"shop":"super_store","shopLabel":"Super Store","label":"Receipt + Voice Recorder","skill":100,"cameras":"off","checkpoint":"on"},{"id":15307,"shop":"pharmacy","shopLabel":"Pharmacy","label":"Epinephrine","skill":100,"cameras":"on","checkpoint":"off"},{"id":15330,"shop":"pharmacy","shopLabel":"Pharmacy","label":"Serotonin + Syringes","skill":1,"cameras":"off","checkpoint":"off"},{"id":15346,"shop":"pharmacy","shopLabel":"Pharmacy","label":"Melatonin","skill":5,"cameras":"on"},{"id":15358,"shop":"pharmacy","shopLabel":"Pharmacy","label":"Tyrosine","skill":10,"cameras":"off","checkpoint":"on"},{"id":15393,"shop":"pharmacy","shopLabel":"Pharmacy","label":"Box of Medical Supplies","skill":100,"checkpoint":"on"},{"id":15215,"shop":"cyber_force","shopLabel":"Cyber Force","label":"HPCPUs","skill":5,"cameras":"off","guards":"on"},{"id":15245,"shop":"cyber_force","shopLabel":"Cyber Force","label":"Office Chair","skill":60,"cameras":"on","guards":"off"},{"id":15246,"shop":"cyber_force","shopLabel":"Cyber Force","label":"Cash unique","skill":1,"cameras":"on","guards":"on"},{"id":15247,"shop":"cyber_force","shopLabel":"Cyber Force","label":"Points unique","skill":1,"cameras":"on","guards":"off"},{"id":15248,"shop":"cyber_force","shopLabel":"Cyber Force","label":"Computer-parts bundle","skill":15,"cameras":"off","guards":"off"},{"id":18828,"shop":"cyber_force","shopLabel":"Cyber Force","label":"RF Detector","skill":1,"cameras":"off"},{"id":16128,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Magnifying Glass","skill":1,"cameras":"on","guards":"on"},{"id":16130,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Drill + Polishing Pad + Gold Rings","skill":1,"cameras":"off","guards":"on"},{"id":16131,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Grinding Stone + Diamond Ring","skill":1,"cameras":"off","guards":"on"},{"id":16132,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Gold Ring + Graver","skill":1,"cameras":"on","guards":"on"},{"id":12894,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Vanity Hand Mirror","skill":10,"cameras":"off","guards":"off"},{"id":12890,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Gold Teeth","skill":20,"cameras":"on","guards":"on"},{"id":12891,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Raw Ivory","skill":40,"cameras":"on","guards":"on"},{"id":12893,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Diamond Ring + Latex Gloves","skill":40,"cameras":"off","guards":"on"},{"id":12892,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Diamond Bladed Knife","skill":60,"cameras":"on","guards":"off"},{"id":20765,"shop":"jewelry_store","shopLabel":"Jewelry Store","label":"Cluster Ring","skill":100,"cameras":"off","guards":"off","notoriety":"0%"},{"id":13022,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Full Body Armor","skill":1,"cameras":"off","guards":"off"},{"id":13038,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Special Ammo","skill":1,"cameras":"off","guards":"off"},{"id":13020,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Ninja Stars","skill":30,"cameras":"off","guards":"on"},{"id":13016,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Desert Eagle","skill":40,"cameras":"on","guards":"on"},{"id":13019,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Stick Grenades","skill":50,"cameras":"on","guards":"off"},{"id":13015,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Steyr AUG","skill":60,"guards":"off"},{"id":13017,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Throwing Knives","skill":70,"cameras":"off","guards":"on"},{"id":13018,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"HEGs","skill":80,"cameras":"on","guards":"on"},{"id":13021,"shop":"big_als","shopLabel":"Big Al's Gun Shop","label":"Box of Grenades","skill":100,"cameras":"on","guards":"on"}].map(entry => Object.freeze(entry)));
 function normalizePdaAlertTypes(value) {
 const source = value && typeof value === 'object' ? value : {};
-return Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, source[definition.id] !== false]));
+return Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, Object.hasOwn(source, definition.id) ? source[definition.id] !== false : definition.defaultEnabled !== false]));
 }
 const GOOGLE_PLAY_POINTS_HELP_URL = 'https://support.google.com/googleplay/answer/9077192';
 const GOOGLE_PLAY_POINTS_ANDROID_INTENT = `intent://play.google.com/store/points#Intent;scheme=https;package=com.android.vending;S.browser_fallback_url=${encodeURIComponent(GOOGLE_PLAY_POINTS_HELP_URL)};end`;
@@ -959,6 +968,37 @@ merged[id] = Math.max(Number(merged[id]) || 0, Number(until) || 0);
 }
 return merged;
 }
+function cloneSettings(value) {
+if (value === undefined) return undefined;
+try { return JSON.parse(JSON.stringify(value)); }
+catch { return value && typeof value === 'object' ? {} : value; }
+}
+function sameSettingValue(left, right) {
+try { return JSON.stringify(left) === JSON.stringify(right); }
+catch { return left === right; }
+}
+function mergeSettingChanges(base, current, latest) {
+if (sameSettingValue(current, base)) return cloneSettings(latest);
+const baseRecord = storedRecord(base);
+const currentRecord = storedRecord(current);
+const latestRecord = storedRecord(latest);
+if (!baseRecord || !currentRecord || !latestRecord) return cloneSettings(current);
+const merged = cloneSettings(latestRecord);
+for (const key of new Set([...Object.keys(baseRecord), ...Object.keys(currentRecord)])) {
+if (!Object.hasOwn(currentRecord, key)) {
+if (Object.hasOwn(baseRecord, key)) delete merged[key];
+continue;
+}
+merged[key] = mergeSettingChanges(baseRecord[key], currentRecord[key], latestRecord[key]);
+}
+return merged;
+}
+function readSafeSettingsEnvelope() {
+try {
+const envelope = JSON.parse(global.localStorage.getItem(SETTINGS_STORAGE_KEY) || 'null');
+return { data:storedRecord(envelope?.data) || storedRecord(envelope) || {}, savedAt:Math.max(0, Number(envelope?.savedAt) || storedRecordSavedAt(envelope?.data || envelope)) };
+} catch { return { data:{}, savedAt:0 }; }
+}
 function readDataState() {
 const saved = storageRead(DATA_STORAGE_KEY, {});
 const value = saved && typeof saved === 'object' ? saved : {};
@@ -1105,9 +1145,18 @@ return runtime;
 }
 
 function writeDataState() {
+const latestSettings = readSafeSettingsEnvelope();
+const currentSettings = cloneSettings(dataState.settings);
+const settingsChangedHere = !sameSettingValue(currentSettings, lastPersistedSettings);
+dataState.settings = settingsChangedHere
+? mergeSettingChanges(lastPersistedSettings, currentSettings, latestSettings.data)
+: recordHasData(latestSettings.data) ? cloneSettings(latestSettings.data) : currentSettings;
 dataState._savedAt = Math.max(Date.now(), Number(dataState._savedAt || 0) + 1);
 writeAlertSnoozes(dataState.settings?.alerts?.snoozedUntil);
+if (settingsChangedHere || !recordHasData(latestSettings.data)) {
 try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings })); } catch {}
+}
+lastPersistedSettings = cloneSettings(dataState.settings);
 storageWrite(DATA_STORAGE_KEY, dataState);
 }
 function currentApiKey() {
@@ -1125,6 +1174,7 @@ return String(dataState.ffKey || '').trim();
 }
 const state = readState();
 const dataState = readDataState();
+let lastPersistedSettings = cloneSettings(dataState.settings);
 try {
 if (!Number(dataState._savedAt)) dataState._savedAt = Date.now();
 global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings }));
@@ -2263,7 +2313,6 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
-
 
 
 

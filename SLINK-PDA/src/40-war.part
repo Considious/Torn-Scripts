@@ -331,6 +331,26 @@ return null;
 }
 return search(response);
 }
+function cityShopTargetStockPda(body) {
+const found = new Map();
+const targetById = new Map(PDA_CITY_SHOP_TARGETS.map(target => [target.id, target]));
+for (const shop of Array.isArray(body?.cityshops) ? body.cityshops : []) {
+for (const item of Array.isArray(shop?.items) ? shop.items : []) {
+const target = targetById.get(Number(item?.id));
+if (!target || String(shop?.name || '').toLowerCase() !== target.shop.toLowerCase()) continue;
+const current = finite(item?.stock?.current);
+const normal = finite(item?.stock?.default);
+found.set(target.id, {
+...target,
+shopName:String(shop?.name || target.shop),
+price:Math.max(0, Number(item?.price) || 0),
+stock:current === null ? null : Math.max(0, Math.trunc(current)),
+defaultStock:normal === null ? null : Math.max(0, Math.trunc(normal))
+});
+}
+}
+return PDA_CITY_SHOP_TARGETS.map(target => found.get(target.id) || { ...target, stock:null, defaultStock:null, price:0 });
+}
 function utcDay(timestamp = Date.now()) {
 return Math.floor(Number(timestamp) / 86_400_000);
 }
@@ -632,6 +652,9 @@ add('nerveRefill', refillAvailable(body?.refills, 'nerve'), 'Nerve refill is unu
 add('missions', missions.length > 0, missions.length >= 3 ? 'Mission cap reached' : `${missions.length} unfinished mission${missions.length === 1 ? '' : 's'}`, missions.length >= 3 ? 'Complete one before another arrives so you do not miss mission credits.' : missions.map(row => row?.title).filter(Boolean).slice(0, 2).join(' / '), [['Missions','https://www.torn.com/page.php?sid=missions']]);
 add('googlePlayPoints', Number(dataState.settings.alerts.googlePlayPointsClaimedAt || 0) + WEEK_MS <= Date.now(), 'Claim your weekly Google Play Points prize', `${playPoints.detail} This reminder returns seven days after confirmation.`, playPoints.links);
 add('cityItems', !cityHidden && cityBought !== null && cityBought < 100, 'Buy 100 city items', `${number(cityBought)} / 100 bought since daily reset. Once the shared cap reaches 100, every city-item reminder stops.`, [['City','https://www.torn.com/city.php']]);
+for (const item of cityShopTargetStockPda(snapshot?.cityShops)) {
+add(`cityStock:${item.id}`, !cityHidden && cityBought !== null && cityBought < 100 && Number(item.stock) > 0, `${item.label} in stock at ${item.shopName || item.shop}`, `${number(item.stock)} available${item.defaultStock !== null ? ` (normal restock ${number(item.defaultStock)})` : ''}. ${number(cityBought)} / 100 total city items bought today.`, [[item.shopName || item.shop,item.href]]);
+}
 add('raceOrFly', racewayKnown && !activeRace && !away, 'Start a race or take a flight', 'You are on the ground and not entered in an active race.', [['Raceway','https://www.torn.com/page.php?sid=racing'],['Travel','https://www.torn.com/travelagency.php']]);
 add('landing', travelSeconds > 0 && travelSeconds <= 10 * 60, 'Landing soon', `${travel?.destination ? `Arriving in ${travel.destination} in ` : 'Landing in '}${duration(travelSeconds)}`, [['Travel','https://www.torn.com/index.php']]);
 add('organizedCrime', Number(profile?.faction_id || 0) > 0 && (body?.organizedcrime ?? body?.organizedCrime) === null, 'Join an organized crime', 'No current organized crime was returned for your faction membership.', [['Faction crimes','https://www.torn.com/factions.php?step=your#/tab=crimes']]);
@@ -844,6 +867,13 @@ if (!dataState.caches.stockCatalog?.at || Date.now() - dataState.caches.stockCat
 stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
 dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
 }
+let cityShops = cached?.cityShops || null;
+const cityStockEnabled = PDA_CITY_SHOP_TARGETS.some(target => dataState.settings.alerts.enabledTypes?.[`cityStock:${target.id}`] === true);
+const cityProgressComplete = Number(dataState.settings.alerts.cityDoneDay) === day || (currentBought !== null && resetBought !== null && currentBought - resetBought >= 100);
+if (cityStockEnabled && !cityProgressComplete && (force || !Number(cityShops?.fetchedAt) || Date.now() - Number(cityShops.fetchedAt) >= 5 * 60_000)) {
+try { cityShops = { ...(await tornJson('/v2/torn/cityshops', 'SLINK PDA city stock alerts')), fetchedAt:Date.now() }; }
+catch (error) { cityError = [cityError, `City stock alerts: ${errorMessage(error)}`].filter(Boolean).join(' '); }
+}
 try {
 const crimeCache = await refreshCrimeUniqueProgress(force);
 crimeCache.nextLiveAt = 0;
@@ -857,7 +887,8 @@ cityDay:cityError ? Number(cached?.cityDay) || day : day,
 cityBaselineVersion:2,
 cityTotal:currentBought,
 cityAtReset:resetBought,
-cityBought:currentBought !== null && resetBought !== null ? Math.max(0, currentBought - resetBought) : finite(cached?.cityBought)
+cityBought:currentBought !== null && resetBought !== null ? Math.max(0, currentBought - resetBought) : finite(cached?.cityBought),
+cityShops
 };
 current.error = cityError ? `City item reminder: ${cityError}` : '';
 endStackIfSpent(current.data);
@@ -1021,7 +1052,6 @@ const score = numeric && Number(item.id) === numeric ? 0 : name.startsWith(needl
 return { item, score };
 }).filter(row => row.score < 99).sort((a, b) => a.score - b.score || String(a.item.name).localeCompare(String(b.item.name))).slice(0, MARKET_SUGGESTION_LIMIT).map(row => row.item);
 }
-
 
 
 

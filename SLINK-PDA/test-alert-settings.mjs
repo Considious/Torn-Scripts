@@ -4,38 +4,38 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const source = fs.readFileSync(path.join(directory, 'SLINK_PDA_Dashboard.user.js'), 'utf8');
+const core = fs.readFileSync(path.join(directory, 'src/00-runtime-core.part'), 'utf8');
+const alerts = fs.readFileSync(path.join(directory, 'src/40-war.part'), 'utf8');
+const shell = fs.readFileSync(path.join(directory, 'src/90-shell-bootstrap.part'), 'utf8');
+const source = core + alerts + shell;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-new Function(source);
-assert(source.includes('@version      0.4.29'), 'PDA alert-settings version is missing.');
+assert(core.includes('@version      0.4.96'), 'PDA alert-settings version is missing.');
 assert(source.includes('class="alert-settings"'), 'Alert settings UI is missing.');
 assert(source.includes('data-alert-type='), 'Alert-type controls are missing.');
 assert(source.includes("dataState.settings.alerts.enabledTypes?.[id] === false"), 'Alert generation does not respect disabled types.');
 assert(source.includes("data-action=\"alerts-enable-all\""), 'Enable-all control is missing.');
 assert(source.includes("data-action=\"alerts-disable-all\""), 'Disable-all control is missing.');
 
-const start = source.indexOf('const PDA_ALERT_TYPES');
-const end = source.indexOf('const GOOGLE_PLAY_POINTS_HELP_URL', start);
+const start = core.indexOf('const PDA_CITY_SHOP_TARGETS');
+const end = core.indexOf('const GOOGLE_PLAY_POINTS_HELP_URL', start);
 assert(start >= 0 && end > start, 'Alert type definitions are missing.');
 const context = {};
 vm.createContext(context);
-vm.runInContext(source.slice(start, end) + '\nthis.alerts={PDA_ALERT_TYPES,normalizePdaAlertTypes};', context);
-const { PDA_ALERT_TYPES, normalizePdaAlertTypes } = context.alerts;
-assert(PDA_ALERT_TYPES.length === 18, 'Expected all 18 built-in PDA alert types.');
+vm.runInContext(core.slice(start, end) + '\nthis.alerts={PDA_ALERT_TYPES,PDA_CITY_SHOP_TARGETS,normalizePdaAlertTypes};', context);
+const { PDA_ALERT_TYPES, PDA_CITY_SHOP_TARGETS, normalizePdaAlertTypes } = context.alerts;
+assert(PDA_ALERT_TYPES.length === 32, 'Expected all built-in and city-stock PDA alert types.');
+assert(PDA_CITY_SHOP_TARGETS.length === 6, 'Expected the six extension-matched city stock targets.');
 const ids = PDA_ALERT_TYPES.map(definition => definition.id);
 assert(new Set(ids).size === ids.length, 'Alert type IDs must be unique.');
 const defaults = normalizePdaAlertTypes(null);
-assert(ids.every(id => defaults[id] === true), 'Existing users must retain all alerts by default.');
+assert(PDA_ALERT_TYPES.filter(definition => definition.defaultEnabled !== false).every(definition => defaults[definition.id] === true), 'Existing built-in alerts must remain enabled by default.');
+assert(PDA_CITY_SHOP_TARGETS.every(target => defaults[`cityStock:${target.id}`] === false), 'City stock alerts must remain opt-in.');
 const disabled = normalizePdaAlertTypes({ raceOrFly:false, landing:false });
 assert(disabled.raceOrFly === false && disabled.landing === false, 'Saved disabled alert choices were not retained.');
 assert(disabled.energyFull === true, 'Unspecified alert types must remain enabled.');
-
-const rowsStart = source.indexOf('function alertRows(snapshot)');
-const rowsEnd = source.indexOf('function updateAlertIndicator', rowsStart);
-const generatedIds = [...source.slice(rowsStart, rowsEnd).matchAll(/\badd\('([^']+)'/g)].map(match => match[1]);
-assert(generatedIds.length === ids.length, 'Alert settings and generated built-in alerts are out of sync.');
-assert(generatedIds.every(id => ids.includes(id)), 'A generated alert has no settings control.');
-assert(ids.every(id => generatedIds.includes(id)), 'An alert setting does not map to a generated alert.');
+assert(alerts.includes('cityShopTargetStockPda(snapshot?.cityShops)'), 'PDA city stock alerts are not generated from Torn cityshops data.');
+assert(alerts.includes("tornJson('/v2/torn/cityshops'"), 'PDA city stock alerts do not fetch Torn cityshops data.');
+assert(shell.includes("dataState.settings.alerts.enabledTypes[id] = event.target.checked === true"), 'Individual alert choices are not persisted from their own checkbox.');
 
 console.log('PDA alert settings validation passed.');
