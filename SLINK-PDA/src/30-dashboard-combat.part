@@ -430,13 +430,20 @@ writeDataState();
 }
 return value;
 }
-async function pdaOwnBattleStats() {
-const cached = dataState.caches.muggingOwnBattleStats;
-if (Number(cached?.total) > 0 && Number(cached?.level) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
+function pdaStoredOwnBattleStats() {
+const shared=dataState.caches.ownBattleStats&&typeof dataState.caches.ownBattleStats==='object'?dataState.caches.ownBattleStats:{};
+const legacy=dataState.caches.muggingOwnBattleStats&&typeof dataState.caches.muggingOwnBattleStats==='object'?dataState.caches.muggingOwnBattleStats:{};
+const cached=Number(shared.checkedAt)>=Number(legacy.checkedAt)?shared:legacy;
+if(Number(cached.total)>0&&(shared.total!==cached.total||shared.level!==cached.level||shared.checkedAt!==cached.checkedAt))dataState.caches.ownBattleStats={total:Number(cached.total),level:Math.max(0,Math.trunc(Number(cached.level)||0)),checkedAt:Math.max(0,Number(cached.checkedAt)||0)};
+return dataState.caches.ownBattleStats||cached;
+}
+async function pdaOwnBattleStats(force = false) {
+const cached = pdaStoredOwnBattleStats();
+if (!force && Number(cached?.total) > 0 && Number(cached?.level) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
 const statsPayload = await tornJson('/v2/user?selections=battlestats,basic', 'SLINK PDA Mugging rough assignment', { priority:'high' });
 const total = pdaBattleStatsTotal(statsPayload);
 const level = Math.max(0, Math.trunc(Number(statsPayload?.level ?? statsPayload?.basic?.level) || 0));
-dataState.caches.muggingOwnBattleStats = { total, level, checkedAt:Date.now() };
+dataState.caches.ownBattleStats = { total, level, checkedAt:Date.now() };
 writeDataState();
 return total;
 }
@@ -572,7 +579,7 @@ if (error?.code === 'SLINK_TORN_API_LIMIT') break;
 }
 let assignmentsRefreshed = false;
 const assignmentCache = muggingCache();
-const ownStats = Number(dataState.caches.muggingOwnBattleStats?.total) || 0;
+const ownStats = Number(pdaStoredOwnBattleStats()?.total) || 0;
 if (mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
 try {
 await refreshMugging(false, { userBattleStats:ownStats, touch:false, background:true });
@@ -621,12 +628,13 @@ function muggingCache() {
 const value = dataState.caches.mugging && typeof dataState.caches.mugging === 'object'
 ? dataState.caches.mugging
 : {};
+const ownStats=pdaStoredOwnBattleStats();
 return {
 updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
 estimateKind:String((value.estimateKind ?? value.estimate_kind) || 'rough'),
 estimateSource:String((value.estimateSource ?? value.estimate_source) || 'cached battle-stat estimate'),
-userBattleStats:Math.max(0, Number(value.userBattleStats ?? value.user_battle_stats) || 0),
-userLevel:Math.max(0, Math.trunc(Number(value.userLevel ?? value.user_level) || 0)),
+userBattleStats:Math.max(0, Number(ownStats?.total ?? value.userBattleStats ?? value.user_battle_stats) || 0),
+userLevel:Math.max(0, Math.trunc(Number(ownStats?.level ?? value.userLevel ?? value.user_level) || 0)),
 pool:{
 total:Math.max(0, Number(value.pool?.total) || 0),
 estimable:Math.max(0, Number(value.pool?.estimable) || 0),
@@ -660,7 +668,7 @@ current.notice = '';
 if (options.touch !== false) touchMuggingActivity();
 renderMugging();
 try {
-const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats();
+const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats(force === true && options.background !== true);
 const response = await muggingRequest('/api/assignments/rough', {
 method:'POST',
 body:{
@@ -672,7 +680,9 @@ limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
 });
 dataState.caches.mugging = {
 ...response,
-userLevel:Math.max(0, Math.trunc(Number(dataState.caches.muggingOwnBattleStats?.level) || 0)),
+userBattleStats,
+userLevel:Math.max(0, Math.trunc(Number(pdaStoredOwnBattleStats()?.level) || 0)),
+ownBattleStatsCheckedAt:Math.max(0,Number(pdaStoredOwnBattleStats()?.checkedAt)||0),
 updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
 };
 writeDataState();
@@ -1462,4 +1472,5 @@ const config = snapshot?.config || {};
 const settings = dataState.settings.war;
 return `<div class="war-settings"><label>Faction War mode<select data-field="war-mode"><option value="war" ${(config.mode || settings.mode) === 'war' ? 'selected' : ''}>Real war</option><option value="termed" ${(config.mode || settings.mode) === 'termed' ? 'selected' : ''}>Termed war</option></select></label><label>Faction idle filter<input type="number" min="0" max="60" data-field="war-idle" value="${Number(config.idleMinutes ?? settings.idleMinutes) || 0}"></label><label>Inside-hit cap<input type="number" min="0" max="9999" data-field="war-inside-cap" value="${Number(config.insideHitCap ?? settings.insideHitCap) || 0}"></label><label>Major-window inside gate<select data-field="war-inside-mode"><option value="off" ${(config.insideBlockMode || settings.insideBlockMode) === 'off' ? 'selected' : ''}>Off</option><option value="warn" ${(config.insideBlockMode || settings.insideBlockMode || 'warn') === 'warn' ? 'selected' : ''}>Warning with override</option><option value="block" ${(config.insideBlockMode || settings.insideBlockMode) === 'block' ? 'selected' : ''}>Hard block</option></select></label><div class="war-settings-note">These faction-wide controls apply to every SLINK War user. Major-window gating only activates in Termed mode.</div><button type="button" data-action="save-war-settings">Save War settings</button></div>`;
 }
+
 
