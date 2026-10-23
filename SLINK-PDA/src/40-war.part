@@ -810,7 +810,7 @@ async function refreshAlerts(force = false) {
 const current = moduleState.alerts;
 if (current.busy) return;
 const cached = dataState.caches.alerts;
-if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.lastAttemptAt = Number(cached.at) || Date.now(); current.data = cached; renderAlerts(); return; }
+if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.lastAttemptAt = Number(cached.at) || Date.now(); current.data = cached; syncThemeHealthAssets(); renderAlerts(); return; }
 current.lastAttemptAt = Date.now();
 current.busy = true; current.error = ''; renderAlerts();
 try {
@@ -863,6 +863,7 @@ current.error = cityError ? `City item reminder: ${cityError}` : '';
 endStackIfSpent(current.data);
 reconcileAlertNotifications(current.data);
 writeDataState();
+syncThemeHealthAssets();
 } catch (error) { current.error = errorMessage(error); }
 finally { current.busy = false; renderAlerts(); }
 }
@@ -1020,6 +1021,7 @@ const score = numeric && Number(item.id) === numeric ? 0 : name.startsWith(needl
 return { item, score };
 }).filter(row => row.score < 99).sort((a, b) => a.score - b.score || String(a.item.name).localeCompare(String(b.item.name))).slice(0, MARKET_SUGGESTION_LIMIT).map(row => row.item);
 }
+
 
 
 

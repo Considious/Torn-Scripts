@@ -6,8 +6,8 @@ const shell = fs.readFileSync(new URL('./src/90-shell-bootstrap.part', import.me
 const manifest = JSON.parse(fs.readFileSync(new URL('./source-manifest.json', import.meta.url), 'utf8'));
 const launcher = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 
-assert.equal(manifest.revision, '0.4.93');
-assert.match(launcher, /@version\s+0\.4\.93/);
+assert.equal(manifest.revision, '0.4.94');
+assert.match(launcher, /@version\s+0\.4\.94/);
 assert.match(core, /THEME_ASSET_ORIGIN/);
 assert.match(core, /normalizeThemeAssets/);
 assert.match(core, /THEME_HEALTH_STATES/);
@@ -53,12 +53,17 @@ assert.match(shell, /var\(--s-theme-panel-crimson-image\)/);
 assert.match(shell, /opacity:\.68/);
 assert.match(shell, /visibleLifeSnapshot/);
 assert.match(shell, /background-size:100% 100%/);
-assert.match(shell, /class="theme-content-shell"/);
-assert.match(shell, /\.theme-content-shell\{position:absolute;inset:8\.5% 15% 9%;z-index:2;display:grid;grid-template-rows:auto minmax\(0,1fr\) auto/);
+assert.match(shell, /class="gothic-nav-structure"/);
+assert.match(shell, /class="gothic-health-roses"/);
+assert.match(shell, /border-image-source:var\(--s-theme-frame-image\)/);
+assert.match(shell, /\.theme-content-shell\{position:absolute;inset:8\.5% 15% 9%;z-index:4;display:grid;grid-template-rows:auto minmax\(0,1fr\) auto/);
 assert.match(shell, /\.primary-nav\{position:relative!important;right:auto!important;bottom:auto!important;left:auto!important/);
-assert.match(shell, /\.primary-nav button.*background:#181819!important/);
+assert.match(shell, /\.primary-nav button\{border:0!important;background:transparent!important/);
+assert.match(shell, /function lifeNumber/);
+assert.match(shell, /aria-valuenow/);
 assert.doesNotMatch(shell, /margin:clamp\(118px,14vh,176px\)/);
 assert.doesNotMatch(shell, /\.subnav button.*background-image:var\(--s-theme-panel-smoke-image\)!important/);
 
 console.log('SLINK PDA image-backed theme checks passed.');
+
 

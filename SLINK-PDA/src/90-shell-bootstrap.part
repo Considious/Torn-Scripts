@@ -350,14 +350,20 @@ button:active{filter:brightness(1.25);transform:translateY(1px)}
 :host([data-theme-image="true"]) .stat,:host([data-theme-image="true"]) .status,:host([data-theme-image="true"]) .target,:host([data-theme-image="true"]) .alert,:host([data-theme-image="true"]) .merit,:host([data-theme-image="true"]) .mini,:host([data-theme-image="true"]) .module-message,:host([data-theme-image="true"]) .target-card,:host([data-theme-image="true"]) .mug-report,:host([data-theme-image="true"]) .war-card,:host([data-theme-image="true"]) .war-pill,:host([data-theme-image="true"]) .war-log,:host([data-theme-image="true"]) .target-list-form,:host([data-theme-image="true"]) .bounty-form,:host([data-theme-image="true"]) .market-watch,:host([data-theme-image="true"]) .market-deal,:host([data-theme-image="true"]) .dollar-bazaar-row,:host([data-theme-image="true"]) .alert-settings,:host([data-theme-image="true"]) .racing-assistant,:host([data-theme-image="true"]) .racing-card,:host([data-theme-image="true"]) .abroad-summary>div,:host([data-theme-image="true"]) .museum-item,:host([data-theme-image="true"]) .abroad-leave-time{border-color:var(--s-border);background:color-mix(in srgb,var(--s-bg) var(--s-theme-item-opacity),transparent);backdrop-filter:blur(var(--s-theme-item-blur)) saturate(1.04)}
 :host([data-theme-image="true"]) .primary-nav button[aria-selected="true"],:host([data-theme-image="true"]) .subnav button[aria-selected="true"]{border-color:var(--s-alt);background:linear-gradient(135deg,color-mix(in srgb,var(--s-accent) var(--s-theme-item-opacity),transparent),color-mix(in srgb,var(--s-bg) var(--s-theme-item-opacity),transparent) 57%,color-mix(in srgb,var(--s-alt) var(--s-theme-item-opacity),transparent));box-shadow:-3px 0 11px color-mix(in srgb,var(--s-alt) 34%,transparent),3px 0 13px color-mix(in srgb,var(--s-accent) 44%,transparent)}
 :host([data-theme-ornament="gothic"]) .overlay{isolation:isolate;background-image:linear-gradient(color-mix(in srgb,rgb(6 5 6) var(--s-theme-veil-top),transparent),color-mix(in srgb,rgb(6 5 6) var(--s-theme-veil-bottom),transparent)),var(--s-theme-background-image);background-position:center top;background-repeat:no-repeat;background-size:cover}
-:host([data-theme-ornament="gothic"]) .overlay::before{position:absolute;inset:0;z-index:0;background-image:var(--s-theme-health-roses-image),var(--s-theme-frame-image);background-position:center;background-repeat:no-repeat;background-size:100% 100%;content:"";pointer-events:none;user-select:none}
-:host([data-theme-ornament="gothic"]) .overlay::after{position:absolute;inset:0;z-index:1;background:var(--s-theme-health-blood-image) center/100% 100% no-repeat;content:"";opacity:.68;pointer-events:none;user-select:none}
-:host([data-theme-ornament="gothic"]) .theme-content-shell{position:absolute;inset:8.5% 15% 9%;z-index:2;display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0;overflow:hidden}
+:host([data-theme-ornament="gothic"]) .overlay::before{position:absolute;inset:0;z-index:0;background:var(--s-theme-frame-image) center/100% 100% no-repeat;content:"";pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .gothic-nav-structure{position:absolute;right:15%;bottom:9%;left:15%;z-index:1;display:grid;height:54px;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;padding:8px 0;pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .gothic-nav-structure>i{display:block;min-width:0;border:10px solid transparent;border-image-source:var(--s-theme-frame-image);border-image-slice:96 80 96 80 fill;border-image-width:10px;border-image-repeat:stretch;background:rgb(13 11 12/.78)}
+:host([data-theme-ornament="gothic"]) .gothic-health-roses{position:absolute;inset:0;z-index:2;background:var(--s-theme-health-roses-image) center/100% 100% no-repeat;pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .overlay::after{position:absolute;inset:0;z-index:3;background:var(--s-theme-health-blood-image) center/100% 100% no-repeat;content:"";opacity:.68;pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .theme-content-shell{position:absolute;inset:8.5% 15% 9%;z-index:4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0;overflow:hidden}
 :host([data-theme-ornament="gothic"]) .topbar{grid-row:1;min-height:54px;padding:6px 0;border:0;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important}
 :host([data-theme-ornament="gothic"]) .scroll{grid-row:2;min-height:0;padding:8px 0;overflow:auto}
-:host([data-theme-ornament="gothic"]) .primary-nav{position:relative!important;right:auto!important;bottom:auto!important;left:auto!important;z-index:auto;grid-row:3;gap:7px;padding:8px 0;border:1px solid #555;border-radius:5px;background:#171719!important;box-shadow:none!important;backdrop-filter:none!important}
-:host([data-theme-ornament="gothic"]) .primary-nav button,:host([data-theme-ornament="gothic"]) .subnav button,:host([data-theme-ornament="gothic"]) .page-actions button{border:1px solid #a4a29c!important;border-radius:5px;background:#181819!important;color:#f0e9d9;box-shadow:none!important;backdrop-filter:none!important}
-:host([data-theme-ornament="gothic"]) .primary-nav button[aria-selected="true"],:host([data-theme-ornament="gothic"]) .subnav button[aria-selected="true"]{border-color:#f0e9d9!important;background:#780d19!important;color:#f0e9d9!important}
+:host([data-theme-ornament="gothic"]) .primary-nav{position:relative!important;right:auto!important;bottom:auto!important;left:auto!important;z-index:auto;grid-row:3;gap:7px;padding:8px 0;border:0;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .primary-nav button{border:0!important;background:transparent!important;color:#f0e9d9;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .primary-nav button[aria-selected="true"]{background:rgb(120 13 25/.34)!important;color:#fff7e8!important;text-shadow:0 1px 3px #000,0 0 6px #bf273a}
+:host([data-theme-ornament="gothic"]) .subnav button,:host([data-theme-ornament="gothic"]) .page-actions button{border:8px solid transparent!important;border-image-source:var(--s-theme-frame-image)!important;border-image-slice:96 80 96 80 fill!important;border-image-width:8px!important;border-image-repeat:stretch!important;border-radius:0!important;background:rgb(13 11 12/.78)!important;color:#f0e9d9;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .subnav button[aria-selected="true"]{background:rgb(120 13 25/.78)!important;color:#fff7e8!important}
+:host([data-theme-ornament="gothic"]) .stat,:host([data-theme-ornament="gothic"]) .status,:host([data-theme-ornament="gothic"]) .target,:host([data-theme-ornament="gothic"]) .alert,:host([data-theme-ornament="gothic"]) .merit,:host([data-theme-ornament="gothic"]) .mini,:host([data-theme-ornament="gothic"]) .module-message,:host([data-theme-ornament="gothic"]) .target-card,:host([data-theme-ornament="gothic"]) .mug-report,:host([data-theme-ornament="gothic"]) .war-card,:host([data-theme-ornament="gothic"]) .war-log,:host([data-theme-ornament="gothic"]) .target-list-form,:host([data-theme-ornament="gothic"]) .bounty-form,:host([data-theme-ornament="gothic"]) .market-watch,:host([data-theme-ornament="gothic"]) .market-deal,:host([data-theme-ornament="gothic"]) .dollar-bazaar-row,:host([data-theme-ornament="gothic"]) .alert-settings,:host([data-theme-ornament="gothic"]) .racing-assistant,:host([data-theme-ornament="gothic"]) .racing-card,:host([data-theme-ornament="gothic"]) .abroad-summary>div,:host([data-theme-ornament="gothic"]) .museum-item,:host([data-theme-ornament="gothic"]) .abroad-leave-time{border:8px solid transparent!important;border-image-source:var(--s-theme-frame-image)!important;border-image-slice:96 80 96 80 fill!important;border-image-width:8px!important;border-image-repeat:stretch!important;border-radius:0!important}
 :host([data-theme-ornament="gothic"]) .card{position:relative;isolation:isolate;background:transparent!important}
 :host([data-theme-ornament="gothic"]) .card::before{position:absolute;inset:0;z-index:0;border-radius:inherit;background-position:center;background-repeat:no-repeat;background-size:100% 100%;content:"";opacity:var(--s-theme-panel-opacity);pointer-events:none}
 :host([data-theme-ornament="gothic"]) .card>*{position:relative;z-index:1}
@@ -407,7 +413,7 @@ overlay.hidden = true;
 overlay.setAttribute('role', 'dialog');
 overlay.setAttribute('aria-modal', 'true');
 overlay.setAttribute('aria-label', 'SLINK PDA Dashboard');
-overlay.innerHTML = `<div class="theme-content-shell">
+overlay.innerHTML = `<div class="gothic-nav-structure" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="gothic-health-roses" aria-hidden="true"></div><div class="theme-content-shell">
 <header class="topbar" data-swipe-close>
 <div class="brand-mark" aria-hidden="true">SL</div>
 <div class="brand"><strong>SLINK Dashboard</strong><span>Shared Live Intelligence NetworK · PDA shell ${BUILD}</span></div>
@@ -716,13 +722,20 @@ if(!Number.isFinite(value)||!Number.isFinite(max)||max<=0)return '100';
 const percent=Math.max(0,Math.min(100,value/max*100));
 return percent>75?'100':percent>50?'075':percent>25?'050':percent>=5?'025':'004';
 }
+function lifeNumber(value){
+if(typeof value==='string')value=value.replaceAll(',','').replace(/[^\d.+-]/g,'');
+const parsed=Number(value);
+return Number.isFinite(parsed)?parsed:NaN;
+}
 function normalizedLifeSnapshot(value){
-const current=Number(value?.current);const maximum=Number(value?.maximum??value?.max);
+const current=lifeNumber(value?.current??value?.value??value?.now);const maximum=lifeNumber(value?.maximum??value?.max??value?.total);
 return Number.isFinite(current)&&Number.isFinite(maximum)&&maximum>0?{current,maximum}:null;
 }
 function visibleLifeSnapshot(){
 const candidates=document.querySelectorAll('[data-stat="life"],[aria-label*="life" i],[title*="life" i],[class*="life" i]');
 for(const element of Array.from(candidates).slice(0,80)){
+const attributed=normalizedLifeSnapshot({current:element.getAttribute?.('aria-valuenow')??element.dataset?.current??element.dataset?.value,maximum:element.getAttribute?.('aria-valuemax')??element.dataset?.maximum??element.dataset?.max});
+if(attributed)return attributed;
 const text=[element.getAttribute?.('aria-label'),element.getAttribute?.('title'),element.textContent].filter(Boolean).join(' ');
 const match=text.match(/([\d,]+)\s*(?:\/|of)\s*([\d,]+)/i);
 if(!match)continue;
@@ -740,6 +753,8 @@ const health=themeHealthState(life?.current,life?.maximum);
 const roses=definition?.assets?.healthRoses?.[health]||'';
 const blood=definition?.assets?.healthBlood?.[health]||'';
 host.dataset.themeHealth=health;
+host.dataset.themeHealthSource=life?'bars-or-page':'unknown';
+if(life){host.dataset.themeHealthCurrent=String(life.current);host.dataset.themeHealthMaximum=String(life.maximum);}else{delete host.dataset.themeHealthCurrent;delete host.dataset.themeHealthMaximum;}
 host.style.setProperty('--s-theme-health-roses-image',roses?`url("${roses}")`:'none');
 host.style.setProperty('--s-theme-health-blood-image',blood?`url("${blood}")`:'none');
 }
@@ -1710,6 +1725,7 @@ refresh:refreshPlayerIntelligence
 });
 host.dataset.slinkReady = 'true';
 })(globalThis);
+
 
 
 

@@ -1,6 +1,6 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.93",
+  "version": "0.4.94",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,3 +9,4 @@
     "test": "node build.mjs --check && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-abroad-stocks.mjs && node test-money-property.mjs && node test-events.mjs && node test-storage-resilience.mjs && node test-alert-snooze-persistence.mjs && node test-shoplifting-unique-parity.mjs && node test-runtime-readiness.mjs && node test-theme-assets.mjs"
   }
 }
+
