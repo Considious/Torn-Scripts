@@ -6,8 +6,8 @@ const shell = fs.readFileSync(new URL('./src/90-shell-bootstrap.part', import.me
 const manifest = JSON.parse(fs.readFileSync(new URL('./source-manifest.json', import.meta.url), 'utf8'));
 const launcher = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
 
-assert.equal(manifest.revision, '0.4.90');
-assert.match(launcher, /@version\s+0\.4\.90/);
+assert.equal(manifest.revision, '0.4.91');
+assert.match(launcher, /@version\s+0\.4\.91/);
 assert.match(core, /THEME_ASSET_ORIGIN/);
 assert.match(core, /normalizeThemeAssets/);
 assert.match(core, /THEME_HEALTH_STATES/);
@@ -50,6 +50,10 @@ assert.match(shell, /height:64px/);
 assert.match(shell, /var\(--s-theme-panel-smoke-image\)/);
 assert.match(shell, /var\(--s-theme-panel-damask-image\)/);
 assert.match(shell, /var\(--s-theme-panel-crimson-image\)/);
+assert.match(shell, /opacity:\.68/);
+assert.match(shell, /visibleLifeSnapshot/);
+assert.match(shell, /background-size:100% 100%/);
+assert.match(shell, /@media\(max-width:700px\).*\.primary-nav\{position:absolute\}/);
 
 console.log('SLINK PDA image-backed theme checks passed.');
 
