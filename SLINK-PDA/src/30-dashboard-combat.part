@@ -431,11 +431,29 @@ writeDataState();
 return value;
 }
 function pdaStoredOwnBattleStats() {
-const shared=dataState.caches.ownBattleStats&&typeof dataState.caches.ownBattleStats==='object'?dataState.caches.ownBattleStats:{};
-const legacy=dataState.caches.muggingOwnBattleStats&&typeof dataState.caches.muggingOwnBattleStats==='object'?dataState.caches.muggingOwnBattleStats:{};
-const cached=Number(shared.checkedAt)>=Number(legacy.checkedAt)?shared:legacy;
-if(Number(cached.total)>0&&(shared.total!==cached.total||shared.level!==cached.level||shared.checkedAt!==cached.checkedAt))dataState.caches.ownBattleStats={total:Number(cached.total),level:Math.max(0,Math.trunc(Number(cached.level)||0)),checkedAt:Math.max(0,Number(cached.checkedAt)||0)};
-return dataState.caches.ownBattleStats||cached;
+const normalize = value => value && typeof value === 'object' && Number(value.total) > 0 ? {
+schema:2,
+total:Number(value.total),
+level:Math.max(0,Math.trunc(Number(value.level)||0)),
+checkedAt:Math.max(0,Number(value.checkedAt)||0),
+source:String(value.source || 'torn-v2-battlestats')
+} : null;
+const durable=normalize(storageRead(OWN_BATTLE_STATS_STORAGE_KEY, null));
+const shared=normalize(dataState.caches.ownBattleStats);
+// The dedicated and shared records are both populated only from the
+// authenticated Torn battlestats endpoint. Choose the fresher of those two.
+// The legacy Mugging cache is migration-only and must never replace a valid
+// shared Torn record, even if an old build gave it a misleading timestamp.
+let current=!durable?shared:!shared?durable:Number(durable.checkedAt)>=Number(shared.checkedAt)?durable:shared;
+if(!current){
+const legacy=normalize(dataState.caches.muggingOwnBattleStats);
+if(legacy)current={...legacy,source:'legacy-torn-cache-migration'};
+}
+if(!current)return {};
+dataState.caches.ownBattleStats=current;
+delete dataState.caches.muggingOwnBattleStats;
+if(!durable||durable.total!==current.total||durable.level!==current.level||durable.checkedAt!==current.checkedAt)storageWrite(OWN_BATTLE_STATS_STORAGE_KEY,current);
+return current;
 }
 async function pdaOwnBattleStats(force = false) {
 const cached = pdaStoredOwnBattleStats();
@@ -443,7 +461,9 @@ if (!force && Number(cached?.total) > 0 && Number(cached?.level) > 0 && Date.now
 const statsPayload = await tornJson('/v2/user?selections=battlestats,basic', 'SLINK PDA Mugging rough assignment', { priority:'high' });
 const total = pdaBattleStatsTotal(statsPayload);
 const level = Math.max(0, Math.trunc(Number(statsPayload?.level ?? statsPayload?.basic?.level) || 0));
-dataState.caches.ownBattleStats = { total, level, checkedAt:Date.now() };
+dataState.caches.ownBattleStats = { schema:2, total, level, checkedAt:Date.now(), source:'torn-v2-battlestats' };
+delete dataState.caches.muggingOwnBattleStats;
+storageWrite(OWN_BATTLE_STATS_STORAGE_KEY, dataState.caches.ownBattleStats);
 writeDataState();
 return total;
 }
@@ -1472,5 +1492,4 @@ const config = snapshot?.config || {};
 const settings = dataState.settings.war;
 return `<div class="war-settings"><label>Faction War mode<select data-field="war-mode"><option value="war" ${(config.mode || settings.mode) === 'war' ? 'selected' : ''}>Real war</option><option value="termed" ${(config.mode || settings.mode) === 'termed' ? 'selected' : ''}>Termed war</option></select></label><label>Faction idle filter<input type="number" min="0" max="60" data-field="war-idle" value="${Number(config.idleMinutes ?? settings.idleMinutes) || 0}"></label><label>Inside-hit cap<input type="number" min="0" max="9999" data-field="war-inside-cap" value="${Number(config.insideHitCap ?? settings.insideHitCap) || 0}"></label><label>Major-window inside gate<select data-field="war-inside-mode"><option value="off" ${(config.insideBlockMode || settings.insideBlockMode) === 'off' ? 'selected' : ''}>Off</option><option value="warn" ${(config.insideBlockMode || settings.insideBlockMode || 'warn') === 'warn' ? 'selected' : ''}>Warning with override</option><option value="block" ${(config.insideBlockMode || settings.insideBlockMode) === 'block' ? 'selected' : ''}>Hard block</option></select></label><div class="war-settings-note">These faction-wide controls apply to every SLINK War user. Major-window gating only activates in Termed mode.</div><button type="button" data-action="save-war-settings">Save War settings</button></div>`;
 }
-
 

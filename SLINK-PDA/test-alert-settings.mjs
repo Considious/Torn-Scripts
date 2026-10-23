@@ -10,7 +10,7 @@ const shell = fs.readFileSync(path.join(directory, 'src/90-shell-bootstrap.part'
 const source = core + alerts + shell;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(core.includes('@version      0.4.97'), 'PDA alert-settings version is missing.');
+assert(core.includes('@version      0.4.98'), 'PDA alert-settings version is missing.');
 assert(source.includes('class="alert-settings"'), 'Alert settings UI is missing.');
 assert(source.includes('data-alert-type='), 'Alert-type controls are missing.');
 assert(source.includes("dataState.settings.alerts.enabledTypes?.[id] === false"), 'Alert generation does not respect disabled types.');
