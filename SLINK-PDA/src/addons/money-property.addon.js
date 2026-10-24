@@ -6,6 +6,64 @@ const ID = 'moneyProperty';
 const SCOPE = 'slink.qol.money-property';
 const CACHE_MS = 15 * 60_000;
 const CATALOG_MS = 7 * 86_400_000;
+
+const BANK_RATE_CACHE_MS = 60 * 60_000;
+const BANK_AMOUNT_LIMIT = 2_000_000_000;
+const BANK_TERMS = Object.freeze([{days:7,label:'1 week'},{days:14,label:'2 weeks'},{days:30,label:'1 month'},{days:60,label:'2 months'},{days:90,label:'3 months'}]);
+function bankMeritLevel(userMerits, meritCatalog) {
+  const merits=userMerits?.merits ?? userMerits;
+  if(!merits || typeof merits!=='object')return null;
+  const named=Object.entries(merits).find(([name])=>/bank[ _-]*interest|nothing for nothing/i.test(name));
+  if(named){const n=Number(named[1]?.level ?? named[1]);return Number.isFinite(n)?Math.max(0,Math.min(10,n)):null;}
+  const upgrades=Array.isArray(merits.upgrades)?merits.upgrades:Array.isArray(merits)?merits:null;
+  if(!upgrades)return null;
+  const definitions=Array.isArray(meritCatalog?.merits)?meritCatalog.merits:[];
+  const definition=definitions.find(row=>/bank.*interest|nothing for nothing/i.test(String(row.name||'')+' '+String(row.description||'')));
+  const entry=upgrades.find(row=>/bank.*interest|nothing for nothing/i.test(String(row.name||'')) || (definition && Number(row.id)===Number(definition.id)));
+  if(!entry)return definition?0:null;
+  const level=Number(entry.level);
+  return Number.isFinite(level)?Math.max(0,Math.min(10,level)):null;
+}
+function bankStockBonus(userStocks, tornStocks) {
+  const catalog=Array.isArray(tornStocks?.stocks)?tornStocks.stocks:Object.values(tornStocks?.stocks||{});
+  const definition=catalog.find(stock=>/^(TCI|TCB)$/i.test(stock.acronym||'') || /bank.*interest/i.test(stock.bonus?.description||''));
+  if(!definition || !Array.isArray(userStocks?.stocks))return {active:null,label:'Bank stock benefit unavailable'};
+  const holding=userStocks.stocks.find(stock=>Number(stock.id)===Number(definition.id));
+  const label=String(definition.acronym||'TCI');
+  if(!holding)return {active:false,label:label+' not owned'};
+  const required=Number(definition.bonus?.requirement);
+  const shares=Number(holding.shares ?? holding.total_shares);
+  if(Number.isFinite(required) && Number.isFinite(shares) && shares<required)return {active:false,label:label+' below benefit threshold'};
+  if(typeof holding.bonus?.available==='boolean')return {active:holding.bonus.available,label:label+(holding.bonus.available?' active · +10% interest':' held · benefit not active yet')};
+  return {active:null,label:label+' benefit activation unavailable'};
+}
+function bankRateRows(body) {
+  const bank=body?.bank;
+  if(!Array.isArray(bank))return [];
+  return bank.filter(row=>BANK_TERMS.some(term=>term.days===Number(row.days)) && row.rate!==null && row.rate!=='' && Number.isFinite(Number(row.rate)) && Number(row.rate)>=0)
+    .map(row=>({days:Number(row.days),baseApr:Number(row.rate)}));
+}
+function bankComparison(input, amount) {
+  const principal=Number(amount);
+  if(!Number.isFinite(principal)||principal<0||principal>BANK_AMOUNT_LIMIT)return {error:'Enter an amount from $0 to $2,000,000,000.',rows:[]};
+  const meritLevel=bankMeritLevel(input?.userMerits,input?.meritCatalog);
+  const stock=bankStockBonus(input?.userStocks,input?.tornStocks);
+  if(meritLevel===null||stock.active===null)return {error:'Your bank interest bonuses could not be verified. Refresh to load your merits and stock benefit.',rows:[],meritLevel,stock};
+  const multiplier=(1+meritLevel*.05)*(stock.active?1.1:1);
+  const rates=bankRateRows(input?.rates);
+  const comparisons=BANK_TERMS.map(term=>{
+    const rate=rates.find(row=>row.days===term.days);
+    if(!rate)return {...term,available:false};
+    // Torn's rate is the base APR for THIS term, expressed as a percent.
+    // Use each term independently; 30/60/90 days are Torn's fixed month terms.
+    const effectiveApr=rate.baseApr*multiplier;
+    const roi=effectiveApr/100*term.days/365;
+    const profit=Math.floor(principal*roi);
+    return {...term,available:true,baseApr:rate.baseApr,effectiveApr,roi,profit,total:principal+profit,perDay:profit/term.days,dailyRoi:roi/term.days};
+  });
+  const best=comparisons.filter(row=>row.available).sort((a,b)=>b.dailyRoi-a.dailyRoi||a.days-b.days)[0]?.days ?? null;
+  return {amount:principal,meritLevel,stock,rows:comparisons,best,error:rates.length?'':'Bank rates are unavailable. Refresh to try again.'};
+}
 const URLS = Object.freeze({
 bank:'https://www.torn.com/city.php#/p=bank',
 loan:'https://www.torn.com/loan.php',
@@ -15,7 +73,7 @@ items:'https://www.torn.com/item.php'
 });
 const defaults = Object.freeze({
 enabled:true, bankLeadHours:2, rentalLeadDays:3, cashierLeadHours:24,
-upkeepThreshold:1000000, loanReminder:true, soundEnabled:false, stockAlerts:{}
+upkeepThreshold:1000000, loanReminder:true, soundEnabled:false, stockAlerts:{}, bankAmount:2000000000
 });
 let busy = false;
 let error = '';
@@ -213,6 +271,16 @@ for (const stock of status.stocks || []) if (config.stockAlerts[stock.alertKey] 
 return result;
 }
 function summaryCard(label,value,detail='') { return '<article class="card"><span class="muted">'+api.escapeHtml(label)+'</span><h2>'+api.escapeHtml(value)+'</h2>'+(detail?'<p>'+api.escapeHtml(detail)+'</p>':'')+'</article>'; }
+function bankResultsHtml(amount) {
+const comparison=bankComparison(cache().bankPlanner,amount);
+if(comparison.error)return api.moduleMessage(comparison.error,'error');
+const pct=value=>(value*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,'')+'%';
+return '<p>Bank interest merits: '+comparison.meritLevel+'/10 (+ '+comparison.meritLevel*5+'%) · '+api.escapeHtml(comparison.stock.label)+'</p><div class="grid">'+comparison.rows.map(row=>'<article class="card"><h3>'+row.label+(row.days===comparison.best?' · Best daily ROI':'')+'</h3>'+(row.available?'<p>APR: '+row.effectiveApr.toFixed(3)+'% · '+row.days+' days</p><p><strong>Profit: '+exactMoney(row.profit)+'</strong><br>Per day: '+exactMoney(row.perDay)+'<br>Total returned: '+exactMoney(row.total)+'<br>Term ROI: '+pct(row.roi)+' · Daily ROI: '+pct(row.dailyRoi)+'</p>':'<p>No rate returned for this term.</p>')+'</article>').join('')+'</div>';
+}
+function bankPlannerHtml() {
+const current=cache();
+return '<article class="card full"><div class="card-head"><div><h2>Bank investment comparison</h2><span class="muted">Rates checked '+api.relativeTime(current.bankPlanner?.fetchedAt)+' · cached for up to 1 hour</span></div>'+api.actionLink('Open Bank',URLS.bank)+'</div><p>Uses Torn’s individual APR for each term, your bank interest merits, and your active bank stock benefit. Estimated daily income is paid at maturity, not daily.</p>'+(current.bankPlanner?.error?api.moduleMessage(current.bankPlanner.error,'error'):'')+'<label>Amount to invest (maximum $2 billion)<input type="number" inputmode="numeric" min="0" max="2000000000" step="1" data-mp-bank-amount value="'+integer(settings().bankAmount ?? 2000000000)+'" style="width:100%;min-height:44px;margin:6px 0 10px"></label><div data-mp-bank-results>'+bankResultsHtml(settings().bankAmount ?? 2000000000)+'</div></article>';
+}
 function render() {
 const root = api.root(ID);
 if (!root) return;
@@ -237,7 +305,7 @@ summaryCard('Available for stocks',money(status.money.availableCash),'Cash + fac
 summaryCard('Property',property?.name||'Unavailable',property?.rentalEndsAt?'Rental ends in '+duration(property.rentalEndsAt-Date.now()):'No rental timer returned')+
 '<article class="card wide"><h2>Reminder settings</h2><div class="form-grid"><label>Bank lead hours<input type="number" min="0" max="168" data-mp-setting="bankLeadHours" value="'+config.bankLeadHours+'"></label><label>Rental lead days<input type="number" min="0" max="30" data-mp-setting="rentalLeadDays" value="'+config.rentalLeadDays+'"></label><label>Cashier-check lead hours<input type="number" min="0" max="168" data-mp-setting="cashierLeadHours" value="'+config.cashierLeadHours+'"></label><label>Upkeep alert threshold<input type="number" min="0" step="1000" data-mp-setting="upkeepThreshold" value="'+config.upkeepThreshold+'"></label></div><label class="check-row"><input type="checkbox" data-mp-setting="loanReminder"'+(config.loanReminder?' checked':'')+'> Remind me to pursue Loan Shark when the achievement state is available</label><label class="check-row"><input type="checkbox" data-mp-setting="soundEnabled"'+(config.soundEnabled?' checked':'')+'> Play sounds for Money &amp; Property alerts</label></article>'+
 '<article class="card wide"><div class="card-head"><div><h2>Financial status</h2><span class="muted">Only fields actually returned by Torn are shown.</span></div></div><p><strong>Bank:</strong> '+(status.bank.amount?money(status.bank.amount)+(status.bank.matured?' · ready to collect':status.bank.maturedAt?' · '+duration(status.bank.maturedAt-Date.now())+' remaining':''):'No active investment returned')+'</p><p><strong>Duke:</strong> '+(status.loan.amount?money(status.loan.amount)+' owed':'No balance returned')+'</p><p><strong>Daily property upkeep:</strong> '+(property?money(property.upkeepPerDay):'Unavailable')+'</p><p><strong>Upkeep owed:</strong> '+(property&&Number.isFinite(property.upkeepOwed)?money(property.upkeepOwed):'Not exposed by Torn API')+'</p><p><strong>Cashier checks:</strong> '+status.cashierChecks.length+'</p><div class="target-actions">'+api.actionLink('Open Bank',URLS.bank)+api.actionLink('Open Property',URLS.property)+api.actionLink('Open Duke',URLS.loan)+'</div></article>'+
-'<article class="card full"><div class="card-head"><div><h2>Income-producing stock benefits</h2><span class="muted">Actual payout value and cadence, sorted by estimated monthly ROI. Non-income perks are omitted.</span></div>'+api.actionLink('Open Stocks',URLS.stocks)+'</div><div class="grid">'+stockRowsHtml+'</div></article></div>';
+bankPlannerHtml()+'<article class="card full"><div class="card-head"><div><h2>Income-producing stock benefits</h2><span class="muted">Actual payout value and cadence, sorted by estimated monthly ROI. Non-income perks are omitted.</span></div>'+api.actionLink('Open Stocks',URLS.stocks)+'</div><div class="grid">'+stockRowsHtml+'</div></article></div>';
 bind(root);
 }
 function bind(root) {
@@ -250,6 +318,10 @@ if (button) void refresh(true);
 root.addEventListener('change', event => {
 const target = event.target;
 const config = settings();
+if(target.matches('[data-mp-bank-amount]')){
+if(target.validity.valid){config.bankAmount=Number(target.value);api.save();}
+return;
+}
 if (target.matches('[data-mp-setting]')) {
 const key = target.dataset.mpSetting;
 config[key] = target.type === 'checkbox' ? target.checked : Number(target.value);
@@ -258,23 +330,45 @@ if (target.matches('[data-mp-stock]')) config.stockAlerts[target.dataset.mpStock
 api.save();
 api.alertsChanged();
 });
+root.addEventListener('input',event=>{
+if(!event.target.matches('[data-mp-bank-amount]'))return;
+const results=root.querySelector('[data-mp-bank-results]');
+if(results)results.innerHTML=bankResultsHtml(event.target.value);
+});
 }
 async function refresh(force = false) {
 const current = cache();
 if (busy) return current.status;
-if (!force && current.status && Date.now()-Number(current.fetchedAt||0)<CACHE_MS) { render(); return current.status; }
+if (!force && current.status && current.bankPlanner && Date.now()-Number(current.fetchedAt||0)<CACHE_MS) { render(); return current.status; }
 busy = true; error = ''; render();
 try {
 await api.ensurePermission(false);
 if (!api.hasScope(SCOPE)) throw new Error('Your SLINK account does not have '+SCOPE+' permission.');
-const [moneyData,propertiesData,currentPropertyData,stocksData,achievements,tornStocks] = await Promise.all([
+const [moneyData,propertiesData,currentPropertyData,stocksData,achievements,tornStocks,userMerits] = await Promise.all([
 api.tornJson('/v2/user/money','SLINK PDA Money and Property'),
 api.tornJson('/v2/user/properties?limit=100','SLINK PDA Money and Property'),
 api.tornJson('/v2/user/property','SLINK PDA current property').catch(()=>({})),
 api.tornJson('/v2/user/stocks','SLINK PDA Money and Property'),
 api.tornJson('/v2/user?selections=honors,medals,merits','SLINK PDA Money and Property').catch(()=>({})),
-api.tornJson('/v2/torn/stocks','SLINK PDA stock benefit catalog')
+api.tornJson('/v2/torn/stocks','SLINK PDA stock benefit catalog'),
+api.tornJson('/v2/user/merits','SLINK PDA bank interest merits').catch(()=>null)
 ]);
+const previousPlanner=current.bankPlanner||{};
+let rates=previousPlanner.rates,meritCatalog=previousPlanner.meritCatalog,fetchedAt=previousPlanner.fetchedAt;
+let bankError='';
+try{
+if(force||!bankRateRows(rates).length||Date.now()-Number(fetchedAt||0)>=BANK_RATE_CACHE_MS){
+const updatedRates=await api.tornJson('/v2/torn/bank','SLINK PDA bank term rates');
+if(!bankRateRows(updatedRates).length)throw new Error('Torn returned no usable bank term rates.');
+rates=updatedRates;
+fetchedAt=Date.now();
+}
+if(!meritCatalog||Date.now()-Number(previousPlanner.meritCatalogAt||0)>=CATALOG_MS){
+meritCatalog=await api.tornJson('/v2/torn/merits','SLINK PDA merit names');
+current.bankPlanner={...previousPlanner,meritCatalogAt:Date.now()};
+}
+}catch(caught){bankError='Bank comparison refresh: '+api.errorMessage(caught);}
+current.bankPlanner={...(current.bankPlanner||previousPlanner),rates,meritCatalog,fetchedAt,userMerits,userStocks:stocksData,tornStocks,error:bankError};
 const user={...achievements,money:moneyData?.money||{},properties:propertiesData?.properties||[],currentProperty:currentPropertyData?.property||currentPropertyData?.properties?.[0]||null,stocks:stocksData?.stocks||[]};
 if (force || !current.itemCatalogAt || Date.now()-current.itemCatalogAt>=CATALOG_MS) {
 const catalogBody = await api.tornJson('/v2/torn/items?sort=ASC','SLINK PDA Money and Property item values');
@@ -301,5 +395,5 @@ global.setInterval(() => {
 if (api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) void refresh(false).catch(() => undefined);
 },60000);
 }
-api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts})});
+api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
 })(globalThis);

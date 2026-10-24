@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.98
+// @version      0.4.99
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.98-direct-source';
+const BUILD = '0.4.99-direct-source';
 const HOST_ID = 'slink-pda-dashboard-host';
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
@@ -47,7 +47,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.98';
+const CLIENT_VERSION = '0.4.99';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_CITY_SHOP_TARGETS = Object.freeze([
 Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
@@ -914,6 +914,11 @@ const legacy = readLocalRecord(DATA_STORAGE_KEY);
 // records carry _savedAt, a genuinely newer fallback may recover interrupted writes.
 return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy], storedRecord(gmValue) || bootstrapped || mirror || legacy || fallback);
 }
+if (key === OWN_BATTLE_STATS_STORAGE_KEY) {
+return [PDA_BOOTSTRAP[key], gmValue, readLocalRecord(key)]
+.filter(value => storedRecord(value) && Number(value.total) > 0)
+.sort((left,right) => Number(right.checkedAt || 0) - Number(left.checkedAt || 0))[0] || fallback;
+}
 if (gmValue !== null) return gmValue;
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
@@ -923,8 +928,9 @@ return fallback;
 }
 function storageWrite(key, value) {
 if (key === DATA_STORAGE_KEY) writeDataMirror(value);
-try { if (typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
-if (key === DATA_STORAGE_KEY && PDA_STORAGE_WRITE_EVENT) {
+const bridged = Boolean(PDA_STORAGE_WRITE_EVENT && (key === DATA_STORAGE_KEY || key === OWN_BATTLE_STATS_STORAGE_KEY));
+try { if (!bridged && typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
+if ((key === DATA_STORAGE_KEY || key === OWN_BATTLE_STATS_STORAGE_KEY) && PDA_STORAGE_WRITE_EVENT) {
 try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, value }) })); } catch {}
 }
 if (key !== DATA_STORAGE_KEY) {
@@ -1146,6 +1152,9 @@ return runtime;
 }
 
 function writeDataState() {
+// Reconcile the independently saved Torn stats before any background page
+// writes its entire cache snapshot back over the primary record.
+if (dataState.caches.ownBattleStats || dataState.caches.muggingOwnBattleStats) pdaStoredOwnBattleStats();
 const latestSettings = readSafeSettingsEnvelope();
 const currentSettings = cloneSettings(dataState.settings);
 const settingsChangedHere = !sameSettingValue(currentSettings, lastPersistedSettings);

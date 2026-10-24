@@ -20,7 +20,7 @@ assert(loader.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-c
 assert(loader.includes('Source download failed; using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
 assert(loader.includes('if (selected === mirror && selected !== primary)'), 'The loader must identify mirror recovery before repairing primary GM storage.');
-assert(loader.includes("globalThis.GM_setValue(DATA_STORAGE_KEY, selected)"), 'The loader must repair primary GM storage with the selected recovered record.');
+assert(loader.includes("await gmWrite(DATA_STORAGE_KEY, selected)"), 'The loader must repair primary GM storage with the selected recovered record.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
 assert(core.includes("settings:JSON.parse(JSON.stringify(dataState.settings || {}))"), 'The backup must include user settings.');
 assert(core.includes("targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))"), 'The backup must include saved targets.');
@@ -36,6 +36,6 @@ assert(shell.includes('uploadDataBackup(false)'), 'PDA startup must schedule the
 assert(dashboard.includes("...[...pdaPlugins.values()].map(plugin => ['quality-of-life', String(plugin.id)])"), 'Permission gates must include dynamically registered Quality of Life modules.');
 assert(dashboard.includes('const visibleTab = allowed.includes(state[stateKey]) ? state[stateKey] : allowed[0];'), 'Unavailable modules may use a visible fallback without overwriting the saved tab.');
 assert(!dashboard.includes('if (!allowed.includes(state[stateKey])) state[stateKey] = allowed[0];'), 'Permission refreshes must never overwrite the saved last tab.');
-assert(shell.includes("applyPermissionGates();\nif (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);"), 'Plugin registration must restore the exact saved Quality of Life module after applying its permission gate.');
+assert(/applyPermissionGates\(\);\s+if \(state\.qualityOfLifeTab === id\) selectSubpage\('qualityOfLife', id, false\);/.test(shell), 'Plugin registration must restore the exact saved Quality of Life module after applying its permission gate.');
 
 console.log('PDA durable local storage and API-key-free backup wiring are verified.');

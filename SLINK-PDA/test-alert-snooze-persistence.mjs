@@ -11,8 +11,7 @@ const loader = read('SLINK_PDA_Dashboard.user.js');
 const manifest = JSON.parse(read('source-manifest.json'));
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(loader.includes('@version      0.4.84'), 'PDA loader version was not bumped.');
-assert(manifest.revision === '0.4.84', 'Direct-source manifest revision was not bumped.');
+assert(loader.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim() === manifest.revision, 'PDA loader and manifest versions must agree.');
 assert(core.includes("const ALERT_SNOOZE_STORAGE_KEY = 'slink-pda-dashboard:alert-snoozes:v1';"), 'Dedicated alert snooze storage is missing.');
 assert(core.includes('const alertSnoozes = mergeAlertSnoozes('), 'Stored alert snoozes are not merged during startup.');
 assert(core.includes('snoozedUntil:alertSnoozes'), 'Merged alert snoozes are not applied to alert settings.');

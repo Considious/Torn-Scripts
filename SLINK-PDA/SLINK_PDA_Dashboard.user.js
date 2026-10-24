@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.98
+// @version      0.4.99
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -36,6 +36,8 @@
   const HOST_ID = 'slink-pda-dashboard-host';
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
   const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
+  const OWN_BATTLE_STATS_STORAGE_KEY = 'slink-pda-dashboard:own-battle-stats:v1';
+  const BRIDGED_STORAGE_KEYS = new Set([DATA_STORAGE_KEY, OWN_BATTLE_STATS_STORAGE_KEY]);
   const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';
   const CACHE_RETRY_KEY = 'slink-pda-dashboard:runtime-cache-retry:v1';
   const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
@@ -84,38 +86,55 @@
     } catch {}
   }
 
-  function readPersistedData() {
+  async function readPersistedData() {
     let primary = null;
     try {
-      const value = typeof globalThis.GM_getValue === 'function' ? globalThis.GM_getValue(DATA_STORAGE_KEY, {}) : {};
-      if (!(value && typeof value.then === 'function') && isRecord(value)) primary = value;
+      const value = await gmRead(DATA_STORAGE_KEY, {});
+      if (isRecord(value)) primary = value;
     } catch {}
     const mirror = readMirror();
     let selected = hasData(primary) ? primary : mirror || {};
     if (hasData(mirror) && savedAt(mirror) > savedAt(selected)) selected = mirror;
     if (hasData(selected)) writeMirror(selected);
     if (selected === mirror && selected !== primary) {
-      try { if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, selected); } catch {}
+      await gmWrite(DATA_STORAGE_KEY, selected);
     }
     return selected;
   }
 
-  function collectBootstrap() {
-    return { [DATA_STORAGE_KEY]:readPersistedData(), storageWriteEvent:STORAGE_WRITE_EVENT };
+  async function collectBootstrap() {
+    const [data, primaryStats] = await Promise.all([readPersistedData(), gmRead(OWN_BATTLE_STATS_STORAGE_KEY, null)]);
+    let localStats = null;
+    try { localStats = JSON.parse(globalThis.localStorage?.getItem(OWN_BATTLE_STATS_STORAGE_KEY) || 'null'); } catch {}
+    const stats = [primaryStats, localStats, data?.caches?.ownBattleStats]
+      .filter(value => isRecord(value) && Number(value.total) > 0)
+      .sort((a,b) => Number(b.checkedAt || 0) - Number(a.checkedAt || 0))[0] || null;
+    return { [DATA_STORAGE_KEY]:data, [OWN_BATTLE_STATS_STORAGE_KEY]:stats, storageWriteEvent:STORAGE_WRITE_EVENT };
   }
 
   function installStorageBridge() {
+    let pendingWrite = Promise.resolve();
     document.addEventListener(STORAGE_WRITE_EVENT, event => {
       try {
         const payload = JSON.parse(String(event?.detail || ''));
-        if (!isRecord(payload) || payload.key !== DATA_STORAGE_KEY) return;
+        if (!isRecord(payload) || !BRIDGED_STORAGE_KEYS.has(payload.key)) return;
         if (payload.remove) {
+          if (payload.key !== DATA_STORAGE_KEY) return;
           try { globalThis.localStorage?.removeItem(DATA_MIRROR_KEY); globalThis.localStorage?.removeItem(DATA_STORAGE_KEY); } catch {}
           if (typeof globalThis.GM_deleteValue === 'function') globalThis.GM_deleteValue(DATA_STORAGE_KEY);
           return;
         }
-        writeMirror(payload.value);
-        if (typeof globalThis.GM_setValue === 'function') globalThis.GM_setValue(DATA_STORAGE_KEY, payload.value);
+        if (payload.key === DATA_STORAGE_KEY) writeMirror(payload.value);
+        else try { globalThis.localStorage?.setItem(payload.key, JSON.stringify(payload.value)); } catch {}
+        // Native PDA storage calls can be asynchronous. Preserve write order
+        // so a slow old write cannot finish after the fresh battle-stat save.
+        pendingWrite = pendingWrite.then(async () => {
+          if (payload.key === OWN_BATTLE_STATS_STORAGE_KEY) {
+            const previous = await gmRead(payload.key, null);
+            if (Number(previous?.checkedAt || 0) > Number(payload.value?.checkedAt || 0)) return;
+          }
+          await gmWrite(payload.key, payload.value);
+        }).catch(() => undefined);
       } catch {}
     });
   }
@@ -244,7 +263,7 @@
     if (currentHost) currentHost.dataset.slinkAddonsReady = 'false';
     const sources = ['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];
     if (!runtimeReady) {
-      const bootstrap = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(collectBootstrap()) + ';';
+      const bootstrap = 'globalThis.__SLINK_PDA_BOOTSTRAP__=' + JSON.stringify(await collectBootstrap()) + ';';
       sources.push(bootstrap + '\n' + bundle.runtimeSource.split('###PDA-APIKEY###').join(PDA_API_KEY) + '\n//# sourceURL=SLINK_PDA_Direct_Runtime.js\n');
     }
     bundle.addonSources.forEach((source, index) => {
