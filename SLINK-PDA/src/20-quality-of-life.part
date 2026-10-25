@@ -536,8 +536,8 @@ return travelRecord(current,now);
 }
 async function landingMarketPrices(now=Date.now()){
 const market=marketRuntime();
-const force=!market.catalog?.items?.length||now-Number(market.catalog.fetchedAt||0)>=MARKET_CACHE_MS;
-const catalog=await marketEnsureCatalog(market,force);
+const catalog=await pdaSharedData().catalog({key:currentApiKey(),maxAgeMs:MARKET_CACHE_MS,needPrices:true});
+market.catalog=catalog;
 dataState.caches.market=market;
 return Object.fromEntries((catalog.items||[]).filter(item=>Number(item.id)>0&&Number(item.marketPrice)>0).map(item=>[Number(item.id),Number(item.marketPrice)]));
 }

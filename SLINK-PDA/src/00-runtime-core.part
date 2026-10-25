@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.104
+// @version      0.4.105
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.104-audit-test3';
+const BUILD = '0.4.105-audit-test4';
 // PDA visibility is authoritative; WebView hasFocus() is not reliable.
 let pdaPagePresent = true;
 let pdaActivityGeneration = 0;
@@ -65,7 +65,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.104';
+const CLIENT_VERSION = '0.4.105';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_CITY_SHOP_TARGETS = Object.freeze([
 Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
@@ -1480,7 +1480,7 @@ const ledger = readApiLedger();
 return { count:ledger.events.length, limit:API_LIMIT, remaining:Math.max(0, API_LIMIT - ledger.events.length) };
 }
 async function tornJson(path, comment = 'SLINK PDA Dashboard', options = {}) {
-const key = currentApiKey();
+const key = options.apiKey || currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
@@ -1489,6 +1489,37 @@ const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${k
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
 return result;
 }
+
+let sharedDataProvider = null;
+function pdaSharedData() {
+if (sharedDataProvider) return sharedDataProvider;
+sharedDataProvider = global.SLINK_SHARED_DATA.create({
+read:() => {
+const cached=dataState.caches.sharedProviders || {};
+const durable=storageRead(OWN_BATTLE_STATS_STORAGE_KEY,null);
+const personal={...(cached.personal||{})};
+for(const [audience,record] of Object.entries(durable?.sharedProviderPersonal||{})){
+if(!personal[audience] || record.statsAt>personal[audience].statsAt)personal[audience]=record;
+}
+return {...cached,personal};
+},
+write:value => {
+dataState.caches.sharedProviders=value;
+const records=Object.values(value.personal||{}).sort((a,b)=>b.statsAt-a.statsAt);
+if(records.length){
+const latest=records[0];
+const durable=storageRead(OWN_BATTLE_STATS_STORAGE_KEY,null);
+storageWrite(OWN_BATTLE_STATS_STORAGE_KEY,{...(durable||{}),...latest,sharedProviderPersonal:value.personal});
+dataState.caches.ownBattleStats={...latest,sharedProviderPersonal:value.personal};
+}
+writeDataState();
+},
+normalizeItems:catalogItems,
+request:(kind,key)=>tornJson(kind==='personal'?'/v2/user?selections=battlestats,basic':'/v2/torn/items?cat=All&sort=ASC','SLINK PDA shared data',{priority:'high',apiKey:key})
+});
+return sharedDataProvider;
+}
+
 function validPlayerIntelligenceId(value) {
 const parsed = Number(value);
 return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -1516,6 +1547,43 @@ function playerIntelligenceUntilMilliseconds(record = {}) {
 const seconds = normalizePlayerIntelligenceUntil(record.until ?? record.statusUntil);
 return seconds > 0 ? seconds * 1000 : 0;
 }
+
+  function intelligenceFieldMeta(input, existing = {}) {
+    if (input.fieldMeta && typeof input.fieldMeta === 'object') return {...input.fieldMeta};
+    const at=Number(input.observedAt ?? input.checkedAt ?? input.updatedAt)||Date.now();
+    const source=String(input.source||'unknown');
+    const meta={};
+    const supplied={
+      status:input.state ?? input.status?.state,
+      name:input.name, level:input.level,
+      fairFight:input.fairFight,
+      battleStatsEstimate:input.battleStatsEstimate ?? input.bsEstimate,
+      bountyCount:input.bountyCount ?? input.bounty_count,
+      bountyTotal:input.bountyTotal ?? input.bounty_total
+    };
+    for(const [field,value] of Object.entries(supplied)){
+      if(value!==null && value!==undefined && value!=='')meta[field]={at,source};
+    }
+    return {...(existing.fieldMeta||{}),...meta};
+  }
+  function mergeIntelligenceFields(previous, next) {
+    const merged={...previous,fieldMeta:{...(previous.fieldMeta||{})}};
+    for(const field of ['status','name','level','fairFight','battleStatsEstimate','bountyCount','bountyTotal']){
+      const metadata=next.fieldMeta?.[field];
+      if(!metadata || Number(metadata.at)<Number(previous.fieldMeta?.[field]?.at||0))continue;
+      merged.fieldMeta[field]={...metadata};
+      if(field==='status'){
+        for(const key of ['state','until','description','source','observedAt'])merged[key]=next[key];
+      }else { merged[field]=next[field]; if(field==='fairFight')merged.fairFightContext=next.fairFightContext; }
+    }
+    merged.checkedAt=Math.max(previous.checkedAt,next.checkedAt);
+    merged.lastSeenMugged=Math.max(previous.lastSeenMugged,next.lastSeenMugged);
+    merged.lastDomObservedAt=Math.max(previous.lastDomObservedAt||0,next.lastDomObservedAt||0);
+    merged.lastApiCheckAt=Math.max(previous.lastApiCheckAt||0,next.lastApiCheckAt||0);
+    merged.sources=[...new Set([...previous.sources,...next.sources])].sort();
+    return merged;
+  }
+
 function normalizePlayerIntelligenceRecord(input = {}, existing = {}) {
 const playerId = validPlayerIntelligenceId(
 input.playerId ?? input.player_id ?? input.targetId ?? input.id ??
@@ -1551,6 +1619,8 @@ Number(existing.lastApiCheckAt) || 0
 const fairFightValue = input.fairFight ?? existing.fairFight;
 const battleStatsValue = input.battleStatsEstimate ?? input.bsEstimate ?? existing.battleStatsEstimate;
 return {
+fairFightContext:input.fairFightContext ?? existing.fairFightContext ?? null,
+fieldMeta:intelligenceFieldMeta(input,existing),
 playerId,
 id:playerId,
 name:String(input.name ?? existing.name ?? `Player ${playerId}`).slice(0, 80),
@@ -1559,12 +1629,12 @@ state,
 until,
 description,
 source,
-observedAt,
+observedAt:Number(intelligenceFieldMeta(input,existing).status?.at)||0,
 checkedAt:Math.max(0, Number(input.checkedAt) || observedAt),
 lastDomObservedAt,
 lastApiCheckAt,
-fairFight:Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
-battleStatsEstimate:Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
+fairFight:fairFightValue != null && Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
+battleStatsEstimate:battleStatsValue != null && Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
 bountyCount:Math.max(0, Math.trunc(Number(input.bountyCount ?? input.bounty_count ?? existing.bountyCount) || 0)),
 bountyTotal:Math.max(0, Number(input.bountyTotal ?? input.bounty_total ?? existing.bountyTotal) || 0),
 lastSeenMugged:Math.max(0, Number(input.lastSeenMugged ?? existing.lastSeenMugged) || 0),
@@ -1576,37 +1646,9 @@ source
 };
 }
 function mergePlayerIntelligenceRecord(existing = null, incoming = {}) {
-const previous = existing && typeof existing === 'object'
-? normalizePlayerIntelligenceRecord(existing)
-: null;
-const next = normalizePlayerIntelligenceRecord(incoming, previous || {});
-if (!previous) return next;
-const useIncomingStatus = next.observedAt >= previous.observedAt;
-const hasOwn = key => Object.prototype.hasOwnProperty.call(incoming, key);
-const merged = {
-...previous,
-playerId:next.playerId,
-id:next.playerId,
-name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
-level:next.level || previous.level,
-fairFight:next.fairFight ?? previous.fairFight,
-battleStatsEstimate:next.battleStatsEstimate ?? previous.battleStatsEstimate,
-bountyCount:hasOwn('bountyCount') || hasOwn('bounty_count') ? next.bountyCount : previous.bountyCount,
-bountyTotal:hasOwn('bountyTotal') || hasOwn('bounty_total') ? next.bountyTotal : previous.bountyTotal,
-lastSeenMugged:Math.max(previous.lastSeenMugged, next.lastSeenMugged),
-checkedAt:Math.max(previous.checkedAt, next.checkedAt),
-observedAt:Math.max(previous.observedAt, next.observedAt),
-lastDomObservedAt:Math.max(previous.lastDomObservedAt || 0, next.lastDomObservedAt || 0),
-lastApiCheckAt:Math.max(previous.lastApiCheckAt || 0, next.lastApiCheckAt || 0),
-sources:[...new Set([...previous.sources, ...next.sources])].sort()
-};
-if (useIncomingStatus) {
-merged.state = next.state;
-merged.until = next.until;
-merged.description = next.description;
-merged.source = next.source;
-}
-return merged;
+const previous=existing && typeof existing==='object'?normalizePlayerIntelligenceRecord(existing):null;
+const next=normalizePlayerIntelligenceRecord(incoming);
+return previous?mergeIntelligenceFields(previous,next):next;
 }
 function effectivePlayerIntelligenceStatus(record = {}, now = Date.now()) {
 const normalized = normalizePlayerIntelligenceRecord(record);
@@ -1676,8 +1718,8 @@ level:profile?.level,
 state:status?.state,
 until:status?.until,
 description:status?.description,
-bountyCount:bounties.length,
-bountyTotal:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
+bountyCount:Array.isArray(profile?.bounties)?bounties.length:undefined,
+bountyTotal:!Array.isArray(profile?.bounties)?undefined:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
 source:'torn-api',
 observationKind:'api',
 lastApiCheckAt:now,

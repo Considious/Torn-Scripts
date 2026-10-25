@@ -233,11 +233,7 @@ if (body?.error) throw new Error(body.error.message || body.error.error || 'Torn
 return body;
 }
 async function marketEnsureCatalog(runtime, force = false) {
-if (!force && runtime.catalog?.items?.length && Date.now() - Number(runtime.catalog.fetchedAt) < 86_400_000) return runtime.catalog;
-const body = await marketTornJson(`${URLS.torn}/v2/torn/items?cat=All&sort=ASC`, '/v2/torn/items', 'high');
-const items = catalogItems(body);
-if (!items.length) throw new Error('Torn returned an empty item catalog.');
-runtime.catalog = { fetchedAt:Date.now(), items };
+runtime.catalog=await pdaSharedData().catalog({key:currentApiKey(),force,maxAgeMs:86_400_000,needPrices:true});
 return runtime.catalog;
 }
 function marketDue(source, force) {

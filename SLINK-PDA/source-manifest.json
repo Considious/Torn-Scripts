@@ -1,9 +1,10 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "0.4.104",
+  "revision": "0.4.105",
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
+    "src/00-shared-data.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
     "src/20-quality-of-life.part",

@@ -441,6 +441,7 @@ return value;
 }
 function pdaStoredOwnBattleStats() {
 const normalize = value => value && typeof value === 'object' && Number(value.total) > 0 ? {
+...value,
 schema:2,
 total:Number(value.total),
 level:Math.max(0,Math.trunc(Number(value.level)||0)),
@@ -459,22 +460,16 @@ const legacy=normalize(dataState.caches.muggingOwnBattleStats);
 if(legacy)current={...legacy,source:'legacy-torn-cache-migration'};
 }
 if(!current)return {};
+const accountId=Number(dataState.sessions?.permission?.userId)||0;
+if(current.accountId && accountId && Number(current.accountId)!==accountId)return {};
 dataState.caches.ownBattleStats=current;
 delete dataState.caches.muggingOwnBattleStats;
 if(!durable||durable.total!==current.total||durable.level!==current.level||durable.checkedAt!==current.checkedAt)storageWrite(OWN_BATTLE_STATS_STORAGE_KEY,current);
 return current;
 }
 async function pdaOwnBattleStats(force = false) {
-const cached = pdaStoredOwnBattleStats();
-if (!force && Number(cached?.total) > 0 && Number(cached?.level) > 0 && Date.now() - Number(cached?.checkedAt || 0) < MUGGING_OWN_STATS_TTL_MS) return Number(cached.total);
-const statsPayload = await tornJson('/v2/user?selections=battlestats,basic', 'SLINK PDA Mugging rough assignment', { priority:'high' });
-const total = pdaBattleStatsTotal(statsPayload);
-const level = Math.max(0, Math.trunc(Number(statsPayload?.level ?? statsPayload?.basic?.level) || 0));
-dataState.caches.ownBattleStats = { schema:2, total, level, checkedAt:Date.now(), source:'torn-v2-battlestats' };
-delete dataState.caches.muggingOwnBattleStats;
-storageWrite(OWN_BATTLE_STATS_STORAGE_KEY, dataState.caches.ownBattleStats);
-writeDataState();
-return total;
+const record=await pdaSharedData().personal({key:currentApiKey(),force,maxAgeMs:MUGGING_OWN_STATS_TTL_MS,requireLevel:true});
+return record.total;
 }
 function queueMuggingContributionObservation(playerId, record, mode) {
 const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object' ? dataState.caches.muggingPendingSync : {};
@@ -498,7 +493,7 @@ level:Math.max(0, Number(record.level) || 0),
 bountyCount:Math.max(0, Math.trunc(Number(record.bountyCount) || 0)),
 bountyTotal:Math.max(0, Number(record.bountyTotal) || 0),
 battleStatsEstimate:Number.isFinite(Number(record.battleStatsEstimate)) ? Number(record.battleStatsEstimate) : null,
-fairFight:Number.isFinite(Number(record.fairFight)) ? Number(record.fairFight) : null
+fairFight:null // Observer-dependent values are not portable contributor intelligence.
 };
 }
 async function syncMuggingContributorReports(force = false) {
@@ -662,8 +657,8 @@ return {
 updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
 estimateKind:String((value.estimateKind ?? value.estimate_kind) || 'rough'),
 estimateSource:String((value.estimateSource ?? value.estimate_source) || 'cached battle-stat estimate'),
-userBattleStats:Math.max(0, Number(ownStats?.total ?? value.userBattleStats ?? value.user_battle_stats) || 0),
-userLevel:Math.max(0, Math.trunc(Number(ownStats?.level ?? value.userLevel ?? value.user_level) || 0)),
+userBattleStats:Math.max(0, Number(ownStats?.total) || 0),
+userLevel:Math.max(0, Math.trunc(Number(ownStats?.level) || 0)),
 pool:{
 total:Math.max(0, Number(value.pool?.total) || 0),
 estimable:Math.max(0, Number(value.pool?.estimable) || 0),
