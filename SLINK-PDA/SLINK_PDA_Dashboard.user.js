@@ -29,7 +29,7 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/80a283caca38eaf967b0399b136113a42151975c/SLINK-PDA/';
+  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/36dd3c8c15246e1c931882c2f44f07112981089a/SLINK-PDA/';
   const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
