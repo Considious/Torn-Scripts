@@ -1,8 +1,8 @@
-# SLINK PDA audit tester build — candidate 2
+# SLINK PDA audit tester build — candidate 3
 
 This is an early testing build. The stable script and main branch have not changed. The full audit plan is not implemented yet.
 
-- Version: **0.4.102**, dashboard build **0.4.102-audit-test2**.
+- Version: **0.4.104**, dashboard build **0.4.104-audit-test3**.
 - Branch: `audit/test-foundation`.
 - [Install the PDA tester script](https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js).
 - [One running tester changelog for extension and PDA](https://github.com/Considious/SLINK-Browser-Extension/blob/audit/test-foundation/TESTER-CHANGELOG.md).

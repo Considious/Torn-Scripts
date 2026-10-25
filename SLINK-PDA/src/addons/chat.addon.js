@@ -616,7 +616,8 @@
 
   function armMacro(macro, root, composer) {
     clearArmed();
-    const message = normalizeAnchorHrefs(expandMessageTemplate(macro.message));
+    const rawMessage = normalizeAnchorHrefs(expandMessageTemplate(macro.message));
+    const message = isNewsletterRoot(root) ? rawMessage : globalThis.SLINK_NORMALIZE_CHAT_HTML(rawMessage);
     if (profileTokenPresent(message)) {
       menuStatus = 'No profile was found on this page. Open the player profile and try again.';
       renderMenu();

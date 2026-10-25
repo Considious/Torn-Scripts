@@ -91,6 +91,9 @@ if (dashboardOpen && !document.hidden) void loadActiveModule(false);
 function protectEditableState(root) {
 const selector = 'input,textarea,select,[contenteditable="true"],details';
 const dirty = new Map();
+const revisions = new Map();
+const tickets = new WeakMap();
+let revision = 0;
 const commitAction = /(?:^|[-_\\s])(save|submit|apply|update|confirm|cancel|reset|clear|remove|delete)(?:$|[-_\\s])/i;
 let focusedKey = '';
 let restoring = false;
@@ -138,7 +141,10 @@ const values = new Set(state.values || []);
 function remember(control) {
 const key = identity(control);
 if (!key) return;
-dirty.set(key, take(control));
+const next = take(control);
+const semantic = value => JSON.stringify(value && { kind:value.kind, value:value.value, checked:value.checked, values:value.values, open:value.open });
+if (semantic(next) !== semantic(dirty.get(key))) revisions.set(key, ++revision);
+dirty.set(key, next);
 if (control === (root.activeElement || document.activeElement)) focusedKey = key;
 }
 function clearScope(element) {
@@ -146,6 +152,44 @@ const prefix = scope(element?.querySelector?.(selector) || element);
 for (const key of dirty.keys()) if (key.startsWith(`${prefix}|`)) dirty.delete(key);
 if (focusedKey.startsWith(`${prefix}|`)) focusedKey = '';
 }
+    function keysIn(element) {
+      const controls = [...(element?.querySelectorAll?.(selector) || [])];
+      if (element?.matches?.(selector)) controls.unshift(element);
+      return [...new Set(controls.map(control => identity(control)).filter(Boolean))];
+    }
+
+    function begin(element = root) {
+      const ticket = Object.freeze({});
+      tickets.set(ticket, new Map(keysIn(element).map(key => [key, revisions.get(key) || 0])));
+      return ticket;
+    }
+
+    function isCurrent(ticket) {
+      const captured = tickets.get(ticket);
+      return Boolean(captured && [...captured].every(([key, version]) => (revisions.get(key) || 0) === version));
+    }
+
+    function commit(ticket) {
+      const captured = tickets.get(ticket);
+      if (!captured) return false;
+      const current = isCurrent(ticket);
+      for (const [key, version] of captured) {
+        if ((revisions.get(key) || 0) !== version) continue;
+        dirty.delete(key);
+        if (focusedKey === key) focusedKey = '';
+      }
+      tickets.delete(ticket);
+      return current;
+    }
+
+    function cancel(element = root) {
+      for (const key of keysIn(element)) {
+        revisions.set(key, ++revision);
+        dirty.delete(key);
+        if (focusedKey === key) focusedKey = '';
+      }
+    }
+
 function restore() {
 scheduled = false;
 if (restoring || (!dirty.size && !Object.keys(state.panels || {}).length)) return;
@@ -206,15 +250,16 @@ if (dirty.has(focusedKey)) remember(event.target);
 }, true);
 root.addEventListener('focusout', event => {
 if (!event.target?.matches?.(selector)) return;
-const key = identity(event.target);
+const control = event.target;
+const key = identity(control);
 queueMicrotask(() => {
-if (event.target.isConnected && focusedKey === key && (root.activeElement || document.activeElement) !== event.target) focusedKey = '';
+if (control.isConnected && focusedKey === key && (root.activeElement || document.activeElement) !== control) focusedKey = '';
 });
 }, true);
 root.addEventListener('click', event => {
 const action = event.target?.closest?.('button,input[type="submit"],input[type="reset"],[role="button"]');
 const signature = action ? [action.id,action.name,action.dataset?.action,action.value,action.textContent].filter(Boolean).join(' ') : '';
-if (signature && commitAction.test(signature)) global.setTimeout(() => clearScope(action), 0);
+if (signature && commitAction.test(signature) && !action?.closest?.('[data-ui-explicit-commit="true"]')) global.setTimeout(() => clearScope(action), 0);
 }, true);
 // Ignore ordinary text-only updates (countdowns, "updated ago" labels, and
 // similar).  They do not replace an editor and must not cause a full control
@@ -223,7 +268,7 @@ const observer = new MutationObserver(mutations => {
 if (mutationNeedsRestore(mutations)) scheduleRestore();
 });
 observer.observe(root, { childList:true, subtree:true });
-return Object.freeze({ clear:clearScope, restore, stop:() => observer.disconnect() });
+return Object.freeze({ begin, commit, cancel, isCurrent, clear:clearScope, restore, stop:() => observer.disconnect() });
 }
 const moduleRenderGuards = new WeakMap();
 const nativeInnerHtml = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
@@ -1172,6 +1217,8 @@ button.disabled = false;
 })();
 }
 if (action === 'toggle-target-polling') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-polling]');
+if (form) editableState.cancel(form);
 moduleState.targetList.pollingOpen = !moduleState.targetList.pollingOpen;
 moduleState.targetList.error = '';
 moduleState.targetList.notice = '';
@@ -1179,6 +1226,7 @@ renderTargetList();
 }
 if (action === 'save-target-polling') {
 const root = moduleRoot('targetList');
+const ticket = editableState.begin(root?.querySelector('[data-target-polling]'));
 const previous = targetPollingSettings();
 const next = {
 enabled:root?.querySelector('[data-field="target-poll-enabled"]')?.checked === true,
@@ -1200,10 +1248,13 @@ moduleState.targetList.notice = normalized.enabled
 ? `Rolling polling enabled across ${normalized.intervalMinutes} minutes.`
 : 'Automatic Target List polling disabled.';
 writeDataState();
+editableState.commit(ticket);
 renderTargetList();
 void runTargetPolling();
 }
 if (action === 'toggle-target-list-form') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
 moduleState.targetList.formOpen = !moduleState.targetList.formOpen;
 moduleState.targetList.editingId = 0;
 moduleState.targetList.error = '';
@@ -1211,6 +1262,8 @@ moduleState.targetList.notice = '';
 renderTargetList();
 }
 if (action === 'cancel-target-list') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
 moduleState.targetList.formOpen = false;
 moduleState.targetList.editingId = 0;
 moduleState.targetList.error = '';
@@ -1233,6 +1286,7 @@ global.setTimeout(() => { if (button.isConnected) button.textContent = 'Save Tar
 }
 if (action === 'save-target-list') {
 const root = moduleRoot('targetList'), state = moduleState.targetList;
+const ticket = editableState.begin(root?.querySelector('[data-target-editor]'));
 try {
 const playerId = Number(root?.querySelector('[data-field="target-list-id"]')?.value || state.editingId);
 const tags = [...(root?.querySelectorAll('[data-target-list-tag]:checked') || [])].map(node => node.dataset.targetListTag);
@@ -1247,6 +1301,9 @@ source:'manual',
 sourceLabel:'Manual'
 };
 if (state.editingId) updatePdaTarget(payload); else addPdaTarget(payload);
+// The existing synchronous local model accepted the edit. This is not a new
+// native-storage transaction or a claim of cross-WebView acknowledgement.
+editableState.commit(ticket);
 state.formOpen = false; state.editingId = 0; state.error = ''; state.notice = 'Target saved.';
 } catch (error) { state.error = errorMessage(error); }
 renderTargetList();
@@ -1267,6 +1324,8 @@ void runTargetStakeouts();
 }
 }
 if (action === 'edit-target-list') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 moduleState.targetList.editingId = playerId;
 moduleState.targetList.formOpen = true;
@@ -1278,6 +1337,11 @@ if (action === 'remove-target-list') {
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 if (playerId && global.confirm('Remove this player from Target List?')) {
 removePdaTarget(playerId);
+if (Number(moduleState.targetList.editingId) === playerId) {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
+moduleState.targetList.editingId = 0; moduleState.targetList.formOpen = false;
+}
 moduleState.targetList.error = '';
 moduleState.targetList.notice = 'Target removed.';
 renderTargetList();
