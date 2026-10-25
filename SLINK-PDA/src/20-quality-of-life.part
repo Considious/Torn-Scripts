@@ -1,7 +1,16 @@
+let racingHighlightedNode = null;
+let racingRecommendationLabel = null;
+let racingRecommendationKey = '';
+let racingAssistantRoot = null;
+let racingAssistantSignature = '';
 function renderRacingAssistant() {
 const root = moduleRoot('racing')?.querySelector('[data-racing-assistant]');
 if (!root) return;
 const value = racingAssistant;
+const signature = JSON.stringify(value);
+if (root === racingAssistantRoot && signature === racingAssistantSignature) return;
+racingAssistantRoot = root;
+racingAssistantSignature = signature;
 const tone = value.status === 'ready' ? 'ready' : ['not-completed','not-found','invalid-nickname'].includes(value.status) ? 'warn' : 'normal';
 root.dataset.tone = tone;
 root.innerHTML = `<strong>${escapeHtml(value.track ? `${value.track}: ${value.message}` : value.message)}</strong>${value.nickname ? `<span>Expected car: ${escapeHtml(value.nickname)}</span>` : '<span>Uses Torn page text only; no API calls.</span>'}`;
@@ -11,48 +20,71 @@ racingAssistant = next;
 renderRacingAssistant();
 }
 function scanOfficialRaceDom() {
-clearRacingHighlight();
+if (!racingDomActive()) { clearRacingHighlight(); return; }
 const trackNode = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_TRACK_SELECTOR)]
 .find(node => /-\s*Official race\s*$/i.test(String(node.textContent || '').trim()));
 const track = parseOfficialRacingTrack(trackNode?.textContent);
 if (!track) {
+clearRacingHighlight();
 setRacingAssistant({ status:'waiting', track:null, nickname:'', message:'Open an official race to receive a recommendation.' });
 return;
 }
 const recommendation = racingRecommendationForTrack(track, racingSettings());
 if (recommendation.status === 'not-completed') {
+clearRacingHighlight();
 setRacingAssistant({ ...recommendation, message:'Recommended build is not marked complete.' });
 return;
 }
 if (recommendation.status === 'invalid-nickname') {
+clearRacingHighlight();
 setRacingAssistant({ ...recommendation, message:'Saved nickname is invalid. Fix it in the Racing guide.' });
 return;
 }
 if (recommendation.status !== 'ready') {
+clearRacingHighlight();
 setRacingAssistant({ ...recommendation, message:'No saved Racing build is configured for this track.' });
 return;
 }
 const nodes = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_CAR_NAME_SELECTOR)];
 const match = matchVisibleRacingCar(recommendation.nickname, nodes.map(node => ({ name:node.textContent, node })));
 if (!match?.node) {
+clearRacingHighlight();
 setRacingAssistant({ ...recommendation, status:'not-found', message:"Recommended car not found in Torn's visible car list." });
 return;
 }
 ensureRacingHighlightStyle();
+const key = `${track}|${recommendation.nickname}`;
+if (racingHighlightedNode === match.node && racingRecommendationLabel?.isConnected && racingRecommendationKey === key) {
+match.node.classList.add(RACING_HIGHLIGHT_CLASS);
+return;
+}
+clearRacingHighlight();
+racingHighlightedNode = match.node;
+racingRecommendationKey = key;
 match.node.classList.add(RACING_HIGHLIGHT_CLASS);
 const label = document.createElement('span');
+racingRecommendationLabel = label;
 label.setAttribute(RACING_LABEL_ATTRIBUTE, 'true');
 label.textContent = 'SLINK Recommended';
 match.node.after(label);
-try { match.node.scrollIntoView({ block:'nearest', behavior:'smooth' }); } catch {}
 setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
 }
 function scheduleRacingScan(delay = 80) {
-if (!hasScope(RACING_SCOPE) || racingScanTimer) return;
+if (!racingDomActive() || !hasScope(RACING_SCOPE) || racingScanTimer) return;
 racingScanTimer = global.setTimeout(() => {
 racingScanTimer = null;
 scanOfficialRaceDom();
 }, delay);
+}
+function racingDomActive() {
+if (document.hidden) return false;
+const page = new URL(global.location.href);
+return /rac(?:e|ing)/i.test(page.pathname) || /rac(?:e|ing)/i.test(page.hash) || /rac(?:e|ing)/i.test(String(page.searchParams.get('sid') || ''));
+}
+function racingMutationRelevant(mutation) {
+if (mutation.target?.closest?.(`[${RACING_LABEL_ATTRIBUTE}],#${HOST_ID}`)) return false;
+const changed = [...mutation.addedNodes, ...mutation.removedNodes];
+return !changed.length || !changed.every(node => node.nodeType === 1 && node.matches?.(`[${RACING_LABEL_ATTRIBUTE}]`));
 }
 function renderRacing() {
 const root = moduleRoot('racing');

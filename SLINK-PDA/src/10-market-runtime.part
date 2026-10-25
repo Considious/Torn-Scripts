@@ -711,6 +711,9 @@ style.textContent = `
 return style;
 }
 function clearRacingHighlight() {
-document.querySelectorAll(`.${RACING_HIGHLIGHT_CLASS}`).forEach(node => node.classList.remove(RACING_HIGHLIGHT_CLASS));
-document.querySelectorAll(`[${RACING_LABEL_ATTRIBUTE}]`).forEach(node => node.remove());
+racingHighlightedNode?.classList.remove(RACING_HIGHLIGHT_CLASS);
+racingRecommendationLabel?.remove();
+racingHighlightedNode = null;
+racingRecommendationLabel = null;
+racingRecommendationKey = '';
 }

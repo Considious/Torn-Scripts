@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         SLINK PDA Dashboard
+// @name         SLINK PDA Dashboard [AUDIT TEST]
 // @namespace    Considious [3853023]
-// @version      0.4.100
+// @version      0.4.101
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
-// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
-// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
+// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js
+// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/';
+  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/';
   const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
@@ -38,8 +38,8 @@
   const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
   const OWN_BATTLE_STATS_STORAGE_KEY = 'slink-pda-dashboard:own-battle-stats:v1';
   const BRIDGED_STORAGE_KEYS = new Set([DATA_STORAGE_KEY, OWN_BATTLE_STATS_STORAGE_KEY]);
-  const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';
-  const CACHE_RETRY_KEY = 'slink-pda-dashboard:runtime-cache-retry:v1';
+  const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';
+  const CACHE_RETRY_KEY = 'slink-pda-dashboard:runtime-cache-retry:audit-test:v1';
   const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
 
   function showFailure(error) {

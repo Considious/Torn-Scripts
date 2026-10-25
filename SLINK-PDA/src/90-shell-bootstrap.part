@@ -1588,11 +1588,11 @@ if (!host.isConnected && document.documentElement) document.documentElement.appe
 if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaChatButton.isConnected)) ensurePdaChatButton();
 });
 guardian.observe(document, { childList:true, subtree:true });
-marketObserver = new MutationObserver(() => {
+marketObserver = new MutationObserver(mutations => {
 schedulePurchaseOpportunityFormatting(80);
 scanAttackMugResults();
 if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
-scheduleRacingScan();
+if (mutations.some(racingMutationRelevant)) scheduleRacingScan();
 });
 marketObserver.observe(document.body, { childList:true, subtree:true });
 if (typeof GM_API.menu === 'function') {

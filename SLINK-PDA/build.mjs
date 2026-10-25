@@ -26,7 +26,7 @@ new Script(loaderSource, { filename:loaderPath });
 if (!loaderSource.includes("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';")) {
   throw new Error('PDA loader is not configured for direct source loading.');
 }
-if (!loaderSource.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';")) {
+if (!loaderSource.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';")) {
   throw new Error('PDA loader is missing the last-known-working runtime cache.');
 }
 if (loaderSource.includes('SLINK_PDA_Runtime.js?v=')) {

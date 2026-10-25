@@ -16,7 +16,7 @@ assert(loader.includes("savedAt(mirror) > savedAt(selected)"), 'A mirror may onl
 assert(!core.includes('global.localStorage.removeItem(DATA_STORAGE_KEY);'), 'Startup must never erase the legacy recovery copy.');
 assert(loader.includes('function readMirror()'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
 assert(loader.includes("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';"), 'The startup loader must fetch the authored source manifest directly.');
-assert(loader.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';"), 'The startup loader must retain a last-known-working runtime.');
+assert(loader.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';"), 'The startup loader must retain a last-known-working runtime.');
 assert(loader.includes('Source download failed; using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
 assert(loader.includes('if (selected === mirror && selected !== primary)'), 'The loader must identify mirror recovery before repairing primary GM storage.');

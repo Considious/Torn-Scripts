@@ -1,5 +1,7 @@
 # SLINK PDA Dashboard
 
+> **AUDIT TEST BRANCH — candidate 1.** Use the [tester installation instructions](TESTING.md), not the stable links below. Disable the stable script while testing. See the [single extension/PDA tester changelog](https://github.com/Considious/SLINK-Browser-Extension/blob/audit/test-foundation/TESTER-CHANGELOG.md). Main is unchanged.
+
 ## 0.4.72 — direct startup source loading
 
 The installed userscript is now a small startup launcher. On each page start it
