@@ -608,7 +608,8 @@
 
   function armMacro(macro, root, composer) {
     clearArmed();
-    const message = normalizeAnchorHrefs(expandMessageTemplate(macro.message));
+    const rawMessage = normalizeAnchorHrefs(expandMessageTemplate(macro.message));
+    const message = isNewsletterRoot(root) ? rawMessage : globalThis.SLINK_NORMALIZE_CHAT_HTML(rawMessage);
     if (profileTokenPresent(message)) {
       menuStatus = 'No profile was found on this page. Open the player profile and try again.';
       renderMenu();
@@ -1055,5 +1056,6 @@ function render(){const root=api.root(ID);if(!root)return;if(root.contains(docum
 function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';root.addEventListener('click',event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);api.save();clear();scan();render();}});}
 api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(schedule);observer.observe(document.body,{childList:true,subtree:true});scan();},render(){render();bind();},alerts(){return[];}});
 })(globalThis);
+
 
 

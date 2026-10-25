@@ -678,8 +678,28 @@ return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(text)}</div
 function actionLink(label, href) {
 return `<a class="action-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
 }
+function normalizeChatHtml(value) {
+  // Torn accepts HTML input but may convert it to another internal format.
+  // Keep numeric IDs outside link labels to avoid nested square brackets.
+  return String(value ?? '').replace(/<a\b([^>]*?)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+    (_match, before, doubleQuoted, singleQuoted, bare) => `<a${before}href="${String(doubleQuoted ?? singleQuoted ?? bare ?? '').replace(/&(?!(?:[a-z][a-z0-9]+|#\d+|#x[\da-f]+);)/gi, '&amp;').replaceAll('"', '&quot;')}"`)
+    .replace(/<a\b([^>]*\bhref="https:\/\/www\.torn\.com\/profiles\.php\?[^">]*"[^>]*)>([^<]*?)\s*(\[\d+\])\s*<\/a>/gi,
+      (_match, attributes, name, id) => `<a${attributes}>${name.trim()}</a> ${id}`);
+}
+
+global.SLINK_NORMALIZE_CHAT_HTML = normalizeChatHtml;
+function ffNumber(value) {
+if (typeof value === 'boolean') return null;
+const score = finite(value);
+return score !== null && score >= 1 && score <= 3 ? score : null;
+}
+function ffLabel(row) {
+const value = ffNumber(row?.fairFight ?? row?.fair_fight);
+if (value === null) return 'N/A — unverified';
+return number(value, 2) + (row?.fairFightStale ? ' (cached estimate)' : '');
+}
 function chatLink(label, href) {
-return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+return normalizeChatHtml(`<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`);
 }
 function attackLink(href) {
 return chatLink('【ATTACK】', href);
@@ -714,3 +734,4 @@ function clearRacingHighlight() {
 document.querySelectorAll(`.${RACING_HIGHLIGHT_CLASS}`).forEach(node => node.classList.remove(RACING_HIGHLIGHT_CLASS));
 document.querySelectorAll(`[${RACING_LABEL_ATTRIBUTE}]`).forEach(node => node.remove());
 }
+

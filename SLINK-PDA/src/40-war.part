@@ -102,7 +102,7 @@ if (Array.isArray(snapshot?.members)) snapshot.members = await refineWithFfScout
 if (Array.isArray(snapshot?.retals) && snapshot.retals.length) {
 const rows = snapshot.retals.map(retal => ({ id:retal.attackerId, name:retal.attackerName, ...retal }));
 const refined = await refineWithFfScouter(rows);
-snapshot.retals = snapshot.retals.map((retal, index) => ({ ...retal, fairFight:refined[index]?.fairFight ?? refined[index]?.fair_fight ?? retal.fairFight, battleStatsEstimate:refined[index]?.battleStatsEstimate ?? retal.battleStatsEstimate }));
+snapshot.retals = snapshot.retals.map((retal, index) => ({ ...retal, fairFight:refined[index]?.fairFight ?? refined[index]?.fair_fight ?? retal.fairFight, battleStatsEstimate:refined[index]?.battleStatsEstimate ?? retal.battleStatsEstimate, fairFightStale:Boolean(refined[index]?.fairFightStale), fairFightCheckedAt:Number(refined[index]?.fairFightCheckedAt) || 0 }));
 }
 if (snapshot?.config) {
 dataState.settings.war.mode = snapshot.config.mode || dataState.settings.war.mode;
@@ -960,6 +960,7 @@ await new Promise(resolve => global.setTimeout(resolve, 75));
 return null;
 }
 async function sendToFaction(text) {
+text = normalizeChatHtml(text);
 if (document.visibilityState !== 'visible' || !document.hasFocus()) return false;
 let container = factionContainer(); let input = factionComposer(container);
 if (!input) {
@@ -993,6 +994,7 @@ function isFactionMessagePrimed(key) {
 return Boolean(currentPrimedFactionMessage(String(key || '')));
 }
 async function primeFactionMessage(text, key) {
+text = normalizeChatHtml(text);
 const value = String(text || '').trim();
 const normalizedKey = String(key || '');
 if (!value) return { ok:false, label:'Nothing to copy' };
@@ -1052,6 +1054,7 @@ const score = numeric && Number(item.id) === numeric ? 0 : name.startsWith(needl
 return { item, score };
 }).filter(row => row.score < 99).sort((a, b) => a.score - b.score || String(a.item.name).localeCompare(String(b.item.name))).slice(0, MARKET_SUGGESTION_LIMIT).map(row => row.item);
 }
+
 
 
 

@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "0.4.100",
+  "revision": "0.4.103",
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
     "src/00-runtime-core.part",
@@ -29,3 +29,4 @@
   ],
   "loaderMaxBytes": 18000
 }
+
