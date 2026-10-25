@@ -69,6 +69,7 @@ const wasted = Math.max(0, current + XANAX_SAFETY_GAIN - XANAX_SAFETY_CAP);
 return `You currently have ${current.toLocaleString()} energy.\n\nBy using this Xanax you will waste ${wasted.toLocaleString()} energy.\n\nAre you sure you want to use it?`;
 }
 function handleXanaxSafetyClick(event) {
+if (!pdaDomActive()) return;
 const action = xanaxSafetyAction(event.target);
 if (!action) return;
 const energy = xanaxSafetyCurrentEnergy();
@@ -81,6 +82,7 @@ event.stopImmediatePropagation();
 let xanaxSafetyDecorationScheduled = false;
 function decorateXanaxSafetyActions() {
 xanaxSafetyDecorationScheduled = false;
+if (!pdaDomActive()) return;
 const energy = xanaxSafetyCurrentEnergy();
 const guarded = energy !== null && energy > XANAX_SAFETY_LIMIT;
 for (const action of document.querySelectorAll(XANAX_SAFETY_SELECTOR)) {
@@ -90,7 +92,7 @@ else action.removeAttribute('aria-description');
 }
 }
 function scheduleXanaxSafetyDecoration() {
-if (xanaxSafetyDecorationScheduled) return;
+if (xanaxSafetyDecorationScheduled || !pdaDomActive()) return;
 xanaxSafetyDecorationScheduled = true;
 global.requestAnimationFrame(decorateXanaxSafetyActions);
 }
@@ -100,10 +102,13 @@ xanaxSafetyStyle.textContent = `[${XANAX_SAFETY_ATTRIBUTE}="true"]{outline:2px s
 (document.head || document.documentElement).appendChild(xanaxSafetyStyle);
 document.addEventListener('click', handleXanaxSafetyClick, true);
 const xanaxSafetyObserver = new MutationObserver(scheduleXanaxSafetyDecoration);
+function syncXanaxSafetyActivity(active) {
+xanaxSafetyObserver.disconnect();
+if (!active) return;
 xanaxSafetyObserver.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
 scheduleXanaxSafetyDecoration();
-global.addEventListener('pagehide', () => {
-xanaxSafetyObserver.disconnect();
-document.removeEventListener('click', handleXanaxSafetyClick, true);
-}, { once:true });
+}
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncXanaxSafetyActivity);
+syncXanaxSafetyActivity(pdaDomActive());
+// Activity subscription handles pagehide/pageshow without losing the safety handler.
 }

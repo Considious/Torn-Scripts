@@ -118,7 +118,7 @@ settings.watches.push(watch);dataState.caches.market=marketRuntime();writeDataSt
 function focusedTornPage() {
 // Torn PDA's WebView can report hasFocus() as false while the visible
 // Torn page is still interactive.
-return document.visibilityState !== 'hidden';
+return pdaDomActive();
 }
 function elementVisible(element) {
 if (!element?.isConnected) return false;

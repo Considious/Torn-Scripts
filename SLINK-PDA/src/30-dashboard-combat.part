@@ -921,7 +921,7 @@ function clearPlayerProfileIntent() {
 try { global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY); } catch {}
 }
 function activeProfilePage(expectedId = 0) {
-if (document.visibilityState !== 'visible' || !document.hasFocus?.()) return null;
+if (!pdaDomActive()) return null;
 let url;
 try { url = new URL(global.location.href); } catch { return null; }
 if (!/^\/profiles\.php$/i.test(url.pathname)) return null;
@@ -966,6 +966,7 @@ bountyTotal:rewards.reduce((sum, reward) => sum + reward, 0)
 } : {};
 }
 async function observeActiveProfileDom({ playerId = 0, source = 'profile', requireIntent = true } = {}) {
+if (!pdaDomActive()) return { observed:false, reason:'inactive-page' };
 if (playerDomObservationBusy) return { observed:false, reason:'busy' };
 const profile = activeProfilePage(playerId);
 if (!profile) return { observed:false, reason:'inactive-or-different-page' };
@@ -1105,6 +1106,7 @@ console.debug('[SLINK PDA] Mug result report paused:', message(error));
 });
 }
 function scanAttackMugResults() {
+if (!pdaDomActive()) return;
 if (!attackPageUrl() || attackMugScanTimer) return;
 attackMugScanTimer = global.setTimeout(() => {
 attackMugScanTimer = null;
@@ -1362,7 +1364,7 @@ return members;
 }
 // Retrieval and pagination adapted from Considious Armory Recaller 1.2.6.
 function warArmoryPageFocused() {
-return document.visibilityState === 'visible' && document.hasFocus();
+return pdaDomActive();
 }
 function warArmorySetStatus(message, state = 'normal') {
 moduleState.war.armoryStatus = message;

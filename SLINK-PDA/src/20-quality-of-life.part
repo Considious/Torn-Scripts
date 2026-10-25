@@ -77,7 +77,7 @@ scanOfficialRaceDom();
 }, delay);
 }
 function racingDomActive() {
-if (document.hidden) return false;
+if (!pdaDomActive()) return false;
 const page = new URL(global.location.href);
 return /rac(?:e|ing)/i.test(page.pathname) || /rac(?:e|ing)/i.test(page.hash) || /rac(?:e|ing)/i.test(String(page.searchParams.get('sid') || ''));
 }

@@ -33,6 +33,7 @@ const racing={RACEWAY_DOM:{OFFICIAL_RACE_TRACK_SELECTOR:'track',OFFICIAL_RACE_CA
  recommendationForTrack:()=>({status:'ready',nickname:'Fixture car'}),matchVisibleCar:(_name,nodes)=>nodes.length?nodes[0]:null};
 Object.assign(ctx,{racing,RACING_DOM:racing.RACEWAY_DOM,parseOfficialRacingTrack:racing.parseOfficialRaceTrack,racingRecommendationForTrack:racing.recommendationForTrack,racingSettings:()=>({}),matchVisibleRacingCar:racing.matchVisibleCar});
 vm.createContext(ctx);
+ctx.pdaDomActive=()=>!ctx.document.hidden;
 if(platform==='extension'){
  vm.runInContext(segment(source,'      function clearHighlight()','      function queueSave()'),ctx);
  const observer=segment(source,'observer = new MutationObserver(mutations => {','      observer.observe(');

@@ -27,8 +27,8 @@ const sandbox={console,URL,TextEncoder,setTimeout,clearTimeout,crypto:{randomUUI
 sandbox.globalThis=sandbox;
 await vm.runInNewContext(loader,sandbox);
 assert.equal(requests.length,13,'The manifest and all twelve startup files must come from the same commit.');
-assert.ok(injected.includes('0.4.101-audit-test1'));
+assert.ok(injected.includes('0.4.102-audit-test2'));
 assert.ok(injected.includes('SLINK_PDA_Direct_Addon_4.js'));
-assert.ok(native.get(cacheKey)?.runtimeSource.includes('0.4.101-audit-test1'));
+assert.ok(native.get(cacheKey)?.runtimeSource.includes('0.4.102-audit-test2'));
 assert.equal(native.has('slink-pda-dashboard:runtime-cache:v1'),false,'The stable runtime cache must remain untouched.');
 console.log('PDA tester loader requests one pinned source set, evaluates all startup files and isolates its runtime cache.');

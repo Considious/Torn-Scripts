@@ -1589,12 +1589,25 @@ if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaC
 });
 guardian.observe(document, { childList:true, subtree:true });
 marketObserver = new MutationObserver(mutations => {
+if (!pdaDomActive()) return;
 schedulePurchaseOpportunityFormatting(80);
 scanAttackMugResults();
 if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
 if (mutations.some(racingMutationRelevant)) scheduleRacingScan();
 });
 marketObserver.observe(document.body, { childList:true, subtree:true });
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(active => {
+marketObserver.disconnect();
+if (!active) {
+if (racingScanTimer) global.clearTimeout(racingScanTimer);
+racingScanTimer = null;
+return;
+}
+marketObserver.observe(document.body, { childList:true, subtree:true });
+schedulePurchaseOpportunityFormatting(0);
+scheduleRacingScan(0);
+scanAttackMugResults();
+});
 if (typeof GM_API.menu === 'function') {
 GM_API.menu('Open SLINK PDA Dashboard', openDashboard);
 GM_API.menu('Reset SLINK PDA layout', resetLayout);

@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source=fs.readFileSync(new URL('./src/00-runtime-core.part',import.meta.url),'utf8');
+const segment=source.slice(source.indexOf('let pdaPagePresent'),source.indexOf("global.addEventListener('pageshow', () => { pdaPagePresent = true; pdaActivityChanged(); });")+"global.addEventListener('pageshow', () => { pdaPagePresent = true; pdaActivityChanged(); });".length);
+const events=new Map();
+const on=(type,callback)=>events.set(type,callback);
+const context=vm.createContext({document:{visibilityState:'visible',hasFocus:()=>false,addEventListener:on},addEventListener:on});context.global=context;
+vm.runInContext(segment,context);
+const activity=context.SLINK_PDA_PAGE_ACTIVITY;
+assert.equal(activity.eligible(),true,'A visible PDA page works even when desktop focus is false.');
+let eventsSeen=0;activity.subscribe(()=>eventsSeen++);
+const initial=activity.token();context.document.visibilityState='hidden';events.get('visibilitychange')();
+assert.equal(activity.eligible(),false);assert.equal(activity.current(initial),false);
+context.document.visibilityState='visible';events.get('visibilitychange')();assert.equal(activity.eligible(),true);
+events.get('pagehide')();assert.equal(activity.eligible(),false,'Pagehide invalidates even before visibility changes.');
+events.get('pageshow')();assert.equal(activity.eligible(),true);assert.equal(eventsSeen,4);
+console.log('PDA visibility/page lifecycle and immediate token invalidation passed without desktop focus requirements.');
