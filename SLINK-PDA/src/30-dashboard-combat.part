@@ -492,14 +492,17 @@ until:Math.max(0, Math.trunc(Number(record.until ?? record.status?.until) || 0))
 level:Math.max(0, Number(record.level) || 0),
 bountyCount:Math.max(0, Math.trunc(Number(record.bountyCount) || 0)),
 bountyTotal:Math.max(0, Number(record.bountyTotal) || 0),
-battleStatsEstimate:Number.isFinite(Number(record.battleStatsEstimate)) ? Number(record.battleStatsEstimate) : null,
+battleStatsEstimate:record.battleStatsEstimate != null && typeof record.battleStatsEstimate !== 'boolean' && Number.isFinite(Number(record.battleStatsEstimate)) && Number(record.battleStatsEstimate) > 0 ? Number(record.battleStatsEstimate) : null,
+battle_stats_observed_at:Math.max(0,Number(record.fieldMeta?.battleStatsEstimate?.at ?? record.battleStatsCheckedAt)||0),
 fairFight:null // Observer-dependent values are not portable contributor intelligence.
 };
 }
 async function syncMuggingContributorReports(force = false) {
 const now = Date.now();
 const previous = dataState.caches.muggingSync || {};
-if (!force && now - Number(previous.lastAttemptAt || 0) < MUGGING_SYNC_INTERVAL_MS) return previous;
+const retryAt=Number(previous.nextAttemptAt)||Number(previous.lastAttemptAt||0)+(previous.error?MUGGING_SYNC_RETRY_MS:MUGGING_SYNC_INTERVAL_MS);
+if (!force && now < retryAt) return previous;
+if (!Object.keys(dataState.caches.muggingPendingSync||{}).length) return previous;
 if (!dataState.settings.mugging.enabled || !hasScope('slink.mugging')) return previous;
 if (muggingSyncBusy) return previous;
 muggingSyncBusy = true;
@@ -540,6 +543,8 @@ if (rows.length < MUGGING_SYNC_BATCH_SIZE) break;
 const status = {
 lastAttemptAt:now,
 lastSuccessAt:Date.now(),
+nextAttemptAt:now+MUGGING_SYNC_INTERVAL_MS,
+consecutiveFailures:0,
 accepted,
 batches,
 pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
@@ -552,6 +557,8 @@ return status;
 const status = {
 ...previous,
 lastAttemptAt:now,
+nextAttemptAt:now+Math.min(MUGGING_SYNC_INTERVAL_MS,MUGGING_SYNC_RETRY_MS*2**Math.min(3,Number(previous.consecutiveFailures)||0)),
+consecutiveFailures:(Number(previous.consecutiveFailures)||0)+1,
 accepted:0,
 batches,
 pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
@@ -662,7 +669,8 @@ userLevel:Math.max(0, Math.trunc(Number(ownStats?.level) || 0)),
 pool:{
 total:Math.max(0, Number(value.pool?.total) || 0),
 estimable:Math.max(0, Number(value.pool?.estimable) || 0),
-eligible:Math.max(0, Number(value.pool?.eligible) || 0)
+eligible:Math.max(0, Number(value.pool?.eligible) || 0),
+excluded:value.pool?.excluded && typeof value.pool.excluded === 'object' ? value.pool.excluded : null
 },
 targets:(Array.isArray(value.targets) ? value.targets : []).map(target => ({
 ...target,
@@ -757,6 +765,7 @@ return `<article class="target-card"><div>
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
 <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div><div class="stat"><strong>${escapeHtml(contribution.mode || 'disabled')}</strong><span>${Number(contribution.fetched) || 0}/${Number(contribution.apiBudgetPerMinute) || 0} contributor checks</span></div></div>
 ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}
+${cache.pool.excluded ? moduleMessage(`Pool exclusions: ${Number(cache.pool.excluded.no_estimate)||0} without estimates · ${Number(cache.pool.excluded.timed_unavailable)||0} hospital/jail timers · ${Number(cache.pool.excluded.mug_cooldown)||0} post-mug cooldowns · ${Number(cache.pool.excluded.fair_fight_range)||0} outside your FF range.`) : ''}
 <div class="bounty-form">
 <label class="check-row wide"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
 <label>Minimum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-min-ff" value="${Number(settings.minFairFight) || 1}"></label>
@@ -764,7 +773,7 @@ ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? module
 <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
 <div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
 </div>
-<div class="module-message">Contributor checks use only spare shared Torn capacity, keep 10 calls/min reserved for interactive work, and never exceed 40 contribution calls/min. Mugging assignments stop after five minutes away, while low-priority contribution may continue independently. Results are deduplicated locally and synchronized to shared SLINK intelligence in acknowledged batches every six hours. Pending: ${Number(contribution.pendingSync) || 0}${contribution.lastSyncAt ? ` · Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}` : ''}${contribution.syncError ? ` · Sync retry pending: ${escapeHtml(contribution.syncError)}` : ''}.</div>
+<div class="module-message">Contributor checks use only spare shared Torn capacity, keep 10 calls/min reserved for interactive work, and never exceed 40 contribution calls/min. Mugging assignments stop after five minutes away, while low-priority contribution may continue independently. Results are deduplicated locally and synchronized to shared SLINK intelligence in acknowledged batches about every five minutes while this client is running. Pending: ${Number(contribution.pendingSync) || 0}${contribution.lastSyncAt ? ` · Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}` : ''}${contribution.syncError ? ` · Sync retry pending: ${escapeHtml(contribution.syncError)}` : ''}.</div>
 <div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
 </article></div>`;
 }
