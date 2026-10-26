@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
-import { runtime as source, assertVersionConsistency } from './test-support/runtime.mjs';
+import { runtime as source, assertVersionConsistency, extractFunction } from './test-support/runtime.mjs';
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
 assertVersionConsistency();
@@ -17,8 +18,10 @@ assert.match(source, /grid-template-columns:minmax\(0,1fr\)/);
 assert.match(source, /\.scroll\{width:100%;min-width:0;min-height:0/);
 assert.match(source, /\.launcher\[hidden\]\{display:none\}/);
 assert.match(source, /launcher\.hidden = true/);
-assert.match(source, /launcher\.hidden = false/);
-assert.doesNotMatch(source, /@media\(orientation:landscape\)/);
+assert.match(source, /launcher\.hidden = state\.minimizedMode === 'chat'/);
+// Landscape has an intentional minimized-bar layout, not an alternate or hidden dashboard.
+assert.match(source, /@media\(orientation:landscape\)[^\n]+\.launcher\[data-mode="bar"\]/);
+assert.doesNotMatch(source, /@media\(orientation:landscape\)[^\n]+\.overlay\{display:none/);
 assert.doesNotMatch(source, /padding-right:104px/);
 assert.match(source, /data-action="reset-layout"/);
 assert.match(source, /orientationchange/);
@@ -123,10 +126,12 @@ assert.match(source, /data-action="refresh-market-permissions"/);
 assert.match(source, /function refreshMarketPermissions/);
 assert.match(source, /data-action="dismiss-market-deal"/);
 assert.match(source, /data-action="send-market-deal"/);
-assert.match(source, /data-slink-market-buy/);
-assert.match(source, /data-slink-market-shop-profit/);
-assert.match(source, /data-slink-market-one-dollar/);
-assert.match(source, /Below city shop sell price/);
+assert.match(source, /data-tdd-quick-buy/);
+assert.match(source, /data-tdd-item-market-shop-profit/);
+assert.match(source, /data-tdd-bazaar-shop-profit/);
+assert.match(source, /data-tdd-item-market-one-dollar/);
+assert.match(source, /data-tdd-bazaar-one-dollar/);
+assert.match(source, /price < sellPrice/);
 assert.match(source, /native\.click\(\)/);
 assert.match(source, /href:deal\.href/);
 assert.match(source, /onclick:\(\) => openAlertDestination\(href\)/);
@@ -137,7 +142,8 @@ assert.match(source, /data-action="copy-war-mug-report"/);
 assert.match(source, /scanAttackMugResults/);
 assert.match(source, /data-war-tab="\$\{name\}"/);
 assert.match(source, /\['targets', 'outside', 'claims'/);
-assert.match(source, /warOfficer\(\) \? \['armory', 'logs', 'settings'\]/);
+assert.match(source, /armoryOfficer \? \['armory'\] : \[\]/);
+assert.match(source, /officer \? \['logs', 'settings'\] : \[\]/);
 assert.match(source, /data-action="refresh-war-outside"/);
 assert.match(source, /api\/v1\/get-targets/);
 assert.match(source, /data-action="claim-war-target"/);
@@ -169,6 +175,49 @@ assert.doesNotMatch(source, /location\.(?:reload|replace|assign)\s*\(/);
 assert.doesNotMatch(source, /history\.(?:go|back|forward)\s*\(/);
 assert.doesNotMatch(source, /chrome\.(?:runtime|storage|alarms)/);
 assert.match(preview, /SLINK_PDA_Dashboard\.user\.js/);
+
+// Exercise the real open/close functions for every saved minimize mode. The
+// previous launcher.hidden=false assertion would incorrectly reject chat mode.
+for (const mode of ['bubble','bar','chat']) {
+  const calls=[];
+  const launcher={hidden:false,setAttribute:() => {},querySelector:() => ({textContent:''}),focus:() => calls.push('launcher-focus')};
+  const context=vm.createContext({
+    dashboardOpen:false,overlay:{hidden:true},launcher,
+    state:{page:'efficiency',minimizedMode:mode},host:{removeAttribute:() => {}},
+    pdaChatButton:{focus:() => calls.push('chat-focus')},
+    shadow:{querySelector:() => ({focus:() => calls.push('close-focus')})},
+    moduleState:{alerts:{data:{}}},dataState:{caches:{}},
+    syncPdaChatButtonVisibility:() => calls.push('sync-chat'),
+    lockTornScroll:() => calls.push('lock'),unlockTornScroll:() => calls.push('unlock'),
+    selectPage:(page,persist) => calls.push(['page',page,persist]),
+    renderAllModules:() => calls.push('render'),loadActiveModule:async () => calls.push('load'),
+    alertRows:() => [{id:'test'}],updateAlertIndicator:count => calls.push(['count',count]),
+    clampLauncher:() => calls.push('clamp'),global:{setTimeout:callback => callback()}
+  });
+  vm.runInContext(extractFunction('openDashboard')+'\n'+extractFunction('closeDashboard'),context);
+  context.openDashboard();
+  assert.equal(context.dashboardOpen,true);
+  assert.equal(context.overlay.hidden,false);
+  assert.equal(launcher.hidden,true);
+  assert(calls.some(row => Array.isArray(row)&&row[0]==='page'&&row[1]==='efficiency'&&row[2]===false),'Opening must restore, not reset or overwrite the saved page');
+  context.closeDashboard();
+  assert.equal(context.dashboardOpen,false);
+  assert.equal(context.overlay.hidden,true);
+  assert.equal(launcher.hidden,mode==='chat');
+  assert(calls.includes(mode==='chat'?'chat-focus':'launcher-focus'));
+  assert(calls.includes('unlock'));
+  assert(calls.some(row => Array.isArray(row)&&row[0]==='count'&&row[1]===1));
+  assert.equal(context.state.page,'efficiency');
+}
+const roles=vm.createContext({hasScope:scope => roles.grants.has(scope),grants:new Set()});
+vm.runInContext(extractFunction('warOfficer')+'\n'+extractFunction('warArmoryOfficer'),roles);
+for (const scope of ['slink.war.officer','slink.officer.armory','admin.*']) {
+  roles.grants=new Set([scope]);
+  assert.equal(roles.warArmoryOfficer(),true);
+  assert.equal(roles.warOfficer(),scope!=='slink.officer.armory','Armory-only scope must not grant War settings/log access');
+}
+roles.grants=new Set();
+assert.equal(roles.warArmoryOfficer(),false);
 
 console.log('SLINK PDA overlay static safety and recovery checks passed.');
 
