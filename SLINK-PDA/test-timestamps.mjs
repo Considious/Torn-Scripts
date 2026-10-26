@@ -2,11 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
-const start = source.indexOf('  function discordTimestamp(');
-assert(start >= 0);
+import { extractFunction } from './test-support/runtime.mjs';
 const context = vm.createContext({ Date });
-vm.runInContext(source.slice(start, source.indexOf('\n  }', start) + 4), context);
+vm.runInContext(extractFunction('discordTimestamp', 'src/30-dashboard-combat.part'), context);
 const convert = context.discordTimestamp;
 assert.equal(convert('1970-01-01T00:00').code, '<t:0:R>');
 for (const invalid of ['', '2026-02-30T10:00', '2026-09-25T24:00', '2026-09-25T10:99', '2026-09-25', '2026-09-25T10:00Z']) assert.equal(convert(invalid), null);

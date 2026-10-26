@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { assertVersionConsistency } from './test-support/runtime.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const core = fs.readFileSync(path.join(directory, 'src/00-runtime-core.part'), 'utf8');
@@ -10,7 +11,7 @@ const shell = fs.readFileSync(path.join(directory, 'src/90-shell-bootstrap.part'
 const source = core + alerts + shell;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(core.includes('@version      0.4.106'), 'PDA alert-settings version is missing.');
+assertVersionConsistency();
 assert(source.includes('class="alert-settings"'), 'Alert settings UI is missing.');
 assert(source.includes('data-alert-type='), 'Alert-type controls are missing.');
 assert(source.includes("dataState.settings.alerts.enabledTypes?.[id] === false"), 'Alert generation does not respect disabled types.');

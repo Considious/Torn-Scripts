@@ -773,7 +773,7 @@ ${cache.pool.excluded ? moduleMessage(`Pool exclusions: ${Number(cache.pool.excl
 <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
 <div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
 </div>
-<div class="module-message">Contributor checks use only spare shared Torn capacity, keep 10 calls/min reserved for interactive work, and never exceed 40 contribution calls/min. Mugging assignments stop after five minutes away, while low-priority contribution may continue independently. Results are deduplicated locally and synchronized to shared SLINK intelligence in acknowledged batches about every five minutes while this client is running. Pending: ${Number(contribution.pendingSync) || 0}${contribution.lastSyncAt ? ` · Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}` : ''}${contribution.syncError ? ` · Sync retry pending: ${escapeHtml(contribution.syncError)}` : ''}.</div>
+${contribution.lastSyncAt ? `<div class="module-message">Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}</div>` : ''}
 <div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
 </article></div>`;
 }

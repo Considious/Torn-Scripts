@@ -4,11 +4,11 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const source = fs.readFileSync(path.join(directory, 'SLINK_PDA_Dashboard.user.js'), 'utf8');
+import { runtime as source, assertVersionConsistency } from './test-support/runtime.mjs';
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 new Function(source);
-assert(source.includes('@version      0.4.28'), 'PDA Racing release version is missing.');
+assertVersionConsistency();
 assert(source.includes('data-page="quality-of-life"'), 'Quality of Life top-level page is missing.');
 assert(source.includes('data-quality-of-life-tab="racing"'), 'Racing Quality of Life tab is missing.');
 assert(source.includes('data-module-root="racing"'), 'Racing module root is missing.');

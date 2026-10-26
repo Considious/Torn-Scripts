@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertVersionConsistency } from './test-support/runtime.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const loader = fs.readFileSync(path.join(directory, 'SLINK_PDA_Dashboard.user.js'), 'utf8');
@@ -8,8 +9,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'source-manifes
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
 new Function(loader);
-assert(loader.includes('@version      0.4.106'), 'PDA loader version was not bumped.');
-assert(manifest.revision === '0.4.106', 'Direct-source manifest revision was not bumped.');
+assertVersionConsistency();
 assert(loader.includes("host?.dataset?.slinkReady === 'true' && host?.dataset?.slinkAddonsReady === 'true'"), 'Readiness must use the shared dashboard host.');
 assert(loader.includes("slinkReadyHost.dataset.slinkAddonsReady='true'"), 'Downloaded add-ons do not signal readiness through the shared dashboard host.');
 assert(loader.includes("currentHost.dataset.slinkAddonsReady = 'false'"), 'A new add-on attempt does not clear stale readiness.');
