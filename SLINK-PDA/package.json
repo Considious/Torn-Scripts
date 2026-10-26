@@ -1,11 +1,11 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.108",
+  "version": "0.4.109",
   "private": true,
   "type": "module",
   "scripts": {
     "test:baseline-repairs": "node test-armory.mjs && node test-reminders.mjs && node test-module-activity.mjs && node test-travel-safety.mjs && node test-market-dom.mjs && node test-weaver-due.mjs && node test-runtime-discovery.mjs && node test-racing.mjs && node test-timestamps.mjs && node test-mugging.mjs && node test-mugging-report-safety.mjs && node test-mugging-shared-stats.mjs",
-    "test:audit": "node test-weaver-due.mjs && node test-mugging-report-safety.mjs && node test-shared-data.mjs && node build.mjs --check && node test-form-commit.mjs && node test-hyperlinks-ff-fallback.mjs && node test-page-activity.mjs && node test-audit-channel.mjs && node test-racing-dom-idempotence.mjs && node test-permissions.mjs && node test-form-state.mjs && node test-settings-write-isolation.mjs && node test-native-storage-roundtrip.mjs && node test-events.mjs",
+    "test:audit": "node test-travel-estimates.mjs && node test-company-alert-safety.mjs && node test-weaver-due.mjs && node test-mugging-report-safety.mjs && node test-shared-data.mjs && node build.mjs --check && node test-form-commit.mjs && node test-hyperlinks-ff-fallback.mjs && node test-page-activity.mjs && node test-audit-channel.mjs && node test-racing-dom-idempotence.mjs && node test-permissions.mjs && node test-form-state.mjs && node test-settings-write-isolation.mjs && node test-native-storage-roundtrip.mjs && node test-events.mjs",
     "build": "node build.mjs",
     "check": "node build.mjs --check",
     "test": "node build.mjs --check && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-abroad-stocks.mjs && node test-money-property.mjs && node test-events.mjs && node test-mugging-shared-stats.mjs && node test-native-storage-roundtrip.mjs && node test-settings-write-isolation.mjs && node test-storage-resilience.mjs && node test-alert-snooze-persistence.mjs && node test-shoplifting-unique-parity.mjs && node test-runtime-readiness.mjs && node test-theme-assets.mjs"

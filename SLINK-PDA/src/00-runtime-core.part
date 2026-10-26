@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.108
+// @version      0.4.109
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.108-audit-test8';
+const BUILD = '0.4.109-audit-test10';
 // PDA visibility is authoritative; WebView hasFocus() is not reliable.
 let pdaPagePresent = true;
 let pdaActivityGeneration = 0;
@@ -65,7 +65,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.108';
+const CLIENT_VERSION = '0.4.109';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_CITY_SHOP_TARGETS = Object.freeze([
 Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
@@ -251,7 +251,7 @@ const snoozed = dataState.settings.alerts.snoozedUntil || {};
 if (!snapshot || !settings.enabled || !hasScope(COMPANY_SCOPE)) return [];
 const rows = [];
 const add = row => { if (Number(snoozed[row.id] || 0) <= Date.now()) rows.push(row); };
-if (snapshot.self?.addictionPenalty !== null && snapshot.self.addictionPenalty >= settings.addictionThreshold) {
+if (snapshot.self && snapshot.self.addictionPenalty !== null && snapshot.self.addictionPenalty >= settings.addictionThreshold) {
 add({ id:'company:addiction:self', title:'Company addiction reminder', detail:`Your company effectiveness addiction penalty is -${snapshot.self.addictionPenalty}. Please rehab as soon as possible.`, links:[['Company','https://www.torn.com/joblist.php']] });
 }
 if (snapshot.director) {
@@ -328,13 +328,24 @@ prometheus:Object.freeze({ id:'prometheus', label:'Prometheus', url:'https://pro
 tornIntel:Object.freeze({ id:'tornIntel', label:'Torn Intel', url:'https://torn-intel.com/api/v1/foreign-stock/travel-table' }),
 droqs:Object.freeze({ id:'droqs', label:'DroqsDB forecast', url:'https://droqsdb.com/api/public/v1/restocking-soon', enrichment:true })
 });
+// Torn Wiki Travel, without book, verified 2026-10-26. Exact displayed times avoid multiplier rounding errors.
+// https://wiki.torn.com/wiki/Travel — Private is WLT; Business Class is the faster ticket option.
 const COUNTRIES = Object.freeze([
-['arg','Argentina',158], ['can','Canada',39], ['cay','Cayman Islands',33],
-['chi','China',229], ['haw','Hawaii',127], ['jap','Japan',213],
-['mex','Mexico',24], ['sou','South Africa',282], ['swi','Switzerland',175],
-['uae','UAE',271], ['uni','United Kingdom',159]
-].map(([code,name,minutes]) => Object.freeze({ code, name, minutes })));
-const TRAVEL_MULTIPLIERS = Object.freeze({ standard:1, airstrip:0.7, business:0.5, private:0.3 });
+  ["arg","Argentina",158,111,79,47],
+  ["can","Canada",39,27,19,12],
+  ["cay","Cayman Islands",33,23,17,10],
+  ["chi","China",229,160,114,69],
+  ["haw","Hawaii",127,89,63,38],
+  ["jap","Japan",213,149,107,64],
+  ["mex","Mexico",24,17,12,7],
+  ["sou","South Africa",282,197,141,85],
+  ["swi","Switzerland",166,116,83,50],
+  ["uae","UAE",257,180,128,77],
+  ["uni","United Kingdom",151,106,75,45]
+].map(([code,name,minutes,airstrip,privateMinutes,business]) => Object.freeze({
+  code,name,minutes,travelTimes:Object.freeze({standard:minutes,airstrip,private:privateMinutes,business})
+})));
+const TRAVEL_MULTIPLIERS = Object.freeze({ standard:1, airstrip:0.7, business:0.3, private:0.5 });
 const countryByCode = new Map(COUNTRIES.map(country => [country.code, country]));
 const countryByName = new Map(COUNTRIES.map(country => [key(country.name), country]));
 function key(value) {
@@ -606,8 +617,7 @@ return [...merged.values()].sort((left,right) => left.countryName.localeCompare(
 function travelMinutes(countryCode, method = 'standard', bufferMinutes = 0) {
 const country = countryByCode.get(String(countryCode || '').toLowerCase());
 if (!country) return null;
-const multiplier = TRAVEL_MULTIPLIERS[method] ?? TRAVEL_MULTIPLIERS.standard;
-return Math.ceil(country.minutes * multiplier) + Math.max(0, Number(bufferMinutes) || 0);
+return (country.travelTimes[method] ?? country.travelTimes.standard) + Math.max(0, Number(bufferMinutes) || 0);
 }
 function departureAt(row, settings = {}) {
 const next = Number(row?.nextRestockAt) || 0;

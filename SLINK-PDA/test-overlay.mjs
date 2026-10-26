@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
+import { runtime as source, assertVersionConsistency } from './test-support/runtime.mjs';
 const preview = fs.readFileSync(new URL('./preview.html', import.meta.url), 'utf8');
 
-assert.match(source, /@version\s+0\.4\.33/);
+assertVersionConsistency();
 assert.match(source, /@grant\s+GM_xmlhttpRequest/);
 assert.match(source, /@grant\s+GM_notification/);
 assert.match(source, /@connect\s+api\.torn\.com/);

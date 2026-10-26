@@ -349,7 +349,7 @@ const MARKET_CACHE_MS = 60 * 60_000;
 const ACTIVITY_MS = 5 * 60_000;
 const PROVIDER_ORDER = ['yata','prometheus','tornIntel'];
 const PROVIDER_STATUS_ORDER = [...PROVIDER_ORDER,'droqs'];
-const TRAVEL_LABELS = Object.freeze({standard:'Standard',airstrip:'Private Island airstrip',business:'Business Class',private:'Private Jet'});
+const TRAVEL_LABELS = Object.freeze({standard:'Standard',airstrip:'Private Island airstrip',business:'Business Class',private:'Private (WLT benefit)'});
 function settings() {
 const input = dataState.settings.abroadStocks || {};
 const explicit=input.travelMethodExplicit===true;
