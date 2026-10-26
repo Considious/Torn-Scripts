@@ -303,7 +303,9 @@ result.bazaar = payload; delete result.errors.bazaar; runtime.results[watch.uid]
 if (target.pricelist) runtime.pricelistResults[target.itemId] = { bazaar:payload, errors:{} };
 }
 async function pollMarketWeaverTargets(settings, allowed, runtime, force) {
-const targets = marketWeaverTargets(settings, allowed, runtime);
+const targets = marketWeaverTargets(settings, allowed, runtime).filter(target => force
+|| target.manual.some(watch => marketDue(runtime.results[watch.uid]?.bazaar))
+|| (target.pricelist && marketDue(runtime.pricelistResults?.[target.itemId]?.bazaar)));
 if (!targets.length) return;
 let summary;
 try { summary = await marketWeaverSummary(runtime, force, WEAVER_SUMMARY_REFRESH_MS); }

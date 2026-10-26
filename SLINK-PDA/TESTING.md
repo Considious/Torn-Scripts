@@ -1,8 +1,8 @@
-# SLINK PDA audit tester build — candidate 7
+# SLINK PDA audit tester build — candidate 8
 
 This is an early testing build. This audit batch does not change stable or main; the separately approved Mugging hotfix is already on main. The full audit plan is not implemented yet.
 
-- Version: **0.4.107**, dashboard build **0.4.107-audit-test7**.
+- Version: **0.4.108**, dashboard build **0.4.108-audit-test8**.
 - Branch: `audit/test-foundation`.
 - [Install the PDA tester script](https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js).
 - [One running tester changelog for extension and PDA](https://github.com/Considious/SLINK-Browser-Extension/blob/audit/test-foundation/TESTER-CHANGELOG.md).
