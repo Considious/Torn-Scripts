@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.104
+// @version      0.4.113
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -15,6 +15,7 @@
 // @grant        GM_notification
 // @connect      api.torn.com
 // @connect      raw.githubusercontent.com
+// @connect      cdn.jsdelivr.net
 // @connect      ffscouter.com
 // @connect      weav3r.dev
 // @connect      yata.yt
@@ -40,6 +41,10 @@
   const BRIDGED_STORAGE_KEYS = new Set([DATA_STORAGE_KEY, OWN_BATTLE_STATS_STORAGE_KEY]);
   const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';
   const CACHE_RETRY_KEY = 'slink-pda-dashboard:runtime-cache-retry:v1';
+  const CACHE_CHECK_KEY = RUNTIME_CACHE_KEY + ':update-check';
+  const UPDATE_CHECK_MS = 15 * 60_000;
+  let preferSourceMirror = false;
+  let loadingRuntime = null;
   const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
 
   function showFailure(error) {
@@ -49,12 +54,12 @@
     const button = document.createElement('button');
     button.id = ERROR_ID;
     button.type = 'button';
-    button.textContent = 'SLINK failed: ' + message.slice(0, 120) + ' — tap to retry';
+    button.textContent = 'SLINK could not load. Torn is unaffected — tap to retry';
     button.title = message;
     button.style.cssText = 'position:fixed;right:10px;bottom:76px;z-index:2147483647;padding:10px 12px;border:2px solid #111;border-radius:8px;background:#b91c1c;color:#fff;font:bold 12px Arial,sans-serif';
     button.addEventListener('click', () => {
       button.remove();
-      void loadRuntime();
+      void loadRuntime(true);
     });
     (document.body || document.documentElement).appendChild(button);
   }
@@ -163,12 +168,14 @@
     );
   }
 
-  async function fetchSource(url) {
+  async function requestSource(url) {
     if (typeof globalThis.PDA_httpGet === 'function') {
       const response = await globalThis.PDA_httpGet(url);
       const status = Number(response?.status || response?.statusCode || 200);
       if (status < 200 || status >= 300) throw new Error('SLINK source download returned HTTP ' + status + '.');
-      return String(response?.data ?? response?.responseText ?? '');
+      const text = String(response?.data ?? response?.responseText ?? '');
+      if (response?.error || !text.trim() || /^error[, :]|^Exception:/i.test(text)) throw new Error('SLINK source connection failed.');
+      return text;
     }
     if (typeof globalThis.GM_xmlhttpRequest === 'function') {
       return await new Promise((resolve, reject) => {
@@ -184,7 +191,36 @@
         });
       });
     }
-    throw new Error('PDA_httpGet is unavailable.');
+    if (typeof globalThis.fetch === 'function') {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = globalThis.setTimeout(() => controller?.abort(), 8000);
+      try {
+        const response = await globalThis.fetch(url, { signal:controller?.signal, credentials:'omit' });
+        if (!response.ok) throw new Error('SLINK source download returned HTTP ' + response.status + '.');
+        return await response.text();
+      } finally { globalThis.clearTimeout(timer); }
+    }
+    throw new Error('No SLINK source download transport is available.');
+  }
+
+  async function fetchSource(url) {
+    const mirror = url.replace('https://raw.githubusercontent.com/Considious/Torn-Scripts/', 'https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@');
+    // Only the script's public source URL is mirrored; never API keys or user data.
+    const urls = preferSourceMirror ? [mirror, url] : [url, mirror];
+    let failure;
+    for (const endpoint of [...new Set(urls)]) {
+      let timer;
+      try {
+        const text = await Promise.race([requestSource(endpoint), new Promise((_, reject) => {
+          timer = globalThis.setTimeout(() => reject(new Error('SLINK source download timed out.')), 9000);
+        })]);
+        if (!String(text).trim()) throw new Error('SLINK source download was empty.');
+        preferSourceMirror = endpoint === mirror;
+        return text;
+      } catch (error) { failure = error; }
+      finally { globalThis.clearTimeout(timer); }
+    }
+    throw failure || new Error('SLINK source download unavailable.');
   }
 
   function safeSourcePath(value) {
@@ -222,9 +258,16 @@
     const addonPaths = (manifest.startupAddons || []).map(addon => safeSourcePath(addon?.source));
     const revision = String(manifest.revision || 'unversioned');
     const query = '?v=' + encodeURIComponent(revision) + '&t=' + nonce;
-    const sources = await Promise.all(
-      [...fragmentPaths, ...addonPaths].map(path => fetchSource(SOURCE_ROOT + path + query))
-    );
+    const paths = [...fragmentPaths, ...addonPaths];
+    const sources = new Array(paths.length);
+    let cursor = 0, sourceFailed = false;
+    await Promise.all(Array.from({ length:Math.min(2, paths.length) }, async () => {
+      while (!sourceFailed && cursor < paths.length) {
+        const index = cursor++;
+        try { sources[index] = await fetchSource(SOURCE_ROOT + paths[index] + query); }
+        catch (error) { sourceFailed = true; throw error; }
+      }
+    }));
     const fragmentSources = sources.slice(0, fragmentPaths.length);
     const addonSources = sources.slice(fragmentPaths.length);
     if (fragmentSources.some(source => source.length < 100)) throw new Error('A SLINK runtime source file was empty or incomplete.');
@@ -278,14 +321,40 @@ if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
     await waitUntilReady();
   }
 
-  async function loadRuntime() {
+  async function checkRuntimeUpdate(cached) {
+    try {
+      const previous = await gmRead(CACHE_CHECK_KEY, {});
+      if (Date.now() - Number(previous?.checkedAt || 0) < UPDATE_CHECK_MS) return;
+      await gmWrite(CACHE_CHECK_KEY, { revision:previous?.revision || cached.revision, checkedAt:Date.now() });
+      const manifest = JSON.parse(await fetchSource(MANIFEST_URL + '?t=' + Date.now()));
+      if (manifest?.mode !== 'direct-source' || !manifest.revision) return;
+      await gmWrite(CACHE_CHECK_KEY, { revision:String(manifest.revision), checkedAt:Date.now() });
+    } catch (error) { console.debug('[SLINK PDA] Update check deferred; cached runtime remains active.', error); }
+  }
+
+  function loadRuntime(force = false) {
+    if (loadingRuntime) return loadingRuntime;
+    loadingRuntime = loadRuntimeOnce(force).finally(() => { loadingRuntime = null; });
+    return loadingRuntime;
+  }
+
+  async function loadRuntimeOnce(force = false) {
     const cached = await gmRead(RUNTIME_CACHE_KEY, null);
+    const checked = await gmRead(CACHE_CHECK_KEY, {});
     const retryCached = globalThis.sessionStorage?.getItem(CACHE_RETRY_KEY) === '1';
     if (retryCached) {
       globalThis.sessionStorage?.removeItem(CACHE_RETRY_KEY);
       if (!validBundle(cached)) return showFailure(new Error('No known-working SLINK runtime is cached yet.'));
       try { await executeBundle(cached); return; }
       catch (error) { return showFailure(error); }
+    }
+
+    if (!force && validBundle(cached) && (!checked?.revision || checked.revision === cached.revision)) {
+      try {
+        await executeBundle(cached);
+        void checkRuntimeUpdate(cached);
+        return;
+      } catch (error) { console.warn('[SLINK PDA] Cached startup failed; attempting a source download.', error); }
     }
 
     let fresh;
@@ -301,6 +370,7 @@ if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
     try {
       await executeBundle(fresh);
       await gmWrite(RUNTIME_CACHE_KEY, fresh);
+      await gmWrite(CACHE_CHECK_KEY, { revision:fresh.revision, checkedAt:Date.now() });
     } catch (runtimeError) {
       if (validBundle(cached) && cached.signature !== fresh.signature) {
         try {
@@ -316,6 +386,7 @@ if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
   installStorageBridge();
   await loadRuntime();
 })();
+
 
 
 

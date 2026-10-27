@@ -1,9 +1,10 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.104",
+  "version": "0.4.113",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:startup-hotfix": "node test-loader-recovery.mjs && node test-dom-performance.mjs",
     "test:mugging-release": "node build.mjs --check && node test-mugging-report-safety.mjs && node test-mugging-shared-stats.mjs",
     "test:hotfix": "node test-hyperlinks-ff-fallback.mjs",
     "build": "node build.mjs",
@@ -11,5 +12,6 @@
     "test": "node build.mjs --check && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-abroad-stocks.mjs && node test-money-property.mjs && node test-events.mjs && node test-mugging-shared-stats.mjs && node test-native-storage-roundtrip.mjs && node test-settings-write-isolation.mjs && node test-storage-resilience.mjs && node test-alert-snooze-persistence.mjs && node test-shoplifting-unique-parity.mjs && node test-runtime-readiness.mjs && node test-theme-assets.mjs"
   }
 }
+
 
 
