@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard [AUDIT TEST]
 // @namespace    Considious [3853023]
-// @version      0.4.110
+// @version      0.4.111
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/208025297549111a344004c87c0a8b816d2a54d9/SLINK-PDA/';
+  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/d6ef0f9b2ac23b27ff430271952cb9c243002aec/SLINK-PDA/';
   const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
@@ -37,7 +37,9 @@
   const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
   const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
   const OWN_BATTLE_STATS_STORAGE_KEY = 'slink-pda-dashboard:own-battle-stats:v1';
-  const BRIDGED_STORAGE_KEYS = new Set([DATA_STORAGE_KEY, OWN_BATTLE_STATS_STORAGE_KEY]);
+  const UI_STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
+  const ALERT_SNOOZE_STORAGE_KEY = 'slink-pda-dashboard:alert-snoozes:v1';
+  const BRIDGED_STORAGE_KEYS = new Set([DATA_STORAGE_KEY, OWN_BATTLE_STATS_STORAGE_KEY, UI_STORAGE_KEY, ALERT_SNOOZE_STORAGE_KEY]);
   const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';
   const CACHE_RETRY_KEY = 'slink-pda-dashboard:runtime-cache-retry:audit-test:v1';
   const STORAGE_WRITE_EVENT = 'slink-pda-storage-write:' + (globalThis.crypto?.randomUUID?.() || (String(Date.now()) + ':' + Math.random()));
@@ -75,7 +77,7 @@
   }
 
   function savedAt(value) {
-    return Math.max(0, Number(isRecord(value) ? value._savedAt : 0) || 0);
+    return Math.max(0, Number(isRecord(value) ? value._savedAt || value.savedAt : 0) || 0);
   }
 
   function writeMirror(value) {
@@ -88,15 +90,17 @@
 
   async function readPersistedData() {
     let primary = null;
+    let primaryFailed=false;
     try {
+      const store=nativeStorage();if(store){const value=await store.get(DATA_STORAGE_KEY,null);if(hasData(value)){writeMirror(value);return value;}}
       const value = await gmRead(DATA_STORAGE_KEY, {});
       if (isRecord(value)) primary = value;
-    } catch {}
+    } catch {primaryFailed=true;}
     const mirror = readMirror();
     let selected = hasData(primary) ? primary : mirror || {};
     if (hasData(mirror) && savedAt(mirror) > savedAt(selected)) selected = mirror;
     if (hasData(selected)) writeMirror(selected);
-    if (selected === mirror && selected !== primary) {
+    if (selected === mirror && selected !== primary && !primaryFailed) {
       await gmWrite(DATA_STORAGE_KEY, selected);
     }
     return selected;
@@ -109,53 +113,87 @@
     const stats = [primaryStats, localStats, data?.caches?.ownBattleStats]
       .filter(value => isRecord(value) && Number(value.total) > 0)
       .sort((a,b) => Number(b.checkedAt || 0) - Number(a.checkedAt || 0))[0] || null;
-    return { [DATA_STORAGE_KEY]:data, [OWN_BATTLE_STATS_STORAGE_KEY]:stats, storageWriteEvent:STORAGE_WRITE_EVENT };
+    return { [DATA_STORAGE_KEY]:data, [OWN_BATTLE_STATS_STORAGE_KEY]:stats, storageWriteEvent:STORAGE_WRITE_EVENT, [UI_STORAGE_KEY]:await gmRead(UI_STORAGE_KEY,{}), [ALERT_SNOOZE_STORAGE_KEY]:await gmRead(ALERT_SNOOZE_STORAGE_KEY,{}) };
+  }
+
+  function nativeStorage(){const store=typeof PDA_storage==='object'?PDA_storage:globalThis.PDA_storage;return store&&typeof store.get==='function'&&typeof store.set==='function'?store:null;}
+
+  function mergeChanges(base,current,latest) {
+    if (JSON.stringify(base) === JSON.stringify(current)) return latest;
+    if (!isRecord(base) || !isRecord(current) || !isRecord(latest)) return current;
+    const result={...latest};
+    for (const key of new Set([...Object.keys(base),...Object.keys(current)])) {
+      if (['__proto__','constructor','prototype'].includes(key)) continue;
+      if (!Object.hasOwn(current,key)) {if (Object.hasOwn(base,key)) delete result[key];}
+      else result[key]=mergeChanges(base[key],current[key],latest[key]);
+    }
+    return result;
   }
 
   function installStorageBridge() {
-    let pendingWrite = Promise.resolve();
-    document.addEventListener(STORAGE_WRITE_EVENT, event => {
-      try {
-        const payload = JSON.parse(String(event?.detail || ''));
-        if (!isRecord(payload) || !BRIDGED_STORAGE_KEYS.has(payload.key)) return;
-        if (payload.remove) {
-          if (payload.key !== DATA_STORAGE_KEY) return;
-          try { globalThis.localStorage?.removeItem(DATA_MIRROR_KEY); globalThis.localStorage?.removeItem(DATA_STORAGE_KEY); } catch {}
-          if (typeof globalThis.GM_deleteValue === 'function') globalThis.GM_deleteValue(DATA_STORAGE_KEY);
-          return;
-        }
-        if (payload.key === DATA_STORAGE_KEY) writeMirror(payload.value);
-        else try { globalThis.localStorage?.setItem(payload.key, JSON.stringify(payload.value)); } catch {}
-        // Native PDA storage calls can be asynchronous. Preserve write order
-        // so a slow old write cannot finish after the fresh battle-stat save.
-        pendingWrite = pendingWrite.then(async () => {
-          if (payload.key === OWN_BATTLE_STATS_STORAGE_KEY) {
-            const previous = await gmRead(payload.key, null);
-            if (Number(previous?.checkedAt || 0) > Number(payload.value?.checkedAt || 0)) return;
-          }
-          await gmWrite(payload.key, payload.value);
-        }).catch(() => undefined);
-      } catch {}
-    });
+  let pendingWrite = Promise.resolve();
+  const acknowledge = (payload,ok,error='') => {
+  try {document.dispatchEvent(new CustomEvent(STORAGE_WRITE_EVENT+':ack',{detail:JSON.stringify({id:payload.id,ok,backend:nativeStorage()?'pda':'browser',error})}));} catch {}
+  };
+  document.addEventListener(STORAGE_WRITE_EVENT, event => {
+  let payload;
+  try {payload=JSON.parse(String(event?.detail || ''));} catch {return;}
+  if (!isRecord(payload) || !BRIDGED_STORAGE_KEYS.has(payload.key)) return;
+  if (payload.remove && payload.key !== DATA_STORAGE_KEY) return;
+  if (!payload.remove && !isRecord(payload.value)) return;
+  if (!payload.remove) {
+  if (payload.key === DATA_STORAGE_KEY) writeMirror(payload.value);
+  else try {globalThis.localStorage?.setItem(payload.key,JSON.stringify(payload.value));} catch {}
+  }
+  pendingWrite=pendingWrite.catch(()=>{}).then(async()=>{
+  if (payload.remove) {
+  const store=nativeStorage();
+  if (store) {if (typeof store.delete !== 'function') throw Error('Storage delete unavailable.');await store.delete(payload.key);}
+  else if (typeof globalThis.GM_deleteValue==='function') await Promise.resolve(globalThis.GM_deleteValue(payload.key));
+  else throw Error('Storage delete unavailable.');
+  try {globalThis.localStorage?.removeItem(DATA_MIRROR_KEY);globalThis.localStorage?.removeItem(DATA_STORAGE_KEY);} catch {}
+  } else {
+  const previous=await gmRead(payload.key,null);
+  if (payload.key === OWN_BATTLE_STATS_STORAGE_KEY && Number(previous?.checkedAt || 0)>Number(payload.value?.checkedAt || 0)) return;
+  let value=payload.value;
+  if (payload.key === DATA_STORAGE_KEY && isRecord(previous) && isRecord(payload.base)) {
+  const settings=mergeChanges(payload.base.settings,value.settings,previous.settings || {});
+  const targets=mergeChanges(payload.base.targetList,value.caches?.targetList || {},previous.caches?.targetList || {});
+  value={...(savedAt(previous)>savedAt(value)?previous:value),settings,caches:{...(savedAt(previous)>savedAt(value)?previous.caches:value.caches),targetList:targets},_savedAt:Math.max(savedAt(previous),savedAt(value))+1};
+  } else if (savedAt(previous)>savedAt(value)) return;
+  if(payload.base?.protected && previous)for(const key of Object.keys(payload.base.protected))value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(previous,key)?previous[key]:payload.value[key]);
+  await gmWrite(payload.key,value);
+  }
+  }).then(()=>acknowledge(payload,true),error=>acknowledge(payload,false,String(error?.code || 'Storage write failed')));
+  });
   }
 
   async function gmRead(key, fallback = null) {
-    try {
-      if (typeof globalThis.GM_getValue !== 'function') return fallback;
-      return await Promise.resolve(globalThis.GM_getValue(key, fallback));
-    } catch { return fallback; }
+  const store=nativeStorage();
+  if (store) {
+  const value=await store.get(key,null);
+  if (value !== null && value !== undefined) return value;
+  }
+  let legacy;
+  try {legacy=typeof globalThis.GM_getValue==='function'?await Promise.resolve(globalThis.GM_getValue(key,fallback)):fallback;}
+  catch(error) {if(BRIDGED_STORAGE_KEYS.has(key))throw error;return fallback;}
+  if (store && isRecord(legacy) && Object.keys(legacy).length && BRIDGED_STORAGE_KEYS.has(key) && await store.get(key,null)==null) await store.set(key,legacy);
+  return legacy;
   }
 
   async function gmWrite(key, value) {
-    try {
-      if (typeof globalThis.GM_setValue === 'function') await Promise.resolve(globalThis.GM_setValue(key, value));
-    } catch {}
+  const store=nativeStorage();
+  if (store) {await store.set(key,value);return;}
+  if (typeof globalThis.GM_setValue!=='function') throw Error('Browser storage unavailable.');
+  await Promise.resolve(globalThis.GM_setValue(key,value));
+  if (typeof globalThis.GM_getValue==='function' && JSON.stringify(await globalThis.GM_getValue(key,null))!==JSON.stringify(value)) throw Error('Browser storage write was not retained.');
   }
 
   function validBundle(value) {
     return Boolean(
       isRecord(value) &&
       value.schema === 1 &&
+      value.storageProtocol === 2 &&
       typeof value.runtimeSource === 'string' &&
       value.runtimeSource.length > 1000 &&
       Array.isArray(value.addonSources) &&
@@ -215,7 +253,7 @@
     let manifest;
     try { manifest = JSON.parse(manifestText); }
     catch { throw new Error('The SLINK source manifest was not valid JSON.'); }
-    if (manifest?.mode !== 'direct-source' || !Array.isArray(manifest.fragments) || !manifest.fragments.length) {
+    if (manifest?.mode !== 'direct-source' || manifest.storageProtocol!==2 || !Array.isArray(manifest.fragments) || !manifest.fragments.length) {
       throw new Error('The SLINK source manifest is incomplete.');
     }
     const fragmentPaths = manifest.fragments.map(safeSourcePath);
@@ -231,7 +269,7 @@
     if (addonSources.some(source => source.length < 100)) throw new Error('A SLINK startup add-on was empty or incomplete.');
     const runtimeSource = fragmentSources.join('');
     const signature = await signatureFor(runtimeSource, addonSources);
-    return { schema:1, revision, signature, runtimeSource, addonSources, savedAt:Date.now() };
+    return { schema:1, storageProtocol:2, revision, signature, runtimeSource, addonSources, savedAt:Date.now() };
   }
 
   async function executeRuntime(source) {
@@ -279,7 +317,7 @@ if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
   }
 
   async function loadRuntime() {
-    const cached = await gmRead(RUNTIME_CACHE_KEY, null);
+    const cached = await gmRead(RUNTIME_CACHE_KEY, null).catch(()=>null);
     const retryCached = globalThis.sessionStorage?.getItem(CACHE_RETRY_KEY) === '1';
     if (retryCached) {
       globalThis.sessionStorage?.removeItem(CACHE_RETRY_KEY);
@@ -300,7 +338,7 @@ if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
 
     try {
       await executeBundle(fresh);
-      await gmWrite(RUNTIME_CACHE_KEY, fresh);
+      try {await gmWrite(RUNTIME_CACHE_KEY, fresh);} catch {console.warn('[SLINK PDA] Runtime cache not saved; running source remains active.');}
     } catch (runtimeError) {
       if (validBundle(cached) && cached.signature !== fresh.signature) {
         try {
