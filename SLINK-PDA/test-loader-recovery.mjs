@@ -19,7 +19,7 @@ async function run({cache=null,checked=null,refuse=false,denyAll=false,native=tr
    await new Promise(resolve=>setTimeout(resolve,1));
    if(denyAll||(refuse&&url.startsWith('https://raw.')))throw Error('ClientException SocketConnection refused errno=61');
    const path=url.split('/SLINK-PDA/')[1]?.split('?')[0];
-   const data=path==='source-manifest.json'?JSON.stringify({mode:'direct-source',revision:'new',fragments:['src/one.part','src/two.part'],startupAddons:[{source:'src/addon.js'}]}):path==='src/addon.js'?addon:runtime;
+   const data=path==='source-manifest.json'?JSON.stringify({mode:'direct-source',revision:'new',sourceRef:'a'.repeat(40),fragments:['src/one.part','src/two.part'],startupAddons:[{source:'src/addon.js'}]}):path==='src/addon.js'?addon:runtime;
    return {status:200,data};
   }finally{inFlight--;}
  }
@@ -40,6 +40,7 @@ const warm=await run({cache:bundle,checked:{revision:'cached',checkedAt:Date.now
 assert.equal(warm.executions,1);assert.equal(warm.requests.length,0,'Warm page load must not wait for a source download');
 const cold=await run({refuse:true});assert.equal(cold.executions,1);assert.equal(cold.maxInFlight,2);assert.equal(cold.requests.filter(url=>url.startsWith('https://raw.')).length,1);
 assert(cold.requests.some(url=>url.startsWith('https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@')));assert.equal(cold.banner,null);
+assert(cold.requests.filter(url=>!url.includes('source-manifest.json')).every(url=>url.includes('@'+'a'.repeat(40)+'/')),'Fallback fragments must stay on one immutable manifest reference');
 const fallback=await run({cache:bundle,checked:{revision:'new',checkedAt:Date.now()},denyAll:true});assert.equal(fallback.executions,1);assert.equal(fallback.banner,null);
 const unavailable=await run({denyAll:true});assert.equal(unavailable.executions,0);assert.match(unavailable.banner.textContent,/Torn is unaffected/);
 const browser=await run({native:false,refuse:true});assert.equal(browser.executions,1,'Browser transport must also recover via the public mirror');

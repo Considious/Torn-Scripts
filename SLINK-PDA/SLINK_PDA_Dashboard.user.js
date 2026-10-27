@@ -31,6 +31,7 @@
 (async () => {
   'use strict';
   const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/';
+  const FALLBACK_SOURCE_REF = '0ec293cbf704c7600ecda2f6018578dffc97b6ee';
   const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
@@ -131,8 +132,6 @@
         }
         if (payload.key === DATA_STORAGE_KEY) writeMirror(payload.value);
         else try { globalThis.localStorage?.setItem(payload.key, JSON.stringify(payload.value)); } catch {}
-        // Native PDA storage calls can be asynchronous. Preserve write order
-        // so a slow old write cannot finish after the fresh battle-stat save.
         pendingWrite = pendingWrite.then(async () => {
           if (payload.key === OWN_BATTLE_STATS_STORAGE_KEY) {
             const previous = await gmRead(payload.key, null);
@@ -204,8 +203,7 @@
   }
 
   async function fetchSource(url) {
-    const mirror = url.replace('https://raw.githubusercontent.com/Considious/Torn-Scripts/', 'https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@');
-    // Only the script's public source URL is mirrored; never API keys or user data.
+    const mirror = url.replace('https://raw.githubusercontent.com/Considious/Torn-Scripts/', 'https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@').replace('@main/', '@' + FALLBACK_SOURCE_REF + '/');
     const urls = preferSourceMirror ? [mirror, url] : [url, mirror];
     let failure;
     for (const endpoint of [...new Set(urls)]) {
@@ -257,6 +255,9 @@
     const fragmentPaths = manifest.fragments.map(safeSourcePath);
     const addonPaths = (manifest.startupAddons || []).map(addon => safeSourcePath(addon?.source));
     const revision = String(manifest.revision || 'unversioned');
+    const sourceRef = String(manifest.sourceRef || (preferSourceMirror ? FALLBACK_SOURCE_REF : ''));
+    if (sourceRef && !/^[a-f0-9]{40}$/.test(sourceRef)) throw new Error('Invalid SLINK source release reference.');
+    const bundleRoot = sourceRef ? SOURCE_ROOT.replace('/main/SLINK-PDA/', '/' + sourceRef + '/SLINK-PDA/') : SOURCE_ROOT;
     const query = '?v=' + encodeURIComponent(revision) + '&t=' + nonce;
     const paths = [...fragmentPaths, ...addonPaths];
     const sources = new Array(paths.length);
@@ -264,7 +265,7 @@
     await Promise.all(Array.from({ length:Math.min(2, paths.length) }, async () => {
       while (!sourceFailed && cursor < paths.length) {
         const index = cursor++;
-        try { sources[index] = await fetchSource(SOURCE_ROOT + paths[index] + query); }
+        try { sources[index] = await fetchSource(bundleRoot + paths[index] + query); }
         catch (error) { sourceFailed = true; throw error; }
       }
     }));
