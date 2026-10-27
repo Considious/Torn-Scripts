@@ -52,7 +52,12 @@
     if (enabled) return;
     enabled = true;
     addStyles();
-    observer = new MutationObserver(scheduleScan);
+    observer = new MutationObserver(mutations => {
+      if (!activity.eligible()) return;
+      if (menuChatRoot && !menuChatRoot.isConnected) closeMenu();
+      const selector = CHAT_ROOT_SELECTOR + ',' + CHAT_HEADER_DISCOVERY_SELECTOR + ',[data-testid="editor-root"]';
+      if (mutations.some(mutation => [...(mutation.addedNodes || [])].some(node => node.nodeType === 1 && (node.matches?.(selector) || node.querySelector?.(selector))))) scheduleScan();
+    });
     syncActivity();
     window.addEventListener('hashchange', scheduleScan);
   }

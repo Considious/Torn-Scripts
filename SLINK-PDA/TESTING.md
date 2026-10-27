@@ -1,6 +1,8 @@
-# SLINK PDA audit tester build — candidate 25
+# SLINK PDA audit tester build — candidate 26
 
-Testing branch only, not stable/main. Version **0.4.112**, dashboard build **0.4.112-audit-test25**.
+Testing branch only, not stable/main. Version **0.4.114**, dashboard build **0.4.114-audit-test26**.
+
+Main-first emergency hotfix integrated: refused source connections can use the public mirror, matching immutable cached sources start immediately, and attack text no longer triggers Xanax-wide rescans. The immutable tester pin needs no background update polling. Native storage acknowledgements/lifecycle guards remain. Loader whitespace was formatted without compression or identifier renaming to stay below the existing size ceiling. Update in place, never clear data.
 
 This batch fixes background/page-return observer and timer ownership, cancels stale delayed chat actions, and prevents hidden/zero-size viewport events resetting launcher position. See LIFECYCLE.md and the one cumulative tester changelog. Physical PDA acceptance is still required.
 

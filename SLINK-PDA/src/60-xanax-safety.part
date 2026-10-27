@@ -12,6 +12,9 @@ const XANAX_SAFETY_SELECTOR = [
 'a[data-role="use"][aria-label^="Xanax"]',
 `[data-id="${XANAX_SAFETY_ITEM_ID}"][title="Xanax"]`
 ].join(',');
+const XANAX_ENERGY_SELECTOR = '#barEnergy,[id*="barEnergy"],[data-stat="energy"],[data-testid*="energy" i],[aria-label*="energy" i],[class*="barEnergy"],a[href*="gym.php"]';
+let xanaxSafetyPagePresent = true;
+function xanaxSafetyActive() { return xanaxSafetyPagePresent && pdaDomActive(); }
 function xanaxSafetyInteger(value) {
 const parsed = Number(String(value ?? '').replace(/,/g, ''));
 return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
@@ -69,7 +72,7 @@ const wasted = Math.max(0, current + XANAX_SAFETY_GAIN - XANAX_SAFETY_CAP);
 return `You currently have ${current.toLocaleString()} energy.\n\nBy using this Xanax you will waste ${wasted.toLocaleString()} energy.\n\nAre you sure you want to use it?`;
 }
 function handleXanaxSafetyClick(event) {
-if (!pdaDomActive()) return;
+if (!xanaxSafetyActive()) return;
 const action = xanaxSafetyAction(event.target);
 if (!action) return;
 const energy = xanaxSafetyCurrentEnergy();
@@ -79,36 +82,53 @@ event.preventDefault();
 event.stopPropagation();
 event.stopImmediatePropagation();
 }
-let xanaxSafetyDecorationScheduled = false;
+let xanaxSafetyDecorationTimer = null;
 function decorateXanaxSafetyActions() {
-xanaxSafetyDecorationScheduled = false;
-if (!pdaDomActive()) return;
+xanaxSafetyDecorationTimer = null;
+if (!xanaxSafetyActive()) return;
+const actions = document.querySelectorAll(XANAX_SAFETY_SELECTOR);
+if (!actions.length) return;
 const energy = xanaxSafetyCurrentEnergy();
 const guarded = energy !== null && energy > XANAX_SAFETY_LIMIT;
-for (const action of document.querySelectorAll(XANAX_SAFETY_SELECTOR)) {
+for (const action of actions) {
 action.toggleAttribute(XANAX_SAFETY_ATTRIBUTE, guarded);
 if (guarded) action.setAttribute('aria-description', `SLINK safety confirmation required. Current energy: ${energy}.`);
 else action.removeAttribute('aria-description');
 }
 }
 function scheduleXanaxSafetyDecoration() {
-if (xanaxSafetyDecorationScheduled || !pdaDomActive()) return;
-xanaxSafetyDecorationScheduled = true;
-global.requestAnimationFrame(decorateXanaxSafetyActions);
+if (!xanaxSafetyActive() || xanaxSafetyDecorationTimer !== null) return;
+xanaxSafetyDecorationTimer = global.setTimeout(decorateXanaxSafetyActions, 200);
+}
+function relevantXanaxSafetyMutation(mutation) {
+const target = mutation.target?.nodeType === 1 ? mutation.target : mutation.target?.parentElement;
+if (target?.closest?.(XANAX_ENERGY_SELECTOR + ',' + XANAX_SAFETY_SELECTOR)) return true;
+if (mutation.type === 'characterData') return false;
+return [...(mutation.addedNodes || [])].some(node => node.nodeType === 1 && (node.matches?.(XANAX_ENERGY_SELECTOR + ',' + XANAX_SAFETY_SELECTOR) || node.querySelector?.(XANAX_ENERGY_SELECTOR + ',' + XANAX_SAFETY_SELECTOR)));
+}
+function syncXanaxSafetyActivity() {
+xanaxSafetyObserver.disconnect();
+global.clearTimeout(xanaxSafetyDecorationTimer); xanaxSafetyDecorationTimer = null;
+if (!xanaxSafetyActive()) return;
+xanaxSafetyObserver.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
+scheduleXanaxSafetyDecoration();
 }
 const xanaxSafetyStyle = document.createElement('style');
 xanaxSafetyStyle.id = 'slink-xanax-safety-style';
 xanaxSafetyStyle.textContent = `[${XANAX_SAFETY_ATTRIBUTE}="true"]{outline:2px solid #f59e0b!important;outline-offset:2px!important}`;
 (document.head || document.documentElement).appendChild(xanaxSafetyStyle);
 document.addEventListener('click', handleXanaxSafetyClick, true);
-const xanaxSafetyObserver = new MutationObserver(scheduleXanaxSafetyDecoration);
-function syncXanaxSafetyActivity(active) {
+const xanaxSafetyObserver = new MutationObserver(mutations => {
+if (xanaxSafetyActive() && mutations.some(relevantXanaxSafetyMutation)) scheduleXanaxSafetyDecoration();
+});
+document.addEventListener('visibilitychange', syncXanaxSafetyActivity);
+global.addEventListener('pageshow', () => { xanaxSafetyPagePresent = true; syncXanaxSafetyActivity(); });
+global.addEventListener('pagehide', () => {
+xanaxSafetyPagePresent = false;
 xanaxSafetyObserver.disconnect();
-if (!active) return;
-xanaxSafetyObserver.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
-scheduleXanaxSafetyDecoration();
-}
+global.clearTimeout(xanaxSafetyDecorationTimer); xanaxSafetyDecorationTimer = null;
+});
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncXanaxSafetyActivity);
-syncXanaxSafetyActivity(pdaDomActive());
-// Activity subscription handles pagehide/pageshow without losing the safety handler.
+syncXanaxSafetyActivity();
 }
+

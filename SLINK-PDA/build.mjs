@@ -23,13 +23,14 @@ const addons = await Promise.all((manifest.startupAddons || []).map(async addon 
 const loaderPath = resolve(root, manifest.output || 'SLINK_PDA_Dashboard.user.js');
 const loaderSource = await readFile(loaderPath, 'utf8');
 new Script(loaderSource, { filename:loaderPath });
-if (!loaderSource.includes("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';")) {
+const hasLoaderCode = code => loaderSource.replace(/\s/g,'').replaceAll('"', "'").includes(code.replace(/\s/g,'').replaceAll('"', "'"));
+if (!hasLoaderCode("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';")) {
   throw new Error('PDA loader is not configured for direct source loading.');
 }
-if (!loaderSource.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';")) {
+if (!hasLoaderCode("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';")) {
   throw new Error('PDA loader is missing the last-known-working runtime cache.');
 }
-if (loaderSource.includes('SLINK_PDA_Runtime.js?v=')) {
+if (hasLoaderCode('SLINK_PDA_Runtime.js?v=')) {
   throw new Error('PDA loader still depends on the generated runtime.');
 }
 const loaderVersion = loaderSource.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim();

@@ -11,7 +11,7 @@ const store={get:async(key,fallback)=>clone(native.get(key)??fallback),set:async
 const localStorage={getItem:key=>browser.get(key)??null,setItem:(key,value)=>browser.set(key,value),removeItem:key=>browser.delete(key)};
 const keys={DATA_STORAGE_KEY:'data',DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:'stats',UI_STORAGE_KEY:'ui',STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes'};
 const ctx=vm.createContext({...keys,BRIDGED_STORAGE_KEYS:new Set(['data','stats','ui','snoozes']),STORAGE_WRITE_EVENT:'write',CustomEvent:Event,document:doc,globalThis:{localStorage,PDA_storage:store,GM_getValue:async(key,fallback)=>clone(legacy.get(key)??fallback),GM_setValue:async(key,value)=>legacy.set(key,clone(value))}});
-vm.runInContext(loader.slice(loader.indexOf('  function isRecord(value)'),loader.indexOf('  function validBundle(value)')),ctx);ctx.installStorageBridge();
+vm.runInContext(loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)')),ctx);ctx.installStorageBridge();
 legacy.set('data',{_savedAt:1,apiKey:'synthetic',settings:{plugins:{chat:{term:'keep'}}},caches:{targetList:{'1':{name:'A',description:'old'},'2':{name:'B'}}}});
 const boot=await ctx.collectBootstrap();assert.equal(native.get('data').settings.plugins.chat.term,'keep','Legacy data must migrate non-destructively to available native storage');assert.equal(legacy.get('data').apiKey,'synthetic');
 const beforeReadFailure=clone(native.get('data')),getBeforeFailure=store.get;

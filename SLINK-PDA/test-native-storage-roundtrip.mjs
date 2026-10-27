@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const loader=fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js',import.meta.url),'utf8');
-const source=loader.slice(loader.indexOf('  function isRecord(value)'),loader.indexOf('  function validBundle(value)'));
+const source=loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)'));
 const dataKey='data',statsKey='own-stats';
 const local=new Map(),native=new Map([[dataKey,{_savedAt:100,caches:{ownBattleStats:{total:571764,checkedAt:100}}}]]);
 const callbacks=new Map();

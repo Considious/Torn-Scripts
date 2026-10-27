@@ -4,10 +4,10 @@ import vm from 'node:vm';
 
 const read=path=>fs.readFileSync(new URL(path,import.meta.url),'utf8');
 const loader=read('./SLINK_PDA_Dashboard.user.js');
-const root=loader.match(/const SOURCE_ROOT = '([^']+)';/)?.[1];
+const root=loader.match(/const SOURCE_ROOT\s*=\s*["']([^"']+)["'];/)?.[1];
 assert.match(root,/^https:\/\/raw\.githubusercontent\.com\/Considious\/Torn-Scripts\/[a-f0-9]{40}\/SLINK-PDA\/$/,'The tester runtime must be pinned to one immutable source commit.');
 assert.ok(loader.includes('/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js'),'Userscript updates must stay on the tester branch.');
-const cacheKey=loader.match(/const RUNTIME_CACHE_KEY = '([^']+)';/)?.[1];
+const cacheKey=loader.match(/const RUNTIME_CACHE_KEY\s*=\s*["']([^"']+)["'];/)?.[1];
 assert.equal(cacheKey,'slink-pda-dashboard:runtime-cache:audit-test:v1');
 const requests=[],native=new Map(),local=new Map();
 let host=null,injected='';

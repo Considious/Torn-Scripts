@@ -49,7 +49,7 @@ const bootstrapContext = { DATA_STORAGE_KEY:'data', OWN_BATTLE_STATS_STORAGE_KEY
   readPersistedData:async()=>({caches:{ownBattleStats:stale}}), gmRead:async()=>fresh,
   globalThis:{localStorage:{getItem:()=>null}}, isRecord:value=>value&&typeof value==='object' };
 vm.createContext(bootstrapContext);
-vm.runInContext(loader.slice(loader.indexOf('  async function collectBootstrap()'),loader.indexOf('  function installStorageBridge()')),bootstrapContext);
+vm.runInContext(loader.slice(loader.indexOf('async function collectBootstrap()'),loader.indexOf('function installStorageBridge()')),bootstrapContext);
 assert.equal((await bootstrapContext.collectBootstrap())[key].total,603502,'Asynchronous native storage must be awaited before injecting startup data.');
 
 console.log('PDA shared battle-stat freshness checks passed.');
