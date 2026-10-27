@@ -952,8 +952,10 @@ if (button) return button;
 return null;
 }
 async function waitFor(check, timeoutMs = 2_000) {
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
 const started = Date.now();
 while (Date.now() - started < timeoutMs) {
+if (!global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return null;
 const value = check(); if (value) return value;
 await new Promise(resolve => global.setTimeout(resolve, 75));
 }
@@ -961,7 +963,8 @@ return null;
 }
 async function sendToFaction(text) {
 text = normalizeChatHtml(text);
-if (document.visibilityState !== 'visible' || !document.hasFocus()) return false;
+if (!pdaDomActive()) return false;
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
 let container = factionContainer(); let input = factionComposer(container);
 if (!input) {
 const launcher = factionLauncher(); if (!launcher) return false;
@@ -969,7 +972,7 @@ launcher.click();
 const found = await waitFor(() => { const next = factionContainer(); const field = factionComposer(next); return field ? { next, field } : null; });
 container = found?.next; input = found?.field;
 }
-if (!input || !document.hasFocus()) return false;
+if (!input || !global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return false;
 input.focus();
 if (input.matches('textarea,input')) {
 const prototype = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -982,7 +985,7 @@ const send = await waitFor(() => {
 const button = factionSendButton(container, input);
 return button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null;
 }, 1_500);
-if (!send || !document.hasFocus()) return false;
+if (!send || !global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return false;
 send.click(); return true;
 }
 function currentPrimedFactionMessage(key = '') {

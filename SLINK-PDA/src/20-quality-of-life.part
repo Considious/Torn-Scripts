@@ -79,7 +79,7 @@ if (racingDomActive() && mutations.some(racingMutationRelevant)) scheduleRacingS
 // do not make every attribute change trigger unrelated Market/profile readers.
 racingStateObserver.observe(document.body, { subtree:true, characterData:true, attributes:true, attributeOldValue:true, attributeFilter:['class','style','hidden','aria-hidden'] });
 if (racingScanTimer) return;
-racingScanTimer = global.setTimeout(() => {
+racingScanTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 racingScanTimer = null;
 scanOfficialRaceDom();
 }, delay);

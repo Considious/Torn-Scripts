@@ -1130,7 +1130,7 @@ console.debug('[SLINK PDA] Mug result report paused:', message(error));
 function scanAttackMugResults() {
 if (!pdaDomActive()) return;
 if (!attackPageUrl() || attackMugScanTimer) return;
-attackMugScanTimer = global.setTimeout(() => {
+attackMugScanTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 attackMugScanTimer = null;
 if (!attackPageUrl()) return;
 document.querySelectorAll('div[class*="dialog___"] div[class*="title___"],div[class*="green___"] div[class*="title___"]').forEach(recordMugResultNode);

@@ -970,13 +970,13 @@ function scheduleQuickPurchaseControlSync(delay = 40) {
 if (!focusedTornPage()) return;
 if (!onPurchaseOpportunityPage() && !marketPurchaseState.quickPurchaseFlow && !marketPurchaseState.quickPurchaseOverlays.size) return;
 if (marketPurchaseState.quickPurchaseSyncTimer) return;
-marketPurchaseState.quickPurchaseSyncTimer = window.setTimeout(() => {
+marketPurchaseState.quickPurchaseSyncTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 marketPurchaseState.quickPurchaseSyncTimer = null;
 syncHighlightedQuickPurchaseControls();
 }, delay);
 }
 function refreshPurchaseOpportunityFormattingAfterClick(delay) {
-window.setTimeout(() => {
+global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 formatBazaarOneDollarListings();
 formatItemMarketPurchaseOpportunities();
 syncHighlightedQuickPurchaseControls();
@@ -1006,7 +1006,7 @@ marketPurchaseState.quickPurchaseFlow = { ...flow, confirmationSentAt: sentAt };
 spec.native.click();
 refreshPurchaseOpportunityFormattingAfterClick(80);
 refreshPurchaseOpportunityFormattingAfterClick(300);
-window.setTimeout(() => {
+global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 if (marketPurchaseState.quickPurchaseFlow?.confirmationSentAt === sentAt) marketPurchaseState.quickPurchaseFlow = null;
 refreshPurchaseOpportunityFormattingAfterClick(0);
 }, 2_050);
@@ -1050,7 +1050,7 @@ spec.native.click();
 refreshPurchaseOpportunityFormattingAfterClick(40);
 refreshPurchaseOpportunityFormattingAfterClick(160);
 refreshPurchaseOpportunityFormattingAfterClick(450);
-window.setTimeout(() => {
+global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 const currentFlow = marketPurchaseState.quickPurchaseFlow;
 if (currentFlow?.lastActionAt === now) {
 const listingNow = resolvedQuickPurchaseListing(currentFlow);
@@ -1078,7 +1078,7 @@ stock: bazaarCardStock(card),
 clickedAt: Date.now(),
 };
 marketPurchaseState.pendingBazaarPurchase = pending;
-[0, 60, 180, 420, 900, 1_500].forEach((delay) => window.setTimeout(() => {
+[0, 60, 180, 420, 900, 1_500].forEach((delay) => global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 fillBazaarPurchaseMaximum(pending);
 if (delay === 1_500 && marketPurchaseState.pendingBazaarPurchase === pending) marketPurchaseState.pendingBazaarPurchase = null;
 }, delay));
@@ -1086,7 +1086,7 @@ if (delay === 1_500 && marketPurchaseState.pendingBazaarPurchase === pending) ma
 function schedulePurchaseOpportunityFormatting(delay = 200) {
 if (!focusedTornPage() || !onPurchaseOpportunityPage()) return;
 if (marketPurchaseState.bazaarOneDollarTimer) return;
-marketPurchaseState.bazaarOneDollarTimer = window.setTimeout(() => {
+marketPurchaseState.bazaarOneDollarTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
 marketPurchaseState.bazaarOneDollarTimer = null;
 formatBazaarOneDollarListings();
 formatItemMarketPurchaseOpportunities();
@@ -1094,8 +1094,8 @@ syncHighlightedQuickPurchaseControls();
 }, delay);
 }
 function clearMarketPurchaseFormatting() {
-if (marketPurchaseState.bazaarOneDollarTimer) global.clearTimeout(marketPurchaseState.bazaarOneDollarTimer);
-if (marketPurchaseState.quickPurchaseSyncTimer) global.clearTimeout(marketPurchaseState.quickPurchaseSyncTimer);
+if (marketPurchaseState.bazaarOneDollarTimer) global.SLINK_PDA_PAGE_ACTIVITY.cancel(marketPurchaseState.bazaarOneDollarTimer);
+if (marketPurchaseState.quickPurchaseSyncTimer) global.SLINK_PDA_PAGE_ACTIVITY.cancel(marketPurchaseState.quickPurchaseSyncTimer);
 marketPurchaseState.bazaarOneDollarTimer = null;
 marketPurchaseState.quickPurchaseSyncTimer = null;
 clearQuickPurchaseControls();

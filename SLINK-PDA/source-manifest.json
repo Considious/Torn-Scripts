@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "0.4.111",
+  "revision": "0.4.112",
   "storageProtocol": 2,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [

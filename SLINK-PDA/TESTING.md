@@ -1,6 +1,8 @@
-# SLINK PDA audit tester build — candidate 24
+# SLINK PDA audit tester build — candidate 25
 
-Testing branch only, not stable/main. Version **0.4.111**, dashboard build **0.4.111-audit-test24**.
+Testing branch only, not stable/main. Version **0.4.112**, dashboard build **0.4.112-audit-test25**.
+
+This batch fixes background/page-return observer and timer ownership, cancels stale delayed chat actions, and prevents hidden/zero-size viewport events resetting launcher position. See LIFECYCLE.md and the one cumulative tester changelog. Physical PDA acceptance is still required.
 
 Native PDA storage is feature-detected and preferred; legacy data is kept and copied non-destructively, the write bridge returns acknowledgements/failures, and target/credential completion waits. Unknown/add-on settings are retained. Failed native changes keep their intent until a later successful save; stale unchanged snapshots merge against current settings/targets/protected fields. Access exposes Retry for failures. The complete test checklist and limitations are in the one running changelog linked below; the full audit is not complete.
 

@@ -5,7 +5,7 @@ if (state.page === 'quality-of-life') return state.qualityOfLifeTab;
 return 'access';
 }
 async function loadActiveModule(force = false) {
-if (!dashboardOpen || document.hidden) return;
+if (!dashboardOpen || !pdaDomActive()) return;
 const name = activeModuleName();
 const plugin = pdaPlugins.get(name);
 if (plugin) {
@@ -59,16 +59,17 @@ permissionRecoveryBusy = false;
 function startScheduler() {
 if (schedulerTimer) return;
 schedulerTimer = global.setInterval(() => {
+if (!pdaPagePresent) return;
 if (currentApiKey() && termsAccepted('permission') && !validSession('permission')) void ensureAutomaticPermissionSession(false);
 const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
-if (canRefreshAlerts) {
+if (canRefreshAlerts && pdaDomActive()) {
 const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 if (previousIds !== JSON.stringify(dataState.caches.alertNotificationIds)) { writeDataState(); renderAlerts(); }
 const clock = shadow.querySelector('[data-timer24-clock]');
 if (clock) clock.textContent = timer24Label();
 }
-syncThemeHealthAssets();
+if (pdaDomActive()) syncThemeHealthAssets();
 if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
 if (canRefreshAlerts && Number(dataState.caches.crimeUniques?.nextLiveAt || 0) <= Date.now()) void refreshCrimeUniqueWindows(false);
 const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
@@ -85,7 +86,7 @@ if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
 if (hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
 if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
-if (dashboardOpen && !document.hidden) void loadActiveModule(false);
+if (dashboardOpen && pdaDomActive()) void loadActiveModule(false);
 }, 30_000);
 }
 function protectEditableState(root) {
@@ -562,6 +563,7 @@ badge.querySelector('span').textContent = pdaChatButtonAlertCount > 99 ? '99+' :
 pdaChatButton.setAttribute('aria-label', pdaChatButtonAlertCount ? 'Open SLINK, ' + pdaChatButtonAlertCount + ' active alert' + (pdaChatButtonAlertCount === 1 ? '' : 's') : 'Open SLINK');
 }
 function ensurePdaChatButton() {
+if (!pdaDomActive()) return;
 if (state.minimizedMode !== 'chat') return;
 const settingsButton = document.getElementById('notes_settings_button');
 const peopleButton = document.getElementById('people_panel_button');
@@ -602,9 +604,12 @@ if (fieldRect.bottom > visibleBottom) scroller.scrollTop += fieldRect.bottom - v
 else if (fieldRect.top < visibleTop) scroller.scrollTop -= visibleTop - fieldRect.top;
 }
 function guardUnexpectedBottomJump(expectedTop, node) {
+if (!pdaDomActive()) return;
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
 const scroller = shadow.querySelector('.scroll');
 if (!scroller || !keyboardEditable(node)) return;
 const check = () => {
+if (!global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return;
 if (shadow.activeElement !== node) return;
 const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
 const jumpedToEnd = max > expectedTop + 140 && scroller.scrollTop >= max - 3;
@@ -612,8 +617,8 @@ if (jumpedToEnd) scroller.scrollTop = expectedTop;
 keepFocusedFieldVisible(node);
 };
 global.requestAnimationFrame(check);
-global.setTimeout(check, 90);
-global.setTimeout(check, 260);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(check, 90);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(check, 260);
 }
 function clamp(value, min, max) {
 return Math.min(Math.max(Number(value) || 0, min), Math.max(min, max));
@@ -661,6 +666,7 @@ syncPdaChatButtonVisibility();
 if (persist) writeState();
 }
 function clampLauncher(persist = false) {
+if (!pdaDomActive() || !(global.innerWidth>0 && global.innerHeight>0)) return;
 launcher.dataset.mode = state.minimizedMode;
 if (state.minimizedMode === 'bar' || state.minimizedMode === 'chat') {
 delete launcher.dataset.positioned;
@@ -792,6 +798,7 @@ const current=lifeNumber(value?.current??value?.value??value?.now);const maximum
 return Number.isFinite(current)&&Number.isFinite(maximum)&&maximum>0?{current,maximum}:null;
 }
 function visibleLifeSnapshot(){
+if (!pdaDomActive()) return null;
 const candidates=document.querySelectorAll('[data-stat="life"],[aria-label*="life" i],[title*="life" i],[class*="life" i]');
 for(const element of Array.from(candidates).slice(0,80)){
 const attributed=normalizedLifeSnapshot({current:element.getAttribute?.('aria-valuenow')??element.dataset?.current??element.dataset?.value,maximum:element.getAttribute?.('aria-valuemax')??element.dataset?.maximum??element.dataset?.max});
@@ -1639,37 +1646,21 @@ event.preventDefault();
 toggleDashboard();
 }
 });
-global.addEventListener('resize', () => { clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
-global.visualViewport?.addEventListener('resize', () => { syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
-global.addEventListener('orientationchange', () => global.setTimeout(() => clampLauncher(true), 180));
+global.addEventListener('resize', () => { if (!pdaDomActive()) return;clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+global.visualViewport?.addEventListener('resize', () => { if (!pdaDomActive()) return;syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+global.addEventListener('orientationchange', () => global.SLINK_PDA_PAGE_ACTIVITY.defer(() => clampLauncher(true), 180));
 global.addEventListener('hashchange', schedulePurchaseOpportunityFormatting);
 global.addEventListener('hashchange', scheduleRacingScan);
 global.addEventListener('popstate', schedulePurchaseOpportunityFormatting);
 global.addEventListener('popstate', scheduleRacingScan);
 global.addEventListener('resize', scheduleQuickPurchaseControlSync);
 global.addEventListener('scroll', scheduleQuickPurchaseControlSync, true);
-document.addEventListener('visibilitychange', () => {
-if (dashboardOpen && !document.hidden) void loadActiveModule(false);
-if (!document.hidden) void scanIntendedProfileDom();
-});
-global.addEventListener('focus', () => void scanIntendedProfileDom());
-global.addEventListener('pagehide', () => {
-unlockTornScroll();
-clearInterval(targetPollingTimer);
-clearInterval(targetStakeoutTimer);
-clearTimeout(attackMugScanTimer);
-attackMugScanTimer = null;
-marketObserver?.disconnect();
-if (racingScanTimer) global.clearTimeout(racingScanTimer);
-clearRacingHighlight();
-document.getElementById(RACING_HIGHLIGHT_STYLE_ID)?.remove();
-clearMarketPurchaseFormatting();
-}, { once:true });
-const guardian = new MutationObserver(() => {
+const guardian = new MutationObserver(() => {if (pdaDomActive()) repairPdaHost();});
+function repairPdaHost() {
+if (!pdaDomActive()) return;
 if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
 if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaChatButton.isConnected)) ensurePdaChatButton();
-});
-guardian.observe(document, { childList:true, subtree:true });
+}
 marketObserver = new MutationObserver(mutations => {
 if (!pdaDomActive()) return;
 schedulePurchaseOpportunityFormatting(80);
@@ -1677,21 +1668,54 @@ scanAttackMugResults();
 if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
 if (mutations.some(racingMutationRelevant)) scheduleRacingScan();
 });
-marketObserver.observe(document.body, { childList:true, subtree:true });
-global.SLINK_PDA_PAGE_ACTIVITY.subscribe(active => {
-marketObserver.disconnect();
+let pdaForegroundActive=null;
+let targetPollingKickoff=null,targetStakeoutKickoff=null;
+function startPdaTargetTimers() {
+if (!pdaPagePresent) return;
+if (targetPollingTimer===null) {
+const timer=global.setInterval(()=>{if (pdaPagePresent && targetPollingTimer===timer) void runTargetPolling();},TARGET_POLL_TICK_MS);
+targetPollingTimer=timer;
+const kickoff=global.setTimeout(()=>{if (targetPollingKickoff!==kickoff) return;targetPollingKickoff=null;if (pdaPagePresent) void runTargetPolling();},2000);
+targetPollingKickoff=kickoff;
+}
+if (targetStakeoutTimer===null) {
+const timer=global.setInterval(()=>{if (pdaPagePresent && targetStakeoutTimer===timer) void runTargetStakeouts();},TARGET_STAKEOUT_TICK_MS);
+targetStakeoutTimer=timer;
+const kickoff=global.setTimeout(()=>{if (targetStakeoutKickoff!==kickoff) return;targetStakeoutKickoff=null;if (pdaPagePresent) void runTargetStakeouts();},2000);
+targetStakeoutKickoff=kickoff;
+}
+}
+function stopPdaTargetTimers() {
+global.clearInterval(targetPollingTimer);global.clearInterval(targetStakeoutTimer);
+global.clearTimeout(targetPollingKickoff);global.clearTimeout(targetStakeoutKickoff);
+targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targetStakeoutKickoff=null;
+}
+function syncPdaForeground(active=pdaDomActive()) {
+if (active===pdaForegroundActive) return;
+pdaForegroundActive=active;
+marketObserver.disconnect();guardian.disconnect();racingStateObserver?.disconnect();
 if (!active) {
-racingStateObserver?.disconnect();
+global.SLINK_PDA_PAGE_ACTIVITY.cancel(attackMugScanTimer);attackMugScanTimer=null;
+global.SLINK_PDA_PAGE_ACTIVITY.cancel(racingScanTimer);racingScanTimer=null;
+global.clearTimeout(keyboardFocusTimer);keyboardFocusTimer=null;
 clearRacingHighlight();
-if (racingScanTimer) global.clearTimeout(racingScanTimer);
-racingScanTimer = null;
+document.getElementById(RACING_HIGHLIGHT_STYLE_ID)?.remove();
+clearMarketPurchaseFormatting();unlockTornScroll();
 return;
 }
-marketObserver.observe(document.body, { childList:true, subtree:true });
-schedulePurchaseOpportunityFormatting(0);
-scheduleRacingScan(0);
-scanAttackMugResults();
-});
+if (document.body) marketObserver.observe(document.body,{childList:true,subtree:true});
+guardian.observe(document,{childList:true,subtree:true});
+repairPdaHost();
+clampLauncher(false);
+if (dashboardOpen) lockTornScroll();
+syncThemeHealthAssets();
+schedulePurchaseOpportunityFormatting(0);scheduleRacingScan(0);scanAttackMugResults();
+void scanIntendedProfileDom();
+}
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
+global.addEventListener('pagehide',stopPdaTargetTimers);
+global.addEventListener('pageshow',startPdaTargetTimers);
+global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});
 if (typeof GM_API.menu === 'function') {
 GM_API.menu('Open SLINK PDA Dashboard', openDashboard);
 GM_API.menu('Reset SLINK PDA layout', resetLayout);
@@ -1705,10 +1729,8 @@ selectSubpage('efficiency', state.efficiencyTab, false);
 selectSubpage('qualityOfLife', state.qualityOfLifeTab, false);
 clampLauncher(false);
 renderAllModules();
-targetPollingTimer = global.setInterval(() => void runTargetPolling(), TARGET_POLL_TICK_MS);
-targetStakeoutTimer = global.setInterval(() => void runTargetStakeouts(), TARGET_STAKEOUT_TICK_MS);
-global.setTimeout(() => void runTargetPolling(), 2_000);
-global.setTimeout(() => void runTargetStakeouts(), 2_000);
+startPdaTargetTimers();
+syncPdaForeground();
 if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
 reconcileAlertNotifications(moduleState.alerts.data);
 writeDataState();
