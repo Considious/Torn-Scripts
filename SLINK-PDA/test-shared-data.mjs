@@ -71,4 +71,39 @@ function verifyIntel(core){
 }
 verifyIntel(pdaIntel);
 console.log('PDA shared provider and field freshness checks passed.');
+// Coverage and freshness belong to each field, not whichever response arrives last.
+{
+ let saved={},time=10,requests=0,releases=[];
+ const shared=factory.create({now:()=>time,read:async()=>clone(saved),write:async value=>{saved=clone(value);},
+  request:async()=>{requests++;return new Promise(resolve=>releases.push(resolve));},
+  normalizeItems:body=>(Array.isArray(body.items)?body.items:Object.entries(body.items).map(([id,row])=>({...row,id:Number(id)}))).map(row=>({id:row.id,name:row.name}))});
+ const stats={profile:{id:321},battlestats:{strength:100,defense:100,speed:100,dexterity:100}};
+ const ordinary=shared.personal({key:'coverage'}),needsLevel=shared.personal({key:'coverage',requireLevel:true});
+ while(requests<1)await new Promise(resolve=>setImmediate(resolve));releases.shift()(stats);
+ const outcomes=await Promise.allSettled([ordinary,needsLevel]);
+ assert.equal(requests,1);assert.equal(outcomes[0].status,'fulfilled');assert.equal(outcomes[0].value.total,400);
+ assert.equal(outcomes[1].status,'rejected','A coalesced caller must enforce its own coverage requirement');
+ assert.equal((await shared.peekPersonal({key:'coverage'})).total,400,'Valid authenticated stats survive missing profile-level coverage');
+ time=100;const early=shared.personal({key:'coverage',maxAgeMs:0});while(requests<2)await new Promise(resolve=>setImmediate(resolve));
+ time=200;const later=shared.personal({key:'coverage',force:true});while(requests<3)await new Promise(resolve=>setImmediate(resolve));
+ const older=releases.shift(),newer=releases.shift();newer({...stats,battlestats:{strength:400,defense:100,speed:100,dexterity:100}});await later;
+ older({...stats,profile:{id:321,level:40}});await early;
+ const merged=await shared.peekPersonal({key:'coverage'});assert.equal(merged.total,700);assert.equal(merged.statsAt,200);assert.equal(merged.level,40);assert.equal(merged.levelAt,100);
+ assert.equal(await shared.peekPersonal({key:'other-account'}),null);
+ time=1000;const catalogOld=shared.catalog({key:'coverage'});while(requests<4)await new Promise(resolve=>setImmediate(resolve));
+ time=2000;const catalogNew=shared.catalog({key:'coverage',force:true});while(requests<5)await new Promise(resolve=>setImmediate(resolve));
+ const oldCatalog=releases.shift(),newCatalog=releases.shift();
+ time=2010;newCatalog({items:[{id:1,name:'New A',value:{}},{id:2,name:'New B',value:{market_price:200}},{id:4,name:'New D',value:{}}]});await catalogNew;
+ time=2020;oldCatalog({items:[{id:1,name:'Old A',value:{market_price:50}},{id:2,name:'Old B',value:{market_price:0}},{id:3,name:'Removed C',value:{market_price:99}}]});await catalogOld;
+ assert.equal(saved.catalog.metadataAt,2000);assert.equal(saved.catalog.fetchedAt,2010);
+ assert.deepEqual(saved.catalog.items.map(row=>row.id),[1,2,4],'Older responses must not resurrect removed catalog entries');
+ assert.equal(saved.catalog.items[0].name,'New A');assert.equal(saved.catalog.items[0].marketPrice,50);assert.equal(saved.catalog.items[0].priceCheckedAt,1000);
+ assert.equal(saved.catalog.items[1].marketPrice,200);assert.equal(saved.catalog.items[1].priceCheckedAt,2000,'An older zero must not replace a newer price');
+ assert.equal(saved.catalog.items[2].priceAvailable,false);assert.equal(saved.catalog.pricesAt,0);assert.equal(saved.catalog.partialPrices,true);
+ time=3000;const keyed=shared.catalog({key:'coverage',force:true,needPrices:true});while(requests<6)await new Promise(resolve=>setImmediate(resolve));
+ releases.shift()({items:{1:{name:'Keyed A',value:{market_price:0}},2:{name:'Keyed B',value:{market_price:250}}}});
+ const keyedResult=await keyed;assert.equal(keyedResult.items[0].marketPrice,0);assert.equal(keyedResult.items[0].priceCheckedAt,3000,'Object-keyed IDs and authoritative zero prices must be retained');
+}
+console.log('Shared field coverage: mixed consumers, partial level, late useful prices, no metadata rollback/resurrection and keyed zero prices passed.');
+
 

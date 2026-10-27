@@ -1,6 +1,8 @@
-# SLINK PDA audit tester build — candidate 26
+# SLINK PDA audit tester build — candidate 27
 
-Testing branch only, not stable/main. Version **0.4.114**, dashboard build **0.4.114-audit-test26**.
+Testing branch only, not stable/main. Version **0.4.115**, dashboard build **0.4.115-audit-test27**.
+
+Candidate27 improves shared stats/catalog field freshness under partial and out-of-order replies. A late response may fill an unknown price but cannot replace newer prices/names or resurrect removed entries. Missing player level does not discard otherwise valid authenticated battle stats; level-dependent callers still enforce their own coverage. See the single tester changelog. UI, permissions, storage keys and formulas are unchanged.
 
 Main-first emergency hotfix integrated: refused source connections can use the public mirror, matching immutable cached sources start immediately, and attack text no longer triggers Xanax-wide rescans. The immutable tester pin needs no background update polling. Native storage acknowledgements/lifecycle guards remain. Loader whitespace was formatted without compression or identifier renaming to stay below the existing size ceiling. Update in place, never clear data.
 

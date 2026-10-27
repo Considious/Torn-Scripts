@@ -18,7 +18,6 @@
     const total = Object.values(components).reduce((sum, value) => sum + value, 0);
     if (!(total > 0)) throw new Error('Torn returned no usable personal battle-stat total.');
     const level = finite(profile?.level ?? body?.level) || 0;
-    if (!level) throw new Error('Torn returned incomplete basic-profile coverage.');
     return { schema:1, audience, accountId, components, total,
       score:Object.values(components).reduce((sum, value) => sum + Math.sqrt(value), 0),
       level, statsAt:startedAt, levelAt:level > 0 ? startedAt : 0,
@@ -70,16 +69,22 @@
       const result = await requestOnce('personal:' + audience, force, async startedAt => {
         const body = await adapter.request('personal', key);
         const next = personalRecord(body, startedAt, now(), audience);
-        if (requireLevel && !next.level) throw new Error('Torn returned no player level.');
         return mutate(state => {
           state.personal ||= {};
           const previous = state.personal[audience];
-          if (previous && previous.statsAt > startedAt) return previous;
-          if (!next.level && previous?.accountId === next.accountId) { next.level = previous.level; next.levelAt = previous.levelAt; }
-          state.personal[audience] = next;
-          return next;
+          const current = previous?.statsAt > startedAt ? { ...previous } : { ...next };
+          if (previous?.accountId === next.accountId) {
+            const level = next.level > 0 && next.levelAt >= Number(previous.levelAt || 0) ? next : previous;
+            current.level = level.level;
+            current.levelAt = level.levelAt;
+          }
+          state.personal[audience] = current;
+          return current;
         });
       });
+      if (requireLevel && (!(result.level > 0) || (maxAgeMs > 0 && now() - result.levelAt >= maxAgeMs))) {
+        throw new Error('Torn returned incomplete current player level; valid battle stats were retained.');
+      }
       return copy(result);
     }
     async function catalog({ key, force = false, maxAgeMs = 86_400_000, needPrices = false, category = 'All' }) {
@@ -94,23 +99,24 @@
         if (body?.error) throw new Error('Torn rejected the shared item catalog request.');
         const items = adapter.normalizeItems(body);
         if (!items.length) throw new Error('Torn returned an empty item catalog.');
-        const raw = Array.isArray(body?.items) ? body.items : Object.values(body?.items || {});
+        const raw = Array.isArray(body?.items) ? body.items : Object.entries(body?.items || {}).map(([id, item]) => ({ ...item, id:item?.id ?? id }));
         const prices = new Map(raw.map(item => [Number(item?.id), finite(item?.value?.market_price)]));
         return mutate(state => {
           const previous = state.catalog;
-          if (previous?.metadataAt > startedAt) return previous;
           const old = new Map((previous?.items || []).map(item => [item.id, item]));
-          let completePrices = true;
-          const normalized = items.map(item => {
+          const newestMetadata = !(previous?.metadataAt > startedAt);
+          const normalized = (newestMetadata ? items : previous.items).map(item => {
             const price = prices.get(item.id);
-            if (price === null || price === undefined) completePrices = false;
-            return { ...item, marketPrice:price ?? old.get(item.id)?.marketPrice ?? 0,
-              priceCheckedAt:price !== null && price !== undefined ? startedAt : Number(old.get(item.id)?.priceCheckedAt) || 0,
-              priceAvailable:price !== null && price !== undefined || old.get(item.id)?.priceAvailable === true };
+            const prior = old.get(item.id);
+            const usePrice = price !== null && price !== undefined && startedAt >= Number(prior?.priceCheckedAt || 0);
+            return { ...item, marketPrice:usePrice ? price : prior?.marketPrice ?? 0,
+              priceCheckedAt:usePrice ? startedAt : Number(prior?.priceCheckedAt) || 0,
+              priceAvailable:usePrice || prior?.priceAvailable === true };
           });
-          const next = { schema:1, coverage:'All', items:normalized, fetchedAt:now(), metadataAt:startedAt,
+          const metadataAt = newestMetadata ? startedAt : previous.metadataAt;
+          const next = { schema:1, coverage:'All', items:normalized, fetchedAt:newestMetadata ? now() : previous.fetchedAt, metadataAt,
             pricesAt:normalized.every(item => item.priceAvailable) ? Math.min(...normalized.map(item => item.priceCheckedAt)) : 0,
-            partialPrices:!completePrices, source:'torn-v2-items-all' };
+            partialPrices:normalized.some(item => !item.priceAvailable || item.priceCheckedAt < metadataAt), source:'torn-v2-items-all' };
           state.catalog = next;
           return next;
         });
@@ -124,4 +130,3 @@
   if (global.SLINK_EXTENSION) global.SLINK_EXTENSION.define('core', 'sharedData', api);
   else global.SLINK_SHARED_DATA = api;
 })(globalThis);
-
