@@ -37,7 +37,7 @@ function contextFor(cached) {
   };
   vm.createContext(ctx);
   vm.runInContext(core.slice(core.indexOf('function storedRecord(value)'), core.indexOf('function writeDataMirror(value)'))+
-    core.slice(core.indexOf('function storageRead(key, fallback)'), core.indexOf('function storageWrite(key, value)'))+
+    core.slice(core.indexOf('function storageRead(key, fallback)'), core.indexOf('function storageWrite('))+
     combat.slice(combat.indexOf('function pdaStoredOwnBattleStats()'), combat.indexOf('async function pdaOwnBattleStats')), ctx);
   return ctx;
 }
@@ -45,7 +45,7 @@ const oldPage = contextFor(stale);
 assert.equal(oldPage.pdaStoredOwnBattleStats().total,603502,'Old page must adopt the newer independent stats before a background cache write.');
 assert.equal(contextFor(oldPage.dataState.caches.ownBattleStats).pdaStoredOwnBattleStats().total,603502,'Reload must not restore 571K from stale native storage.');
 const loader = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js',import.meta.url),'utf8');
-const bootstrapContext = { DATA_STORAGE_KEY:'data', OWN_BATTLE_STATS_STORAGE_KEY:key, STORAGE_WRITE_EVENT:'bridge',
+const bootstrapContext = { DATA_STORAGE_KEY:'data', OWN_BATTLE_STATS_STORAGE_KEY:key, STORAGE_WRITE_EVENT:'bridge',UI_STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes',
   readPersistedData:async()=>({caches:{ownBattleStats:stale}}), gmRead:async()=>fresh,
   globalThis:{localStorage:{getItem:()=>null}}, isRecord:value=>value&&typeof value==='object' };
 vm.createContext(bootstrapContext);

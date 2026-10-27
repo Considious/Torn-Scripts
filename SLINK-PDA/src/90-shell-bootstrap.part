@@ -975,7 +975,7 @@ writeState();
 }
 }, true);
 overlay.addEventListener('change', event => trackModuleInteraction(event.target), true);
-overlay.addEventListener('click', event => {
+overlay.addEventListener('click', async event => {
 trackModuleInteraction(event.target);
 const bountyProfile = event.target.closest('[data-bounty-profile]');
 if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
@@ -1272,12 +1272,16 @@ renderTargetList();
 if (action === 'save-source-target') {
 const button = event.target.closest('[data-target-source][data-target-id]');
 if (button) {
+if (button.disabled) return;
+button.disabled=true;
 try {
 savePdaSourceTarget(String(button.dataset.targetSource || ''), Number(button.dataset.targetId));
+await flushPdaStorage();
 button.textContent = 'Saved';
 button.disabled = true;
 global.setTimeout(() => { if (button.isConnected) { button.textContent = 'Save Target'; button.disabled = false; } }, 1500);
 } catch (error) {
+button.disabled=false;
 button.textContent = 'Save failed';
 button.title = errorMessage(error);
 global.setTimeout(() => { if (button.isConnected) button.textContent = 'Save Target'; }, 2000);
@@ -1286,6 +1290,9 @@ global.setTimeout(() => { if (button.isConnected) button.textContent = 'Save Tar
 }
 if (action === 'save-target-list') {
 const root = moduleRoot('targetList'), state = moduleState.targetList;
+if (state.saving) return;
+state.saving=true;
+state.notice='';
 const ticket = editableState.begin(root?.querySelector('[data-target-editor]'));
 try {
 const playerId = Number(root?.querySelector('[data-field="target-list-id"]')?.value || state.editingId);
@@ -1301,27 +1308,35 @@ source:'manual',
 sourceLabel:'Manual'
 };
 if (state.editingId) updatePdaTarget(payload); else addPdaTarget(payload);
-// The existing synchronous local model accepted the edit. This is not a new
-// native-storage transaction or a claim of cross-WebView acknowledgement.
-editableState.commit(ticket);
-state.formOpen = false; state.editingId = 0; state.error = ''; state.notice = 'Target saved.';
+await flushPdaStorage();
+if (editableState.commit(ticket)) {state.formOpen=false;state.editingId=0;}
+state.error='';state.notice='Target saved.';
 } catch (error) { state.error = errorMessage(error); }
+finally {state.saving=false;}
 renderTargetList();
 }
 if (action === 'toggle-target-stakeout') {
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 const target = pdaTargetListEntries().find(value => value.id === playerId);
 if (target) {
+try {
 updatePdaTarget({
 playerId,
 stakeout:target.stakeout !== true,
 stakeoutIntervalSeconds:target.stakeoutIntervalSeconds
 });
+await flushPdaStorage();
 moduleState.targetList.notice = target.stakeout ? 'Stakeout stopped.' : 'Stakeout started.';
 moduleState.targetList.error = '';
 renderTargetList();
 void runTargetStakeouts();
+} catch (error) {moduleState.targetList.error=errorMessage(error);moduleState.targetList.notice='';renderTargetList();}
 }
+}
+if (action === 'retry-local-storage') {
+try {await retryPdaStorage();moduleState.access.error='';}
+catch (error) {moduleState.access.error=errorMessage(error);}
+updateStorageNotice();
 }
 if (action === 'edit-target-list') {
 const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
@@ -1336,15 +1351,18 @@ renderTargetList();
 if (action === 'remove-target-list') {
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 if (playerId && global.confirm('Remove this player from Target List?')) {
+const editForm=moduleRoot('targetList')?.querySelector('[data-target-editor]');
+const deleteTicket=Number(moduleState.targetList.editingId)===playerId ? editableState.begin(editForm) : null;
+try {
 removePdaTarget(playerId);
-if (Number(moduleState.targetList.editingId) === playerId) {
-const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
-if (form) editableState.cancel(form);
+await flushPdaStorage();
+if (Number(moduleState.targetList.editingId) === playerId && deleteTicket && editableState.commit(deleteTicket)) {
 moduleState.targetList.editingId = 0; moduleState.targetList.formOpen = false;
 }
 moduleState.targetList.error = '';
 moduleState.targetList.notice = 'Target removed.';
 renderTargetList();
+} catch (error) {moduleState.targetList.error=errorMessage(error);renderTargetList();}
 }
 }
 if (action === 'refresh-target-list') {
@@ -1790,6 +1808,7 @@ openDashboard();
 }
 });
 global.SLINK_PDA_DASHBOARD = Object.freeze({
+storage:Object.freeze({flush:flushPdaStorage,retry:retryPdaStorage,status:()=>({pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName})}),
 build:BUILD,
 open:openDashboard,
 close:closeDashboard,

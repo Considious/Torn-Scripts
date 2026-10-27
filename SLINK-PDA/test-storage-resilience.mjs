@@ -8,7 +8,7 @@ const loader = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.m
 
 assert(core.includes("const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1'"), 'PDA runtime must maintain an independent local data mirror.');
 assert(core.includes('function writeDataMirror(value)'), 'Every primary data write must also update the local mirror.');
-assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(value)'), 'The mirror must be written before the GM bridge.');
+assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot)'), 'The captured mirror must be written before the bridge.');
 assert(core.includes('return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy]'), 'Storage recovery must compare the loader-vetted primary with fallback copies.');
 assert(core.includes('function storedRecordSavedAt(value)'), 'Durable records must carry freshness metadata.');
 assert(loader.includes("let selected = hasData(primary) ? primary : mirror || {};"), 'The PDA primary record must win when legacy copies have no freshness metadata.');
@@ -19,7 +19,7 @@ assert(loader.includes("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json
 assert(loader.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';"), 'The startup loader must retain a last-known-working runtime.');
 assert(loader.includes('Source download failed; using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
-assert(loader.includes('if (selected === mirror && selected !== primary)'), 'The loader must identify mirror recovery before repairing primary GM storage.');
+assert(loader.includes('if (selected === mirror && selected !== primary && !primaryFailed)'), 'Mirror repair must not overwrite primary storage after a failed primary read.');
 assert(loader.includes("await gmWrite(DATA_STORAGE_KEY, selected)"), 'The loader must repair primary GM storage with the selected recovered record.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
 assert(core.includes("settings:JSON.parse(JSON.stringify(dataState.settings || {}))"), 'The backup must include user settings.');

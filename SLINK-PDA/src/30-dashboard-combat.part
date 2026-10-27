@@ -12,6 +12,8 @@ return item?.version ? `<a href="${escapeHtml(item.url || '#')}" target="_blank"
 root.innerHTML = `<div class="grid">
 <article class="card wide"><div class="card-head"><div><h2>API &amp; feature access</h2><span class="muted">The key and sessions stay in this userscript's local storage.</span></div><span class="badge ${permission ? 'ready' : 'warn'}">${permission ? 'Connected' : 'Setup'}</span></div>
 ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : ''}
+<p data-storage-status role="status" ${failedStorageWrites.size ? '' : 'hidden'}>${failedStorageWrites.size ? 'Some SLINK changes are not saved. Keep this page open and retry.' : ''}</p>
+<button type="button" data-action="retry-local-storage" ${failedStorageWrites.size ? '' : 'hidden'}>Retry saving local changes</button>
 <div class="access-form">
 <label>Torn API key<input type="password" autocomplete="off" data-field="api-key" value="${escapeHtml(dataState.apiKey)}" placeholder="Limited-access Torn key"></label>
 <label>FFScouter API key<input type="password" autocomplete="off" data-field="ff-key" value="${escapeHtml(dataState.ffKey)}" placeholder="Usually different from the Torn key"></label>
@@ -41,11 +43,15 @@ catch (error) { moduleState.access.error = errorMessage(error); }
 finally { moduleState.access.busy = false; renderAccess(); }
 }
 async function saveAccess() {
+if (moduleState.access.saving) return;
+moduleState.access.saving=true;
+const ticket=editableState.begin(moduleRoot('access'));
 const keyInput = moduleRoot('access')?.querySelector('[data-field="api-key"]');
 const ffInput = moduleRoot('access')?.querySelector('[data-field="ff-key"]');
 const pdaApiInput = moduleRoot('access')?.querySelector('[data-field="use-pda-api-key"]');
 const pdaFfInput = moduleRoot('access')?.querySelector('[data-field="use-pda-ff-key"]');
 const acceptance = moduleRoot('access')?.querySelector('[data-field="accept-terms"]');
+const acceptedHere=acceptance?.checked===true;
 dataState.apiKey = String(keyInput?.value || '').trim();
 dataState.ffKey = String(ffInput?.value || '').trim();
 dataState.usePdaApiKey = pdaApiInput ? pdaApiInput.checked : false;
@@ -54,14 +60,16 @@ clearSessions();
 moduleState.access.error = '';
 try {
 await fetchAllTerms(false);
-if (!acceptance?.checked) throw new Error('Accept the current SLINK terms and disclosures before authenticating.');
+if (!acceptedHere) throw new Error('Accept the current SLINK terms and disclosures before authenticating.');
 acceptCurrentTerms();
 await ensurePermissionSession(true);
 await Promise.allSettled([hasScope('slink.level') ? ensureLevelingSession(true) : Promise.resolve(), hasScope('slink.war') ? ensureWarSession(true) : Promise.resolve()]);
 } catch (error) {
 moduleState.access.error = errorMessage(error);
 }
-writeDataState();
+try {await writeDataState();await flushPdaStorage();if (!moduleState.access.error) editableState.commit(ticket);}
+catch (error) {moduleState.access.error=errorMessage(error);}
+moduleState.access.saving=false;
 renderAllModules();
 }
 const MODULE_SCOPES = Object.freeze({

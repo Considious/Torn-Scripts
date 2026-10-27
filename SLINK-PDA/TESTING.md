@@ -1,10 +1,10 @@
-# SLINK PDA audit tester build — candidate 10
+# SLINK PDA audit tester build — candidate 24
 
-This is an early testing build. This audit batch does not change stable or main; the separately approved Mugging hotfix is already on main. The full audit plan is not implemented yet.
+Testing branch only, not stable/main. Version **0.4.111**, dashboard build **0.4.111-audit-test24**.
 
-- Version: **0.4.110**, dashboard build **0.4.110-audit-test18**.
+Native PDA storage is feature-detected and preferred; legacy data is kept and copied non-destructively, the write bridge returns acknowledgements/failures, and target/credential completion waits. Unknown/add-on settings are retained. Failed native changes keep their intent until a later successful save; stale unchanged snapshots merge against current settings/targets/protected fields. Access exposes Retry for failures. The complete test checklist and limitations are in the one running changelog linked below; the full audit is not complete.
 
-Candidate 18 adds the Racing visible-row/visibility-change highlight fix. It does not port the extension's new Racing autosave/background mutation owner to native PDA storage. See the single running tester changelog for checks and remaining limits.
+Physical PDA acceptance remains mandatory. No native API means browser fallback only, not app-backed durability. Export a backup before tester installation, update in place and reload; never uninstall to test this. No automated cloud restoration or settings/key reset is introduced.
 - Branch: `audit/test-foundation`.
 - [Install the PDA tester script](https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js).
 - [One running tester changelog for extension and PDA](https://github.com/Considious/SLINK-Browser-Extension/blob/audit/test-foundation/TESTER-CHANGELOG.md).

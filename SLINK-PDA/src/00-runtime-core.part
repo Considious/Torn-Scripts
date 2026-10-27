@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.110
+// @version      0.4.111
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.110-audit-test18';
+const BUILD = '0.4.111-audit-test24';
 // PDA visibility is authoritative; WebView hasFocus() is not reliable.
 let pdaPagePresent = true;
 let pdaActivityGeneration = 0;
@@ -65,7 +65,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.110';
+const CLIENT_VERSION = '0.4.111';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_CITY_SHOP_TARGETS = Object.freeze([
 Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
@@ -817,6 +817,39 @@ notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notif
 const PDA_BOOTSTRAP_KEY = '__SLINK_PDA_BOOTSTRAP__';
 const PDA_BOOTSTRAP = global[PDA_BOOTSTRAP_KEY] && typeof global[PDA_BOOTSTRAP_KEY] === 'object' ? global[PDA_BOOTSTRAP_KEY] : {};
 const PDA_STORAGE_WRITE_EVENT = String(PDA_BOOTSTRAP.storageWriteEvent || '');
+const pendingStorageWrites=new Map(), failedStorageWrites=new Map(), latestStorageWrites=new Map();
+let storageWriteSequence=0, storageBackendName='unknown';
+let acknowledgedDataBase=null,acknowledgedDataSequence=0;
+function updateStorageNotice() {
+try {
+const node=moduleRoot('access')?.querySelector('[data-storage-status]');
+if (node) {
+node.textContent=failedStorageWrites.size?'Some SLINK changes are not saved. Keep this page open and retry.':pendingStorageWrites.size?'Saving changes…':storageBackendName==='browser'?'Saved in browser storage; this PDA version has no confirmed native storage.':'';
+node.hidden=!node.textContent;
+}
+const retry=moduleRoot('access')?.querySelector('[data-action="retry-local-storage"]');
+if (retry) retry.hidden=!failedStorageWrites.size;
+} catch {}
+}
+if (PDA_STORAGE_WRITE_EVENT) document.addEventListener(PDA_STORAGE_WRITE_EVENT+':ack',event=>{
+let value;try {value=JSON.parse(String(event?.detail || ''));} catch {return;}
+const pending=pendingStorageWrites.get(value?.id);if (!pending) return;
+if (value.ok===true) {storageBackendName=value.backend || 'unknown';pending.resolve();}
+else pending.reject(new Error('SLINK storage write failed. '+String(value.error || 'Retry from Access.')));
+});
+async function flushPdaStorage() {
+await Promise.allSettled([...pendingStorageWrites.values()].map(value=>value.promise));
+if (failedStorageWrites.size) throw new Error('Some SLINK changes could not be saved. Retry from Access before closing.');
+}
+async function retryPdaStorage() {
+const keys=[...failedStorageWrites.keys()];
+for (const key of keys) {
+if (key===DATA_STORAGE_KEY) await writeDataState();
+else if (key===STORAGE_KEY) await writeState();
+else await storageWrite(key,storageRead(key,failedStorageWrites.get(key).value));
+}
+await flushPdaStorage();
+}
 try { delete global[PDA_BOOTSTRAP_KEY]; } catch { global[PDA_BOOTSTRAP_KEY] = null; }
 const existingDashboard = global.SLINK_PDA_DASHBOARD;
 const existingHost = document.getElementById(HOST_ID);
@@ -869,10 +902,13 @@ try {
 const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
 if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) local = parsed;
 } catch {}
-return normalizeUiState({ ...persistent, ...local });
+const bootstrap=PDA_BOOTSTRAP[STORAGE_KEY];
+const selected=newestStoredRecord([bootstrap,persistent,local],{...persistent,...local});
+return normalizeUiState(selected);
 }
 function writeState() {
 const snapshot = {
+_savedAt:Date.now(),
 page:state.page,
 combatTab:state.combatTab,
 efficiencyTab:state.efficiencyTab,
@@ -885,8 +921,7 @@ themeItemOpacity:state.themeItemOpacity,
 bubblePosition:state.bubblePosition,
 panels:{ ...(state.panels || {}) }
 };
-try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
-try { if (typeof GM_API.set === 'function') GM_API.set(STORAGE_KEY, snapshot); } catch {}
+return storageWrite(STORAGE_KEY,snapshot);
 }
 function storedRecord(value) {
 return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -948,6 +983,7 @@ return [PDA_BOOTSTRAP[key], gmValue, readLocalRecord(key)]
 .filter(value => storedRecord(value) && Number(value.total) > 0)
 .sort((left,right) => Number(right.checkedAt || 0) - Number(left.checkedAt || 0))[0] || fallback;
 }
+if (key === ALERT_SNOOZE_STORAGE_KEY) return [PDA_BOOTSTRAP[key],gmValue,readLocalRecord(key)].filter(storedRecord).sort((a,b)=>Number(b.savedAt || 0)-Number(a.savedAt || 0))[0] || fallback;
 if (gmValue !== null) return gmValue;
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
@@ -955,16 +991,42 @@ return parsed === null ? fallback : parsed;
 } catch {}
 return fallback;
 }
-function storageWrite(key, value) {
-if (key === DATA_STORAGE_KEY) writeDataMirror(value);
-const bridged = Boolean(PDA_STORAGE_WRITE_EVENT && (key === DATA_STORAGE_KEY || key === OWN_BATTLE_STATS_STORAGE_KEY));
-try { if (!bridged && typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
-if ((key === DATA_STORAGE_KEY || key === OWN_BATTLE_STATS_STORAGE_KEY) && PDA_STORAGE_WRITE_EVENT) {
-try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, value }) })); } catch {}
+function storageWrite(key, value, base) {
+const snapshot=JSON.parse(JSON.stringify(value));
+if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot);
+else try {global.localStorage.setItem(key,JSON.stringify(snapshot));} catch {}
+const id=++storageWriteSequence;
+latestStorageWrites.set(key,id);
+let finish,fail;
+const promise=new Promise((resolve,reject)=>{finish=resolve;fail=reject;});
+const timer=global.setTimeout(()=>fail(new Error('SLINK storage did not confirm this write. Retry from Access.')),15000);
+const complete=(ok,error)=>{
+global.clearTimeout(timer);pendingStorageWrites.delete(id);
+if (ok && key===DATA_STORAGE_KEY && id>acknowledgedDataSequence) {
+acknowledgedDataSequence=id;
+acknowledgedDataBase=JSON.parse(JSON.stringify({settings:snapshot.settings || {},targetList:snapshot.caches?.targetList || {},protected:Object.fromEntries(Object.keys(base?.protected || {}).map(name=>[name,snapshot[name]]))}));
 }
-if (key !== DATA_STORAGE_KEY) {
-try { global.localStorage.setItem(key, JSON.stringify(value)); } catch {}
+if (latestStorageWrites.get(key)===id) {
+if (ok) failedStorageWrites.delete(key);else failedStorageWrites.set(key,{value:snapshot,error:String(error?.message || error)});
 }
+updateStorageNotice();
+};
+pendingStorageWrites.set(id,{promise,resolve:()=>{complete(true);finish();},reject:error=>{complete(false,error);fail(error);}});
+promise.catch(error=>{if (pendingStorageWrites.has(id)) complete(false,error);});
+const bridged=Boolean(PDA_STORAGE_WRITE_EVENT && [DATA_STORAGE_KEY,OWN_BATTLE_STATS_STORAGE_KEY,STORAGE_KEY,ALERT_SNOOZE_STORAGE_KEY].includes(key));
+if (bridged) {
+try {document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({id,key,value:snapshot,base})}));}
+catch (error) {pendingStorageWrites.get(id)?.reject(error);}
+} else {
+Promise.resolve().then(async()=>{
+if (typeof GM_API.set !== 'function') throw new Error('SLINK browser storage unavailable.');
+await GM_API.set(key,snapshot);
+if (typeof GM_API.get==='function' && JSON.stringify(await GM_API.get(key,null))!==JSON.stringify(snapshot)) throw new Error('SLINK browser storage did not retain this write.');
+storageBackendName='browser';pendingStorageWrites.get(id)?.resolve();
+}).catch(error=>pendingStorageWrites.get(id)?.reject(error));
+}
+updateStorageNotice();
+return promise;
 }
 function storageDelete(key) {
 try { if (typeof GM_API.remove === 'function') GM_API.remove(key); } catch {}
@@ -1055,6 +1117,7 @@ settingsSource?.alerts?.snoozedUntil,
 readAlertSnoozes()
 );
 return {
+...value,
 apiKey:String(value.apiKey || ''),
 ffKey:String(value.ffKey || ''),
 usePdaApiKey:value.usePdaApiKey ?? value.usePdaKey ?? true,
@@ -1064,6 +1127,7 @@ terms:value.terms && typeof value.terms === 'object' ? value.terms : {},
 sessions:value.sessions && typeof value.sessions === 'object' ? value.sessions : {},
 caches:value.caches && typeof value.caches === 'object' ? value.caches : {},
 settings:{
+...settingsSource,
 leveling:{ minFF:1, maxFF:3, ...(settingsSource?.leveling || {}) },
 bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(settingsSource?.bounties || {}) },
 mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(settingsSource?.mugging || {}) },
@@ -1184,6 +1248,11 @@ function writeDataState() {
 // Reconcile the independently saved Torn stats before any background page
 // writes its entire cache snapshot back over the primary record.
 if (dataState.caches.ownBattleStats || dataState.caches.muggingOwnBattleStats) pdaStoredOwnBattleStats();
+const base={settings:cloneSettings(lastPersistedSettings),targetList:cloneSettings(lastPersistedTargets),protected:cloneSettings(lastPersistedProtected)};
+const latestRecord=storageRead(DATA_STORAGE_KEY,{});
+for (const key of Object.keys(lastPersistedProtected)) dataState[key]=mergeSettingChanges(lastPersistedProtected[key],dataState[key],Object.hasOwn(latestRecord,key)?latestRecord[key]:dataState[key]);
+const currentTargets=cloneSettings(dataState.caches.targetList || {});
+dataState.caches.targetList=mergeSettingChanges(lastPersistedTargets,currentTargets,latestRecord?.caches?.targetList || {});
 const latestSettings = readSafeSettingsEnvelope();
 const currentSettings = cloneSettings(dataState.settings);
 const settingsChangedHere = !sameSettingValue(currentSettings, lastPersistedSettings);
@@ -1196,7 +1265,9 @@ if (settingsChangedHere || !recordHasData(latestSettings.data)) {
 try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings })); } catch {}
 }
 lastPersistedSettings = cloneSettings(dataState.settings);
-storageWrite(DATA_STORAGE_KEY, dataState);
+lastPersistedTargets=cloneSettings(dataState.caches.targetList);
+lastPersistedProtected=Object.fromEntries(Object.keys(lastPersistedProtected).map(key=>[key,cloneSettings(dataState[key])]));
+return storageWrite(DATA_STORAGE_KEY,dataState,cloneSettings(acknowledgedDataBase || base));
 }
 function currentApiKey() {
 if (PDA_API_KEY_AVAILABLE && dataState.usePdaApiKey) return PDA_API_KEY;
@@ -1214,6 +1285,9 @@ return String(dataState.ffKey || '').trim();
 const state = readState();
 const dataState = readDataState();
 let lastPersistedSettings = cloneSettings(dataState.settings);
+let lastPersistedTargets=cloneSettings(dataState.caches.targetList || {});
+let lastPersistedProtected=Object.fromEntries(['apiKey','ffKey','usePdaApiKey','usePdaFfKey','accepted','terms','sessions'].map(key=>[key,cloneSettings(dataState[key])]));
+acknowledgedDataBase={settings:cloneSettings(lastPersistedSettings),targetList:cloneSettings(lastPersistedTargets),protected:cloneSettings(lastPersistedProtected)};
 try {
 if (!Number(dataState._savedAt)) dataState._savedAt = Date.now();
 global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings }));

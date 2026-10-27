@@ -10,7 +10,7 @@ const callbacks=new Map();
 let inFlight=0,maxInFlight=0;
 let finishDataWrite;
 const dataWritten=new Promise(resolve=>{finishDataWrite=resolve;});
-const ctx={DATA_STORAGE_KEY:dataKey,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:statsKey,
+const ctx={DATA_STORAGE_KEY:dataKey,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:statsKey,UI_STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes',
   BRIDGED_STORAGE_KEYS:new Set([dataKey,statsKey]),STORAGE_WRITE_EVENT:'write',
   document:{addEventListener(type,callback){callbacks.set(type,callback);}},
   globalThis:{localStorage:{getItem:k=>local.get(k)||null,setItem:(k,v)=>local.set(k,v)},

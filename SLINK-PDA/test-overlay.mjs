@@ -29,7 +29,7 @@ assert.match(source, /MutationObserver/);
 assert.match(source, /dashboardOpen = false/);
 assert.match(source, /function normalizeUiState/);
 assert.match(source, /GM_API\.get\(STORAGE_KEY, \{\}\)/);
-assert.match(source, /GM_API\.set\(STORAGE_KEY, snapshot\)/);
+assert.match(source, /return storageWrite\(STORAGE_KEY,snapshot\)/);
 assert.match(source, /page:\['combat', 'efficiency', 'quality-of-life', 'access'\]/);
 assert.match(source, /data-page="combat"/);
 assert.match(source, /data-page="efficiency"/);
