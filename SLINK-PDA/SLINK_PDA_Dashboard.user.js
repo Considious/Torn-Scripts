@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard [AUDIT TEST]
 // @namespace    Considious [3853023]
-// @version      0.4.109
+// @version      0.4.110
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,7 +29,7 @@
 // ==/UserScript==
 (async () => {
   'use strict';
-  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/b39e369e7c92968f24b0477973f10fa87833b6c4/SLINK-PDA/';
+  const SOURCE_ROOT = 'https://raw.githubusercontent.com/Considious/Torn-Scripts/208025297549111a344004c87c0a8b816d2a54d9/SLINK-PDA/';
   const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';
   const PDA_API_KEY = String('###PDA-APIKEY###').trim();
   const ERROR_ID = 'slink-pda-runtime-load-error';
