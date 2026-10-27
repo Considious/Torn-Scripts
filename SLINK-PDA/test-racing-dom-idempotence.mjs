@@ -11,11 +11,12 @@ const mutations=[],timers=[];
 const parent={closest:()=>null};
 function car(name){
  const classes=new Set();
- return {textContent:name,isConnected:true,classList:{add:value=>classes.add(value),remove:value=>classes.delete(value)},
- after(label){label.isConnected=true;mutations.push({target:parent,addedNodes:[label],removedNodes:[]});},
+ return {textContent:name,isConnected:true,getClientRects:()=>[{}],classList:{add:value=>classes.add(value),remove:value=>classes.delete(value)},
+ after(label){this.marked=true;label.isConnected=true;mutations.push({target:parent,addedNodes:[label],removedNodes:[]});},
  scrollIntoView(){scrolls++;}};
 }
-let cars=[car('Fixture car')];
+const hiddenCar=car('Fixture car');hiddenCar.getClientRects=()=>[];
+let cars=[hiddenCar,car('Fixture car')];
 const ctx={
  console,URL,context:{presentation:'full'},stopped:false,scanTimer:null,saveTimer:null,userState:{},
  highlightedNode:null,recommendationLabel:null,recommendationKey:'',assistantRoot:null,assistantSignature:'',
@@ -23,13 +24,13 @@ const ctx={
  RACING_HIGHLIGHT_CLASS:'fixture-highlight',RACING_LABEL_ATTRIBUTE:'data-slink-pda-racing-label',HOST_ID:'slink-pda-dashboard-host',RACING_SCOPE:'slink.qol.racing',
  racingScanTimer:null,racingAssistant:{},moduleRoot:()=>null,escapeHtml:value=>String(value),
  ui:{getContentElement:()=>({querySelector:()=>null})},
- document:{hidden:false,hasFocus:()=>platform==='extension',querySelectorAll(selector){reads++;return selector==='track'?[{textContent:'Fixture - Official race'}]:cars;},
+ document:{hidden:false,hasFocus:()=>platform==='extension',querySelectorAll(selector){reads++;return selector==='track'?[{textContent:'Wrong - Official race',getClientRects:()=>[]},{textContent:'Fixture - Official race',getClientRects:()=>[{}]}]:cars;},
  createElement(){labels++;return {nodeType:1,isConnected:false,setAttribute(){},matches:()=>true,remove(){if(!this.isConnected)return;this.isConnected=false;mutations.push({target:parent,addedNodes:[],removedNodes:[this]});}};}},
  global:{location:{href:'https://www.torn.com/loader.php?sid=racing'},setTimeout(fn){timers.push(fn);return timers.length;},clearTimeout(){}},
  MutationObserver:class {constructor(callback){observerCallback=callback;}observe(){}},
  ensureHighlightStyle(){},ensureRacingHighlightStyle(){},hasScope:()=>true
 };
-const racing={RACEWAY_DOM:{OFFICIAL_RACE_TRACK_SELECTOR:'track',OFFICIAL_RACE_CAR_NAME_SELECTOR:'car'},parseOfficialRaceTrack:()=> 'Fixture',
+const racing={RACEWAY_DOM:{OFFICIAL_RACE_TRACK_SELECTOR:'track',OFFICIAL_RACE_CAR_NAME_SELECTOR:'car'},parseOfficialRaceTrack:text=>text==='Fixture - Official race'?'Fixture':null,
  recommendationForTrack:()=>({status:'ready',nickname:'Fixture car'}),matchVisibleCar:(_name,nodes)=>nodes.length?nodes[0]:null};
 Object.assign(ctx,{racing,RACING_DOM:racing.RACEWAY_DOM,parseOfficialRacingTrack:racing.parseOfficialRaceTrack,racingRecommendationForTrack:racing.recommendationForTrack,racingSettings:()=>({}),matchVisibleRacingCar:racing.matchVisibleCar});
 vm.createContext(ctx);
@@ -46,6 +47,8 @@ if(platform==='extension'){
 }
 ctx.scanOfficialRaceDom();
 assert.equal(labels,1);assert.equal(scrolls,0,'Background recommendation updates must not repeatedly scroll the page.');
+assert.equal(hiddenCar.marked,undefined,'Hidden matching cars must never steal the recommendation');
+assert.equal(cars[1].marked,true,'The visible supplied car row must receive the label');
 observerCallback(mutations.splice(0));
 assert.equal(timers.length,0,'SLINK label insertion must not schedule another scan.');
 ctx.scanOfficialRaceDom();

@@ -1663,6 +1663,8 @@ marketObserver.observe(document.body, { childList:true, subtree:true });
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(active => {
 marketObserver.disconnect();
 if (!active) {
+racingStateObserver?.disconnect();
+clearRacingHighlight();
 if (racingScanTimer) global.clearTimeout(racingScanTimer);
 racingScanTimer = null;
 return;

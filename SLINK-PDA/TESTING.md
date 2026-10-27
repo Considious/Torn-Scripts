@@ -2,7 +2,9 @@
 
 This is an early testing build. This audit batch does not change stable or main; the separately approved Mugging hotfix is already on main. The full audit plan is not implemented yet.
 
-- Version: **0.4.109**, dashboard build **0.4.109-audit-test10**.
+- Version: **0.4.110**, dashboard build **0.4.110-audit-test18**.
+
+Candidate 18 adds the Racing visible-row/visibility-change highlight fix. It does not port the extension's new Racing autosave/background mutation owner to native PDA storage. See the single running tester changelog for checks and remaining limits.
 - Branch: `audit/test-foundation`.
 - [Install the PDA tester script](https://raw.githubusercontent.com/Considious/Torn-Scripts/audit/test-foundation/SLINK-PDA/SLINK_PDA_Dashboard.user.js).
 - [One running tester changelog for extension and PDA](https://github.com/Considious/SLINK-Browser-Extension/blob/audit/test-foundation/TESTER-CHANGELOG.md).

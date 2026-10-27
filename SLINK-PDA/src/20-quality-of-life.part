@@ -3,6 +3,7 @@ let racingRecommendationLabel = null;
 let racingRecommendationKey = '';
 let racingAssistantRoot = null;
 let racingAssistantSignature = '';
+let racingStateObserver = null;
 function renderRacingAssistant() {
 const root = moduleRoot('racing')?.querySelector('[data-racing-assistant]');
 if (!root) return;
@@ -22,7 +23,7 @@ renderRacingAssistant();
 function scanOfficialRaceDom() {
 if (!racingDomActive()) { clearRacingHighlight(); return; }
 const trackNode = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_TRACK_SELECTOR)]
-.find(node => /-\s*Official race\s*$/i.test(String(node.textContent || '').trim()));
+.find(node => node.getClientRects?.().length !== 0 && /-\s*Official race\s*$/i.test(String(node.textContent || '').trim()));
 const track = parseOfficialRacingTrack(trackNode?.textContent);
 if (!track) {
 clearRacingHighlight();
@@ -45,7 +46,7 @@ clearRacingHighlight();
 setRacingAssistant({ ...recommendation, message:'No saved Racing build is configured for this track.' });
 return;
 }
-const nodes = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_CAR_NAME_SELECTOR)];
+const nodes = [...document.querySelectorAll(RACING_DOM.OFFICIAL_RACE_CAR_NAME_SELECTOR)].filter(node => node.getClientRects?.().length !== 0);
 const match = matchVisibleRacingCar(recommendation.nickname, nodes.map(node => ({ name:node.textContent, node })));
 if (!match?.node) {
 clearRacingHighlight();
@@ -70,7 +71,14 @@ match.node.after(label);
 setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
 }
 function scheduleRacingScan(delay = 80) {
-if (!racingDomActive() || !hasScope(RACING_SCOPE) || racingScanTimer) return;
+if (!racingDomActive() || !hasScope(RACING_SCOPE)) { racingStateObserver?.disconnect(); clearRacingHighlight(); return; }
+if (!racingStateObserver) racingStateObserver = new MutationObserver(mutations => {
+if (racingDomActive() && mutations.some(racingMutationRelevant)) scheduleRacingScan();
+});
+// Only the racing assistant receives these additional visibility/text events;
+// do not make every attribute change trigger unrelated Market/profile readers.
+racingStateObserver.observe(document.body, { subtree:true, characterData:true, attributes:true, attributeOldValue:true, attributeFilter:['class','style','hidden','aria-hidden'] });
+if (racingScanTimer) return;
 racingScanTimer = global.setTimeout(() => {
 racingScanTimer = null;
 scanOfficialRaceDom();
@@ -83,7 +91,15 @@ return /rac(?:e|ing)/i.test(page.pathname) || /rac(?:e|ing)/i.test(page.hash) ||
 }
 function racingMutationRelevant(mutation) {
 if (mutation.target?.closest?.(`[${RACING_LABEL_ATTRIBUTE}],#${HOST_ID}`)) return false;
-const changed = [...mutation.addedNodes, ...mutation.removedNodes];
+if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+const withoutHighlight = value => String(value || '').split(/\s+/).filter(token => token && token !== RACING_HIGHLIGHT_CLASS).sort().join(' ');
+if (withoutHighlight(mutation.oldValue) === withoutHighlight(mutation.target?.getAttribute?.('class'))) return false;
+}
+if (mutation.type === 'attributes') {
+const selector = `${RACING_DOM.OFFICIAL_RACE_TRACK_SELECTOR},${RACING_DOM.OFFICIAL_RACE_CAR_NAME_SELECTOR}`;
+if (!mutation.target?.closest?.(selector) && !mutation.target?.querySelector?.(selector)) return false;
+}
+const changed = [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])];
 return !changed.length || !changed.every(node => node.nodeType === 1 && node.matches?.(`[${RACING_LABEL_ATTRIBUTE}]`));
 }
 function renderRacing() {
