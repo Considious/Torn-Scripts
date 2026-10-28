@@ -837,6 +837,7 @@ delete document.documentElement.dataset[ROOT_OVERFLOW_KEY];
 }
 }
 function openDashboard() {
+if(typeof refreshPdaTargetRecords==='function')void refreshPdaTargetRecords();
 dashboardOpen = true;
 overlay.hidden = false;
 launcher.hidden = true;
@@ -982,7 +983,7 @@ writeState();
 }
 }, true);
 overlay.addEventListener('change', event => trackModuleInteraction(event.target), true);
-overlay.addEventListener('click', async event => {
+listenPdaAction(overlay,'click', async event => {
 trackModuleInteraction(event.target);
 const bountyProfile = event.target.closest('[data-bounty-profile]');
 if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
@@ -996,19 +997,19 @@ if (abroadMode) PDA_ABROAD.setMode(abroadMode);
 const racingView = event.target.closest('[data-racing-view]')?.dataset.racingView;
 if (racingView) {
 racingSettings().view = racingView;
-writeDataState();
+await savePdaChanges();
 renderRacing();
 }
 const racingCard = event.target.closest('[data-racing-build]');
 const racingBuildState = racingCard ? racingSettings().builds[racingCard.dataset.racingBuild] : null;
 if (racingBuildState && event.target.closest('[data-racing-toggle]')) {
 racingBuildState.completed = !racingBuildState.completed;
-writeDataState();
+await savePdaChanges();
 renderRacing();
 scheduleRacingScan(0);
 } else if (racingBuildState && event.target.closest('[data-racing-reset-name]')) {
 racingBuildState.customName = '';
-writeDataState();
+await savePdaChanges();
 renderRacing();
 scheduleRacingScan(0);
 }
@@ -1032,8 +1033,8 @@ if (action === 'save-company-settings') {
 const root = moduleRoot('company');
 dataState.settings.company = { ...companySettings(), addictionThreshold:Number(root?.querySelector('[data-company-own-threshold]')?.value) || 10, directorThreshold:Number(root?.querySelector('[data-company-director-threshold]')?.value) || companySettings().directorThreshold };
 dataState.settings.company = companySettings();
-moduleState.company.notice = 'Company alert settings saved.';
-writeDataState(); renderCompany(); renderAlerts();
+await savePdaChanges();
+moduleState.company.notice = 'Company alert settings saved.'; renderCompany(); renderAlerts();
 }
 if (['copy-company-reminder','fill-company-chat','send-company-chat'].includes(action)) {
 const control = event.target.closest('[data-company-employee]');
@@ -1070,7 +1071,7 @@ dataState.usePdaApiKey = PDA_API_KEY_AVAILABLE;
 dataState.usePdaFfKey = false;
 dataState.accepted = {};
 clearSessions();
-writeDataState();
+await savePdaChanges();
 moduleState.access.error = '';
 setTheme('slink-dark');
 renderAllModules();
@@ -1079,7 +1080,7 @@ if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
 const enabled = action === 'alerts-enable-all';
 dataState.settings.alerts.enabledTypes = Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, enabled]));
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'toggle-stack' || action === 'timer24-start' || action === 'timer24-cancel') {
@@ -1090,7 +1091,7 @@ else settings.timer24EndsAt = action === 'timer24-start' ? Date.now() + 86_400_0
 for (const id of resetIds) delete settings.snoozedUntil[id];
 dataState.caches.alertNotificationIds = (dataState.caches.alertNotificationIds || []).filter(id => !resetIds.includes(id));
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'snooze-alert') {
@@ -1104,20 +1105,20 @@ return;
 }
 dataState.settings.alerts.snoozedUntil[id] = Date.now() + minutes * 60_000;
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 }
 if (action === 'hide-city-until-reset') {
 dataState.settings.alerts.cityDoneDay = utcDay();
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'claim-google-play-points') {
 dataState.settings.alerts.googlePlayPointsClaimedAt = Date.now();
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'crime-unique-checked') {
@@ -1126,7 +1127,7 @@ if (['disposalUnique', 'arsonUnique'].includes(id)) {
 dataState.settings.alerts.crimeUniqueDoneDay[id] = utcDay();
 delete dataState.settings.alerts.snoozedUntil[id];
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 }
@@ -1147,7 +1148,7 @@ const tab = String(event.target.closest('[data-war-tab]')?.dataset.warTab || 'ta
 const officerTabs = [...(warArmoryOfficer() ? ['armory'] : []), ...(warOfficer() ? ['logs', 'settings'] : [])];
 if (['targets', 'outside', 'claims', ...officerTabs].includes(tab)) {
 dataState.settings.war.activeTab = tab;
-writeDataState();
+await savePdaChanges();
 renderWar();
 }
 }
@@ -1175,13 +1176,13 @@ const members = (dataState.caches.warArmoryMembers?.members || []).filter(member
 const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
 const select = !members.every(member => whitelist.has(String(member.id)));
 members.forEach(member => select ? whitelist.add(String(member.id)) : whitelist.delete(String(member.id)));
-dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges(); renderWar();
 }
 if (action === 'select-shown-war-armory' || action === 'clear-shown-war-armory') {
 const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
 const checked = action === 'select-shown-war-armory';
 moduleRoot('war')?.querySelectorAll('[data-armory-search-row]:not([hidden]) [data-war-armory-member]').forEach(input => checked ? whitelist.add(String(input.dataset.warArmoryMember)) : whitelist.delete(String(input.dataset.warArmoryMember)));
-dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges(); renderWar();
 }
 if (action === 'dismiss-war-retal') {
 const attackId = String(event.target.closest('[data-war-retal]')?.dataset.warRetal || '');
@@ -1190,7 +1191,7 @@ if (retal) {
 const key = `user:${Number(retal.attackerId) || attackId}`;
 if (!dataState.settings.war.dismissedRetals || typeof dataState.settings.war.dismissedRetals !== 'object') dataState.settings.war.dismissedRetals = {};
 dataState.settings.war.dismissedRetals[key] = Number(retal.expiresAt) || Math.floor(Date.now() / 1000) + 300;
-writeDataState();
+await savePdaChanges();
 renderWar();
 }
 }
@@ -1254,7 +1255,7 @@ moduleState.targetList.error = '';
 moduleState.targetList.notice = normalized.enabled
 ? `Rolling polling enabled across ${normalized.intervalMinutes} minutes.`
 : 'Automatic Target List polling disabled.';
-writeDataState();
+await savePdaChanges();
 editableState.commit(ticket);
 renderTargetList();
 void runTargetPolling();
@@ -1282,7 +1283,7 @@ if (button) {
 if (button.disabled) return;
 button.disabled=true;
 try {
-savePdaSourceTarget(String(button.dataset.targetSource || ''), Number(button.dataset.targetId));
+await savePdaSourceTarget(String(button.dataset.targetSource || ''), Number(button.dataset.targetId));
 await flushPdaStorage();
 button.textContent = 'Saved';
 button.disabled = true;
@@ -1314,7 +1315,7 @@ tags,
 source:'manual',
 sourceLabel:'Manual'
 };
-if (state.editingId) updatePdaTarget(payload); else addPdaTarget(payload);
+if (state.editingId) await updatePdaTarget(payload); else await addPdaTarget(payload);
 await flushPdaStorage();
 if (editableState.commit(ticket)) {state.formOpen=false;state.editingId=0;}
 state.error='';state.notice='Target saved.';
@@ -1327,7 +1328,7 @@ const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.t
 const target = pdaTargetListEntries().find(value => value.id === playerId);
 if (target) {
 try {
-updatePdaTarget({
+await updatePdaTarget({
 playerId,
 stakeout:target.stakeout !== true,
 stakeoutIntervalSeconds:target.stakeoutIntervalSeconds
@@ -1361,7 +1362,7 @@ if (playerId && global.confirm('Remove this player from Target List?')) {
 const editForm=moduleRoot('targetList')?.querySelector('[data-target-editor]');
 const deleteTicket=Number(moduleState.targetList.editingId)===playerId ? editableState.begin(editForm) : null;
 try {
-removePdaTarget(playerId);
+await removePdaTarget(playerId);
 await flushPdaStorage();
 if (Number(moduleState.targetList.editingId) === playerId && deleteTicket && editableState.commit(deleteTicket)) {
 moduleState.targetList.editingId = 0; moduleState.targetList.formOpen = false;
@@ -1425,13 +1426,13 @@ moduleState.market.error = ''; renderMarket(false); shadow.querySelector('.scrol
 if (action === 'remove-market-watch') {
 const uid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
 const settings = marketSettings(); settings.watches = settings.watches.filter(watch => watch.uid !== uid); if (moduleState.market.editingUid === uid) moduleState.market.editingUid = '';
-const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; writeDataState(); renderMarket(); schedulePurchaseOpportunityFormatting();
+const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; await savePdaChanges(); renderMarket(); schedulePurchaseOpportunityFormatting();
 }
 const marketOption = event.target.closest('[data-market-item-option]');
 if (marketOption) selectMarketSuggestion(Number(marketOption.dataset.marketItemOption));
 if (action === 'dismiss-market-deal') {
 const key = String(event.target.closest('[data-market-dismiss]')?.dataset.marketDismiss || '');
-if (key) { marketSettings().dismissals[key] = Date.now() + 5 * 60_000; writeDataState(); renderMarket(); }
+if (key) { marketSettings().dismissals[key] = Date.now() + 5 * 60_000; await savePdaChanges(); renderMarket(); }
 }
 if (action === 'copy-market-deal' || action === 'send-market-deal') {
 const id = String(event.target.closest('[data-market-deal]')?.dataset.marketDeal || '');
@@ -1450,12 +1451,12 @@ const pinned = new Set(dataState.settings.merits.pinned || []);
 if (pinned.has(key)) pinned.delete(key);
 else if (pinned.size < 3) pinned.add(key);
 dataState.settings.merits.pinned = [...pinned];
-writeDataState();
+await savePdaChanges();
 renderMerits();
 }
 if (action === 'merit-page') {
 dataState.settings.merits.page = Math.max(1, Number(event.target.closest('[data-merit-page]')?.dataset.meritPage) || 1);
-writeDataState();
+await savePdaChanges();
 renderMerits();
 shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' });
 }
@@ -1496,10 +1497,10 @@ if (counter) {
 counter.textContent = `${validation.length}/${validation.maxLength}`;
 counter.dataset.invalid = String(!validation.valid);
 }
-writeDataState();
+queuePdaSettingsSave();
 scheduleRacingScan(0);
 });
-overlay.addEventListener('change', event => {
+listenPdaAction(overlay,'change', async event => {
 if (event.target.matches('[data-alert-type]')) {
 const id = String(event.target.dataset.alertType || '');
 if (PDA_ALERT_TYPES.some(definition => definition.id === id)) {
@@ -1509,7 +1510,7 @@ if (PDA_ALERT_TYPES.find(definition => definition.id === id)?.mode === 'live') {
 dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), nextLiveAt:0 };
 }
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 return;
@@ -1523,18 +1524,19 @@ dataState.settings.mugging.maxFairFight = Math.max(1, Math.min(3, Number(root?.q
 dataState.settings.mugging.limit = Math.max(1, Math.min(100, Math.trunc(Number(root?.querySelector('[data-field="mugging-limit"]')?.value) || 50)));
 moduleState.mugging.error = '';
 moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging settings saved locally; contributor scheduling started.' : 'Mugging disabled locally; cached assignments were kept.';
-if (dataState.settings.mugging.enabled) touchMuggingActivity(); else writeDataState();
+if (dataState.settings.mugging.enabled) touchMuggingActivity();
+await savePdaChanges();
 renderMugging();
 if (dataState.settings.mugging.enabled) void runMuggingContribution(true);
 }
 if (event.target.matches('[data-field="war-armory-mode"]')) {
-dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); writeDataState();
+dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); await savePdaChanges();
 }
 if (event.target.matches('[data-war-armory-member]')) {
 const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
 const id = String(event.target.dataset.warArmoryMember || '');
 if (event.target.checked) whitelist.add(id); else whitelist.delete(id);
-dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState();
+dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges();
 }
 if (event.target.matches('[data-field="war-target-min"],[data-field="war-target-max"],[data-field="war-target-status"],[data-field="war-target-abroad"],[data-field="war-target-location"],[data-field="war-target-sort"]')) {
 const root = moduleRoot('war');
@@ -1544,38 +1546,38 @@ dataState.settings.war.targetStatus = root?.querySelector('[data-field="war-targ
 dataState.settings.war.targetAbroad = root?.querySelector('[data-field="war-target-abroad"]')?.value || 'all';
 dataState.settings.war.targetLocation = root?.querySelector('[data-field="war-target-location"]')?.value || 'all';
 dataState.settings.war.targetSort = root?.querySelector('[data-field="war-target-sort"]')?.value || 'availability';
-writeDataState();
+await savePdaChanges();
 renderWar(true);
 }
 if (event.target.closest?.('.market-form')) captureMarketDraft();
 if (event.target.matches('[data-field="merit-refresh"]')) {
 dataState.settings.merits.refreshMinutes = Math.max(5, Number(event.target.value) || 15);
-writeDataState();
+await savePdaChanges();
 renderMerits();
 }
 if (event.target.matches('[data-field="merit-filter"]')) {
 dataState.settings.merits.filter = String(event.target.value || 'all');
 dataState.settings.merits.page = 1;
-writeDataState();
+await savePdaChanges();
 renderMerits();
 }
 if (event.target.matches('[data-field="market-priority"]')) {
-dataState.settings.market.lastPriority = normalizeMarketPriority(event.target.value); writeDataState();
+dataState.settings.market.lastPriority = normalizeMarketPriority(event.target.value); await savePdaChanges();
 }
 if (event.target.matches('[data-field="market-enabled"]')) {
-marketSettings().enabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
+marketSettings().enabled = event.target.checked; await savePdaChanges(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-listed-items"]')) {
-marketSettings().listedItemsEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+marketSettings().listedItemsEnabled = event.target.checked; await savePdaChanges(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-weaver-pricelist"]')) {
-marketSettings().weaverPricelistEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+marketSettings().weaverPricelistEnabled = event.target.checked; await savePdaChanges(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-weaver-source-order"]')) {
-marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; writeDataState(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
+marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; await savePdaChanges(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-quick-buy"]')) {
-marketSettings().quickBuyEnabled = event.target.checked; marketPurchaseState.settings.highlightedQuickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearQuickPurchaseControls(); else schedulePurchaseOpportunityFormatting(0);
+marketSettings().quickBuyEnabled = event.target.checked; marketPurchaseState.settings.highlightedQuickBuyEnabled = event.target.checked; await savePdaChanges(); if (!event.target.checked) clearQuickPurchaseControls(); else schedulePurchaseOpportunityFormatting(0);
 }
 if (event.target.matches('[data-field="market-type"]')) {
 captureMarketDraft();
@@ -1704,6 +1706,7 @@ clearMarketPurchaseFormatting();unlockTornScroll();
 return;
 }
 if (document.body) marketObserver.observe(document.body,{childList:true,subtree:true});
+if(typeof refreshPdaTargetRecords==='function')void refreshPdaTargetRecords();
 guardian.observe(document,{childList:true,subtree:true});
 repairPdaHost();
 clampLauncher(false);
@@ -1801,7 +1804,8 @@ register:registerPdaPlugin,
 root:moduleRoot,
 settings:pdaPluginSettings,
 cache:pdaPluginCache,
-save:writeDataState,
+save:savePdaChanges,
+listen:listenPdaAction,
 hasScope,
 ensurePermission:ensurePermissionSession,
 tornJson,
@@ -1814,7 +1818,7 @@ moduleMessage,
 actionLink,
 lockedModule,
 errorMessage,
-alertsChanged:() => { writeDataState(); renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
+alertsChanged:() => { renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
 ,
 primeFactionMessage,
 sendPrimedFactionMessage
@@ -1861,6 +1865,7 @@ refresh:refreshPlayerIntelligence
 });
 host.dataset.slinkReady = 'true';
 })(globalThis);
+
 
 
 

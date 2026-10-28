@@ -1,5 +1,6 @@
 (() => {
   'use strict';
+  const pluginApi = globalThis.SLINK_PDA_PLUGIN_API;
 
   const EXTENSION_STORAGE_PREFIX = 'slink-extension:chat-buttons:';
   const GM_getValue = (key, fallback) => {
@@ -34,6 +35,7 @@
   let menuStatus = '';
   let editor = null;
   let editorDraft = null;
+  let editorSaving = false;
   let armed = null;
   let sending = false;
   let armTimer = null;
@@ -120,14 +122,19 @@
 
   function loadMacros() {
     try {
-      return normalizeMacros(GM_getValue(STORAGE_KEY, []));
+      const config=pluginApi.settings('chat',{});
+      if(Array.isArray(config.macros))return normalizeMacros(config.macros);
+      const legacy=normalizeMacros(GM_getValue(STORAGE_KEY, []));
+      if(legacy.length){config.macros=legacy;pluginApi.save().catch(()=>{});}
+      return legacy;
     } catch {
       return [];
     }
   }
 
-  function saveMacros() {
-    GM_setValue(STORAGE_KEY, macros);
+  async function saveMacros(values) {
+    pluginApi.settings('chat',{}).macros=JSON.parse(JSON.stringify(values));
+    await pluginApi.save();
   }
 
   function isNewsletterPage() {
@@ -973,7 +980,8 @@
     renderEditor();
   }
 
-  function saveEditor() {
+  async function saveEditor() {
+    if(editorSaving||!editorDraft)return;
     const incomplete = editorDraft.find((macro) => !String(macro.label || '').trim() || !String(macro.message || '').trim());
     if (incomplete) {
       window.alert('Every custom message button needs both a label and a message.');
@@ -990,11 +998,16 @@
       window.alert(`Newsletter button "${oversizedNewsletter.label}" exceeds the separate ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} character limit.`);
       return;
     }
-    macros = normalizeMacros(editorDraft);
-    saveMacros();
-    clearArmed();
-    closeEditor();
-    scanContexts();
+    const submitted=JSON.stringify(editorDraft),owner=editor,values=normalizeMacros(editorDraft);
+    editorSaving=true;
+    try {
+      await saveMacros(values);
+      macros=values;
+      clearArmed();
+      if(editor===owner&&JSON.stringify(editorDraft)===submitted)closeEditor();
+      if(activity.eligible())scanContexts();
+    } catch(error) { window.alert('Custom messages were not saved. Your editor has been kept. '+String(error.message||error)); }
+    finally {editorSaving=false;}
   }
 
   function addStyles() {
@@ -1074,8 +1087,9 @@ function clear(){document.querySelectorAll('mark[data-slink-chat-highlight]').fo
 function scan(){if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible())return;const active=config().highlights.filter(row=>row.enabled!==false&&String(row.term||'').trim());document.querySelectorAll(SELECTOR).forEach(container=>{if(container.dataset.slinkChatHighlighted==='true')return;const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT,{acceptNode(node){if(!node.nodeValue?.trim()||node.parentElement?.closest('a,button,textarea,input,mark,[contenteditable="true"],style,script'))return NodeFilter.FILTER_REJECT;return active.some(row=>new RegExp(rx(row.term),'i').test(node.nodeValue))?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}}),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const pattern=new RegExp(active.map(row=>'('+rx(row.term)+')').join('|'),'gi'),fragment=document.createDocumentFragment();let last=0,found;while((found=pattern.exec(node.nodeValue))!==null){if(found.index>last)fragment.append(document.createTextNode(node.nodeValue.slice(last,found.index)));const row=active.find(candidate=>new RegExp(rx(candidate.term),'i').test(found[0])),colors=palette(row?.color),mark=document.createElement('mark');mark.dataset.slinkChatHighlight='true';mark.textContent=found[0];mark.style.cssText='background:'+colors[1]+';color:'+colors[2]+';padding:0 2px;border-radius:3px;font-weight:800';fragment.append(mark);last=found.index+found[0].length;if(!found[0].length)pattern.lastIndex++;}if(last<node.nodeValue.length)fragment.append(document.createTextNode(node.nodeValue.slice(last)));node.replaceWith(fragment);}container.dataset.slinkChatHighlighted='true';});}
 function schedule(){if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible())return;global.SLINK_PDA_PAGE_ACTIVITY.cancel(timer);timer=global.SLINK_PDA_PAGE_ACTIVITY.defer(scan,80);}
 function render(){const root=api.root(ID);if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea'))return;const rows=config().highlights;root.innerHTML='<div class="grid"><article class="card full"><div class="card-head"><div><h2>Custom chat buttons</h2><span class="muted">First click loads the HTML message; second click sends it.</span></div></div><p>Unquoted links are corrected to &lt;a href="link"&gt;. Page-link and page-URL tokens remain available in the existing custom-button editor.</p><div class="target-actions"><button type="button" data-chat-action="manage">Manage custom buttons</button></div></article><article class="card full"><div class="card-head"><div><h2>Highlight chat terms</h2><span class="muted">Case-insensitive custom words and phrases.</span></div></div><div data-chat-rows>'+(rows.length?rows.map((row,index)=>'<div class="module-toolbar" data-chat-row="'+index+'"><input type="text" data-chat-term value="'+api.escapeHtml(String(row.term||''))+'" placeholder="Term or phrase"><select data-chat-color>'+COLORS.map(color=>'<option value="'+color[0]+'" '+(row.color===color[0]?'selected':'')+'>'+color[0]+'</option>').join('')+'</select><label><input type="checkbox" data-chat-enabled '+(row.enabled!==false?'checked':'')+'>On</label><button type="button" data-chat-action="delete" data-chat-index="'+index+'">×</button></div>').join(''):'<p>No highlighted terms configured.</p>')+'</div><div class="target-actions"><button type="button" data-chat-action="add">Add term</button><button type="button" data-chat-action="save">Save highlights</button></div></article></div>';}
-function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';root.addEventListener('click',event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);api.save();clear();scan();render();}});}
+function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';api.listen(root,'click',async event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});await api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);await api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);await api.save();clear();scan();render();}});}
 api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(schedule);if(global.SLINK_PDA_PAGE_ACTIVITY.eligible())observer.observe(document.body,{childList:true,subtree:true});scan();},render(){render();bind();},alerts(){return[];}});
 })(globalThis);
+
 
 

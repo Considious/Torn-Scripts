@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const core = fs.readFileSync(new URL('./src/00-runtime-core.part', import.meta.url), 'utf8');
+const dashboard = fs.readFileSync(new URL('./src/30-dashboard-combat.part', import.meta.url), 'utf8');
+const shell = fs.readFileSync(new URL('./src/90-shell-bootstrap.part', import.meta.url), 'utf8');
+const loader = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
+const hasLoaderCode = code => loader.replace(/\s/g,'').replaceAll('"', "'").includes(code.replace(/\s/g,'').replaceAll('"', "'"));
+
+assert(core.includes("const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1'"), 'PDA runtime must maintain an independent local data mirror.');
+assert(core.includes('function writeDataMirror(value)'), 'Every primary data write must also update the local mirror.');
+assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot)'), 'The captured mirror must be written before the bridge.');
+assert(core.includes('return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy]'), 'Storage recovery must compare the loader-vetted primary with fallback copies.');
+assert(core.includes('function storedRecordSavedAt(value)'), 'Durable records must carry freshness metadata.');
+assert(hasLoaderCode("let selected = hasData(primary) ? primary : mirror || {};"), 'The PDA primary record must win when legacy copies have no freshness metadata.');
+assert(hasLoaderCode("savedAt(mirror) > savedAt(selected)"), 'A mirror may only replace primary data when it proves it is newer.');
+assert(!core.includes('global.localStorage.removeItem(DATA_STORAGE_KEY);'), 'Startup must never erase the legacy recovery copy.');
+assert(hasLoaderCode('function readMirror()'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
+assert(hasLoaderCode("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';"), 'The startup loader must fetch the authored source manifest directly.');
+assert(hasLoaderCode("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';"), 'The startup loader must retain a last-known-working runtime.');
+assert(hasLoaderCode('Source download failed; using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
+assert(!hasLoaderCode('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
+assert(hasLoaderCode('if (selected === mirror && selected !== primary && !primaryFailed)'), 'Mirror repair must not overwrite primary storage after a failed primary read.');
+assert(hasLoaderCode("await gmWrite(DATA_STORAGE_KEY, selected)"), 'The loader must repair primary GM storage with the selected recovered record.');
+assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
+assert(core.includes("settings:JSON.parse(JSON.stringify(dataState.settings || {}))"), 'The backup must include user settings.');
+assert(core.includes("targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))"), 'The backup must include saved targets.');
+assert(core.includes('uiState:{'), 'The backup must include dashboard layout and tab preferences.');
+assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('apiKey'), 'Portable backups must not include API keys.');
+assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('sessions'), 'Portable backups must not include login sessions.');
+assert(dashboard.includes('API keys and login sessions are never included'), 'The Access UI must clearly explain backup exclusions.');
+assert(shell.includes("data-action=\"restore-data-backup\"") || shell.includes("action === 'restore-data-backup'"), 'The Access UI restore action must be wired.');
+assert(core.includes("async function downloadDataBackup(userInitiated = false)"), 'Cloud recovery must require an explicit user action.');
+assert(core.includes("if (userInitiated !== true) throw new Error('Cloud backup recovery must be started manually from Access.')"), 'Cloud recovery must reject background invocation.');
+assert(shell.includes('await downloadDataBackup(true);'), 'Only the confirmed Access action may start cloud recovery.');
+assert(shell.includes('uploadDataBackup(false)'), 'PDA startup must schedule the twice-daily backup check.');
+assert(dashboard.includes("...[...pdaPlugins.values()].map(plugin => ['quality-of-life', String(plugin.id)])"), 'Permission gates must include dynamically registered Quality of Life modules.');
+assert(dashboard.includes('const visibleTab = allowed.includes(state[stateKey]) ? state[stateKey] : allowed[0];'), 'Unavailable modules may use a visible fallback without overwriting the saved tab.');
+assert(!dashboard.includes('if (!allowed.includes(state[stateKey])) state[stateKey] = allowed[0];'), 'Permission refreshes must never overwrite the saved last tab.');
+assert(/applyPermissionGates\(\);\s+if \(state\.qualityOfLifeTab === id\) selectSubpage\('qualityOfLife', id, false\);/.test(shell), 'Plugin registration must restore the exact saved Quality of Life module after applying its permission gate.');
+
+console.log('PDA durable local storage and API-key-free backup wiring are verified.');

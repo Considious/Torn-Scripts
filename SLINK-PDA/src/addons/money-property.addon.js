@@ -315,11 +315,11 @@ root.addEventListener('click', event => {
 const button = event.target.closest('[data-mp-action="refresh"]');
 if (button) void refresh(true);
 });
-root.addEventListener('change', event => {
+api.listen(root,'change', async event => {
 const target = event.target;
 const config = settings();
 if(target.matches('[data-mp-bank-amount]')){
-if(target.validity.valid){config.bankAmount=Number(target.value);api.save();}
+if(target.validity.valid){config.bankAmount=Number(target.value);await api.save();}
 return;
 }
 if (target.matches('[data-mp-setting]')) {
@@ -327,7 +327,7 @@ const key = target.dataset.mpSetting;
 config[key] = target.type === 'checkbox' ? target.checked : Number(target.value);
 }
 if (target.matches('[data-mp-stock]')) config.stockAlerts[target.dataset.mpStock] = target.checked;
-api.save();
+await api.save();
 api.alertsChanged();
 });
 root.addEventListener('input',event=>{
@@ -377,7 +377,7 @@ current.itemCatalogAt = catalogBody.pricesAt;
 }
 current.status = buildStatus({user,tornStocks,itemCatalog:current.itemCatalog || []});
 current.fetchedAt = Date.now();
-api.save();
+await api.save();
 api.alertsChanged();
 return current.status;
 } catch (caught) {
@@ -397,3 +397,4 @@ if (api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) vo
 }
 api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
 })(globalThis);
+

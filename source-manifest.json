@@ -1,0 +1,33 @@
+{
+  "schema": 4,
+  "mode": "direct-source",
+  "revision": "0.4.115",
+  "storageProtocol": 2,
+  "output": "SLINK_PDA_Dashboard.user.js",
+  "fragments": [
+    "src/00-shared-data.part",
+    "src/00-runtime-core.part",
+    "src/10-market-runtime.part",
+    "src/20-quality-of-life.part",
+    "src/30-dashboard-combat.part",
+    "src/40-war.part",
+    "src/50-market-dom.part",
+    "src/60-xanax-safety.part",
+    "src/90-shell-bootstrap.part"
+  ],
+  "startupAddons": [
+    {
+      "source": "src/addons/money-property.addon.js"
+    },
+    {
+      "source": "src/addons/events.addon.js"
+    },
+    {
+      "source": "src/addons/faction-officers.addon.js"
+    },
+    {
+      "source": "src/addons/chat.addon.js"
+    }
+  ],
+  "loaderMaxBytes": 18000
+}

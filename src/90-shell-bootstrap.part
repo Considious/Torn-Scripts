@@ -1,0 +1,1866 @@
+function activeModuleName() {
+if (state.page === 'combat') return state.combatTab;
+if (state.page === 'efficiency') return state.efficiencyTab;
+if (state.page === 'quality-of-life') return state.qualityOfLifeTab;
+return 'access';
+}
+async function loadActiveModule(force = false) {
+if (!dashboardOpen || !pdaDomActive()) return;
+const name = activeModuleName();
+const plugin = pdaPlugins.get(name);
+if (plugin) {
+try {
+plugin.render?.();
+if (canAccessModule(name)) await plugin.refresh?.(force);
+} catch (error) { console.warn('[SLINK PDA] Plugin refresh:', name, error); }
+return;
+}
+if (!canAccessModule(name)) { applyPermissionGates(); return; }
+if (['leveling', 'war', 'mugging', 'market'].includes(name)) touchModuleActivity(name);
+if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
+if (name === 'bounties') touchBounties();
+if (name === 'targetList') { renderTargetList(); return; }
+if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
+if (name === 'company') { renderCompany(); await refreshCompany(force).catch(() => undefined); return; }
+if (name === 'museums') { renderMuseums(); await refreshMuseums(force).catch(() => undefined); return; }
+if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
+if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
+const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
+if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
+}
+function renderAllModules() {
+renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderCompany(); renderMuseums(); PDA_ABROAD.render(); for (const plugin of pdaPlugins.values()) { try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', plugin.id, error); } } renderThemeChoices(); applyPermissionGates();
+syncThemeHealthAssets();
+}
+let permissionRecoveryBusy = false;
+let nextPermissionRecoveryAt = 0;
+async function ensureAutomaticPermissionSession(force = false) {
+if (permissionRecoveryBusy || !currentApiKey() || !termsAccepted('permission')) return validSession('permission');
+if (!force && validSession('permission')) return validSession('permission');
+if (!force && Date.now() < nextPermissionRecoveryAt) return null;
+permissionRecoveryBusy = true;
+try {
+const session = await ensurePermissionSession(false);
+nextPermissionRecoveryAt = 0;
+renderAllModules();
+if (hasScope('slink.adhd.alerts') && !moduleState.alerts.busy) global.setTimeout(() => void refreshAlerts(false), 0);
+for (const plugin of pdaPlugins.values()) {
+try { if (!plugin.scope || hasScope(plugin.scope)) void plugin.refresh?.(false); } catch {}
+}
+return session;
+} catch (error) {
+nextPermissionRecoveryAt = Date.now() + 5 * 60_000;
+console.warn('[SLINK PDA] Automatic authentication:', errorMessage(error));
+return null;
+} finally {
+permissionRecoveryBusy = false;
+}
+}
+function startScheduler() {
+if (schedulerTimer) return;
+schedulerTimer = global.setInterval(() => {
+if (!pdaPagePresent) return;
+if (currentApiKey() && termsAccepted('permission') && !validSession('permission')) void ensureAutomaticPermissionSession(false);
+const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
+if (canRefreshAlerts && pdaDomActive()) {
+const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+if (previousIds !== JSON.stringify(dataState.caches.alertNotificationIds)) { writeDataState(); renderAlerts(); }
+const clock = shadow.querySelector('[data-timer24-clock]');
+if (clock) clock.textContent = timer24Label();
+}
+if (pdaDomActive()) syncThemeHealthAssets();
+if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
+if (canRefreshAlerts && Number(dataState.caches.crimeUniques?.nextLiveAt || 0) <= Date.now()) void refreshCrimeUniqueWindows(false);
+const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
+if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= WEAVER_SUMMARY_REFRESH_MS) void refreshMarket(false);
+const canRefreshDollarBazaars = Boolean(currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE));
+if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
+const canRefreshWar = Boolean(currentApiKey() && hasScope('slink.war') && (validSession('war') || termsAccepted('war')));
+if (canRefreshWar && !moduleState.war.busy) {
+if (moduleIsActive('war') && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
+else void refreshWarAlerts();
+}
+if (moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
+if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
+if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
+if (hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
+if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
+if (dashboardOpen && pdaDomActive()) void loadActiveModule(false);
+}, 30_000);
+}
+function protectEditableState(root) {
+const selector = 'input,textarea,select,[contenteditable="true"],details';
+const dirty = new Map();
+const revisions = new Map();
+const tickets = new WeakMap();
+let revision = 0;
+const commitAction = /(?:^|[-_\\s])(save|submit|apply|update|confirm|cancel|reset|clear|remove|delete)(?:$|[-_\\s])/i;
+let focusedKey = '';
+let restoring = false;
+let scheduled = false;
+function scope(control) {
+const container = control?.closest?.('[data-module-root],[data-page-panel],form[id]');
+if (container?.dataset?.moduleRoot) return `module:${container.dataset.moduleRoot}`;
+if (container?.dataset?.pagePanel) return `page:${container.dataset.pagePanel}`;
+if (container?.id) return `form:${container.id}`;
+return 'root';
+}
+function identity(control) {
+if (!control?.matches?.(selector)) return '';
+// Auto-saved controls are already committed to dataState by their owning
+// module.  Keeping a second "draft" copy here can overwrite the freshly
+// rendered model value after bulk actions such as Enable all / Disable all.
+if (control.matches('[data-ui-autosave="true"]')) return '';
+const prefix = scope(control);
+if (control.id) return `${prefix}|id:${control.id}`;
+if (control.name) return `${prefix}|name:${control.name}`;
+for (const name of ['uiKey','field','setting','key','scope','targetListTag','targetId','watchId','marketWatchId','alertType','action']) {
+if (control.dataset?.[name] !== undefined) return `${prefix}|data-${name}:${control.dataset[name]}`;
+}
+const container = control.closest?.('label,.field,.setting,.control') || control.parentElement;
+const index = Math.max(0, [...(container?.querySelectorAll?.(selector) || [])].indexOf(control));
+const label = String(container?.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+return `${prefix}|${control.tagName.toLowerCase()}:${String(control.type || '')}:${label}:${index}`;
+}
+function take(control) {
+if (control.tagName === 'DETAILS') return { kind:'open', open:control.open };
+if (control.matches('[contenteditable="true"]')) return { kind:'html', value:control.innerHTML };
+if (control.tagName === 'INPUT' && ['checkbox','radio'].includes(control.type)) return { kind:'checked', checked:control.checked };
+if (control.tagName === 'SELECT' && control.multiple) return { kind:'multiple', values:[...control.selectedOptions].map(option => option.value) };
+return { kind:'value', value:control.value, start:Number.isInteger(control.selectionStart) ? control.selectionStart : null, end:Number.isInteger(control.selectionEnd) ? control.selectionEnd : null, direction:control.selectionDirection || 'none' };
+}
+function apply(control, state) {
+if (state.kind === 'open') control.open = Boolean(state.open);
+else if (state.kind === 'html') control.innerHTML = state.value;
+else if (state.kind === 'checked') control.checked = Boolean(state.checked);
+else if (state.kind === 'multiple') {
+const values = new Set(state.values || []);
+[...control.options].forEach(option => { option.selected = values.has(option.value); });
+} else control.value = state.value ?? '';
+}
+function remember(control) {
+const key = identity(control);
+if (!key) return;
+const next = take(control);
+const semantic = value => JSON.stringify(value && { kind:value.kind, value:value.value, checked:value.checked, values:value.values, open:value.open });
+if (semantic(next) !== semantic(dirty.get(key))) revisions.set(key, ++revision);
+dirty.set(key, next);
+if (control === (root.activeElement || document.activeElement)) focusedKey = key;
+}
+function clearScope(element) {
+const prefix = scope(element?.querySelector?.(selector) || element);
+for (const key of dirty.keys()) if (key.startsWith(`${prefix}|`)) dirty.delete(key);
+if (focusedKey.startsWith(`${prefix}|`)) focusedKey = '';
+}
+    function keysIn(element) {
+      const controls = [...(element?.querySelectorAll?.(selector) || [])];
+      if (element?.matches?.(selector)) controls.unshift(element);
+      return [...new Set(controls.map(control => identity(control)).filter(Boolean))];
+    }
+
+    function begin(element = root) {
+      const ticket = Object.freeze({});
+      tickets.set(ticket, new Map(keysIn(element).map(key => [key, revisions.get(key) || 0])));
+      return ticket;
+    }
+
+    function isCurrent(ticket) {
+      const captured = tickets.get(ticket);
+      return Boolean(captured && [...captured].every(([key, version]) => (revisions.get(key) || 0) === version));
+    }
+
+    function commit(ticket) {
+      const captured = tickets.get(ticket);
+      if (!captured) return false;
+      const current = isCurrent(ticket);
+      for (const [key, version] of captured) {
+        if ((revisions.get(key) || 0) !== version) continue;
+        dirty.delete(key);
+        if (focusedKey === key) focusedKey = '';
+      }
+      tickets.delete(ticket);
+      return current;
+    }
+
+    function cancel(element = root) {
+      for (const key of keysIn(element)) {
+        revisions.set(key, ++revision);
+        dirty.delete(key);
+        if (focusedKey === key) focusedKey = '';
+      }
+    }
+
+function restore() {
+scheduled = false;
+if (restoring || (!dirty.size && !Object.keys(state.panels || {}).length)) return;
+restoring = true;
+for (const panel of root.querySelectorAll('details[data-ui-key]')) {
+const key = String(panel.dataset.uiKey || '');
+if (key && Object.hasOwn(state.panels || {}, key)) panel.open = Boolean(state.panels[key]);
+}
+const scrollX = Number(global.scrollX) || 0;
+const scrollY = Number(global.scrollY) || 0;
+let focusTarget = null;
+for (const control of root.querySelectorAll(selector)) {
+const key = identity(control);
+if (!dirty.has(key)) continue;
+apply(control, dirty.get(key));
+if (key === focusedKey) focusTarget = control;
+}
+if (focusTarget?.isConnected) {
+try {
+focusTarget.focus({ preventScroll:true });
+const state = dirty.get(focusedKey);
+if (state?.kind === 'value' && state.start !== null && focusTarget.setSelectionRange) focusTarget.setSelectionRange(state.start, state.end, state.direction);
+global.scrollTo?.(scrollX, scrollY);
+} catch {}
+}
+restoring = false;
+}
+function scheduleRestore() {
+if (scheduled || (!dirty.size && !Object.keys(state.panels || {}).length)) return;
+scheduled = true;
+queueMicrotask(restore);
+}
+function mutationNeedsRestore(mutations) {
+const restorable = `${selector},details[data-ui-key]`;
+return mutations.some(mutation => [...mutation.addedNodes].some(node =>
+node?.nodeType === 1 && (node.matches?.(restorable) || node.querySelector?.(restorable))
+));
+}
+function onEdit(event) {
+if (!restoring && event.target?.matches?.(selector)) remember(event.target);
+}
+root.addEventListener('input', onEdit, true);
+root.addEventListener('change', onEdit, true);
+root.addEventListener('toggle', event => {
+if (restoring || event.target?.tagName !== 'DETAILS') return;
+remember(event.target);
+const key = String(event.target.dataset?.uiKey || '');
+if (key) {
+state.panels ||= {};
+state.panels[key] = event.target.open;
+writeState();
+}
+}, true);
+root.addEventListener('focusin', event => {
+if (!event.target?.matches?.(selector)) return;
+focusedKey = identity(event.target);
+if (dirty.has(focusedKey)) remember(event.target);
+}, true);
+root.addEventListener('focusout', event => {
+if (!event.target?.matches?.(selector)) return;
+const control = event.target;
+const key = identity(control);
+queueMicrotask(() => {
+if (control.isConnected && focusedKey === key && (root.activeElement || document.activeElement) !== control) focusedKey = '';
+});
+}, true);
+root.addEventListener('click', event => {
+const action = event.target?.closest?.('button,input[type="submit"],input[type="reset"],[role="button"]');
+const signature = action ? [action.id,action.name,action.dataset?.action,action.value,action.textContent].filter(Boolean).join(' ') : '';
+if (signature && commitAction.test(signature) && !action?.closest?.('[data-ui-explicit-commit="true"]')) global.setTimeout(() => clearScope(action), 0);
+}, true);
+// Ignore ordinary text-only updates (countdowns, "updated ago" labels, and
+// similar).  They do not replace an editor and must not cause a full control
+// restore/repaint on every dashboard tick.
+const observer = new MutationObserver(mutations => {
+if (mutationNeedsRestore(mutations)) scheduleRestore();
+});
+observer.observe(root, { childList:true, subtree:true });
+return Object.freeze({ begin, commit, cancel, isCurrent, clear:clearScope, restore, stop:() => observer.disconnect() });
+}
+const moduleRenderGuards = new WeakMap();
+const nativeInnerHtml = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+function moduleHasActiveEditor(root) {
+const active = root?.getRootNode?.()?.activeElement || document.activeElement;
+return Boolean(active && root.contains(active) && active.matches?.('input,textarea,select,[contenteditable="true"]'));
+}
+function restoreKeyedPanels(root) {
+for (const panel of root?.querySelectorAll?.('details[data-ui-key]') || []) {
+const key = String(panel.dataset.uiKey || '');
+if (key && Object.hasOwn(state.panels || {}, key)) panel.open = Boolean(state.panels[key]);
+}
+}
+function installModuleRenderGuard(root) {
+if (!root || moduleRenderGuards.has(root) || !nativeInnerHtml?.get || !nativeInnerHtml?.set) return root;
+const guard = { pending:null, timer:0 };
+Object.defineProperty(root, 'innerHTML', {
+configurable:true,
+get() { return nativeInnerHtml.get.call(root); },
+set(value) {
+const html = String(value ?? '');
+if (moduleHasActiveEditor(root)) {
+guard.pending = html;
+root.dataset.slinkRenderPending = 'true';
+return;
+}
+guard.pending = null;
+delete root.dataset.slinkRenderPending;
+nativeInnerHtml.set.call(root, html);
+restoreKeyedPanels(root);
+}
+});
+function flush() {
+guard.timer = 0;
+if (guard.pending === null || moduleHasActiveEditor(root)) return;
+const html = guard.pending;
+guard.pending = null;
+delete root.dataset.slinkRenderPending;
+nativeInnerHtml.set.call(root, html);
+restoreKeyedPanels(root);
+}
+root.addEventListener('focusout', () => {
+global.clearTimeout(guard.timer);
+guard.timer = global.setTimeout(flush, 350);
+}, true);
+root.addEventListener('focusin', () => {
+global.clearTimeout(guard.timer);
+guard.timer = 0;
+}, true);
+moduleRenderGuards.set(root, guard);
+return root;
+}
+let host = document.createElement('div');
+host.id = HOST_ID;
+const shadow = host.attachShadow({ mode: 'open' });
+const editableState = protectEditableState(shadow);
+const style = document.createElement('style');
+style.textContent = `
+:host {
+--s-bg:#0b1118;--s-panel:#121b25;--s-card:#17222e;--s-control:#223140;
+--s-border:rgba(132,199,255,.43);--s-soft:rgba(255,255,255,.11);
+--s-text:#edf7ff;--s-muted:#9fb2c4;--s-accent:#3b8cca;--s-alt:#75c1ff;
+--s-ready:#91e2a8;--s-warning:#ffd174;--s-error:#ff9c9c;
+--s-shadow:rgba(0,0,0,.72);--s-page:radial-gradient(circle at 50% -20%,#203950 0,#0b1118 48%,#070b10 100%);
+--s-theme-background-image:none;--s-theme-icon-sheet:none;--s-theme-brand-icon:none;--s-theme-chat-icon:none;--s-theme-frame-image:none;--s-theme-rose-corner-image:none;--s-theme-badge-ivory-image:none;--s-theme-panel-smoke-image:none;--s-theme-panel-damask-image:none;--s-theme-panel-crimson-image:none;--s-theme-divider-left-image:none;--s-theme-divider-middle-image:none;--s-theme-divider-right-image:none;--s-theme-health-roses-image:none;--s-theme-health-blood-image:none;--s-theme-panel-opacity:87%;--s-theme-panel-blur:7px;--s-theme-item-opacity:82%;--s-theme-item-blur:3px;--s-theme-veil-top:25%;--s-theme-veil-bottom:48%;
+all:initial;color-scheme:dark;font-family:Arial,sans-serif;
+}
+:host([data-theme="slinky-pursuit"]){--s-bg:#03070c;--s-panel:#080e16;--s-card:#0e1621;--s-control:#172334;--s-border:rgba(232,239,246,.68);--s-text:#f7fbff;--s-muted:#adbac8;--s-accent:#167fe8;--s-alt:#ef3333;--s-ready:#7dd8ff;--s-warning:#ffca57;--s-page:radial-gradient(circle at 4% 0,rgba(220,25,25,.34),transparent 34%),radial-gradient(circle at 96% 0,rgba(20,115,255,.36),transparent 36%),#02050a}
+:host([data-theme="slinky-underglow"]){--s-bg:#020303;--s-panel:#070909;--s-card:#0d1010;--s-control:#161a19;--s-border:rgba(211,181,255,.69);--s-text:#faf7fc;--s-muted:#b9b0c0;--s-accent:#9f43ed;--s-alt:#74ef42;--s-ready:#9cff74;--s-warning:#dcff61;--s-page:radial-gradient(circle at 8% 100%,rgba(82,255,28,.25),transparent 38%),radial-gradient(circle at 92% 0,rgba(171,51,255,.31),transparent 42%),#010202}
+*{box-sizing:border-box}
+button,select{font:inherit}
+button{min-height:44px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-control);color:var(--s-text);cursor:pointer;touch-action:manipulation}
+button:active{filter:brightness(1.25);transform:translateY(1px)}
+.launcher[hidden]{display:none}.launcher{position:fixed;right:max(12px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));z-index:2147483647;display:grid;width:58px;height:58px;min-height:58px;padding:0;place-items:center;border:1px solid var(--s-border);border-radius:50%;background:linear-gradient(145deg,var(--s-accent),var(--s-bg));box-shadow:0 8px 25px var(--s-shadow),-3px 0 13px color-mix(in srgb,var(--s-alt) 45%,transparent),3px 0 13px color-mix(in srgb,var(--s-accent) 55%,transparent);cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none}
+.launcher[data-dragging="true"]{cursor:grabbing;transform:scale(1.06)}
+.launcher.has-alerts{border-color:var(--s-error);box-shadow:0 8px 25px var(--s-shadow),0 0 18px color-mix(in srgb,var(--s-error) 80%,transparent);animation:slink-alert-pulse 1.35s ease-in-out infinite alternate}@keyframes slink-alert-pulse{to{filter:brightness(1.28)}}
+.coil{position:relative;width:31px;height:27px;pointer-events:none}.coil i{position:absolute;left:3px;width:25px;height:10px;border:2px solid #edf4f7;border-radius:50%;filter:drop-shadow(0 0 3px var(--s-alt))}.coil i:nth-child(1){top:0}.coil i:nth-child(2){top:6px}.coil i:nth-child(3){top:12px}.coil i:nth-child(4){top:18px}
+.launcher-label{position:absolute;right:52px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-panel);color:var(--s-text);font:bold 10px/1 Arial,sans-serif;white-space:nowrap;pointer-events:none;opacity:0;transform:translateX(5px);transition:.16s}.launcher:focus-visible .launcher-label,.launcher:hover .launcher-label{opacity:1;transform:none}
+.launcher-alert-count{position:absolute;top:-5px;right:-5px;display:grid;min-width:23px;height:23px;padding:0 5px;place-items:center;border:2px solid var(--s-bg);border-radius:999px;background:var(--s-error);color:#170404;font:bold 10px/1 Arial,sans-serif;pointer-events:none}.launcher-alert-count[hidden]{display:none}
+.launcher-main{display:none;min-width:0;flex:1 1 auto;text-align:left;pointer-events:none}.launcher-main strong{display:block;font-size:11px;line-height:1.05;letter-spacing:.08em}.launcher-summary{display:block;min-width:0;margin-top:2px;overflow:hidden;color:var(--s-muted);font:10px/1.15 Arial,sans-serif;text-overflow:ellipsis;white-space:nowrap}
+.launcher[data-mode="bar"]{left:max(0px,env(safe-area-inset-left));right:max(0px,env(safe-area-inset-right));bottom:35px;top:auto;z-index:999;display:flex;width:auto;max-width:none;height:40px;min-height:40px;padding:0 10px;gap:8px;border-radius:10px 10px 0 0;opacity:var(--slink-launcher-opacity,.85);cursor:pointer;touch-action:manipulation;transition:opacity .16s,bottom .16s}
+.launcher[data-mode="bar"][data-positioned="true"]{left:max(0px,env(safe-area-inset-left))!important;right:max(0px,env(safe-area-inset-right))!important;bottom:35px!important;top:auto!important}
+.launcher[data-mode="bar"] .coil{width:25px;height:22px;flex:0 0 25px;transform:scale(.68)}.launcher[data-mode="bar"] .launcher-main{display:block}.launcher[data-mode="bar"] .launcher-label{display:none}.launcher[data-mode="bar"] .launcher-alert-count{position:static;flex:0 0 auto;min-width:24px;height:24px;border-color:var(--s-panel)}
+.launcher[data-mode="bar"]:not(.has-alerts) .launcher-alert-count{display:none}
+@media(orientation:landscape) and (max-height:520px){.launcher[data-mode="bar"]{left:max(0px,env(safe-area-inset-left));right:max(58px,calc(env(safe-area-inset-right) + 58px));bottom:0;border-radius:10px 0 0 0}}
+.overlay[hidden]{display:none}.overlay{position:fixed;inset:0;z-index:2147483646;display:grid;width:100%;max-width:none;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);overflow:hidden;background:var(--s-page);color:var(--s-text);font:13px/1.42 Arial,sans-serif;overscroll-behavior:contain}
+.theme-content-shell{display:contents}
+.topbar{display:flex;align-items:center;gap:10px;min-height:64px;padding:max(9px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 9px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--s-border);background:color-mix(in srgb,var(--s-bg) 94%,transparent);box-shadow:0 7px 22px var(--s-shadow);touch-action:pan-x}
+.brand-mark{display:grid;width:39px;height:39px;flex:0 0 auto;place-items:center;border-radius:10px;background:linear-gradient(145deg,var(--s-accent),var(--s-bg));box-shadow:inset 0 0 0 1px var(--s-border),0 0 13px color-mix(in srgb,var(--s-alt) 30%,transparent);font-weight:900}
+.brand{min-width:0;flex:1}.brand strong,.brand span{display:block}.brand strong{font-size:15px}.brand span{overflow:hidden;color:var(--s-muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.prototype{padding:4px 7px;border:1px solid var(--s-warning);border-radius:999px;color:var(--s-warning);font-size:9px;font-weight:700;white-space:nowrap}
+.close{display:flex;align-items:center;justify-content:center;gap:5px;min-width:46px;padding:0 12px;font-size:14px}.close>span:first-child{font-size:22px}.close-label{font-weight:700}
+.primary-nav{display:flex;gap:7px;padding:8px max(14px,env(safe-area-inset-right)) 8px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--s-soft);background:color-mix(in srgb,var(--s-panel) 93%,transparent)}
+.primary-nav button{position:relative;min-width:105px;padding:7px 17px;color:var(--s-muted);font-weight:700;text-align:center}.primary-nav button[aria-selected="true"]{border-color:var(--s-alt);background:linear-gradient(135deg,var(--s-accent),var(--s-control));color:var(--s-text);box-shadow:0 0 12px color-mix(in srgb,var(--s-alt) 22%,transparent)}
+.scroll{width:100%;min-width:0;min-height:0;overflow:auto;overflow-anchor:none;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:14px max(14px,calc((100vw - 1240px)/2)) max(24px,env(safe-area-inset-bottom))}
+.page[hidden],.subpage[hidden]{display:none}
+.page-head{display:flex;align-items:start;gap:12px;margin:2px 0 12px}.page-head>div{min-width:0;flex:1}.page-head h1{margin:0;font-size:22px}.page-head p{margin:3px 0 0;color:var(--s-muted)}
+.page-actions{display:flex;gap:7px}.page-actions button{position:relative;padding:6px 12px;text-align:center}
+.subnav{display:flex;justify-content:center;flex-wrap:wrap;gap:6px;width:100%;min-width:0;margin-bottom:11px;overflow:visible}.subnav button{position:relative;flex:1 1 112px;width:112px;min-width:112px;max-width:160px;padding:6px 12px;color:var(--s-muted);text-align:center;white-space:nowrap}.subnav button[aria-selected="true"]{background:var(--s-accent);color:var(--s-text)}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:11px}.card{grid-column:span 4;min-width:0;padding:13px;border:1px solid var(--s-border);border-radius:11px;background:color-mix(in srgb,var(--s-panel) 96%,transparent);box-shadow:0 8px 20px var(--s-shadow)}.card.wide{grid-column:span 8}.card.full{grid-column:1/-1}.card h2,.card h3{margin:0}.card h2{font-size:15px}.card h3{font-size:12px}.muted{color:var(--s-muted)}
+.card-head{display:flex;align-items:start;gap:9px;margin-bottom:10px}.card-head>div{min-width:0;flex:1}.card-head h2,.card-head h3,.card-head .muted,.card-head>div>span{display:block}.card-head .muted,.card-head>div>span{margin-top:3px;line-height:1.35}.badge{display:inline-block;padding:3px 7px;border:1px solid var(--s-soft);border-radius:999px;color:var(--s-muted);font-size:9px;white-space:nowrap}.badge.ready{border-color:var(--s-ready);color:var(--s-ready)}.badge.warn{border-color:var(--s-warning);color:var(--s-warning)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.stat{min-width:0;padding:9px 5px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);text-align:center}.stat strong,.stat span{display:block}.stat strong{font-size:17px;overflow-wrap:anywhere}.stat span{color:var(--s-muted);font-size:9px}
+.status{margin:10px 0 0;padding:8px 9px;border-left:3px solid var(--s-accent);border-radius:5px;background:var(--s-bg);color:var(--s-muted)}
+.target-list,.alert-list,.merit-list{display:grid;gap:7px}.target,.alert,.merit{display:grid;gap:7px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target{grid-template-columns:minmax(0,1fr) auto;align-items:center}.target strong,.target small{display:block}.target small{color:var(--s-muted)}.target button{padding:5px 12px}.alert{border-left:4px solid var(--s-ready)}.alert.warn{border-left-color:var(--s-warning)}.alert strong,.alert span{display:block}.alert span{color:var(--s-muted)}
+.two-column{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.mini{padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mini span,.mini strong{display:block}.mini span{color:var(--s-muted);font-size:9px}
+.meter{height:6px;overflow:hidden;border-radius:99px;background:#05080b}.meter i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--s-accent),var(--s-alt))}
+.later{color:var(--s-muted);font-size:10px}.theme-row{display:flex;gap:7px;flex-wrap:wrap}.theme-row button{display:flex;align-items:center;gap:7px;padding:7px 11px}.theme-row button[aria-selected="true"]{outline:2px solid var(--s-alt);outline-offset:1px}.theme-swatch{width:29px;height:15px;border:1px solid var(--s-soft);border-radius:999px;background:linear-gradient(90deg,var(--c1) 0 33%,var(--c2) 33% 67%,var(--c3) 67%);box-shadow:0 0 5px var(--s-shadow)}
+.recovery{display:grid;gap:8px}.recovery code{padding:3px 5px;border-radius:4px;background:var(--s-bg);color:var(--s-alt)}.launcher-opacity-control{display:grid;gap:5px;padding:9px 10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.launcher-opacity-control span{display:flex;justify-content:space-between;gap:10px}.launcher-opacity-control input{width:100%;min-height:28px;margin:0;accent-color:var(--s-accent)}.theme-panel-opacity-control,.theme-item-opacity-control{display:none;margin-top:10px}:host([data-theme-image="true"]) .theme-panel-opacity-control,:host([data-theme-image="true"]) .theme-item-opacity-control{display:grid}.theme-panel-opacity-control input,.theme-item-opacity-control input{cursor:ew-resize;touch-action:none}
+.module-message{padding:11px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg);color:var(--s-muted)}.module-message.error{border-color:var(--s-error);color:var(--s-error)}.module-message.locked{border-color:var(--s-warning);color:var(--s-warning)}
+.module-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:10px}.module-toolbar>span{min-width:0;flex:1;color:var(--s-muted)}.module-toolbar button{padding:6px 12px}
+.access-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.access-form label{display:grid;gap:4px;color:var(--s-muted)}.access-form .wide{grid-column:1/-1}.access-form input,.access-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.access-form input[type="checkbox"]{width:20px;min-height:20px;margin:1px 0}.check-row{display:flex!important;grid-template-columns:none!important;align-items:flex-start;gap:8px!important;color:var(--s-text)!important}.access-actions{display:flex;flex-wrap:wrap;gap:7px}.access-actions button{padding:7px 12px}.danger{border-color:var(--s-error);color:var(--s-error)}
+.terms-list,.scope-list{display:flex;flex-wrap:wrap;gap:6px}.terms-list a,.scope-list span,.action-link{display:inline-flex;align-items:center;min-height:32px;padding:5px 8px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);color:var(--s-alt);text-decoration:none}.scope-list span{color:var(--s-text)}.scope-details summary{min-height:40px;padding:9px;border:1px solid var(--s-soft);border-radius:7px;background:var(--s-bg);cursor:pointer}.scope-details[open] summary{margin-bottom:8px}
+.target-actions{display:flex;flex-wrap:wrap;gap:6px}.target-actions a,.alert a{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:5px 10px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-control);color:var(--s-text);text-decoration:none}.target-actions button,.alert button{padding:5px 10px}
+.target-stack{display:grid;gap:7px}.target-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.target-card strong,.target-card small{display:block}.target-card small{color:var(--s-muted)}.mug-report{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.mug-report>div{min-width:0;flex:1}.mug-report strong,.mug-report span{display:block}.mug-report span{color:var(--s-muted);font-size:10px}.mug-report button{padding:5px 10px}
+.war-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:5px;margin-bottom:9px}.war-tabs button{display:flex;align-items:center;justify-content:center;gap:5px;min-width:0;padding:5px}.war-tabs button[aria-selected="true"]{border-color:var(--s-alt);background:var(--s-accent)}.nav-count{display:grid;min-width:19px;height:19px;padding:0 4px;place-items:center;border:2px solid #090909;border-radius:99px;background:#e32727;color:#fff;font:bold 9px/1 Arial,sans-serif}.war-tab-body{margin-top:9px}.war-stack{display:grid;gap:7px}.war-card{position:relative;display:grid;gap:7px;padding:9px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-card-head{display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--s-soft)}.war-card-head>a,.war-card-head>strong{min-width:0;flex:1;color:var(--s-text);font-weight:800;text-decoration:none}.war-card-head>span{color:var(--s-muted);white-space:nowrap}.war-meta{display:flex;align-items:stretch;flex-wrap:wrap;gap:5px}.war-pill{display:inline-flex;align-items:center;min-height:24px;padding:3px 7px;border:1px solid var(--s-soft);border-radius:99px;background:var(--s-control)}.war-pill.online{color:var(--s-ready)}.war-pill.hospital{color:var(--s-warning)}.war-context{flex-basis:100%;color:var(--s-muted);font-size:10px}.war-filters,.war-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:9px}.war-filters label,.war-settings label,.war-claim-form label{display:grid;gap:3px;color:var(--s-muted)}.war-filters input,.war-filters select,.war-settings input,.war-settings select,.war-claim-form input,.war-claim-form select{width:100%;min-width:0;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-filter-action{display:flex;align-items:end}.war-filter-action button,.war-settings>button{width:100%;padding:5px 8px}.war-settings-note{grid-column:1/-1;padding:8px;border:1px solid var(--s-soft);border-radius:7px;color:var(--s-muted)}.war-settings>button{grid-column:1/-1}.war-claim-form{display:grid;grid-template-columns:minmax(150px,2fr) minmax(130px,1fr) auto;align-items:end;gap:7px;margin-bottom:9px}.war-claim-form button{padding:5px 9px}.war-alert-block{display:grid;gap:7px;margin:9px 0;padding:8px;border:1px solid var(--s-border);border-radius:8px;background:color-mix(in srgb,var(--s-panel) 80%,transparent)}.war-retal{padding-right:39px;border-left:4px solid var(--s-error)}.war-dismiss{position:absolute;top:7px;right:7px;display:grid;width:27px;min-height:27px;padding:0;place-items:center;border-color:var(--s-error);border-radius:50%;color:var(--s-error);font-weight:900}.war-retal-report{display:grid;grid-template-columns:75px minmax(0,1fr);gap:4px 7px}.war-retal-report>span{color:var(--s-muted)}.war-inside-blocked{outline:3px solid var(--s-error);box-shadow:0 0 15px color-mix(in srgb,var(--s-error) 48%,transparent)}.war-inside-warning{color:var(--s-error);font-weight:800}.target-actions .war-inside-attack{border-color:var(--s-error);color:var(--s-error);font-weight:800}.war-log{border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.war-log summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px;cursor:pointer}.war-log summary span{color:var(--s-muted)}.war-log-event{display:grid;gap:2px;margin:0 8px 7px;padding:7px;border-left:3px solid var(--s-border);background:var(--s-panel)}.war-log-event span{color:var(--s-muted);font-size:10px}
+.stat-table,.value-list{display:grid;gap:0;margin-top:8px}.stat-row,.value-list>div{display:grid;grid-template-columns:minmax(82px,1fr) minmax(105px,auto) minmax(105px,auto);align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--s-soft)}.stat-row.head{padding-top:0;color:var(--s-muted);font-size:10px}.stat-row strong{text-align:right;white-space:nowrap;font-size:11px}.value-list>div{grid-template-columns:minmax(0,1fr) auto}.value-list strong{white-space:nowrap}.merit strong,.merit span,.merit small{display:block}.merit span,.merit small{color:var(--s-muted)}.merit small{margin:1px 0 4px;color:var(--s-alt);font-size:9px;text-transform:uppercase;letter-spacing:.04em}.merit .merit-later{margin-top:5px;color:var(--s-alt);font-size:10px}.merit-row{grid-template-columns:44px minmax(0,1fr) auto;align-items:center}.award-emblem{display:grid!important;width:42px;height:48px;place-items:center;clip-path:polygon(10% 0,90% 0,100% 72%,50% 100%,0 72%);background:linear-gradient(160deg,var(--s-accent),#17202b);color:white!important;font-size:19px;font-weight:900;text-shadow:0 1px 2px #000}.award-emblem.honor{background:linear-gradient(160deg,#6f3e87,#2b1732)}.award-emblem.medal{background:linear-gradient(160deg,#a27820,#36260b)}.merit-copy{min-width:0}.pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:11px}.pagination button{min-width:94px;padding:6px 12px}.pagination button:disabled{opacity:.45;cursor:not-allowed}.pagination span{color:var(--s-muted)}.module-toolbar label{display:flex;align-items:center;gap:5px;color:var(--s-muted)}.module-toolbar select{min-height:38px;padding:5px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}
+.target-list-form,.bounty-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.target-list-form>label,.bounty-form>label{display:grid;gap:4px;color:var(--s-muted)}.target-list-form input,.target-list-form textarea,.bounty-form input,.bounty-form select{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-panel);color:var(--s-text)}.target-list-form textarea{min-height:70px;resize:vertical}.target-list-form .wide,.bounty-form .wide{grid-column:1/-1}.target-list-form .check-row,.bounty-form .check-row{display:flex;align-items:center;gap:7px;color:var(--s-text)}.target-list-form .check-row input,.bounty-form .check-row input{width:19px;height:19px;min-height:19px}.target-list-form-actions,.bounty-form-actions{display:flex;flex-wrap:wrap;gap:7px}.target-list-form-actions button,.bounty-form-actions button{padding:6px 12px}.target-list-tags,.target-list-sources{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}.target-list-tag,.target-list-sources span{padding:2px 6px;border-radius:99px;background:var(--s-control);color:var(--s-text);font-size:10px}.target-list-tag{background:var(--s-accent)}.target-list-description{margin-top:6px;white-space:pre-wrap}.target-list-card{align-items:start}.target-list-card.is-stakeout{border-color:var(--s-warning);background:color-mix(in srgb,var(--s-warning) 8%,var(--s-card))}.target-list-stakeout{padding:2px 6px;border-radius:99px;background:var(--s-warning);color:#101820;font-size:10px;font-weight:800}
+.market-form{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(260px,2fr) minmax(150px,1fr) minmax(125px,.7fr);align-items:start;gap:9px}.market-form>label,.market-item-field{display:grid;gap:4px;color:var(--s-muted)}.market-form input,.market-form select{width:100%;min-height:44px;padding:8px 10px;border:1px solid var(--s-border);border-radius:8px;background:var(--s-bg);color:var(--s-text)}.market-form small{color:var(--s-muted);font-size:9px}.market-item-picker{position:relative;min-width:0}.market-item-suggestions{position:absolute;right:0;bottom:calc(100% + 6px);left:0;z-index:8;display:grid;max-height:min(42vh,320px);gap:4px;overflow:auto;padding:5px;border:1px solid var(--s-border);border-radius:9px;background:var(--s-panel);box-shadow:0 10px 26px var(--s-shadow);overscroll-behavior:contain}.market-item-suggestions[hidden]{display:none}.market-item-suggestions button{display:grid;min-height:46px;padding:6px 8px;text-align:left}.market-item-suggestions strong,.market-item-suggestions small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.market-item-suggestions small{color:var(--s-muted)}.market-sources{display:flex;align-items:center;align-self:end;gap:12px;min-height:44px;margin:0;padding:6px 10px;border:1px solid var(--s-border);border-radius:8px}.market-sources legend{padding:0 4px;color:var(--s-muted);font-size:10px}.market-sources label,.market-options label{display:flex;align-items:center;gap:6px}.market-sources input,.market-options input{width:18px;height:18px;min-height:18px}.market-form-actions,.market-bulk-actions{display:flex;align-items:center;gap:7px;align-self:end}.market-form-actions button,.market-bulk-actions button{padding:6px 12px}.market-options{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:10px;border-top:1px solid var(--s-soft);color:var(--s-muted)}.market-watch-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.market-watch,.market-deal{display:grid;align-content:start;gap:6px;min-width:0;padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.market-watch strong,.market-watch span,.market-deal strong,.market-deal span{display:block;overflow-wrap:anywhere}.market-watch span,.market-deal span{color:var(--s-muted)}.market-deals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.market-deal{border-left:4px solid var(--s-ready)}.dollar-bazaar-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.dollar-bazaar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0;padding:10px;border:1px solid var(--s-soft);border-left:4px solid var(--s-ready);border-radius:8px;background:var(--s-bg)}.dollar-bazaar-row>div:first-child{min-width:0}.dollar-bazaar-row strong,.dollar-bazaar-row small{display:block;overflow-wrap:anywhere}.dollar-bazaar-row small{color:var(--s-muted)}.dollar-bazaar-value{text-align:right}.dollar-bazaar-value>strong{color:var(--s-ready)}.dollar-bazaar-row>a{grid-column:1/-1;justify-self:end}
+.war-armory-controls{display:grid;grid-template-columns:minmax(170px,1fr) auto;align-items:end;gap:7px}.war-armory-controls label{display:grid;gap:3px;color:var(--s-muted)}.war-armory-controls select,.war-armory-manager input[type="search"]{width:100%;min-height:42px;padding:6px 8px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-bg);color:var(--s-text)}.war-armory-manager{padding:7px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-manager summary{min-height:40px;padding:8px;cursor:pointer;font-weight:800}.war-armory-ranks{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}.war-armory-ranks button{min-height:34px;padding:4px 7px}.war-armory-members{display:grid;gap:4px;max-height:280px;overflow:auto;padding:4px;border:1px solid var(--s-soft);border-radius:7px}.war-armory-members>label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;padding:6px;background:var(--s-bg)}.war-armory-members>label[hidden]{display:none}.war-armory-members input{width:20px;height:20px}.war-armory-members strong,.war-armory-members small{display:block}.war-armory-members small{color:var(--s-muted)}
+.war-armory-controls{grid-template-columns:1fr}
+.alert-settings{margin:10px 0;padding:8px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.alert-settings summary{min-height:38px;padding:7px;cursor:pointer;font-weight:800}.alert-settings>p{margin:5px 7px 9px;color:var(--s-muted)}.alert-settings-actions{display:flex;gap:7px;margin:0 7px 9px}.alert-settings-actions button{padding:5px 9px}.alert-settings-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.alert-settings fieldset{display:grid;align-content:start;gap:5px;min-width:0;padding:8px;border:1px solid var(--s-soft);border-radius:7px}.alert-settings legend{padding:0 4px;color:var(--s-muted);font-size:10px}.alert-settings label{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:7px;min-height:34px}.alert-settings input{width:20px;height:20px}.alert-settings span{overflow-wrap:anywhere}
+.racing-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:10px 0}.racing-filters{display:flex;gap:6px}.racing-filters button{padding:5px 9px}.racing-filters button[aria-selected="true"]{border-color:var(--s-accent);background:var(--s-accent);color:#fff}.racing-assistant{margin:8px 0;padding:9px;border:1px solid var(--s-soft);border-left:4px solid var(--s-accent);border-radius:8px;background:var(--s-bg)}.racing-assistant[data-tone="ready"]{border-left-color:var(--s-ready)}.racing-assistant[data-tone="warn"]{border-left-color:var(--s-warning)}.racing-assistant strong,.racing-assistant span{display:block}.racing-assistant span{color:var(--s-muted);font-size:10px}.racing-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.racing-card{padding:10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.racing-card[data-completed="true"]{border-left:4px solid var(--s-ready)}.racing-card header,.racing-card footer{display:flex;align-items:start;justify-content:space-between;gap:8px}.racing-card h3{margin:0}.racing-card header span,.racing-card footer small{color:var(--s-muted)}.racing-specs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:8px 0}.racing-specs div{padding:6px;border-radius:6px;background:var(--s-panel)}.racing-specs small,.racing-specs strong{display:block}.racing-specs small{color:var(--s-muted);font-size:9px}.racing-name{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:end}.racing-name label{display:grid;gap:4px;color:var(--s-muted)}.racing-name input{width:100%;min-height:42px;padding:7px 9px;border:1px solid var(--s-border);border-radius:7px;background:var(--s-panel);color:var(--s-text)}.racing-name input[aria-invalid="true"]{border-color:var(--s-error)}.racing-count{min-width:44px;color:var(--s-muted);text-align:right}.racing-count[data-invalid="true"]{color:var(--s-error);font-weight:900}.racing-card footer{align-items:center;margin-top:8px}.racing-card footer div{display:flex;gap:5px}.racing-card footer button{padding:5px 8px}
+.positive{color:var(--s-ready)}.negative{color:var(--s-error)}.permission-lock{opacity:.6}.subnav button:disabled{cursor:not-allowed;opacity:.5}.busy{animation:slink-pulse 1s ease-in-out infinite alternate}@keyframes slink-pulse{to{filter:brightness(1.35)}}
+.mobile-hint{display:none}:host([data-keyboard-open]) .primary-nav{visibility:hidden;pointer-events:none}
+@media(max-width:900px){.card{grid-column:span 6}.card.wide{grid-column:1/-1}.market-form{grid-template-columns:repeat(2,minmax(0,1fr))}.market-item-field{grid-column:span 2}.market-watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.abroad-search{display:grid;grid-template-columns:auto minmax(180px,1fr);gap:8px;align-items:center;margin:10px 0}.abroad-search input{width:100%;min-height:42px}.abroad-overview{display:grid;gap:8px;margin-bottom:10px}.abroad-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.abroad-summary>div{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:8px 10px;border:1px solid var(--s-soft);border-radius:8px;background:var(--s-bg)}.abroad-summary span{color:var(--s-muted);white-space:nowrap}.abroad-summary strong{white-space:nowrap}.abroad-provider-status{align-items:stretch}.abroad-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}.abroad-settings label{display:grid;gap:4px;min-width:0;color:var(--s-muted)}.abroad-settings input:not([type="checkbox"]),.abroad-settings select{box-sizing:border-box;width:100%;min-height:44px;padding:8px 10px}.abroad-provider-key{display:grid;grid-template-columns:auto minmax(180px,1fr) auto;gap:8px;align-items:center}.abroad-provider-key input{box-sizing:border-box;width:100%;min-height:44px;padding:8px 10px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:end;margin-top:10px}.form-grid label{display:grid;gap:4px;min-width:0;color:var(--s-muted)}.form-grid input,.form-grid select{box-sizing:border-box;width:100%;min-height:44px;padding:8px 10px}.company-settings>button{min-height:44px}.company-employee small{line-height:1.4}.museum-set details>summary{display:flex;align-items:center;justify-content:space-between;gap:8px}.museum-set-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0;flex-wrap:wrap}.museum-list{display:grid;gap:8px}.museum-item{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,auto);align-items:center;gap:10px;padding:10px;border:1px solid var(--s-soft);border-radius:9px;background:var(--s-bg)}.museum-item-main{min-width:0}.museum-item-main>strong{display:block;margin-bottom:5px}.museum-item-stats{display:flex;flex-wrap:wrap;gap:5px 10px;color:var(--s-muted)}.museum-item-stats span{white-space:nowrap}.museum-item-stats b{color:var(--s-text)}.ready-text{color:var(--s-ready)}.museum-watch-controls{display:grid;grid-template-columns:minmax(120px,160px) minmax(130px,auto);gap:7px;align-items:end}.museum-watch-controls label{display:grid;gap:3px;color:var(--s-muted);font-size:10px}.museum-watch-controls input{box-sizing:border-box;width:100%;min-height:42px;padding:7px 9px}.museum-watch-controls button{min-height:42px}.abroad-list{display:grid;gap:9px;margin-top:10px}.abroad-card{display:grid;gap:8px;padding:10px;border:1px solid var(--s-soft);border-radius:10px;background:color-mix(in srgb,var(--s-card) 86%,transparent)}.abroad-card header,.abroad-card footer{display:flex;gap:8px;align-items:center;justify-content:space-between}.abroad-card h3{margin:0}.abroad-card header span,.abroad-card footer span,.abroad-card footer small{display:block;color:var(--s-muted)}.abroad-card footer{align-items:flex-start;flex-direction:column}.abroad-leave-time{box-sizing:border-box;width:100%;padding:7px 8px;border-left:3px solid var(--s-ready);border-radius:5px;background:var(--s-bg);color:var(--s-text)!important;font-weight:700}.abroad-sources{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.abroad-sources>div{padding:7px;border:1px solid var(--s-soft);border-radius:8px}.abroad-source{display:grid;gap:2px;margin-top:4px}.abroad-source small,.abroad-source.missing{color:var(--s-muted)}
+@media(max-width:700px){
+.alert-settings-groups{grid-template-columns:1fr}.racing-list{grid-template-columns:1fr}
+.overlay{grid-template-rows:auto minmax(0,1fr)}.topbar{min-height:58px;padding-top:max(7px,env(safe-area-inset-top));padding-bottom:7px}.brand-mark{width:35px;height:35px}.prototype{display:none}.close{width:48px;min-width:48px;flex-basis:48px;padding:0}.close-label{display:none}
+.primary-nav{position:absolute;right:0;bottom:0;left:0;z-index:4;justify-content:stretch;padding:4px 6px;border-top:1px solid var(--s-border);border-bottom:0;box-shadow:0 -5px 14px var(--s-shadow)}.primary-nav button{min-width:0;flex:1;padding:2px 3px;font-size:11px}.primary-nav button::before{display:block;margin-bottom:0;font-size:15px}.primary-nav button[data-page="combat"]::before{content:"⚔"}.primary-nav button[data-page="efficiency"]::before{content:"⏱"}.primary-nav button[data-page="quality-of-life"]::before{content:"🏁"}.primary-nav button[data-page="access"]::before{content:"⚙"}
+.scroll{padding:8px max(8px,env(safe-area-inset-right)) 58px max(8px,env(safe-area-inset-left))}.page-head{align-items:center;margin-bottom:8px}.page-head h1{font-size:18px}.page-head p{font-size:10px}.page-actions button{min-height:40px}.overlay input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),.overlay textarea,.overlay select{font-size:16px}
+.grid{gap:8px}.card,.card.wide{grid-column:1/-1;padding:10px}.stats{gap:5px}.stat{padding:8px 3px}.stat strong{font-size:15px}.two-column{gap:6px}.access-form,.bounty-form,.target-list-form{grid-template-columns:1fr}.access-form .wide,.bounty-form .wide,.target-list-form .wide{grid-column:auto}.target-card{grid-template-columns:1fr}.mug-report{align-items:stretch;flex-direction:column}.war-filters,.war-settings,.war-claim-form{grid-template-columns:1fr}.war-settings-note,.war-settings>button{grid-column:auto}.war-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.merit-row{grid-template-columns:40px minmax(0,1fr) auto}.award-emblem{width:38px;height:44px}.market-form,.market-watch-grid,.market-deals,.dollar-bazaar-list,.abroad-search,.abroad-settings,.abroad-provider-key,.abroad-sources,.form-grid,.museum-item,.museum-watch-controls{grid-template-columns:1fr}.abroad-summary{grid-template-columns:1fr 1fr}.target{grid-template-columns:1fr}.museum-watch-controls label{width:100%}.market-item-field{grid-column:auto}.market-sources{align-self:auto}.market-form-actions{align-self:auto}.mobile-hint{display:block}.launcher{width:54px;height:54px;min-height:54px}.launcher-label{display:none}
+}
+@media(max-width:370px){.brand span{display:none}.page-head p{display:none}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.abroad-summary{grid-template-columns:1fr}.two-column{grid-template-columns:1fr}.subnav button{min-width:82px}.stat-row{grid-template-columns:minmax(62px,1fr) minmax(86px,auto) minmax(86px,auto);gap:4px}.stat-row strong{font-size:9px}}
+:host([data-theme-image="true"]) .overlay{background-color:var(--s-bg);background-image:linear-gradient(color-mix(in srgb,rgb(5 3 9) var(--s-theme-veil-top),transparent),color-mix(in srgb,rgb(5 3 9) var(--s-theme-veil-bottom),transparent)),var(--s-theme-background-image);background-position:center top;background-size:cover}
+:host([data-theme-image="true"]) .topbar,:host([data-theme-image="true"]) .primary-nav{background:color-mix(in srgb,var(--s-bg) 78%,transparent);backdrop-filter:blur(9px) saturate(1.12)}
+:host([data-theme-image="true"]) .card{border-color:var(--s-border);background:color-mix(in srgb,var(--s-card) var(--s-theme-panel-opacity),transparent);box-shadow:-3px 0 12px color-mix(in srgb,var(--s-alt) 26%,transparent),3px 0 14px color-mix(in srgb,var(--s-accent) 32%,transparent);backdrop-filter:blur(var(--s-theme-panel-blur)) saturate(1.08)}
+:host([data-theme-image="true"]) button{background:color-mix(in srgb,var(--s-control) var(--s-theme-item-opacity),transparent);backdrop-filter:blur(var(--s-theme-item-blur))}
+:host([data-theme-image="true"]) .stat,:host([data-theme-image="true"]) .status,:host([data-theme-image="true"]) .target,:host([data-theme-image="true"]) .alert,:host([data-theme-image="true"]) .merit,:host([data-theme-image="true"]) .mini,:host([data-theme-image="true"]) .module-message,:host([data-theme-image="true"]) .target-card,:host([data-theme-image="true"]) .mug-report,:host([data-theme-image="true"]) .war-card,:host([data-theme-image="true"]) .war-pill,:host([data-theme-image="true"]) .war-log,:host([data-theme-image="true"]) .target-list-form,:host([data-theme-image="true"]) .bounty-form,:host([data-theme-image="true"]) .market-watch,:host([data-theme-image="true"]) .market-deal,:host([data-theme-image="true"]) .dollar-bazaar-row,:host([data-theme-image="true"]) .alert-settings,:host([data-theme-image="true"]) .racing-assistant,:host([data-theme-image="true"]) .racing-card,:host([data-theme-image="true"]) .abroad-summary>div,:host([data-theme-image="true"]) .museum-item,:host([data-theme-image="true"]) .abroad-leave-time{border-color:var(--s-border);background:color-mix(in srgb,var(--s-bg) var(--s-theme-item-opacity),transparent);backdrop-filter:blur(var(--s-theme-item-blur)) saturate(1.04)}
+:host([data-theme-image="true"]) .primary-nav button[aria-selected="true"],:host([data-theme-image="true"]) .subnav button[aria-selected="true"]{border-color:var(--s-alt);background:linear-gradient(135deg,color-mix(in srgb,var(--s-accent) var(--s-theme-item-opacity),transparent),color-mix(in srgb,var(--s-bg) var(--s-theme-item-opacity),transparent) 57%,color-mix(in srgb,var(--s-alt) var(--s-theme-item-opacity),transparent));box-shadow:-3px 0 11px color-mix(in srgb,var(--s-alt) 34%,transparent),3px 0 13px color-mix(in srgb,var(--s-accent) 44%,transparent)}
+:host([data-theme-ornament="gothic"]) .overlay{isolation:isolate;background-image:linear-gradient(color-mix(in srgb,rgb(6 5 6) var(--s-theme-veil-top),transparent),color-mix(in srgb,rgb(6 5 6) var(--s-theme-veil-bottom),transparent)),var(--s-theme-background-image);background-position:center top;background-repeat:no-repeat;background-size:cover}
+:host([data-theme-ornament="gothic"]) .overlay::before{position:absolute;inset:0;z-index:0;background:var(--s-theme-frame-image) center/100% 100% no-repeat;content:"";pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .gothic-nav-structure{position:absolute;right:15%;bottom:9%;left:15%;z-index:1;display:grid;height:54px;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;padding:8px 0;pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .gothic-nav-structure>i{display:block;min-width:0;border:10px solid transparent;border-image-source:var(--s-theme-frame-image);border-image-slice:96 80 96 80 fill;border-image-width:10px;border-image-repeat:stretch;background:rgb(13 11 12/.78)}
+:host([data-theme-ornament="gothic"]) .gothic-health-roses{position:absolute;inset:0;z-index:2;background:var(--s-theme-health-roses-image) center/100% 100% no-repeat;pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .overlay::after{position:absolute;inset:0;z-index:3;background:var(--s-theme-health-blood-image) center/100% 100% no-repeat;content:"";opacity:.68;pointer-events:none;user-select:none}
+:host([data-theme-ornament="gothic"]) .theme-content-shell{position:absolute;inset:8.5% 15% 9%;z-index:4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0;overflow:hidden}
+:host([data-theme-ornament="gothic"]) .topbar{grid-row:1;min-height:54px;padding:6px 0;border:0;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .scroll{grid-row:2;min-height:0;padding:8px 0;overflow:auto}
+:host([data-theme-ornament="gothic"]) .primary-nav{position:relative!important;right:auto!important;bottom:auto!important;left:auto!important;z-index:auto;grid-row:3;gap:7px;padding:8px 0;border:0;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .primary-nav button{border:0!important;background:transparent!important;color:#f0e9d9;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .primary-nav button[aria-selected="true"]{background:rgb(120 13 25/.34)!important;color:#fff7e8!important;text-shadow:0 1px 3px #000,0 0 6px #bf273a}
+:host([data-theme-ornament="gothic"]) .subnav button,:host([data-theme-ornament="gothic"]) .page-actions button{border:8px solid transparent!important;border-image-source:var(--s-theme-frame-image)!important;border-image-slice:96 80 96 80 fill!important;border-image-width:8px!important;border-image-repeat:stretch!important;border-radius:0!important;background:rgb(13 11 12/.78)!important;color:#f0e9d9;box-shadow:none!important;backdrop-filter:none!important}
+:host([data-theme-ornament="gothic"]) .subnav button[aria-selected="true"]{background:rgb(120 13 25/.78)!important;color:#fff7e8!important}
+:host([data-theme-ornament="gothic"]) .stat,:host([data-theme-ornament="gothic"]) .status,:host([data-theme-ornament="gothic"]) .target,:host([data-theme-ornament="gothic"]) .alert,:host([data-theme-ornament="gothic"]) .merit,:host([data-theme-ornament="gothic"]) .mini,:host([data-theme-ornament="gothic"]) .module-message,:host([data-theme-ornament="gothic"]) .target-card,:host([data-theme-ornament="gothic"]) .mug-report,:host([data-theme-ornament="gothic"]) .war-card,:host([data-theme-ornament="gothic"]) .war-log,:host([data-theme-ornament="gothic"]) .target-list-form,:host([data-theme-ornament="gothic"]) .bounty-form,:host([data-theme-ornament="gothic"]) .market-watch,:host([data-theme-ornament="gothic"]) .market-deal,:host([data-theme-ornament="gothic"]) .dollar-bazaar-row,:host([data-theme-ornament="gothic"]) .alert-settings,:host([data-theme-ornament="gothic"]) .racing-assistant,:host([data-theme-ornament="gothic"]) .racing-card,:host([data-theme-ornament="gothic"]) .abroad-summary>div,:host([data-theme-ornament="gothic"]) .museum-item,:host([data-theme-ornament="gothic"]) .abroad-leave-time{border:8px solid transparent!important;border-image-source:var(--s-theme-frame-image)!important;border-image-slice:96 80 96 80 fill!important;border-image-width:8px!important;border-image-repeat:stretch!important;border-radius:0!important}
+:host([data-theme-ornament="gothic"]) .card{position:relative;isolation:isolate;background:transparent!important}
+:host([data-theme-ornament="gothic"]) .card::before{position:absolute;inset:0;z-index:0;border-radius:inherit;background-position:center;background-repeat:no-repeat;background-size:100% 100%;content:"";opacity:var(--s-theme-panel-opacity);pointer-events:none}
+:host([data-theme-ornament="gothic"]) .card>*{position:relative;z-index:1}
+:host([data-theme-ornament="gothic"]) .card:nth-child(3n+1)::before{background-image:var(--s-theme-panel-smoke-image)}
+:host([data-theme-ornament="gothic"]) .card:nth-child(3n+2)::before{background-image:var(--s-theme-panel-damask-image)}
+:host([data-theme-ornament="gothic"]) .card:nth-child(3n)::before{background-image:var(--s-theme-panel-crimson-image)}
+:host([data-theme-ornament="gothic"]) .card{padding:26px 28px;border-color:transparent!important;box-shadow:none!important}
+:host([data-theme-ornament="gothic"]) .page-head{align-items:center;flex-wrap:wrap}
+:host([data-theme-ornament="gothic"]) .page-head::after{display:block;width:100%;height:64px;flex:1 0 100%;background-image:var(--s-theme-divider-left-image),var(--s-theme-divider-middle-image),var(--s-theme-divider-right-image);background-position:left center,center,right center;background-repeat:no-repeat,repeat-x,no-repeat;background-size:96px 64px,192px 128px,96px 64px;content:"";filter:drop-shadow(0 3px 5px rgb(0 0 0/.72));opacity:.96}
+:host([data-theme-ornament="gothic"]) .launcher-alert-count,:host([data-theme-ornament="gothic"]) .badge,:host([data-theme-ornament="gothic"]) #slink_pda_chat_button .messageCount___EWpiR{border-color:transparent;background:color-mix(in srgb,#e9dfca 88%,var(--s-error));background-image:var(--s-theme-badge-ivory-image);background-position:center;background-repeat:no-repeat;background-size:100% 100%;color:#341117;text-shadow:0 1px #fff8;box-shadow:0 2px 8px #0008}
+@media(max-width:700px){:host([data-theme-ornament="gothic"]) .theme-content-shell{inset:8.5% 15% 9%}:host([data-theme-ornament="gothic"]) .topbar{width:auto;margin:0}:host([data-theme-ornament="gothic"]) .primary-nav{position:relative!important;z-index:auto}:host([data-theme-ornament="gothic"]) .scroll{padding:6px 0}:host([data-theme-ornament="gothic"]) .card{padding:22px 24px}}
+:host([data-theme-icons="true"]) .primary-nav button::before,:host([data-theme-icons="true"]) .subnav button::before,:host([data-theme-icons="true"]) .page-actions button::before{position:absolute;left:6px;top:50%;display:inline-block;width:18px;height:18px;margin:0;background-image:var(--s-theme-icon-sheet);background-repeat:no-repeat;background-size:400% 500%;filter:drop-shadow(0 0 4px color-mix(in srgb,var(--s-accent) 55%,transparent));transform:translateY(-50%);content:""}
+:host([data-theme-icons="true"]) .primary-nav button[data-page="combat"]::before{background-position:66.666% 75%}
+:host([data-theme-icons="true"]) .primary-nav button[data-page="efficiency"]::before{background-position:0 25%}
+:host([data-theme-icons="true"]) .primary-nav button[data-page="quality-of-life"]::before{background-position:66.666% 0}
+:host([data-theme-icons="true"]) .primary-nav button[data-page="access"]::before{background-position:100% 25%}
+:host([data-theme-icons="true"]) [data-efficiency-tab="alerts"]::before{background-position:0 0}
+:host([data-theme-icons="true"]) [data-efficiency-tab="market"]::before{background-position:33.333% 0}
+:host([data-theme-icons="true"]) [data-efficiency-tab="merits"]::before{background-position:66.666% 0}
+:host([data-theme-icons="true"]) [data-efficiency-tab="dollarBazaars"]::before{background-position:100% 0}
+:host([data-theme-icons="true"]) [data-combat-tab="leveling"]::before{background-position:66.666% 75%}
+:host([data-theme-icons="true"]) [data-combat-tab="mugging"]::before{background-position:100% 0}
+:host([data-theme-icons="true"]) [data-combat-tab="war"]::before{background-position:33.333% 75%}
+:host([data-theme-icons="true"]) [data-combat-tab="stats"]::before{background-position:0 25%}
+:host([data-theme-icons="true"]) [data-combat-tab="bounties"]::before,:host([data-theme-icons="true"]) [data-combat-tab="targetList"]::before{background-position:66.666% 75%}
+:host([data-theme-icons="true"]) [data-quality-of-life-tab="racing"]::before{background-position:100% 75%}
+:host([data-theme-icons="true"]) [data-quality-of-life-tab="abroadStocks"]::before{background-position:66.666% 25%}
+:host([data-theme-icons="true"]) [data-quality-of-life-tab="company"]::before{background-position:66.666% 25%}
+:host([data-theme-icons="true"]) [data-quality-of-life-tab="museums"]::before{background-position:66.666% 0}
+:host([data-theme-icons="true"]) .page-actions button::before{background-position:100% 75%}
+.theme-swatch.image{display:block;background-image:linear-gradient(rgba(5,3,9,.08),rgba(5,3,9,.17)),var(--s-theme-preview);background-position:center 18%;background-size:cover}
+:host([data-theme-image="true"]) .brand-mark{background:linear-gradient(145deg,var(--s-accent),var(--s-bg) 58%,var(--s-alt));box-shadow:inset 0 0 0 1px var(--s-border),0 0 13px color-mix(in srgb,var(--s-accent) 45%,transparent)}
+:host([data-theme-brand="true"]) .brand-mark{background:center/contain no-repeat var(--s-theme-brand-icon)!important;color:transparent;box-shadow:none;text-shadow:none}
+@media(max-width:700px){:host([data-theme-icons="true"]) .primary-nav button::before{position:static;display:block;margin:0 auto 1px;transform:none}:host([data-theme-icons="true"]) .subnav button::before{display:none}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+`;
+const launcher = document.createElement('button');
+launcher.type = 'button';
+launcher.className = 'launcher';
+launcher.setAttribute('aria-label', 'Open SLINK dashboard');
+launcher.title = 'Tap to open SLINK. Drag to move.';
+launcher.innerHTML = '<span class="coil" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="launcher-main"><strong>SLINK</strong><span class="launcher-summary">No active alerts</span></span><span class="launcher-alert-count" hidden>0</span><span class="launcher-label">Open SLINK</span>';
+launcher.dataset.mode = state.minimizedMode;
+const overlay = document.createElement('section');
+overlay.className = 'overlay';
+overlay.hidden = true;
+overlay.setAttribute('role', 'dialog');
+overlay.setAttribute('aria-modal', 'true');
+overlay.setAttribute('aria-label', 'SLINK PDA Dashboard');
+overlay.innerHTML = `<div class="gothic-nav-structure" aria-hidden="true"><i></i><i></i><i></i><i></i></div><div class="gothic-health-roses" aria-hidden="true"></div><div class="theme-content-shell">
+<header class="topbar" data-swipe-close>
+<div class="brand-mark" aria-hidden="true">SL</div>
+<div class="brand"><strong>SLINK Dashboard</strong><span>Shared Live Intelligence NetworK · PDA shell ${BUILD}</span></div>
+<span class="prototype">PDA MODULE BUILD</span>
+<button class="close" type="button" data-action="close" aria-label="Minimize dashboard" title="Minimize SLINK to the movable bubble"><span aria-hidden="true">−</span><span class="close-label">Minimize</span></button>
+</header>
+<nav class="primary-nav" aria-label="Dashboard sections">
+<button type="button" data-page="combat">Combat</button>
+<button type="button" data-page="efficiency">Efficiency</button>
+<button type="button" data-page="quality-of-life">Quality of Life</button>
+<button type="button" data-page="access">Access</button>
+</nav>
+<main class="scroll">
+<section class="page" data-page-panel="combat">
+<div class="page-head"><div><h1>Combat</h1><p>Leveling, bounties, permission-gated Mugging, saved targets, War, and your private daily stats in one mobile workspace.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
+<nav class="subnav" aria-label="Combat tools"><button type="button" data-combat-tab="leveling">Leveling</button><button type="button" data-combat-tab="bounties">Bounties</button><button type="button" data-combat-tab="mugging" hidden>Mugging</button><button type="button" data-combat-tab="targetList">Targets</button><button type="button" data-combat-tab="war">War</button><button type="button" data-combat-tab="stats">Stats</button></nav>
+<div class="subpage" data-combat-panel="leveling"><div data-module-root="leveling"></div></div>
+<div class="subpage" data-combat-panel="bounties" hidden><div data-module-root="bounties"></div></div>
+<div class="subpage" data-combat-panel="mugging" hidden><div data-module-root="mugging"></div></div>
+<div class="subpage" data-combat-panel="targetList" hidden><div data-module-root="targetList"></div></div>
+<div class="subpage" data-combat-panel="war" hidden><div data-module-root="war"></div></div>
+<div class="subpage" data-combat-panel="stats" hidden><div data-module-root="stats"></div></div>
+</section>
+<section class="page" data-page-panel="efficiency" hidden>
+<div class="page-head"><div><h1>Efficiency</h1><p>API-backed reminders, market watches, and Merit farms coordinated inside PDA.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
+<nav class="subnav" aria-label="Efficiency tools"><button type="button" data-efficiency-tab="alerts">Alerts</button><button type="button" data-efficiency-tab="market">Market</button><button type="button" data-efficiency-tab="merits">Merits</button><button type="button" data-efficiency-tab="dollarBazaars">$1 Bazaars</button></nav>
+<div class="subpage" data-efficiency-panel="alerts"><div data-module-root="alerts"></div></div>
+<div class="subpage" data-efficiency-panel="market" hidden><div data-module-root="market"></div></div>
+<div class="subpage" data-efficiency-panel="merits" hidden><div data-module-root="merits"></div></div>
+<div class="subpage" data-efficiency-panel="dollarBazaars" hidden><div data-module-root="dollarBazaars"></div></div>
+</section>
+<section class="page" data-page-panel="quality-of-life" hidden>
+<div class="page-head"><div><h1>Quality of Life</h1><p>Convenience tools that work with Torn's visible page data.</p></div></div>
+<nav class="subnav" aria-label="Quality of Life tools"><button type="button" data-quality-of-life-tab="racing">Racing</button><button type="button" data-quality-of-life-tab="abroadStocks">Abroad Stocks</button><button type="button" data-quality-of-life-tab="company">Company</button><button type="button" data-quality-of-life-tab="museums">Museums</button></nav>
+<div class="subpage" data-quality-of-life-panel="racing"><div data-module-root="racing"></div></div>
+<div class="subpage" data-quality-of-life-panel="abroadStocks" hidden><div data-module-root="abroadStocks"></div></div>
+<div class="subpage" data-quality-of-life-panel="company" hidden><div data-module-root="company"></div></div>
+<div class="subpage" data-quality-of-life-panel="museums" hidden><div data-module-root="museums"></div></div>
+</section>
+<section class="page" data-page-panel="access" hidden>
+<div class="page-head"><div><h1>Access &amp; layout</h1><p>One PDA key, one local session manager, and one shared Torn API limiter.</p></div></div>
+<div data-module-root="access"></div>
+<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Mobile recovery</h2><span class="muted">The dashboard can always get out of your way.</span></div><span class="badge ready">Protected</span></div><div class="recovery"><span>Tap <strong>−</strong> in the top bar to minimize. The alert bar anchors flush above Torn/PDA chat controls and stays behind Torn overlays.</span><span data-minimized-mode-label>Minimized view: alert bar.</span><button type="button" data-action="toggle-minimized-mode">Use movable bubble</button><span>The optional Torn chat-button mode places SLINK immediately left of Torn Settings and shows active alerts on the button.</span><label class="launcher-opacity-control"><span>Alert bar opacity <strong data-launcher-opacity-label>85%</strong></span><input type="range" min="35" max="100" step="5" value="85" data-launcher-opacity aria-label="Alert bar opacity"></label><span>Press <code>Esc</code> or <code>Alt + Shift + S</code> on a keyboard.</span><span>Swipe downward on the dashboard header to minimize on touch devices.</span><button type="button" data-action="reset-layout">Reset launcher position and layout</button></div></article><article class="card"><div class="card-head"><div><h2>Themes</h2><span class="muted">Loaded from the same permission-gated catalog as the extension.</span></div><button type="button" data-action="refresh-themes">Refresh</button></div><div class="theme-row"></div><label class="launcher-opacity-control theme-panel-opacity-control"><span>Panel opacity <strong data-theme-panel-opacity-label>87%</strong></span><input type="range" min="0" max="100" step="1" value="87" data-theme-panel-opacity aria-label="Image theme panel opacity"></label><label class="launcher-opacity-control theme-item-opacity-control"><span>Alert &amp; item opacity <strong data-theme-item-opacity-label>82%</strong></span><input type="range" min="0" max="100" step="1" value="82" data-theme-item-opacity aria-label="Image theme alert and item opacity"></label></article><article class="card full mobile-hint"><strong>Phone note:</strong> The bottom navigation stays reachable above the device safe area. In landscape it moves to the right edge to preserve vertical room.</article></div>
+</section>
+</main></div>`;
+shadow.append(style, overlay, launcher);
+document.documentElement.appendChild(host);
+document.getElementById('slink_pda_chat_button')?.remove();
+let pdaChatButton = null;
+let pdaChatButtonAlertCount = 0;
+
+function installPdaChatButtonStyle() {
+const id = 'slink-pda-chat-button-style';
+if (document.getElementById(id)) return;
+const element = document.createElement('style');
+element.id = id;
+element.textContent = '#slink_pda_chat_button{position:relative;background:var(--slink-chat-button,#2f74ad)!important;background-color:var(--slink-chat-button,#2f74ad)!important;border-color:var(--slink-chat-icon,#fff)!important;color:var(--slink-chat-icon,#fff)!important}#slink_pda_chat_button[hidden],#slink_pda_chat_button .messageCount___EWpiR[hidden]{display:none!important}#slink_pda_chat_button .slink-chat-coil{display:block;width:24px;height:24px;filter:drop-shadow(0 0 3px var(--slink-chat-icon,#fff));pointer-events:none}#slink_pda_chat_button .slink-chat-coil ellipse{fill:none;stroke:currentColor;stroke-width:1.8}#slink_pda_chat_button .slink-chat-theme-icon{display:none;width:26px;height:26px;background:center/contain no-repeat var(--slink-theme-chat-icon);filter:drop-shadow(0 0 3px var(--slink-chat-icon,#fff));pointer-events:none}#slink_pda_chat_button[data-slink-theme-chat="true"] .slink-chat-coil{display:none}#slink_pda_chat_button[data-slink-theme-chat="true"] .slink-chat-theme-icon{display:block}#slink_pda_chat_button[data-slink-theme-gothic="true"] .messageCount___EWpiR{border-color:transparent!important;background:#e9dfca var(--slink-theme-badge-image) center/100% 100% no-repeat!important;color:#341117!important;box-shadow:0 2px 8px #0008!important}#slink_pda_chat_button[data-slink-theme-gothic="true"] .messageCount___EWpiR span{color:#341117!important;text-shadow:0 1px #fff8}';
+(document.head || document.documentElement).appendChild(element);
+}
+function createPdaChatButton() {
+installPdaChatButtonStyle();
+const button = document.createElement('button');
+button.id = 'slink_pda_chat_button';
+button.type = 'button';
+button.title = 'SLINK';
+button.dataset.preventFlyoutSwipe = 'true';
+button.innerHTML = '<span class="slink-chat-theme-icon" aria-hidden="true"></span><svg class="slink-chat-coil" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="9.5" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="14" rx="7.5" ry="3"></ellipse><ellipse cx="12" cy="18.5" rx="7.5" ry="3"></ellipse></svg><div class="messageCount___EWpiR" hidden><span class="root___XpplE headingH1___VK9XQ root____FDYX oneDigit___FJ3vn" style="color: white;">0</span></div>';
+button.addEventListener('click', openDashboard);
+return button;
+}
+function syncPdaChatButtonTheme() {
+if (!pdaChatButton) return;
+pdaChatButton.style.setProperty('--slink-chat-button', host.style.getPropertyValue('--s-accent') || '#2f74ad');
+pdaChatButton.style.setProperty('--slink-chat-icon', host.style.getPropertyValue('--s-text') || '#fff');
+const themedIcon = host.style.getPropertyValue('--s-theme-chat-icon') || 'none';
+pdaChatButton.style.setProperty('--slink-theme-chat-icon', themedIcon);
+pdaChatButton.style.setProperty('--slink-theme-badge-image', host.style.getPropertyValue('--s-theme-badge-ivory-image') || 'none');
+pdaChatButton.dataset.slinkThemeChat = host.dataset.themeChat === 'true' ? 'true' : 'false';
+pdaChatButton.dataset.slinkThemeGothic = host.dataset.themeOrnament === 'gothic' ? 'true' : 'false';
+}
+function syncPdaChatButtonAlert() {
+if (!pdaChatButton) return;
+const badge = pdaChatButton.querySelector('.messageCount___EWpiR');
+badge.hidden = pdaChatButtonAlertCount === 0;
+badge.querySelector('span').textContent = pdaChatButtonAlertCount > 99 ? '99+' : String(pdaChatButtonAlertCount || 0);
+pdaChatButton.setAttribute('aria-label', pdaChatButtonAlertCount ? 'Open SLINK, ' + pdaChatButtonAlertCount + ' active alert' + (pdaChatButtonAlertCount === 1 ? '' : 's') : 'Open SLINK');
+}
+function ensurePdaChatButton() {
+if (!pdaDomActive()) return;
+if (state.minimizedMode !== 'chat') return;
+const settingsButton = document.getElementById('notes_settings_button');
+const peopleButton = document.getElementById('people_panel_button');
+const row = settingsButton?.parentElement;
+if (!row) return;
+if (!pdaChatButton) pdaChatButton = createPdaChatButton();
+pdaChatButton.className = peopleButton?.className || settingsButton.className;
+if (pdaChatButton.parentElement !== row || pdaChatButton.nextElementSibling !== settingsButton) row.insertBefore(pdaChatButton, settingsButton);
+syncPdaChatButtonTheme();
+syncPdaChatButtonAlert();
+}
+function syncPdaChatButtonVisibility() {
+const shouldShow = state.minimizedMode === 'chat' && !dashboardOpen;
+if (shouldShow) ensurePdaChatButton();
+if (pdaChatButton) pdaChatButton.hidden = !shouldShow;
+launcher.hidden = dashboardOpen || state.minimizedMode === 'chat';
+}
+
+function keyboardEditable(node) {
+if (!node?.matches) return false;
+if (node.matches('textarea,[contenteditable="true"]')) return true;
+return node.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="range"]):not([type="color"])');
+}
+function syncKeyboardState() {
+const focused = dashboardOpen && keyboardEditable(shadow.activeElement);
+host.toggleAttribute('data-keyboard-open', focused);
+}
+function keepFocusedFieldVisible(node) {
+const scroller = shadow.querySelector('.scroll');
+if (!scroller || shadow.activeElement !== node) return;
+const field = node.closest('label,.market-item-field,.access-form') || node;
+const fieldRect = field.getBoundingClientRect();
+const scrollRect = scroller.getBoundingClientRect();
+const viewportBottom = global.visualViewport ? global.visualViewport.offsetTop + global.visualViewport.height : scrollRect.bottom;
+const visibleTop = scrollRect.top + 8;
+const visibleBottom = Math.min(scrollRect.bottom, viewportBottom) - 10;
+if (fieldRect.bottom > visibleBottom) scroller.scrollTop += fieldRect.bottom - visibleBottom;
+else if (fieldRect.top < visibleTop) scroller.scrollTop -= visibleTop - fieldRect.top;
+}
+function guardUnexpectedBottomJump(expectedTop, node) {
+if (!pdaDomActive()) return;
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
+const scroller = shadow.querySelector('.scroll');
+if (!scroller || !keyboardEditable(node)) return;
+const check = () => {
+if (!global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return;
+if (shadow.activeElement !== node) return;
+const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+const jumpedToEnd = max > expectedTop + 140 && scroller.scrollTop >= max - 3;
+if (jumpedToEnd) scroller.scrollTop = expectedTop;
+keepFocusedFieldVisible(node);
+};
+global.requestAnimationFrame(check);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(check, 90);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(check, 260);
+}
+function clamp(value, min, max) {
+return Math.min(Math.max(Number(value) || 0, min), Math.max(min, max));
+}
+function syncThemePanelOpacityControls() {
+const value = clamp(state.themePanelOpacity, 0, 100);
+state.themePanelOpacity = value;
+host.style.setProperty('--s-theme-panel-opacity', `${value}%`);
+host.style.setProperty('--s-theme-panel-blur', `${(value * 7 / 87).toFixed(2)}px`);
+host.style.setProperty('--s-theme-veil-top', `${(value * 25 / 87).toFixed(2)}%`);
+host.style.setProperty('--s-theme-veil-bottom', `${(value * 48 / 87).toFixed(2)}%`);
+const opacity = shadow.querySelector('[data-theme-panel-opacity]');
+const label = shadow.querySelector('[data-theme-panel-opacity-label]');
+if (opacity) opacity.value = String(value);
+if (label) label.textContent = `${Math.round(value)}%`;
+}
+function syncThemeItemOpacityControls() {
+const value = clamp(state.themeItemOpacity, 0, 100);
+state.themeItemOpacity = value;
+host.style.setProperty('--s-theme-item-opacity', `${value}%`);
+host.style.setProperty('--s-theme-item-blur', `${(value * 3 / 82).toFixed(2)}px`);
+const opacity = shadow.querySelector('[data-theme-item-opacity]');
+const label = shadow.querySelector('[data-theme-item-opacity-label]');
+if (opacity) opacity.value = String(value);
+if (label) label.textContent = `${Math.round(value)}%`;
+}
+function syncMinimizedModeControls() {
+launcher.dataset.mode = state.minimizedMode;
+launcher.style.setProperty('--slink-launcher-opacity', String(state.launcherOpacity / 100));
+const label = shadow.querySelector('[data-minimized-mode-label]');
+const button = shadow.querySelector('[data-action="toggle-minimized-mode"]');
+const opacity = shadow.querySelector('[data-launcher-opacity]');
+const opacityLabel = shadow.querySelector('[data-launcher-opacity-label]');
+if (label) label.textContent = state.minimizedMode === 'bar' ? 'Minimized view: alert bar.' : state.minimizedMode === 'bubble' ? 'Minimized view: movable bubble.' : 'Minimized view: Torn chat button.';
+if (button) button.textContent = state.minimizedMode === 'bar' ? 'Use movable bubble' : state.minimizedMode === 'bubble' ? 'Use Torn chat button' : 'Use alert bar';
+if (opacity) { opacity.value = String(state.launcherOpacity); opacity.disabled = state.minimizedMode !== 'bar'; }
+if (opacityLabel) opacityLabel.textContent = `${state.launcherOpacity}%`;
+}
+function applyMinimizedMode(mode, persist = true) {
+state.minimizedMode = ['bar', 'bubble', 'chat'].includes(mode) ? mode : 'bar';
+if (state.minimizedMode !== 'bubble') state.bubblePosition = null;
+syncMinimizedModeControls();
+clampLauncher(false);
+syncPdaChatButtonVisibility();
+if (persist) writeState();
+}
+function clampLauncher(persist = false) {
+if (!pdaDomActive() || !(global.innerWidth>0 && global.innerHeight>0)) return;
+launcher.dataset.mode = state.minimizedMode;
+if (state.minimizedMode === 'bar' || state.minimizedMode === 'chat') {
+delete launcher.dataset.positioned;
+launcher.style.removeProperty('left');
+launcher.style.removeProperty('top');
+launcher.style.removeProperty('right');
+launcher.style.removeProperty('bottom');
+if (persist) writeState();
+return;
+}
+if (!state.bubblePosition) {
+delete launcher.dataset.positioned;
+launcher.style.removeProperty('left');
+launcher.style.removeProperty('top');
+launcher.style.removeProperty('right');
+launcher.style.removeProperty('bottom');
+return;
+}
+const width = launcher.offsetWidth || 58;
+const height = launcher.offsetHeight || 58;
+const left = clamp(state.bubblePosition.left, 4, global.innerWidth - width - 4);
+const top = clamp(state.bubblePosition.top, 4, global.innerHeight - height - 4);
+launcher.style.left = `${left}px`;
+launcher.style.top = `${top}px`;
+launcher.style.right = 'auto';
+launcher.style.bottom = 'auto';
+launcher.dataset.positioned = 'true';
+state.bubblePosition = { left: Math.round(left), top: Math.round(top) };
+if (persist) writeState();
+}
+function selectPage(page, persist = true) {
+if (!['combat', 'efficiency', 'quality-of-life', 'access'].includes(page)) page = 'combat';
+state.page = page;
+shadow.querySelectorAll('[data-page-panel]').forEach(panel => { panel.hidden = panel.dataset.pagePanel !== page; });
+shadow.querySelectorAll('[data-page]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.page === page)));
+if (persist) writeState();
+shadow.querySelector('.scroll').scrollTop = 0;
+if (dashboardOpen) void loadActiveModule(false);
+}
+function selectSubpage(group, tab, persist = true) {
+const requestedTab = tab;
+const allowedByGroup = {
+combat:['leveling','bounties','mugging','targetList','war','stats'],
+efficiency:['alerts','market','merits','dollarBazaars'],
+qualityOfLife:['racing','abroadStocks','company','museums',...pdaPlugins.keys()]
+};
+const allowed = allowedByGroup[group] || allowedByGroup.combat;
+const pendingPlugin = group === 'qualityOfLife' && !allowed.includes(tab) && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(String(tab || ''));
+const permitted = allowed.filter(canAccessModule);
+if (!allowed.includes(tab) || !canAccessModule(tab)) tab = permitted[0] || allowed[0];
+const stateKey = group === 'combat' ? 'combatTab' : group === 'efficiency' ? 'efficiencyTab' : 'qualityOfLifeTab';
+state[stateKey] = tab;
+if (group === 'efficiency' && tab === 'market' && persist) moduleState.market.refreshPermissions = true;
+const attributeGroup = group === 'qualityOfLife' ? 'quality-of-life' : group;
+shadow.querySelectorAll(`[data-${attributeGroup}-panel]`).forEach(panel => { panel.hidden = panel.dataset[`${group}Panel`] !== tab; });
+shadow.querySelectorAll(`[data-${attributeGroup}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[`${group}Tab`] === tab)));
+if (pendingPlugin) state.qualityOfLifeTab = requestedTab;
+else if (persist) writeState();
+if (dashboardOpen) void loadActiveModule(false);
+}
+function setTheme(theme, persist = true) {
+const requestedTheme = String(theme || defaults.theme);
+const requestedDefinition = themeCatalog().find(item => item.id === requestedTheme) || null;
+const requestedUnlocked = Boolean(requestedDefinition && (!requestedDefinition.scope || hasThemeScope(requestedDefinition.scope)));
+let definition = requestedUnlocked
+? requestedDefinition
+: themeCatalog().find(item => item.id === 'slink-dark') || bundledThemes()[0];
+theme = definition.id;
+// The remote theme catalog arrives after the shell starts. Keep the saved
+// request while the catalog/permission snapshot is still loading so the
+// temporary fallback cannot replace the user's selected theme in memory.
+state.theme = persist || requestedUnlocked ? theme : requestedTheme;
+host.dataset.theme = theme;
+host.dataset.themeOrnament = definition.ornament || 'none';
+host.dataset.themeImage = definition.assets?.background ? 'true' : 'false';
+host.dataset.themeIcons = definition.assets?.iconSheet ? 'true' : 'false';
+host.dataset.themeBrand = definition.assets?.brandIcon ? 'true' : 'false';
+host.dataset.themeChat = definition.assets?.chatIcon ? 'true' : 'false';
+for (const property of new Set(Object.values(THEME_TOKEN_MAP))) host.style.removeProperty(property);
+host.style.removeProperty('--s-theme-background-image');
+host.style.removeProperty('--s-theme-icon-sheet');
+host.style.removeProperty('--s-theme-brand-icon');
+host.style.removeProperty('--s-theme-chat-icon');
+host.style.removeProperty('--s-theme-frame-image');
+host.style.removeProperty('--s-theme-rose-corner-image');
+host.style.removeProperty('--s-theme-badge-ivory-image');
+host.style.removeProperty('--s-theme-panel-smoke-image');
+host.style.removeProperty('--s-theme-panel-damask-image');
+host.style.removeProperty('--s-theme-panel-crimson-image');
+host.style.removeProperty('--s-theme-divider-left-image');
+host.style.removeProperty('--s-theme-divider-middle-image');
+host.style.removeProperty('--s-theme-divider-right-image');
+host.style.removeProperty('--s-theme-health-roses-image');
+host.style.removeProperty('--s-theme-health-blood-image');
+for (const [name, value] of Object.entries(definition.tokens || {})) if (THEME_TOKEN_MAP[name]) host.style.setProperty(THEME_TOKEN_MAP[name], value);
+if(definition.assets?.background)host.style.setProperty('--s-theme-background-image',`url("${definition.assets.background}")`);
+if(definition.assets?.iconSheet)host.style.setProperty('--s-theme-icon-sheet',`url("${definition.assets.iconSheet}")`);
+if(definition.assets?.brandIcon)host.style.setProperty('--s-theme-brand-icon',`url("${definition.assets.brandIcon}")`);
+if(definition.assets?.chatIcon)host.style.setProperty('--s-theme-chat-icon',`url("${definition.assets.chatIcon}")`);
+if(definition.assets?.frame)host.style.setProperty('--s-theme-frame-image',`url("${definition.assets.frame}")`);
+if(definition.assets?.roseCorner)host.style.setProperty('--s-theme-rose-corner-image',`url("${definition.assets.roseCorner}")`);
+if(definition.assets?.badgeIvory)host.style.setProperty('--s-theme-badge-ivory-image',`url("${definition.assets.badgeIvory}")`);
+if(definition.assets?.panelSmoke)host.style.setProperty('--s-theme-panel-smoke-image',`url("${definition.assets.panelSmoke}")`);
+if(definition.assets?.panelDamask)host.style.setProperty('--s-theme-panel-damask-image',`url("${definition.assets.panelDamask}")`);
+if(definition.assets?.panelCrimson)host.style.setProperty('--s-theme-panel-crimson-image',`url("${definition.assets.panelCrimson}")`);
+if(definition.assets?.dividerLeft)host.style.setProperty('--s-theme-divider-left-image',`url("${definition.assets.dividerLeft}")`);
+if(definition.assets?.dividerMiddle)host.style.setProperty('--s-theme-divider-middle-image',`url("${definition.assets.dividerMiddle}")`);
+if(definition.assets?.dividerRight)host.style.setProperty('--s-theme-divider-right-image',`url("${definition.assets.dividerRight}")`);
+syncThemeHealthAssets(definition);
+syncPdaChatButtonTheme();
+shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
+syncThemePanelOpacityControls();
+syncThemeItemOpacityControls();
+if (persist) writeState();
+}
+function themeHealthState(current, maximum) {
+const max=Number(maximum);const value=Number(current);
+if(!Number.isFinite(value)||!Number.isFinite(max)||max<=0)return '100';
+const percent=Math.max(0,Math.min(100,value/max*100));
+return percent>75?'100':percent>50?'075':percent>25?'050':percent>=5?'025':'004';
+}
+function lifeNumber(value){
+if(typeof value==='string')value=value.replaceAll(',','').replace(/[^\d.+-]/g,'');
+const parsed=Number(value);
+return Number.isFinite(parsed)?parsed:NaN;
+}
+function normalizedLifeSnapshot(value){
+const current=lifeNumber(value?.current??value?.value??value?.now);const maximum=lifeNumber(value?.maximum??value?.max??value?.total);
+return Number.isFinite(current)&&Number.isFinite(maximum)&&maximum>0?{current,maximum}:null;
+}
+function visibleLifeSnapshot(){
+if (!pdaDomActive()) return null;
+const candidates=document.querySelectorAll('[data-stat="life"],[aria-label*="life" i],[title*="life" i],[class*="life" i]');
+for(const element of Array.from(candidates).slice(0,80)){
+const attributed=normalizedLifeSnapshot({current:element.getAttribute?.('aria-valuenow')??element.dataset?.current??element.dataset?.value,maximum:element.getAttribute?.('aria-valuemax')??element.dataset?.maximum??element.dataset?.max});
+if(attributed)return attributed;
+const text=[element.getAttribute?.('aria-label'),element.getAttribute?.('title'),element.textContent].filter(Boolean).join(' ');
+const match=text.match(/([\d,]+)\s*(?:\/|of)\s*([\d,]+)/i);
+if(!match)continue;
+const life=normalizedLifeSnapshot({current:match[1].replaceAll(',',''),maximum:match[2].replaceAll(',','')});
+if(life)return life;
+}
+return null;
+}
+function syncThemeHealthAssets(definition = null) {
+if(!host)return;
+definition=definition||themeCatalog().find(item=>item.id===host.dataset.theme)||themeCatalog().find(item=>item.id==='slink-dark');
+const live=moduleState.alerts.data;const cached=dataState.caches.alerts;
+const life=[live?.body?.bars?.life,live?.body?.life,live?.body?.user?.bars?.life,live?.body?.user?.life,live?.life,cached?.body?.bars?.life,cached?.body?.life,cached?.body?.user?.bars?.life,cached?.body?.user?.life,cached?.life].map(normalizedLifeSnapshot).find(Boolean)||visibleLifeSnapshot();
+const health=themeHealthState(life?.current,life?.maximum);
+const roses=definition?.assets?.healthRoses?.[health]||'';
+const blood=definition?.assets?.healthBlood?.[health]||'';
+host.dataset.themeHealth=health;
+host.dataset.themeHealthSource=life?'bars-or-page':'unknown';
+if(life){host.dataset.themeHealthCurrent=String(life.current);host.dataset.themeHealthMaximum=String(life.maximum);}else{delete host.dataset.themeHealthCurrent;delete host.dataset.themeHealthMaximum;}
+host.style.setProperty('--s-theme-health-roses-image',roses?`url("${roses}")`:'none');
+host.style.setProperty('--s-theme-health-blood-image',blood?`url("${blood}")`:'none');
+}
+function lockTornScroll() {
+if (!document.documentElement.dataset[ROOT_OVERFLOW_KEY]) document.documentElement.dataset[ROOT_OVERFLOW_KEY] = document.documentElement.style.overflow || ' ';
+document.documentElement.style.overflow = 'hidden';
+}
+function unlockTornScroll() {
+const prior = document.documentElement.dataset[ROOT_OVERFLOW_KEY];
+if (prior !== undefined) {
+document.documentElement.style.overflow = prior === ' ' ? '' : prior;
+delete document.documentElement.dataset[ROOT_OVERFLOW_KEY];
+}
+}
+function openDashboard() {
+dashboardOpen = true;
+overlay.hidden = false;
+launcher.hidden = true;
+syncPdaChatButtonVisibility();
+lockTornScroll();
+selectPage(state.page, false);
+renderAllModules();
+void loadActiveModule(false);
+global.setTimeout(() => shadow.querySelector('[data-action="close"]')?.focus({ preventScroll: true }), 0);
+}
+function closeDashboard() {
+dashboardOpen = false;
+host.removeAttribute('data-keyboard-open');
+overlay.hidden = true;
+launcher.hidden = state.minimizedMode === 'chat';
+syncPdaChatButtonVisibility();
+launcher.setAttribute('aria-label', 'Open SLINK dashboard');
+launcher.querySelector('.launcher-label').textContent = 'Open SLINK';
+const minimizedAlerts = alertRows(moduleState.alerts.data || dataState.caches.alerts);
+updateAlertIndicator(minimizedAlerts.length, minimizedAlerts);
+unlockTornScroll();
+clampLauncher(true);
+if (state.minimizedMode === 'chat') pdaChatButton?.focus({ preventScroll:true });
+else launcher.focus({ preventScroll: true });
+}
+function toggleDashboard() {
+if (dashboardOpen) closeDashboard(); else openDashboard();
+}
+function resetLayout() {
+state.page = defaults.page;
+state.combatTab = defaults.combatTab;
+state.efficiencyTab = defaults.efficiencyTab;
+state.qualityOfLifeTab = defaults.qualityOfLifeTab;
+state.theme = defaults.theme;
+state.minimizedMode = defaults.minimizedMode;
+state.launcherOpacity = defaults.launcherOpacity;
+state.themePanelOpacity = defaults.themePanelOpacity;
+state.themeItemOpacity = defaults.themeItemOpacity;
+state.bubblePosition = null;
+setTheme(state.theme, false);
+applyMinimizedMode(state.minimizedMode, false);
+selectPage(state.page, false);
+selectSubpage('combat', state.combatTab, false);
+selectSubpage('efficiency', state.efficiencyTab, false);
+selectSubpage('qualityOfLife', state.qualityOfLifeTab, false);
+clampLauncher(false);
+writeState();
+}
+launcher.addEventListener('pointerdown', event => {
+if (state.minimizedMode !== 'bubble' || event.button !== 0) return;
+const box = launcher.getBoundingClientRect();
+drag = { id:event.pointerId, x:event.clientX, y:event.clientY, left:box.left, top:box.top, moved:false };
+launcher.dataset.dragging = 'true';
+launcher.setPointerCapture(event.pointerId);
+event.preventDefault();
+});
+launcher.addEventListener('pointermove', event => {
+if (!drag || event.pointerId !== drag.id) return;
+const dx = event.clientX - drag.x;
+const dy = event.clientY - drag.y;
+if (Math.abs(dx) + Math.abs(dy) > 6) drag.moved = true;
+state.bubblePosition = { left:drag.left + dx, top:drag.top + dy };
+clampLauncher(false);
+});
+function finishDrag(event) {
+if (!drag || event.pointerId !== drag.id) return;
+const moved = drag.moved;
+drag = null;
+delete launcher.dataset.dragging;
+clampLauncher(true);
+if (!moved) toggleDashboard();
+}
+launcher.addEventListener('pointerup', finishDrag);
+launcher.addEventListener('pointercancel', event => {
+if (!drag || event.pointerId !== drag.id) return;
+drag = null;
+delete launcher.dataset.dragging;
+clampLauncher(true);
+});
+launcher.addEventListener('click', () => {
+if (state.minimizedMode === 'bar') toggleDashboard();
+});
+function trackModuleInteraction(target) {
+if (!target?.closest) return;
+if (target.closest('[data-combat-panel="leveling"]')) touchModuleActivity('leveling');
+else if (target.closest('[data-combat-panel="war"]')) touchModuleActivity('war');
+else if (target.closest('[data-combat-panel="mugging"]')) touchModuleActivity('mugging');
+else if (target.closest('[data-efficiency-panel="market"]')) touchModuleActivity('market');
+else if (target.closest('[data-quality-of-life-panel="abroadStocks"]')) PDA_ABROAD.touch();
+}
+let themeOpacityDrag = null;
+function opacityStateKey(input) {
+return input.matches('[data-theme-item-opacity]') ? 'themeItemOpacity' : 'themePanelOpacity';
+}
+function syncThemeOpacityControls(input) {
+if (input.matches('[data-theme-item-opacity]')) syncThemeItemOpacityControls();
+else syncThemePanelOpacityControls();
+}
+function setThemeOpacityFromPointer(input, clientX) {
+const box = input.getBoundingClientRect();
+if (!box.width) return;
+const ratio = clamp((Number(clientX) - box.left) / box.width, 0, 1);
+state[opacityStateKey(input)] = Math.round(ratio * 100);
+syncThemeOpacityControls(input);
+}
+function finishThemeOpacityDrag(event) {
+if (!themeOpacityDrag || event.pointerId !== themeOpacityDrag.id) return;
+setThemeOpacityFromPointer(themeOpacityDrag.input, event.clientX);
+try { themeOpacityDrag.input.releasePointerCapture?.(event.pointerId); } catch {}
+themeOpacityDrag = null;
+writeState();
+event.preventDefault();
+}
+overlay.addEventListener('pointerdown', event => {
+const input = event.target.closest?.('[data-theme-panel-opacity],[data-theme-item-opacity]');
+if (!input || event.button !== 0) return;
+themeOpacityDrag = { id:event.pointerId, input };
+try { input.setPointerCapture?.(event.pointerId); } catch {}
+setThemeOpacityFromPointer(input, event.clientX);
+event.preventDefault();
+}, true);
+overlay.addEventListener('pointermove', event => {
+if (!themeOpacityDrag || event.pointerId !== themeOpacityDrag.id) return;
+setThemeOpacityFromPointer(themeOpacityDrag.input, event.clientX);
+event.preventDefault();
+}, true);
+overlay.addEventListener('pointerup', finishThemeOpacityDrag, true);
+overlay.addEventListener('pointercancel', finishThemeOpacityDrag, true);
+overlay.addEventListener('input', event => {
+trackModuleInteraction(event.target);
+const opacity = event.target.closest?.('[data-launcher-opacity]');
+if (opacity) {
+state.launcherOpacity = clamp(opacity.value, 35, 100);
+syncMinimizedModeControls();
+writeState();
+return;
+}
+const themeOpacity = event.target.closest?.('[data-theme-panel-opacity],[data-theme-item-opacity]');
+if (themeOpacity) {
+state[opacityStateKey(themeOpacity)] = clamp(themeOpacity.value, 0, 100);
+syncThemeOpacityControls(themeOpacity);
+writeState();
+}
+}, true);
+overlay.addEventListener('change', event => trackModuleInteraction(event.target), true);
+overlay.addEventListener('click', async event => {
+trackModuleInteraction(event.target);
+const bountyProfile = event.target.closest('[data-bounty-profile]');
+if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
+const muggingProfile = event.target.closest('[data-mugging-profile]');
+if (muggingProfile) rememberPlayerProfileIntent(muggingProfile.dataset.muggingProfile, 'mugging');
+const targetProfile = event.target.closest('[data-target-list-profile]');
+if (targetProfile) rememberPlayerProfileIntent(targetProfile.dataset.targetListProfile, 'target-list');
+const action = event.target.closest('[data-action]')?.dataset.action;
+const abroadMode = event.target.closest('[data-abroad-mode]')?.dataset.abroadMode;
+if (abroadMode) PDA_ABROAD.setMode(abroadMode);
+const racingView = event.target.closest('[data-racing-view]')?.dataset.racingView;
+if (racingView) {
+racingSettings().view = racingView;
+writeDataState();
+renderRacing();
+}
+const racingCard = event.target.closest('[data-racing-build]');
+const racingBuildState = racingCard ? racingSettings().builds[racingCard.dataset.racingBuild] : null;
+if (racingBuildState && event.target.closest('[data-racing-toggle]')) {
+racingBuildState.completed = !racingBuildState.completed;
+writeDataState();
+renderRacing();
+scheduleRacingScan(0);
+} else if (racingBuildState && event.target.closest('[data-racing-reset-name]')) {
+racingBuildState.customName = '';
+writeDataState();
+renderRacing();
+scheduleRacingScan(0);
+}
+if (action === 'close') closeDashboard();
+if (action === 'toggle-minimized-mode') applyMinimizedMode(state.minimizedMode === 'bar' ? 'bubble' : state.minimizedMode === 'bubble' ? 'chat' : 'bar');
+if (action === 'reset-layout') resetLayout();
+if (action === 'refresh-active') void loadActiveModule(true);
+if (action === 'refresh-mugging') void refreshMugging(true);
+if (action === 'refresh-travel-safety') void refreshTravelSafety(true).catch(() => undefined);
+if (action === 'refresh-company') void refreshCompany(true).catch(() => undefined);
+if (action === 'refresh-museums') void refreshMuseums(true).catch(() => undefined);
+if (action === 'museum-track-abroad') {
+const set=MUSEUM_SETS.find(entry=>entry.id===event.target.closest('[data-museum-set]')?.dataset.museumSet);
+if(set?.travel){const added=PDA_ABROAD.addItemWatches(set.items.map(item=>item.name));moduleState.museums.notice=added?'Added '+added+' Abroad Stocks watch'+(added===1?'':'es')+'.':'Matching Abroad Stocks rows are already tracked. Refresh Abroad Stocks first if no rows are loaded.';renderMuseums()}
+}
+if (action === 'museum-add-market') {
+const button=event.target.closest('[data-museum-item]'),itemId=Number(button?.dataset.museumItem),price=Number(moduleRoot('museums')?.querySelector('[data-museum-price="'+itemId+'"]')?.value);
+try{addMuseumMarketWatch(itemId,price);moduleState.museums.notice='Museum item added to Market Watch. It counts toward your active slot limit.';moduleState.museums.error=''}catch(error){moduleState.museums.error=errorMessage(error)}renderMuseums()
+}
+if (action === 'save-company-settings') {
+const root = moduleRoot('company');
+dataState.settings.company = { ...companySettings(), addictionThreshold:Number(root?.querySelector('[data-company-own-threshold]')?.value) || 10, directorThreshold:Number(root?.querySelector('[data-company-director-threshold]')?.value) || companySettings().directorThreshold };
+dataState.settings.company = companySettings();
+moduleState.company.notice = 'Company alert settings saved.';
+writeDataState(); renderCompany(); renderAlerts();
+}
+if (['copy-company-reminder','fill-company-chat','send-company-chat'].includes(action)) {
+const control = event.target.closest('[data-company-employee]');
+const employee = companyEmployeeFromAction(control);
+if (action === 'copy-company-reminder') void copyText(companyReminderText(employee)).then(copied => { moduleState.company.notice = copied ? 'Reminder copied.' : 'Could not copy the reminder.'; renderCompany(); });
+else { try { fillCompanyPrivateChat(employee, action === 'send-company-chat'); moduleState.company.notice = action === 'send-company-chat' ? 'Reminder sent.' : 'Reminder placed in the open chat.'; } catch (error) { moduleState.company.error = errorMessage(error); } renderCompany(); }
+}
+if (action === 'load-terms') void loadTerms(true);
+if (action === 'refresh-themes') void loadThemeCatalog(true);
+if (action === 'save-access') void saveAccess();
+if (action === 'backup-data-now') void (async () => {
+moduleState.access.error = '';
+moduleState.access.notice = '';
+try {
+await uploadDataBackup(true);
+moduleState.access.notice = 'Settings and target lists backed up. API keys and sessions were excluded.';
+} catch (error) { moduleState.access.error = errorMessage(error); }
+renderAccess();
+})();
+if (action === 'restore-data-backup') void (async () => {
+moduleState.access.error = '';
+moduleState.access.notice = '';
+if (!global.confirm('Restore the latest SLINK settings backup? Your API keys and current login session will stay on this device.')) return;
+try {
+await downloadDataBackup(true);
+moduleState.access.notice = 'Latest settings backup restored. API keys and the current login session were kept.';
+renderAllModules();
+} catch (error) { moduleState.access.error = errorMessage(error); renderAccess(); }
+})();
+if (action === 'clear-access') {
+dataState.apiKey = '';
+dataState.ffKey = '';
+dataState.usePdaApiKey = PDA_API_KEY_AVAILABLE;
+dataState.usePdaFfKey = false;
+dataState.accepted = {};
+clearSessions();
+writeDataState();
+moduleState.access.error = '';
+setTheme('slink-dark');
+renderAllModules();
+}
+if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
+const enabled = action === 'alerts-enable-all';
+dataState.settings.alerts.enabledTypes = Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, enabled]));
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+if (action === 'toggle-stack' || action === 'timer24-start' || action === 'timer24-cancel') {
+const settings = dataState.settings.alerts;
+const resetIds = action === 'toggle-stack' ? ['energyFull', 'energyRefill'] : ['timer24'];
+if (action === 'toggle-stack') settings.stackModeSince = settings.stackModeSince > 0 ? 0 : Date.now();
+else settings.timer24EndsAt = action === 'timer24-start' ? Date.now() + 86_400_000 : 0;
+for (const id of resetIds) delete settings.snoozedUntil[id];
+dataState.caches.alertNotificationIds = (dataState.caches.alertNotificationIds || []).filter(id => !resetIds.includes(id));
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+if (action === 'snooze-alert') {
+const button = event.target.closest('[data-alert-id]');
+const id = String(button?.dataset.alertId || '');
+const minutes = Math.max(1, Number(button?.dataset.minutes) || 5);
+if (id) {
+if (id.startsWith('abroad:')) {
+PDA_ABROAD.snooze(id, minutes);
+return;
+}
+dataState.settings.alerts.snoozedUntil[id] = Date.now() + minutes * 60_000;
+reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
+writeDataState();
+renderAlerts();
+}
+}
+if (action === 'hide-city-until-reset') {
+dataState.settings.alerts.cityDoneDay = utcDay();
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+if (action === 'claim-google-play-points') {
+dataState.settings.alerts.googlePlayPointsClaimedAt = Date.now();
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+if (action === 'crime-unique-checked') {
+const id = String(event.target.closest('[data-alert-id]')?.dataset.alertId || '');
+if (['disposalUnique', 'arsonUnique'].includes(id)) {
+dataState.settings.alerts.crimeUniqueDoneDay[id] = utcDay();
+delete dataState.settings.alerts.snoozedUntil[id];
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+}
+if (action === 'copy-war-mug-report') {
+const button = event.target.closest('button');
+const active = moduleState.war.data?.activeWar;
+const stats = active ? mugStatsForWar(active.warId) : null;
+if (button && active && stats?.count) void (async () => {
+button.disabled = true;
+const lines = [`SLINK mug report vs ${active.opponentName}`, `${stats.count} mugs · ${money(stats.total)} total · ${money(stats.average)} average · ${money(stats.min)} min · ${money(stats.max)} max`, ...stats.reports.map(report => `${new Date(report.at).toLocaleString()} · ${report.victimName}${report.victimId ? ` [${report.victimId}]` : ''} · ${money(report.amount)}`)];
+const okay = await copyText(lines.join('\n'));
+button.textContent = okay ? 'Copied' : 'Copy failed';
+button.disabled = false;
+})();
+}
+if (action === 'select-war-tab') {
+const tab = String(event.target.closest('[data-war-tab]')?.dataset.warTab || 'targets');
+const officerTabs = [...(warArmoryOfficer() ? ['armory'] : []), ...(warOfficer() ? ['logs', 'settings'] : [])];
+if (['targets', 'outside', 'claims', ...officerTabs].includes(tab)) {
+dataState.settings.war.activeTab = tab;
+writeDataState();
+renderWar();
+}
+}
+if (action === 'refresh-war-outside') void refreshWarOutside();
+if (action === 'war-inside-attack') {
+const link = event.target.closest('[data-war-target]');
+const gate = warInsideGate(Number(link?.dataset.warTarget) || 0);
+if (gate.active && (gate.mode === 'block' || !global.confirm(`${warInsideMessage(gate)}\n\nOpen this inside target anyway?`))) {
+event.preventDefault();
+event.stopPropagation();
+moduleState.war.error = warInsideMessage(gate);
+renderWar();
+}
+}
+if (action === 'claim-war-target') void updateWarClaim('claim');
+if (action === 'release-war-claim') void updateWarClaim('release', Number(event.target.closest('[data-war-target]')?.dataset.warTarget) || 0);
+if (action === 'resolve-war-armory-request') void resolveWarArmoryRequest(String(event.target.closest('[data-war-request]')?.dataset.warRequest || ''));
+if (action === 'save-war-settings') void saveWarOfficerSettings();
+if (action === 'retrieve-war-armory') void retrieveWarArmoryItem();
+if (action === 'next-war-armory') nextWarArmoryPage();
+if (action === 'refresh-war-armory-members') void refreshWarArmoryMembers(true).then(() => { moduleState.war.error = ''; renderWar(); }).catch(error => { moduleState.war.error = errorMessage(error); renderWar(); });
+if (action === 'toggle-war-armory-rank') {
+const rank = String(event.target.closest('[data-armory-rank]')?.dataset.armoryRank || '');
+const members = (dataState.caches.warArmoryMembers?.members || []).filter(member => member.rank === rank);
+const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+const select = !members.every(member => whitelist.has(String(member.id)));
+members.forEach(member => select ? whitelist.add(String(member.id)) : whitelist.delete(String(member.id)));
+dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+}
+if (action === 'select-shown-war-armory' || action === 'clear-shown-war-armory') {
+const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+const checked = action === 'select-shown-war-armory';
+moduleRoot('war')?.querySelectorAll('[data-armory-search-row]:not([hidden]) [data-war-armory-member]').forEach(input => checked ? whitelist.add(String(input.dataset.warArmoryMember)) : whitelist.delete(String(input.dataset.warArmoryMember)));
+dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+}
+if (action === 'dismiss-war-retal') {
+const attackId = String(event.target.closest('[data-war-retal]')?.dataset.warRetal || '');
+const retal = (moduleState.war.data?.snapshot?.retals || []).find(row => String(row?.attackId || row?.attackerId) === attackId);
+if (retal) {
+const key = `user:${Number(retal.attackerId) || attackId}`;
+if (!dataState.settings.war.dismissedRetals || typeof dataState.settings.war.dismissedRetals !== 'object') dataState.settings.war.dismissedRetals = {};
+dataState.settings.war.dismissedRetals[key] = Number(retal.expiresAt) || Math.floor(Date.now() / 1000) + 300;
+writeDataState();
+renderWar();
+}
+}
+if (action === 'copy-war-target' || action === 'send-war-target') {
+const button = event.target.closest('[data-war-target]');
+const id = Number(button?.dataset.warTarget) || 0;
+const rows = button?.dataset.warOutside === 'true' ? moduleState.war.data?.outsideTargets : moduleState.war.data?.snapshot?.members;
+const member = (rows || []).find(row => warMemberId(row) === id);
+if (member && button) void (async () => {
+button.disabled = true;
+const key = warTargetShareKey(member);
+const result = action === 'copy-war-target'
+? await primeFactionMessage(warCallout(member), key)
+: await sendPrimedFactionMessage(key);
+button.textContent = result.label;
+button.disabled = false;
+})();
+}
+if (action === 'copy-war-retal' || action === 'send-war-retal') {
+const button = event.target.closest('[data-war-retal]');
+const attackId = String(button?.dataset.warRetal || '');
+const retal = (moduleState.war.data?.snapshot?.retals || []).find(row => String(row?.attackId || row?.attackerId) === attackId);
+if (retal && button) void (async () => {
+const key = warRetalShareKey(retal);
+button.disabled = true;
+const result = action === 'copy-war-retal'
+? await primeFactionMessage(warRetalCallout(retal), key)
+: await sendPrimedFactionMessage(key);
+button.textContent = result.label;
+button.disabled = false;
+})();
+}
+if (action === 'toggle-target-polling') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-polling]');
+if (form) editableState.cancel(form);
+moduleState.targetList.pollingOpen = !moduleState.targetList.pollingOpen;
+moduleState.targetList.error = '';
+moduleState.targetList.notice = '';
+renderTargetList();
+}
+if (action === 'save-target-polling') {
+const root = moduleRoot('targetList');
+const ticket = editableState.begin(root?.querySelector('[data-target-polling]'));
+const previous = targetPollingSettings();
+const next = {
+enabled:root?.querySelector('[data-field="target-poll-enabled"]')?.checked === true,
+intervalMinutes:root?.querySelector('[data-field="target-poll-interval"]')?.value,
+mugOnly:root?.querySelector('[data-field="target-poll-mug-only"]')?.checked === true
+};
+const normalized = {
+enabled:next.enabled,
+intervalMinutes:Math.max(TARGET_POLL_MIN_MINUTES, Math.min(TARGET_POLL_MAX_MINUTES, Math.trunc(Number(next.intervalMinutes) || TARGET_POLL_DEFAULT_MINUTES))),
+mugOnly:next.mugOnly,
+revision:Date.now()
+};
+const changed = previous.enabled !== normalized.enabled || previous.intervalMinutes !== normalized.intervalMinutes || previous.mugOnly !== normalized.mugOnly;
+if (!changed) normalized.revision = previous.revision;
+dataState.settings.targetListPolling = normalized;
+if (changed) dataState.caches.targetPolling = { revision:normalized.revision, schedule:{} };
+moduleState.targetList.error = '';
+moduleState.targetList.notice = normalized.enabled
+? `Rolling polling enabled across ${normalized.intervalMinutes} minutes.`
+: 'Automatic Target List polling disabled.';
+writeDataState();
+editableState.commit(ticket);
+renderTargetList();
+void runTargetPolling();
+}
+if (action === 'toggle-target-list-form') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
+moduleState.targetList.formOpen = !moduleState.targetList.formOpen;
+moduleState.targetList.editingId = 0;
+moduleState.targetList.error = '';
+moduleState.targetList.notice = '';
+renderTargetList();
+}
+if (action === 'cancel-target-list') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
+moduleState.targetList.formOpen = false;
+moduleState.targetList.editingId = 0;
+moduleState.targetList.error = '';
+renderTargetList();
+}
+if (action === 'save-source-target') {
+const button = event.target.closest('[data-target-source][data-target-id]');
+if (button) {
+if (button.disabled) return;
+button.disabled=true;
+try {
+savePdaSourceTarget(String(button.dataset.targetSource || ''), Number(button.dataset.targetId));
+await flushPdaStorage();
+button.textContent = 'Saved';
+button.disabled = true;
+global.setTimeout(() => { if (button.isConnected) { button.textContent = 'Save Target'; button.disabled = false; } }, 1500);
+} catch (error) {
+button.disabled=false;
+button.textContent = 'Save failed';
+button.title = errorMessage(error);
+global.setTimeout(() => { if (button.isConnected) button.textContent = 'Save Target'; }, 2000);
+}
+}
+}
+if (action === 'save-target-list') {
+const root = moduleRoot('targetList'), state = moduleState.targetList;
+if (state.saving) return;
+state.saving=true;
+state.notice='';
+const ticket = editableState.begin(root?.querySelector('[data-target-editor]'));
+try {
+const playerId = Number(root?.querySelector('[data-field="target-list-id"]')?.value || state.editingId);
+const tags = [...(root?.querySelectorAll('[data-target-list-tag]:checked') || [])].map(node => node.dataset.targetListTag);
+const payload = {
+playerId,
+name:root?.querySelector('[data-field="target-list-name"]')?.value || '',
+description:root?.querySelector('[data-field="target-list-description"]')?.value || '',
+stakeout:root?.querySelector('[data-field="target-list-stakeout"]')?.checked === true,
+stakeoutIntervalSeconds:root?.querySelector('[data-field="target-list-stakeout-interval"]')?.value,
+tags,
+source:'manual',
+sourceLabel:'Manual'
+};
+if (state.editingId) updatePdaTarget(payload); else addPdaTarget(payload);
+await flushPdaStorage();
+if (editableState.commit(ticket)) {state.formOpen=false;state.editingId=0;}
+state.error='';state.notice='Target saved.';
+} catch (error) { state.error = errorMessage(error); }
+finally {state.saving=false;}
+renderTargetList();
+}
+if (action === 'toggle-target-stakeout') {
+const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+const target = pdaTargetListEntries().find(value => value.id === playerId);
+if (target) {
+try {
+updatePdaTarget({
+playerId,
+stakeout:target.stakeout !== true,
+stakeoutIntervalSeconds:target.stakeoutIntervalSeconds
+});
+await flushPdaStorage();
+moduleState.targetList.notice = target.stakeout ? 'Stakeout stopped.' : 'Stakeout started.';
+moduleState.targetList.error = '';
+renderTargetList();
+void runTargetStakeouts();
+} catch (error) {moduleState.targetList.error=errorMessage(error);moduleState.targetList.notice='';renderTargetList();}
+}
+}
+if (action === 'retry-local-storage') {
+try {await retryPdaStorage();moduleState.access.error='';}
+catch (error) {moduleState.access.error=errorMessage(error);}
+updateStorageNotice();
+}
+if (action === 'edit-target-list') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
+const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+moduleState.targetList.editingId = playerId;
+moduleState.targetList.formOpen = true;
+moduleState.targetList.error = '';
+moduleState.targetList.notice = '';
+renderTargetList();
+}
+if (action === 'remove-target-list') {
+const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+if (playerId && global.confirm('Remove this player from Target List?')) {
+const editForm=moduleRoot('targetList')?.querySelector('[data-target-editor]');
+const deleteTicket=Number(moduleState.targetList.editingId)===playerId ? editableState.begin(editForm) : null;
+try {
+removePdaTarget(playerId);
+await flushPdaStorage();
+if (Number(moduleState.targetList.editingId) === playerId && deleteTicket && editableState.commit(deleteTicket)) {
+moduleState.targetList.editingId = 0; moduleState.targetList.formOpen = false;
+}
+moduleState.targetList.error = '';
+moduleState.targetList.notice = 'Target removed.';
+renderTargetList();
+} catch (error) {moduleState.targetList.error=errorMessage(error);renderTargetList();}
+}
+}
+if (action === 'refresh-target-list') {
+const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
+if (playerId) void (async () => {
+const state = moduleState.targetList;
+state.busyId = playerId; state.error = ''; state.notice = ''; renderTargetList();
+try {
+const dom = await observeActiveProfileDom({ playerId, source:'target-list', requireIntent:false });
+const result = await refreshPlayerIntelligence({ playerId, priority:'high' });
+state.notice = dom.observed
+? 'Fresh status read from the active Torn profile; no duplicate API call was needed.'
+: result.fetched
+? 'Fresh Torn API status loaded.'
+: result.reason === 'known-timer'
+? 'Known status timer is still valid; no API call was needed.'
+: 'Recent cached status is still fresh; no API call was needed.';
+} catch (error) { state.error = errorMessage(error); }
+finally { state.busyId = 0; renderTargetList(); }
+})();
+}
+if (action === 'refresh-market-permissions') void refreshMarketPermissions();
+if (action === 'toggle-market-dom-test' && hasScope('admin.*')) {
+marketPurchaseState.domTestEnabled = !marketPurchaseState.domTestEnabled;
+clearMarketDomTestMarks();
+schedulePurchaseOpportunityFormatting(0);
+renderMarket();
+}
+if (action === 'save-bounties') saveBountySettings();
+if (action === 'restart-bounties') {
+dataState.caches.bounties = freshBountyRuntime(bountyRuntime());
+touchBounties();
+moduleState.bounties.error = '';
+renderBounties();
+void refreshBounties(false);
+}
+if (action === 'refresh-dollar-bazaars') void refreshDollarBazaars(true);
+if (action === 'refresh-abroad-stocks') { PDA_ABROAD.touch(); void PDA_ABROAD.refresh(true); }
+if (action === 'save-abroad-settings') PDA_ABROAD.saveFromRoot();
+if (action === 'toggle-abroad-watch') {
+const key = String(event.target.closest('[data-abroad-key]')?.dataset.abroadKey || '');
+if (key) PDA_ABROAD.toggleWatch(key);
+}
+if (action === 'sync-market-weaver-pricelist') void syncMarketPricelistNow();
+if (action === 'save-market-watch') saveMarketWatch();
+if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = ''; renderMarket(false); }
+if (action === 'edit-market-watch') {
+moduleState.market.editingUid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
+const watch = marketSettings().watches.find(row => row.uid === moduleState.market.editingUid);
+moduleState.market.draft = watch ? { ...watch, itemText:watch.marketType === 'points' ? '' : `${watch.label || `Item ${watch.itemId}`} [${watch.itemId}]` } : null;
+moduleState.market.error = ''; renderMarket(false); shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' });
+}
+if (action === 'remove-market-watch') {
+const uid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
+const settings = marketSettings(); settings.watches = settings.watches.filter(watch => watch.uid !== uid); if (moduleState.market.editingUid === uid) moduleState.market.editingUid = '';
+const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; writeDataState(); renderMarket(); schedulePurchaseOpportunityFormatting();
+}
+const marketOption = event.target.closest('[data-market-item-option]');
+if (marketOption) selectMarketSuggestion(Number(marketOption.dataset.marketItemOption));
+if (action === 'dismiss-market-deal') {
+const key = String(event.target.closest('[data-market-dismiss]')?.dataset.marketDismiss || '');
+if (key) { marketSettings().dismissals[key] = Date.now() + 5 * 60_000; writeDataState(); renderMarket(); }
+}
+if (action === 'copy-market-deal' || action === 'send-market-deal') {
+const id = String(event.target.closest('[data-market-deal]')?.dataset.marketDeal || '');
+const deal = marketOpportunities(moduleState.market.data || marketRuntime()).find(row => row.id === id);
+const button = event.target.closest('button');
+if (deal && button) void (async () => { button.disabled = true; const key = `market:${deal.id}`; const result = action === 'copy-market-deal' ? await primeFactionMessage(deal.shareText, key) : await sendPrimedFactionMessage(key); button.textContent = result.label; button.disabled = false; })();
+}
+if (action === 'copy-market-list' || action === 'send-market-list') {
+const text = marketOpportunities(moduleState.market.data || marketRuntime()).slice(0, 12).map(row => row.shareText).join('\n');
+const button = event.target.closest('button');
+if (text && button) void (async () => { button.disabled = true; const key = 'market:all'; const result = action === 'copy-market-list' ? await primeFactionMessage(text, key) : await sendPrimedFactionMessage(key); button.textContent = result.ok && action === 'copy-market-list' ? 'List copied' : result.label; button.disabled = false; })();
+}
+if (action === 'pin-merit') {
+const key = String(event.target.closest('[data-merit-key]')?.dataset.meritKey || '');
+const pinned = new Set(dataState.settings.merits.pinned || []);
+if (pinned.has(key)) pinned.delete(key);
+else if (pinned.size < 3) pinned.add(key);
+dataState.settings.merits.pinned = [...pinned];
+writeDataState();
+renderMerits();
+}
+if (action === 'merit-page') {
+dataState.settings.merits.page = Math.max(1, Number(event.target.closest('[data-merit-page]')?.dataset.meritPage) || 1);
+writeDataState();
+renderMerits();
+shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' });
+}
+const page = event.target.closest('[data-page]')?.dataset.page;
+if (page) selectPage(page);
+const combatTab = event.target.closest('[data-combat-tab]')?.dataset.combatTab;
+if (combatTab) selectSubpage('combat', combatTab);
+const efficiencyTab = event.target.closest('[data-efficiency-tab]')?.dataset.efficiencyTab;
+if (efficiencyTab) selectSubpage('efficiency', efficiencyTab);
+const qualityOfLifeTab = event.target.closest('[data-quality-of-life-tab]')?.dataset.qualityOfLifeTab;
+if (qualityOfLifeTab) selectSubpage('qualityOfLife', qualityOfLifeTab);
+const theme = event.target.closest('[data-theme-choice]')?.dataset.themeChoice;
+if (theme) {
+const required = themeCatalog().find(item => item.id === theme)?.scope || null;
+if (required && !hasThemeScope(required)) {
+moduleState.access.error = `This theme requires ${required}.`;
+renderAccess();
+} else setTheme(theme);
+}
+});
+overlay.addEventListener('input', event => {
+if (event.target.matches('[data-abroad-query]')) {
+PDA_ABROAD.setQuery(event.target.value);
+return;
+}
+if (!event.target.matches('[data-racing-name]')) return;
+const card = event.target.closest('[data-racing-build]');
+const buildState = card ? racingSettings().builds[card.dataset.racingBuild] : null;
+const definition = card ? RACING_RECOMMENDED_BUILDS.find(entry => entry.id === card.dataset.racingBuild) : null;
+if (!buildState || !definition) return;
+const value = event.target.value;
+const suggestion = suggestRacingNickname(definition.tracks).value;
+buildState.customName = value.trim() === suggestion ? '' : value;
+const validation = validateRacingNickname(value);
+event.target.setAttribute('aria-invalid', String(!validation.valid));
+const counter = card.querySelector('[data-racing-count]');
+if (counter) {
+counter.textContent = `${validation.length}/${validation.maxLength}`;
+counter.dataset.invalid = String(!validation.valid);
+}
+writeDataState();
+scheduleRacingScan(0);
+});
+overlay.addEventListener('change', event => {
+if (event.target.matches('[data-alert-type]')) {
+const id = String(event.target.dataset.alertType || '');
+if (PDA_ALERT_TYPES.some(definition => definition.id === id)) {
+dataState.settings.alerts.enabledTypes = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+dataState.settings.alerts.enabledTypes[id] = event.target.checked === true;
+if (PDA_ALERT_TYPES.find(definition => definition.id === id)?.mode === 'live') {
+dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), nextLiveAt:0 };
+}
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+}
+return;
+}
+if (event.target.matches('[data-field="mugging-enabled"],[data-field="mugging-min-ff"],[data-field="mugging-max-ff"],[data-field="mugging-limit"]')) {
+if (!hasScope('slink.mugging')) return;
+const root = moduleRoot('mugging');
+dataState.settings.mugging.enabled = root?.querySelector('[data-field="mugging-enabled"]')?.checked === true;
+dataState.settings.mugging.minFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-min-ff"]')?.value) || 1));
+dataState.settings.mugging.maxFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-max-ff"]')?.value) || 3));
+dataState.settings.mugging.limit = Math.max(1, Math.min(100, Math.trunc(Number(root?.querySelector('[data-field="mugging-limit"]')?.value) || 50)));
+moduleState.mugging.error = '';
+moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging settings saved locally; contributor scheduling started.' : 'Mugging disabled locally; cached assignments were kept.';
+if (dataState.settings.mugging.enabled) touchMuggingActivity(); else writeDataState();
+renderMugging();
+if (dataState.settings.mugging.enabled) void runMuggingContribution(true);
+}
+if (event.target.matches('[data-field="war-armory-mode"]')) {
+dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); writeDataState();
+}
+if (event.target.matches('[data-war-armory-member]')) {
+const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+const id = String(event.target.dataset.warArmoryMember || '');
+if (event.target.checked) whitelist.add(id); else whitelist.delete(id);
+dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState();
+}
+if (event.target.matches('[data-field="war-target-min"],[data-field="war-target-max"],[data-field="war-target-status"],[data-field="war-target-abroad"],[data-field="war-target-location"],[data-field="war-target-sort"]')) {
+const root = moduleRoot('war');
+dataState.settings.war.targetMinFF = Math.max(0, Number(root?.querySelector('[data-field="war-target-min"]')?.value) || 0);
+dataState.settings.war.targetMaxFF = Math.max(0, Number(root?.querySelector('[data-field="war-target-max"]')?.value) || 3);
+dataState.settings.war.targetStatus = root?.querySelector('[data-field="war-target-status"]')?.value || 'all';
+dataState.settings.war.targetAbroad = root?.querySelector('[data-field="war-target-abroad"]')?.value || 'all';
+dataState.settings.war.targetLocation = root?.querySelector('[data-field="war-target-location"]')?.value || 'all';
+dataState.settings.war.targetSort = root?.querySelector('[data-field="war-target-sort"]')?.value || 'availability';
+writeDataState();
+renderWar(true);
+}
+if (event.target.closest?.('.market-form')) captureMarketDraft();
+if (event.target.matches('[data-field="merit-refresh"]')) {
+dataState.settings.merits.refreshMinutes = Math.max(5, Number(event.target.value) || 15);
+writeDataState();
+renderMerits();
+}
+if (event.target.matches('[data-field="merit-filter"]')) {
+dataState.settings.merits.filter = String(event.target.value || 'all');
+dataState.settings.merits.page = 1;
+writeDataState();
+renderMerits();
+}
+if (event.target.matches('[data-field="market-priority"]')) {
+dataState.settings.market.lastPriority = normalizeMarketPriority(event.target.value); writeDataState();
+}
+if (event.target.matches('[data-field="market-enabled"]')) {
+marketSettings().enabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
+}
+if (event.target.matches('[data-field="market-listed-items"]')) {
+marketSettings().listedItemsEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+}
+if (event.target.matches('[data-field="market-weaver-pricelist"]')) {
+marketSettings().weaverPricelistEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+}
+if (event.target.matches('[data-field="market-weaver-source-order"]')) {
+marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; writeDataState(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
+}
+if (event.target.matches('[data-field="market-quick-buy"]')) {
+marketSettings().quickBuyEnabled = event.target.checked; marketPurchaseState.settings.highlightedQuickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearQuickPurchaseControls(); else schedulePurchaseOpportunityFormatting(0);
+}
+if (event.target.matches('[data-field="market-type"]')) {
+captureMarketDraft();
+const points = event.target.value === 'points';
+const root = moduleRoot('market'); const item = root?.querySelector('[data-field="market-item"]'); const sources = root?.querySelector('.market-sources');
+if (item) item.disabled = points; if (sources) sources.disabled = points;
+}
+});
+overlay.addEventListener('click', async event => {
+const button = event.target.closest('[data-armory-copy]');
+if (!button) return;
+const root = button.closest('[data-armory-timestamp]');
+const result = discordTimestamp(root.querySelector('[data-armory-time]').value);
+if (!result) return;
+let copied = false;
+try { copied = await copyText(result.code); } catch {}
+root.querySelector('[data-armory-time-message]').textContent = copied ? 'Copied — paste into Discord.' : 'Select and copy the timestamp above.';
+if (!copied) root.querySelector('[data-armory-code]').select();
+});
+overlay.addEventListener('input', event => {
+if (event.target.matches('[data-armory-time]')) {
+moduleState.war.armoryTimestampValue = event.target.value;
+updateArmoryTimestamp(event.target.closest('[data-armory-timestamp]'), event.target.value);
+}
+const expectedTop = shadow.querySelector('.scroll')?.scrollTop || 0;
+if (event.target.matches('[data-field="war-armory-search"]')) {
+const needle = String(event.target.value || '').trim().toLowerCase();
+moduleRoot('war')?.querySelectorAll('[data-armory-search-row]').forEach(row => { row.hidden = Boolean(needle && !String(row.dataset.armorySearchRow || '').includes(needle)); });
+}
+if (event.target.matches('[data-field="market-item"],[data-field="market-price"]')) {
+captureMarketDraft();
+if (event.target.matches('[data-field="market-item"]')) renderMarketSuggestions(event.target.value);
+}
+guardUnexpectedBottomJump(expectedTop, event.target);
+});
+overlay.addEventListener('focusin', event => {
+const expectedTop = shadow.querySelector('.scroll')?.scrollTop || 0;
+if (keyboardFocusTimer) global.clearTimeout(keyboardFocusTimer);
+syncKeyboardState();
+if (event.target.matches('[data-field="market-item"]')) renderMarketSuggestions(event.target.value);
+guardUnexpectedBottomJump(expectedTop, event.target);
+});
+overlay.addEventListener('focusout', event => {
+if (keyboardFocusTimer) global.clearTimeout(keyboardFocusTimer);
+keyboardFocusTimer = global.setTimeout(() => {
+keyboardFocusTimer = null;
+syncKeyboardState();
+const suggestions = moduleRoot('market')?.querySelector('[data-market-item-suggestions]');
+if (suggestions && !shadow.activeElement?.closest?.('[data-market-item-suggestions]')) suggestions.hidden = true;
+if (moduleState.market.renderPending && !shadow.activeElement?.closest?.('[data-module-root="market"] .market-form')) renderMarket();
+if (moduleState.war.renderPending && !shadow.activeElement?.closest?.('[data-module-root="war"] input,[data-module-root="war"] select,[data-module-root="war"] textarea')) renderWar(true);
+}, 150);
+});
+const swipeHeader = shadow.querySelector('[data-swipe-close]');
+swipeHeader.addEventListener('pointerdown', event => { if (!event.target.closest('button')) swipe = { id:event.pointerId, x:event.clientX, y:event.clientY }; });
+swipeHeader.addEventListener('pointerup', event => {
+if (!swipe || event.pointerId !== swipe.id) return;
+const dx = Math.abs(event.clientX - swipe.x);
+const dy = event.clientY - swipe.y;
+swipe = null;
+if (dy > 70 && dy > dx * 1.35) closeDashboard();
+});
+swipeHeader.addEventListener('pointercancel', () => { swipe = null; });
+global.addEventListener('keydown', event => {
+if (event.key === 'Escape' && dashboardOpen) closeDashboard();
+if (event.altKey && event.shiftKey && event.key.toLowerCase() === 's') {
+event.preventDefault();
+toggleDashboard();
+}
+});
+global.addEventListener('resize', () => { if (!pdaDomActive()) return;clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+global.visualViewport?.addEventListener('resize', () => { if (!pdaDomActive()) return;syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+global.addEventListener('orientationchange', () => global.SLINK_PDA_PAGE_ACTIVITY.defer(() => clampLauncher(true), 180));
+global.addEventListener('hashchange', schedulePurchaseOpportunityFormatting);
+global.addEventListener('hashchange', scheduleRacingScan);
+global.addEventListener('popstate', schedulePurchaseOpportunityFormatting);
+global.addEventListener('popstate', scheduleRacingScan);
+global.addEventListener('resize', scheduleQuickPurchaseControlSync);
+global.addEventListener('scroll', scheduleQuickPurchaseControlSync, true);
+const guardian = new MutationObserver(() => {if (pdaDomActive()) repairPdaHost();});
+function repairPdaHost() {
+if (!pdaDomActive()) return;
+if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
+if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaChatButton.isConnected)) ensurePdaChatButton();
+}
+marketObserver = new MutationObserver(mutations => {
+if (!pdaDomActive()) return;
+schedulePurchaseOpportunityFormatting(80);
+scanAttackMugResults();
+if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
+if (mutations.some(racingMutationRelevant)) scheduleRacingScan();
+});
+let pdaForegroundActive=null;
+let targetPollingKickoff=null,targetStakeoutKickoff=null;
+function startPdaTargetTimers() {
+if (!pdaPagePresent) return;
+if (targetPollingTimer===null) {
+const timer=global.setInterval(()=>{if (pdaPagePresent && targetPollingTimer===timer) void runTargetPolling();},TARGET_POLL_TICK_MS);
+targetPollingTimer=timer;
+const kickoff=global.setTimeout(()=>{if (targetPollingKickoff!==kickoff) return;targetPollingKickoff=null;if (pdaPagePresent) void runTargetPolling();},2000);
+targetPollingKickoff=kickoff;
+}
+if (targetStakeoutTimer===null) {
+const timer=global.setInterval(()=>{if (pdaPagePresent && targetStakeoutTimer===timer) void runTargetStakeouts();},TARGET_STAKEOUT_TICK_MS);
+targetStakeoutTimer=timer;
+const kickoff=global.setTimeout(()=>{if (targetStakeoutKickoff!==kickoff) return;targetStakeoutKickoff=null;if (pdaPagePresent) void runTargetStakeouts();},2000);
+targetStakeoutKickoff=kickoff;
+}
+}
+function stopPdaTargetTimers() {
+global.clearInterval(targetPollingTimer);global.clearInterval(targetStakeoutTimer);
+global.clearTimeout(targetPollingKickoff);global.clearTimeout(targetStakeoutKickoff);
+targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targetStakeoutKickoff=null;
+}
+function syncPdaForeground(active=pdaDomActive()) {
+if (active===pdaForegroundActive) return;
+pdaForegroundActive=active;
+marketObserver.disconnect();guardian.disconnect();racingStateObserver?.disconnect();
+if (!active) {
+global.SLINK_PDA_PAGE_ACTIVITY.cancel(attackMugScanTimer);attackMugScanTimer=null;
+global.SLINK_PDA_PAGE_ACTIVITY.cancel(racingScanTimer);racingScanTimer=null;
+global.clearTimeout(keyboardFocusTimer);keyboardFocusTimer=null;
+clearRacingHighlight();
+document.getElementById(RACING_HIGHLIGHT_STYLE_ID)?.remove();
+clearMarketPurchaseFormatting();unlockTornScroll();
+return;
+}
+if (document.body) marketObserver.observe(document.body,{childList:true,subtree:true});
+guardian.observe(document,{childList:true,subtree:true});
+repairPdaHost();
+clampLauncher(false);
+if (dashboardOpen) lockTornScroll();
+syncThemeHealthAssets();
+schedulePurchaseOpportunityFormatting(0);scheduleRacingScan(0);scanAttackMugResults();
+void scanIntendedProfileDom();
+}
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
+global.addEventListener('pagehide',stopPdaTargetTimers);
+global.addEventListener('pageshow',startPdaTargetTimers);
+global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});
+if (typeof GM_API.menu === 'function') {
+GM_API.menu('Open SLINK PDA Dashboard', openDashboard);
+GM_API.menu('Reset SLINK PDA layout', resetLayout);
+}
+renderThemeChoices();
+setTheme(state.theme, false);
+applyMinimizedMode(state.minimizedMode, false);
+selectPage(state.page, false);
+selectSubpage('combat', state.combatTab, false);
+selectSubpage('efficiency', state.efficiencyTab, false);
+selectSubpage('qualityOfLife', state.qualityOfLifeTab, false);
+clampLauncher(false);
+renderAllModules();
+startPdaTargetTimers();
+syncPdaForeground();
+if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+}
+startScheduler();
+if (currentApiKey() && termsAccepted('permission')) global.setTimeout(() => void ensureAutomaticPermissionSession(false), 1_000);
+if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) global.setTimeout(() => void runMuggingContribution(true), 3_000);
+global.setTimeout(() => void loadThemeCatalog(false), 2_000);
+global.setTimeout(() => void uploadDataBackup(false), 12_000);
+if (currentApiKey() && hasScope('slink.adhd.alerts') && (validSession('permission') || termsAccepted('permission'))) global.setTimeout(() => void refreshAlerts(false), 5_000);
+if (currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled) global.setTimeout(() => void refreshMarket(false), 7_000);
+if (currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE)) global.setTimeout(() => void refreshDollarBazaars(false), 9_000);
+syncMarketPurchaseCatalog();
+schedulePurchaseOpportunityFormatting(0);
+ensureRacingHighlightStyle();
+scheduleRacingScan(0);
+document.addEventListener('click', handleTravelSafetyClick, true);
+document.addEventListener('click', handleHighlightedQuickPurchaseClick, true);
+document.addEventListener('click', handleBazaarPurchaseClick, true);
+void scanIntendedProfileDom();
+scanAttackMugResults();
+
+function pdaPluginSettings(id, defaults = {}) {
+if (!dataState.settings.plugins || typeof dataState.settings.plugins !== 'object') dataState.settings.plugins = {};
+const current = dataState.settings.plugins[id];
+dataState.settings.plugins[id] = { ...defaults, ...(current && typeof current === 'object' ? current : {}) };
+return dataState.settings.plugins[id];
+}
+function pdaPluginCache(id, defaults = {}) {
+if (!dataState.caches.plugins || typeof dataState.caches.plugins !== 'object') dataState.caches.plugins = {};
+const current = dataState.caches.plugins[id];
+dataState.caches.plugins[id] = { ...defaults, ...(current && typeof current === 'object' ? current : {}) };
+return dataState.caches.plugins[id];
+}
+function registerPdaPlugin(plugin) {
+if (!plugin || !/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(String(plugin.id || ''))) throw new Error('Invalid PDA plugin id.');
+const id = String(plugin.id);
+if (pdaPlugins.has(id)) return pdaPlugins.get(id);
+pdaPlugins.set(id, plugin);
+const page = shadow.querySelector('[data-page-panel="quality-of-life"]');
+const nav = page?.querySelector('.subnav');
+if (nav && !nav.querySelector('[data-quality-of-life-tab="' + id + '"]')) {
+const button = document.createElement('button');
+button.type = 'button';
+button.dataset.qualityOfLifeTab = id;
+button.textContent = String(plugin.shortTitle || plugin.title || id);
+nav.appendChild(button);
+}
+if (page && !page.querySelector('[data-quality-of-life-panel="' + id + '"]')) {
+const panel = document.createElement('div');
+panel.className = 'subpage';
+panel.dataset.qualityOfLifePanel = id;
+panel.hidden = true;
+const root = document.createElement('div');
+root.dataset.moduleRoot = id;
+panel.appendChild(root);
+page.appendChild(panel);
+}
+try { plugin.start?.(); } catch (error) { console.warn('[SLINK PDA] Plugin start:', id, error); }
+try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', id, error); }
+applyPermissionGates();
+if (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);
+renderAlerts();
+return plugin;
+}
+global.SLINK_PDA_PLUGIN_API = Object.freeze({
+register:registerPdaPlugin,
+root:moduleRoot,
+settings:pdaPluginSettings,
+cache:pdaPluginCache,
+save:writeDataState,
+hasScope,
+ensurePermission:ensurePermissionSession,
+tornJson,
+catalogItems,
+sharedCatalog:options=>pdaSharedData().catalog({key:currentApiKey(),...options}),
+escapeHtml,
+number,
+relativeTime,
+moduleMessage,
+actionLink,
+lockedModule,
+errorMessage,
+alertsChanged:() => { writeDataState(); renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
+,
+primeFactionMessage,
+sendPrimedFactionMessage
+,
+openArmoryRecaller:() => {
+dataState.settings.war.activeTab = 'armory';
+writeDataState();
+selectPage('combat', false);
+selectSubpage('combat', 'war', false);
+writeState();
+renderWar(true);
+openDashboard();
+}
+});
+global.SLINK_PDA_DASHBOARD = Object.freeze({
+storage:Object.freeze({flush:flushPdaStorage,retry:retryPdaStorage,status:()=>({pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName})}),
+build:BUILD,
+open:openDashboard,
+close:closeDashboard,
+toggle:toggleDashboard,
+reset:resetLayout,
+isOpen:() => dashboardOpen,
+refreshMarket:() => refreshMarket(true),
+refreshDollarBazaars:() => refreshDollarBazaars(true),
+targetList:Object.freeze({
+list:pdaTargetListEntries,
+add:addPdaTarget,
+update:updatePdaTarget,
+remove:removePdaTarget,
+polling:Object.freeze({
+settings:targetPollingSettings,
+run:runTargetPolling
+}),
+stakeout:Object.freeze({
+status:targetStakeoutStatus,
+run:runTargetStakeouts
+})
+}),
+playerIntelligence:Object.freeze({
+get:getPlayerIntelligence,
+observe:observePlayerIntelligence,
+refresh:refreshPlayerIntelligence
+})
+});
+host.dataset.slinkReady = 'true';
+})(globalThis);
+
+
+

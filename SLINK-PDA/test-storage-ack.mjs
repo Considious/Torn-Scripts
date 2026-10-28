@@ -9,9 +9,12 @@ class Event{constructor(type,options){this.type=type;this.detail=options.detail;
 let release,fail=false;
 const store={get:async(key,fallback)=>clone(native.get(key)??fallback),set:async(key,value)=>{if(release)await new Promise(resolve=>{release=resolve;});if(fail){fail=false;throw Object.assign(Error('quota'),{code:'QuotaExceeded'});}native.set(key,clone(value));},delete:async key=>native.delete(key)};
 const localStorage={getItem:key=>browser.get(key)??null,setItem:(key,value)=>browser.set(key,value),removeItem:key=>browser.delete(key)};
-const keys={DATA_STORAGE_KEY:'data',DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:'stats',UI_STORAGE_KEY:'ui',STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes'};
-const ctx=vm.createContext({...keys,BRIDGED_STORAGE_KEYS:new Set(['data','stats','ui','snoozes']),STORAGE_WRITE_EVENT:'write',CustomEvent:Event,document:doc,globalThis:{localStorage,PDA_storage:store,GM_getValue:async(key,fallback)=>clone(legacy.get(key)??fallback),GM_setValue:async(key,value)=>legacy.set(key,clone(value))}});
-vm.runInContext(loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)')),ctx);ctx.installStorageBridge();
+const keys={DATA_STORAGE_KEY:'data',DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:'stats',UI_STORAGE_KEY:'ui',STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes',TARGET_RECORDS_KEY:'targets'};
+const ctx=vm.createContext({...keys,n:'data',s:'mirror',i:'stats',l:'ui',c:'snoozes',u:'targets',m:'write',d:new Set(['data','stats','ui','snoozes','targets']),BRIDGED_STORAGE_KEYS:new Set(['data','stats','ui','snoozes']),STORAGE_WRITE_EVENT:'write',CustomEvent:Event,document:doc,globalThis:{localStorage,PDA_storage:store,GM_getValue:async(key,fallback)=>clone(legacy.get(key)??fallback),GM_setValue:async(key,value)=>legacy.set(key,clone(value))}});
+vm.runInContext(loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)')),ctx);
+const loaderBridgeStart=loader.indexOf('!function(){let e=Promise.resolve();'),loaderBridgeEnd=loader.indexOf(',await loadRuntime()',loaderBridgeStart);
+assert(loaderBridgeStart>=0&&loaderBridgeEnd>loaderBridgeStart,'The actual PDA launcher must register its storage acknowledgement bridge.');
+vm.runInContext(loader.slice(loaderBridgeStart,loaderBridgeEnd),ctx);
 legacy.set('data',{_savedAt:1,apiKey:'synthetic',settings:{plugins:{chat:{term:'keep'}}},caches:{targetList:{'1':{name:'A',description:'old'},'2':{name:'B'}}}});
 const boot=await ctx.collectBootstrap();assert.equal(native.get('data').settings.plugins.chat.term,'keep','Legacy data must migrate non-destructively to available native storage');assert.equal(legacy.get('data').apiKey,'synthetic');
 const beforeReadFailure=clone(native.get('data')),getBeforeFailure=store.get;
@@ -72,5 +75,6 @@ const targetContext=vm.createContext({action:'save-target-list',moduleState:{tar
 vm.runInContext('async function saveTarget(){'+saveBlock+'}',targetContext);
 const saving=targetContext.saveTarget();await targetContext.saveTarget();assert.equal(targetState.saving,true,'A duplicate click must not release the original pending-save guard');assert.equal(targetState.formOpen,true);
 edited=true;fields.set('target-list-description','After');assert.equal(submitted.description,'Before');resolveSave();await saving;assert.equal(targetState.formOpen,true,'A confirmed older save must not close a newer draft');assert.equal(targetState.saving,false);
-const failedSave=targetContext.saveTarget();rejectSave(Error('native quota'));await failedSave;assert.match(targetState.error,/quota/);assert.equal(targetState.formOpen,true);assert.notEqual(targetState.notice,'Target saved.');
+const failedSave=targetContext.saveTarget();await new Promise(resolve=>setImmediate(resolve));rejectSave(Error('native quota'));await failedSave;assert.match(targetState.error,/quota/);assert.equal(targetState.formOpen,true);assert.notEqual(targetState.notice,'Target saved.');
 console.log('PDA native acknowledgement, legacy migration, quota/retry, browser-cache-clear recovery, target deletion/note merges and add-on preference preservation passed.');
+

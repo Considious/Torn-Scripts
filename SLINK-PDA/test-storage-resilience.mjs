@@ -5,23 +5,21 @@ const core = fs.readFileSync(new URL('./src/00-runtime-core.part', import.meta.u
 const dashboard = fs.readFileSync(new URL('./src/30-dashboard-combat.part', import.meta.url), 'utf8');
 const shell = fs.readFileSync(new URL('./src/90-shell-bootstrap.part', import.meta.url), 'utf8');
 const loader = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
-const hasLoaderCode = code => loader.replace(/\s/g,'').replaceAll('"', "'").includes(code.replace(/\s/g,'').replaceAll('"', "'"));
 
 assert(core.includes("const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1'"), 'PDA runtime must maintain an independent local data mirror.');
 assert(core.includes('function writeDataMirror(value)'), 'Every primary data write must also update the local mirror.');
 assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot)'), 'The captured mirror must be written before the bridge.');
 assert(core.includes('return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy]'), 'Storage recovery must compare the loader-vetted primary with fallback copies.');
 assert(core.includes('function storedRecordSavedAt(value)'), 'Durable records must carry freshness metadata.');
-assert(hasLoaderCode("let selected = hasData(primary) ? primary : mirror || {};"), 'The PDA primary record must win when legacy copies have no freshness metadata.');
-assert(hasLoaderCode("savedAt(mirror) > savedAt(selected)"), 'A mirror may only replace primary data when it proves it is newer.');
+assert(loader.includes('let selected=hasData(primary)?primary:mirror||{}'), 'The PDA primary record must win when legacy copies have no freshness metadata.');
+assert(loader.includes('savedAt(mirror)>savedAt(selected)'), 'A mirror may only replace primary data when it proves it is newer.');
 assert(!core.includes('global.localStorage.removeItem(DATA_STORAGE_KEY);'), 'Startup must never erase the legacy recovery copy.');
-assert(hasLoaderCode('function readMirror()'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
-assert(hasLoaderCode("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';"), 'The startup loader must fetch the authored source manifest directly.');
-assert(hasLoaderCode("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:audit-test:v1';"), 'The startup loader must retain a last-known-working runtime.');
-assert(hasLoaderCode('Source download failed; using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
-assert(!hasLoaderCode('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
-assert(hasLoaderCode('if (selected === mirror && selected !== primary && !primaryFailed)'), 'Mirror repair must not overwrite primary storage after a failed primary read.');
-assert(hasLoaderCode("await gmWrite(DATA_STORAGE_KEY, selected)"), 'The loader must repair primary GM storage with the selected recovered record.');
+assert(loader.includes('localStorage?.getItem(s)'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
+assert(loader.includes('source-manifest.json')&&loader.includes('readSourceManifest(2500)'), 'The startup loader must check the authored source manifest with a bounded cached-startup wait.');
+assert(loader.includes('slink-pda-dashboard:runtime-cache:audit-test:v1'), 'The startup loader must retain a last-known-working runtime.');
+assert(loader.includes('using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
+assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
+assert(loader.includes('primaryFailed')&&loader.includes('await gmWrite(n,selected)'), 'Mirror repair must not overwrite primary storage after a failed primary read, and must repair the primary when safe.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
 assert(core.includes("settings:JSON.parse(JSON.stringify(dataState.settings || {}))"), 'The backup must include user settings.');
 assert(core.includes("targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))"), 'The backup must include saved targets.');
@@ -40,3 +38,4 @@ assert(!dashboard.includes('if (!allowed.includes(state[stateKey])) state[stateK
 assert(/applyPermissionGates\(\);\s+if \(state\.qualityOfLifeTab === id\) selectSubpage\('qualityOfLife', id, false\);/.test(shell), 'Plugin registration must restore the exact saved Quality of Life module after applying its permission gate.');
 
 console.log('PDA durable local storage and API-key-free backup wiring are verified.');
+

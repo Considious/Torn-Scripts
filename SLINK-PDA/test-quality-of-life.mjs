@@ -18,3 +18,4 @@ assert(!source.includes('market USD'), 'Museum prices must use Torn cash notatio
 console.log('PDA Quality of Life data and mobile layout wiring is verified.');
 
 assert(!qualitySource.includes('<input type="password" data-field="abroad-torn-intel-key"'), 'Unsupported Torn Intel client-key entry is still visible.');
+

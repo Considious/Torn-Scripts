@@ -1,0 +1,1521 @@
+function renderAccess() {
+const root = moduleRoot('access');
+if (!root) return;
+const permission = validSession('permission');
+const usage = apiUsage();
+const terms = dataState.terms || {};
+const accepted = ['permission', 'leveling', 'war'].every(termsAccepted);
+const termLinks = ['permission', 'leveling', 'war'].map(name => {
+const item = terms[name];
+return item?.version ? `<a href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener">${escapeHtml(name)} ${escapeHtml(item.version)}</a>` : `<span>${escapeHtml(name)} not loaded</span>`;
+}).join('');
+root.innerHTML = `<div class="grid">
+<article class="card wide"><div class="card-head"><div><h2>API &amp; feature access</h2><span class="muted">The key and sessions stay in this userscript's local storage.</span></div><span class="badge ${permission ? 'ready' : 'warn'}">${permission ? 'Connected' : 'Setup'}</span></div>
+${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : ''}
+<p data-storage-status role="status" ${failedStorageWrites.size ? '' : 'hidden'}>${failedStorageWrites.size ? 'Some SLINK changes are not saved. Keep this page open and retry.' : ''}</p>
+<button type="button" data-action="retry-local-storage" ${failedStorageWrites.size ? '' : 'hidden'}>Retry saving local changes</button>
+<div class="access-form">
+<label>Torn API key<input type="password" autocomplete="off" data-field="api-key" value="${escapeHtml(dataState.apiKey)}" placeholder="Limited-access Torn key"></label>
+<label>FFScouter API key<input type="password" autocomplete="off" data-field="ff-key" value="${escapeHtml(dataState.ffKey)}" placeholder="Usually different from the Torn key"></label>
+${PDA_API_KEY_AVAILABLE ? `<label class="check-row"><input type="checkbox" data-field="use-pda-api-key" ${dataState.usePdaApiKey ? 'checked' : ''}>Use Torn PDA's injected key for Torn API requests.</label><label class="check-row"><input type="checkbox" data-field="use-pda-ff-key" ${dataState.usePdaFfKey ? 'checked' : ''}>Use Torn PDA's injected key as the FFScouter fallback.</label>` : '<span class="muted wide">Torn PDA key injection was not detected. Saved Torn and FFScouter keys will be used independently.</span>'}
+<span class="muted wide">The FFScouter key is sent only to FFScouter when refining target estimates.</span>
+<label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK permission, Leveling, and War terms/disclosures shown below.</label>
+<div class="access-actions wide"><button type="button" data-action="save-access">Save &amp; authenticate</button><button type="button" data-action="load-terms">Load current terms</button><button class="danger" type="button" data-action="clear-access">Clear key &amp; sessions</button></div>
+</div>
+<div class="terms-list">${termLinks}</div>
+</article>
+<article class="card wide"><div class="card-head"><div><h2>Settings backup</h2><span class="muted">Saved to Cloudflare twice daily while SLINK is running. API keys and login sessions are never included.</span></div><span class="badge ${dataState.caches.dataBackup?.lastRemoteAt ? 'ready' : 'warn'}">${dataState.caches.dataBackup?.lastRemoteAt ? 'Protected' : 'Not backed up'}</span></div>
+${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') : ''}
+<div class="access-actions"><button type="button" data-action="backup-data-now" ${permission ? '' : 'disabled'}>Back up now</button><button type="button" data-action="restore-data-backup" ${permission ? '' : 'disabled'}>Restore latest backup</button></div>
+<span class="muted">${dataState.caches.dataBackup?.lastRemoteAt ? `Latest cloud backup: ${relativeTime(dataState.caches.dataBackup.lastRemoteAt)}` : 'Authenticate first, then SLINK will create an API-key-free backup automatically.'}</span>
+</article>
+<article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><details class="scope-details"><summary>${permission?.scopes?.length ? `${permission.scopes.length} granted permissions` : 'No permissions loaded'}</summary><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></details></article>
+<article class="card"><div class="card-head"><div><h2>Shared API limiter</h2><span class="muted">Shared with compatible Considious scripts in this Torn page.</span></div></div><div class="stats"><div class="stat"><strong>${usage.count}</strong><span>Last minute</span></div><div class="stat"><strong>${usage.remaining}</strong><span>Remaining</span></div><div class="stat"><strong>${usage.limit}</strong><span>Limit</span></div><div class="stat"><strong>1</strong><span>Queue</span></div></div></article>
+</div>`;
+applyPermissionGates();
+}
+async function loadTerms(force = false) {
+moduleState.access.busy = true;
+moduleState.access.error = '';
+renderAccess();
+try { await fetchAllTerms(force); }
+catch (error) { moduleState.access.error = errorMessage(error); }
+finally { moduleState.access.busy = false; renderAccess(); }
+}
+async function saveAccess() {
+if (moduleState.access.saving) return;
+moduleState.access.saving=true;
+const ticket=editableState.begin(moduleRoot('access'));
+const keyInput = moduleRoot('access')?.querySelector('[data-field="api-key"]');
+const ffInput = moduleRoot('access')?.querySelector('[data-field="ff-key"]');
+const pdaApiInput = moduleRoot('access')?.querySelector('[data-field="use-pda-api-key"]');
+const pdaFfInput = moduleRoot('access')?.querySelector('[data-field="use-pda-ff-key"]');
+const acceptance = moduleRoot('access')?.querySelector('[data-field="accept-terms"]');
+const acceptedHere=acceptance?.checked===true;
+dataState.apiKey = String(keyInput?.value || '').trim();
+dataState.ffKey = String(ffInput?.value || '').trim();
+dataState.usePdaApiKey = pdaApiInput ? pdaApiInput.checked : false;
+dataState.usePdaFfKey = pdaFfInput ? pdaFfInput.checked : false;
+clearSessions();
+moduleState.access.error = '';
+try {
+await fetchAllTerms(false);
+if (!acceptedHere) throw new Error('Accept the current SLINK terms and disclosures before authenticating.');
+acceptCurrentTerms();
+await ensurePermissionSession(true);
+await Promise.allSettled([hasScope('slink.level') ? ensureLevelingSession(true) : Promise.resolve(), hasScope('slink.war') ? ensureWarSession(true) : Promise.resolve()]);
+} catch (error) {
+moduleState.access.error = errorMessage(error);
+}
+try {await writeDataState();await flushPdaStorage();if (!moduleState.access.error) editableState.commit(ticket);}
+catch (error) {moduleState.access.error=errorMessage(error);}
+moduleState.access.saving=false;
+renderAllModules();
+}
+const MODULE_SCOPES = Object.freeze({
+leveling:'slink.level',
+bounties:BOUNTY_SCOPE,
+mugging:'slink.mugging',
+targetList:TARGET_LIST_SCOPE,
+war:'slink.war',
+stats:PLAYER_STATS_SCOPE,
+alerts:'slink.adhd.alerts',
+merits:MERITS_SCOPE,
+dollarBazaars:DOLLAR_BAZAARS_SCOPE,
+racing:RACING_SCOPE,
+abroadStocks:ABROAD_STOCKS_SCOPE,
+company:COMPANY_SCOPE,
+museums:MUSEUM_SCOPE
+});
+function canAccessModule(name) {
+if (name === 'market') return marketWatchLimit() > 0;
+const plugin = pdaPlugins.get(name);
+if (Array.isArray(plugin?.scopes) && plugin.scopes.length) return plugin.scopes.some(hasScope);
+if (plugin?.scope) return hasScope(plugin.scope);
+const required = MODULE_SCOPES[name];
+return !required || hasScope(required);
+}
+function applyPermissionGates() {
+const gates = [
+['combat','leveling'],['combat','bounties'],['combat','mugging'],['combat','targetList'],['combat','war'],['combat','stats'],
+['efficiency','alerts'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],
+['quality-of-life','racing'],['quality-of-life','abroadStocks'],['quality-of-life','company'],['quality-of-life','museums'],
+...[...pdaPlugins.values()].map(plugin => ['quality-of-life', String(plugin.id)])
+];
+for (const [group, moduleName] of gates) {
+const tab = shadow?.querySelector?.(`[data-${group}-tab="${moduleName}"]`);
+const panel = shadow?.querySelector?.(`[data-${group}-panel="${moduleName}"]`);
+const allowed = canAccessModule(moduleName);
+if (tab) {
+tab.hidden = !allowed;
+tab.classList.toggle('permission-lock', !allowed);
+tab.title = allowed ? '' : `Requires ${pdaPlugins.get(moduleName)?.scopes?.join(' or ') || MODULE_SCOPES[moduleName] || 'a Market Watch tier'}`;
+}
+if (panel && !allowed) panel.hidden = true;
+}
+for (const [selector, scope] of [
+['[data-theme-choice="slinky-pursuit"]','slink.theme.pursuit'],
+['[data-theme-choice="slinky-underglow"]','slink.theme.underglow']
+]) {
+const control = shadow?.querySelector?.(selector);
+if (!control) continue;
+const allowed = hasThemeScope(scope);
+control.classList.toggle('permission-lock', !allowed);
+control.title = allowed ? '' : `Requires ${scope}`;
+}
+const groups = [
+['combat','combatTab','combatPanel','combatTab'],
+['efficiency','efficiencyTab','efficiencyPanel','efficiencyTab'],
+['quality-of-life','qualityOfLifeTab','qualityOfLifePanel','qualityOfLifeTab']
+];
+for (const [group,stateKey,panelKey,tabKey] of groups) {
+const allowed = gates.filter(entry => entry[0] === group).map(entry => entry[1]).filter(canAccessModule);
+if (!allowed.length) continue;
+const visibleTab = allowed.includes(state[stateKey]) ? state[stateKey] : allowed[0];
+shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[panelKey] !== visibleTab; });
+shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[tabKey] === visibleTab)));
+}
+}
+function levelingRows(payload) {
+return Array.isArray(payload?.targets) ? payload.targets : Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+}
+async function refineWithFfScouter(rows) {
+const values = Array.isArray(rows) ? rows : [];
+const key = currentFfKey();
+if (!key || !values.length) return values;
+const now = Date.now();
+const cache = dataState.caches.ffScouter && typeof dataState.caches.ffScouter === 'object' ? dataState.caches.ffScouter : {};
+const ids = [...new Set(values.map(row => Math.trunc(Number(row?.id ?? row?.target_id ?? row?.user_id) || 0)).filter(id => id > 0))];
+const missing = ids.filter(id => !cache[id] || now - Number(cache[id].checkedAt || 0) >= 5 * 60_000);
+for (let index = 0; index < missing.length; index += 100) {
+const targets = missing.slice(index, index + 100);
+try {
+const url = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(key)}&targets=${encodeURIComponent(targets.join(','))}`;
+const response = await requestJson(url);
+const returnedRows = Array.isArray(response) ? response : Array.isArray(response?.data) ? response.data : Array.isArray(response?.results) ? response.results : [];
+if (response?.error || (!Array.isArray(response) && !Array.isArray(response?.data) && !Array.isArray(response?.results))) throw new Error('Invalid FFScouter response.');
+const returned = new Set();
+for (const row of returnedRows) {
+const id = Math.trunc(Number(row?.player_id ?? row?.id ?? row?.user_id) || 0);
+if (!id || !targets.includes(id)) continue;
+returned.add(id);
+const score = ffNumber(row?.fair_fight ?? row?.fairFight ?? row?.ff), stats = finite(row?.bs_estimate ?? row?.battle_stats_estimate ?? row?.total_stats);
+if (score !== null || stats !== null) cache[id] = { fairFight:score ?? cache[id]?.fairFight ?? null, battleStats:stats ?? cache[id]?.battleStats ?? null, source:String(row?.source || 'FFScouter'), checkedAt:score !== null ? now : Number(cache[id]?.checkedAt) || 0 };
+}
+for (const id of targets) if (!returned.has(id) && !cache[id]) cache[id] = { fairFight:null, battleStats:null, source:'FFScouter', checkedAt:now };
+} catch { break; /* Estimates are optional: keep the War/Leveling snapshot usable. */ }
+}
+dataState.caches.ffScouter = cache;
+writeDataState();
+return values.map(row => {
+const id = Math.trunc(Number(row?.id ?? row?.target_id ?? row?.user_id) || 0);
+const refined = cache[id] || {};
+return {
+...row,
+fair_fight:ffNumber(refined.fairFight) ?? ffNumber(row?.fair_fight),
+fairFight:ffNumber(refined.fairFight) ?? ffNumber(row?.fairFight),
+bs_estimate:finite(refined.battleStats) ?? row?.bs_estimate,
+battleStatsEstimate:finite(refined.battleStats) ?? row?.battleStatsEstimate,
+fairFightSource:finite(refined.fairFight) === null ? row?.fairFightSource : refined.source,
+fairFightCheckedAt:Number(refined.checkedAt) || 0,
+fairFightStale:!refined.checkedAt || now - Number(refined.checkedAt) >= 5 * 60_000
+};
+});
+}
+function renderLeveling() {
+const root = moduleRoot('leveling');
+if (!root) return;
+if (!hasScope('slink.level')) { root.innerHTML = lockedModule('slink.level', 'SLINK Leveling'); return; }
+const current = moduleState.leveling;
+if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading recommendations…'); return; }
+if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+const payload = current.data?.payload || {};
+const rows = levelingRows(payload);
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Leveling</h2><span class="muted">Read-only PDA recommendations · no API-check contribution</span></div><span class="badge ${payload.collector ? 'warn' : 'ready'}">${payload.collector ? 'Collector available' : 'Standby'}</span></div>
+<div class="module-toolbar"><span>${rows.length} target${rows.length === 1 ? '' : 's'} · FF ${number(dataState.settings.leveling.minFF, 1)}–${number(dataState.settings.leveling.maxFF, 1)} · updated ${relativeTime(current.data?.at)}</span></div>
+${current.error ? moduleMessage(current.error, 'error') : ''}
+<div class="target-stack">${rows.length ? rows.map(row => {
+const id = Math.trunc(Number(row?.id ?? row?.target_id) || 0);
+const name = String(row?.name || `Player ${id}`);
+const ff = finite(row?.fair_fight ?? row?.fairFight);
+const status = String(row?.status ?? row?.previous_status ?? 'Unknown');
+return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>Level ${number(row?.level)} · ${escapeHtml(status)}${ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}<button type="button" data-action="save-source-target" data-target-source="leveling" data-target-id="${id}">Save Target</button></div></article>`;
+}).join('') : moduleMessage('No targets are currently loaded. Press Refresh to start or restart the five-minute Leveling cycle.')}</div>
+</article></div>`;
+}
+async function refreshLeveling(force = false) {
+const current = moduleState.leveling;
+const cached = dataState.caches.leveling;
+if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.data = cached; renderLeveling(); return; }
+current.busy = true; current.error = ''; renderLeveling();
+try {
+await ensurePermissionSession(false);
+await ensureLevelingSession(false);
+const lastActivity = moduleLastActiveAt('leveling');
+const reportedActivity = Math.max(0, Number(dataState.caches.levelingActivityReportedAt) || 0);
+if (lastActivity > reportedActivity) {
+await productRequest('leveling', '/api/user/activity', { method:'POST', body:{ last_interaction_at:lastActivity } });
+dataState.caches.levelingActivityReportedAt = lastActivity;
+}
+const settings = dataState.settings.leveling;
+const query = new URLSearchParams({ limit:'20', poll_seconds:'300', min_ff:String(Math.min(settings.minFF, settings.maxFF)), max_ff:String(Math.max(settings.minFF, settings.maxFF)) });
+const payload = await productRequest('leveling', `/api/recommendations?${query}`);
+if (Array.isArray(payload?.targets)) payload.targets = await refineWithFfScouter(payload.targets);
+else if (Array.isArray(payload?.recommendations)) payload.recommendations = await refineWithFfScouter(payload.recommendations);
+current.data = dataState.caches.leveling = { at:Date.now(), payload };
+writeDataState();
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderLeveling(); }
+}
+function bountySettings() {
+const source = dataState.settings.bounties || {};
+source.enabled = source.enabled === true;
+source.minimumReward = Math.max(1, Math.trunc(Number(source.minimumReward) || 300000));
+source.scanFullList = source.scanFullList === true;
+source.minFF = Math.max(1, Math.min(3, Number(source.minFF) || 1));
+source.maxFF = Math.max(1, Math.min(3, Number(source.maxFF) || 3));
+source.maxBattleStats = Math.max(0, Math.trunc(Number(source.maxBattleStats) || 0));
+source.includeUnknownEstimates = source.includeUnknownEstimates === true;
+source.includeAbroad = source.includeAbroad === true;
+source.statusFilter = ['all', 'okay', 'hospital', 'hide-hospital'].includes(source.statusFilter) ? source.statusFilter : 'hide-hospital';
+source.tornCallsPerMinute = Math.max(1, Math.min(20, Math.trunc(Number(source.tornCallsPerMinute) || 20)));
+source.ffBatchesPerMinute = Math.max(1, Math.min(20, Math.trunc(Number(source.ffBatchesPerMinute) || 5)));
+dataState.settings.bounties = source;
+return source;
+}
+function freshBountyRuntime(previous = null) {
+return { targets:[], fairFight:previous?.fairFight && typeof previous.fairFight === 'object' ? previous.fairFight : {}, statuses:previous?.statuses && typeof previous.statuses === 'object' ? previous.statuses : {}, nextUrl:`${URLS.torn}/v2/torn/bounties?limit=${BOUNTY_PAGE_LIMIT}&offset=0`, scannedRows:0, reportedTotal:0, pagesFetched:0, completed:false, stoppedAtMinimum:false, snapshotTimestamp:0, cacheDelaySeconds:30, nextRefreshAt:0, at:0 };
+}
+function bountyRuntime() {
+const stored = dataState.caches.bounties && typeof dataState.caches.bounties === 'object' ? dataState.caches.bounties : {};
+const runtime = { ...freshBountyRuntime(), ...stored };
+runtime.targets = Array.isArray(runtime.targets) ? runtime.targets : [];
+runtime.fairFight = runtime.fairFight && typeof runtime.fairFight === 'object' ? runtime.fairFight : {};
+const sharedStatuses = playerIntelligenceCache();
+const legacyStatuses = runtime.statuses && typeof runtime.statuses === 'object' ? runtime.statuses : {};
+if (legacyStatuses !== sharedStatuses) {
+for (const [rawId, legacy] of Object.entries(legacyStatuses)) {
+const playerId = validPlayerIntelligenceId(rawId);
+if (!playerId || !legacy || typeof legacy !== 'object') continue;
+sharedStatuses[String(playerId)] = mergePlayerIntelligenceRecord(
+sharedStatuses[String(playerId)],
+{ ...legacy, playerId, source:legacy.source || 'bounty-legacy' }
+);
+}
+}
+runtime.statuses = sharedStatuses;
+dataState.caches.bounties = runtime;
+moduleState.bounties.data = runtime;
+return runtime;
+}
+function bountyActive(now = Date.now()) {
+return bountySettings().enabled && now - Number(dataState.caches.bountyActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS;
+}
+function touchBounties() {
+dataState.caches.bountyActivityAt = Date.now();
+writeDataState();
+}
+function bountyReserve(kind, limit) {
+const run = async () => {
+while (true) {
+const now = Date.now();
+const key = kind === 'ff' ? 'bountyFfBudget' : 'bountyTornBudget';
+const recent = (Array.isArray(dataState.caches[key]) ? dataState.caches[key] : []).map(Number).filter(at => at > now - 60_000 && at <= now + 5000).sort((a, b) => a - b);
+if (recent.length < limit) {
+recent.push(now); dataState.caches[key] = recent; writeDataState(); return;
+}
+await new Promise(resolve => global.setTimeout(resolve, Math.max(50, Math.min(5000, recent[0] + 60_025 - now))));
+}
+};
+const result = bountyBudgetQueue.then(run, run);
+bountyBudgetQueue = result.catch(() => undefined);
+return result;
+}
+async function bountyTornJson(path) {
+const settings = bountySettings();
+const key = currentApiKey();
+if (!key) throw new Error('Save a Torn public API key under Access first.');
+const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
+url.searchParams.delete('key');
+if (!url.searchParams.has('comment')) url.searchParams.set('comment', 'SLINK PDA Bounties');
+await bountyReserve('torn', settings.tornCallsPerMinute);
+await reserveTornApi(url.pathname, { limit:API_LIMIT, priority:'normal' });
+const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
+if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
+return result;
+}
+function cleanBountyNext(input) {
+if (!input) return '';
+try { const url = new URL(input, URLS.torn); if (url.origin !== URLS.torn) return ''; url.searchParams.delete('key'); return url.href; }
+catch { return ''; }
+}
+function mergeBountyRows(targets, rows) {
+const map = new Map((targets || []).map(target => [Number(target.id), { ...target }]));
+for (const row of rows || []) {
+const id = Math.trunc(Number(row?.target_id ?? row?.id) || 0);
+const reward = Math.max(0, Number(row?.reward) || 0);
+if (!id || !reward) continue;
+const quantity = Math.max(1, Number(row?.quantity) || 1);
+const previous = map.get(id);
+if (!previous) {
+map.set(id, { id, name:String(row?.target_name || row?.name || `Player ${id}`).slice(0, 80), level:Math.max(0, Number(row?.target_level ?? row?.level) || 0), highestReward:reward, highestQuantity:quantity, apiRows:1 });
+} else {
+previous.apiRows = Number(previous.apiRows || 0) + 1;
+if (reward > Number(previous.highestReward || 0)) { previous.highestReward = reward; previous.highestQuantity = quantity; }
+else if (reward === Number(previous.highestReward || 0)) previous.highestQuantity = Number(previous.highestQuantity || 0) + quantity;
+}
+}
+return [...map.values()].sort((a, b) => b.highestReward - a.highestReward || a.id - b.id);
+}
+function bountyFfRows(response) {
+if (Array.isArray(response)) return response;
+if (Array.isArray(response?.results)) return response.results;
+if (Array.isArray(response?.data)) return response.data;
+const object = response?.results || response?.data || response;
+return object && typeof object === 'object' ? Object.entries(object).map(([id, row]) => ({ player_id:Number(row?.player_id ?? row?.id ?? id), ...(row || {}) })) : [];
+}
+async function enrichBountyFairFight(runtime, targets) {
+const key = currentFfKey();
+if (!key || !targets.length) return;
+const now = Date.now();
+const ids = [...new Set(targets.map(target => Number(target.id)).filter(id => id > 0 && now - Number(runtime.fairFight[id]?.checkedAt || 0) >= BOUNTY_FF_CACHE_MS))];
+for (let index = 0; index < ids.length; index += BOUNTY_FF_BATCH_SIZE) {
+const chunk = ids.slice(index, index + BOUNTY_FF_BATCH_SIZE);
+try {
+await bountyReserve('ff', bountySettings().ffBatchesPerMinute);
+const response = await requestJson(`https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(key)}&targets=${encodeURIComponent(chunk.join(','))}`);
+if (response?.error) throw new Error('FFScouter unavailable.');
+const returned = new Set();
+for (const row of bountyFfRows(response)) {
+const id = Math.trunc(Number(row?.player_id ?? row?.id) || 0);
+if (!id || !chunk.includes(id)) continue;
+returned.add(id);
+runtime.fairFight[id] = { fairFight:finite(row?.fair_fight), battleStats:finite(row?.bs_estimate), source:String(row?.source || 'FFScouter'), checkedAt:now };
+}
+for (const id of chunk) if (!returned.has(id) && !runtime.fairFight[id]) runtime.fairFight[id] = { fairFight:null, battleStats:null, source:'FFScouter', checkedAt:now };
+dataState.caches.bounties = runtime; writeDataState();
+} catch { break; /* Continue status/reward scanning during FF outages. */ }
+}
+}
+function bountyStateName(value) {
+const lower = String(value || '').trim().toLowerCase();
+if (lower.includes('hospital')) return 'Hospital';
+if (lower.includes('federal')) return 'Federal';
+if (lower.includes('hiding')) return 'Hiding Out';
+if (lower.includes('travel') || lower.includes('flying')) return 'Traveling';
+if (lower.includes('abroad')) return 'Abroad';
+if (lower === 'okay' || lower === 'ok') return 'Okay';
+return String(value || 'Unknown').slice(0, 40);
+}
+function effectiveBountyStatus(record) {
+if (!record) return { state:'Unknown', label:'Unknown', until:0 };
+const status = effectivePlayerIntelligenceStatus(record);
+return {
+state:status.state,
+label:status.presumed ? 'Presumed Okay' : status.state,
+until:status.until
+};
+}
+function bountyCandidates(runtime) {
+const settings = bountySettings();
+const low = Math.min(settings.minFF, settings.maxFF), high = Math.max(settings.minFF, settings.maxFF);
+return runtime.targets.map(target => {
+const estimate = runtime.fairFight[target.id] || {};
+return { ...target, fairFight:finite(estimate.fairFight), battleStats:finite(estimate.battleStats), fairFightStale:Date.now()-Number(estimate.checkedAt||0)>=BOUNTY_FF_CACHE_MS, fairFightCheckedAt:Number(estimate.checkedAt)||0, status:effectiveBountyStatus(runtime.statuses[target.id]) };
+}).filter(target => {
+if (!settings.scanFullList && target.highestReward < settings.minimumReward) return false;
+if (target.fairFight === null || target.battleStats === null) { if (!settings.includeUnknownEstimates) return false; }
+else if (target.fairFight < low || target.fairFight > high || (settings.maxBattleStats > 0 && target.battleStats > settings.maxBattleStats)) return false;
+if (target.status.state === 'Federal') return false;
+if (!settings.includeAbroad && ['Abroad', 'Traveling', 'Hiding Out'].includes(target.status.state)) return false;
+if (settings.statusFilter === 'okay' && target.status.state !== 'Okay') return false;
+if (settings.statusFilter === 'hospital' && target.status.state !== 'Hospital') return false;
+if (settings.statusFilter === 'hide-hospital' && target.status.state === 'Hospital') return false;
+return true;
+}).sort((a, b) => b.highestReward - a.highestReward || (b.fairFight || 0) - (a.fairFight || 0));
+}
+function renderBounties() {
+const root = moduleRoot('bounties');
+if (!root) return;
+const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
+const controls = `<div class="bounty-form"><label class="check-row wide"><input type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${escapeHtml(ffLabel(target))} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}<button type="button" data-action="save-source-target" data-target-source="bounties" data-target-id="${target.id}">Save Target</button></div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets are currently loaded. Press Refresh to start or restart the five-minute Bounty cycle.')}</div></article></div>`;
+}
+function pdaBattleStatsTotal(payload) {
+const source = payload?.battlestats ?? payload?.battle_stats ?? payload?.stats ?? payload ?? {};
+const valueOf = value => {
+const candidate = value && typeof value === 'object' ? value.value ?? value.total ?? value.amount : value;
+const number = Number(candidate);
+return Number.isFinite(number) && number >= 0 ? number : null;
+};
+const values = ['strength', 'defense', 'speed', 'dexterity'].map(key => valueOf(source[key]));
+if (values.some(value => value === null)) throw new Error('Torn returned incomplete battle stats for rough Fair Fight assignment.');
+const total = values.reduce((sum, value) => sum + value, 0);
+if (!(total > 0)) throw new Error('Your Torn battle-stat total is unavailable.');
+return total;
+}
+async function muggingRequest(path, options = {}, retried = false) {
+const session = await ensurePermissionSession(false);
+if (!hasScope('slink.mugging')) throw new Error('Your SLINK account does not have slink.mugging permission.');
+try {
+return await requestJson(`${URLS.mugging}${path}`, {
+...options,
+headers:{ Authorization:`Bearer ${session.token}`, ...(options.headers || {}) }
+});
+} catch (error) {
+if (error?.status === 401 && !retried) {
+dataState.sessions.permission = null;
+writeDataState();
+await ensurePermissionSession(true);
+return muggingRequest(path, options, true);
+}
+throw error;
+}
+}
+function muggingContributionMode(now = Date.now()) {
+return moduleIsActive('mugging', now) ? 'active' : 'inactive';
+}
+function touchMuggingActivity() {
+return touchModuleActivity('mugging');
+}
+function muggingClientId() {
+let value = String(dataState.caches.muggingClientId || '').trim();
+if (!value) {
+value = global.crypto?.randomUUID?.() || `pda-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+dataState.caches.muggingClientId = value;
+writeDataState();
+}
+return value;
+}
+function pdaStoredOwnBattleStats() {
+const normalize = value => value && typeof value === 'object' && Number(value.total) > 0 ? {
+...value,
+schema:2,
+total:Number(value.total),
+level:Math.max(0,Math.trunc(Number(value.level)||0)),
+checkedAt:Math.max(0,Number(value.checkedAt)||0),
+source:String(value.source || 'torn-v2-battlestats')
+} : null;
+const durable=normalize(storageRead(OWN_BATTLE_STATS_STORAGE_KEY, null));
+const shared=normalize(dataState.caches.ownBattleStats);
+// The dedicated and shared records are both populated only from the
+// authenticated Torn battlestats endpoint. Choose the fresher of those two.
+// The legacy Mugging cache is migration-only and must never replace a valid
+// shared Torn record, even if an old build gave it a misleading timestamp.
+let current=!durable?shared:!shared?durable:Number(durable.checkedAt)>=Number(shared.checkedAt)?durable:shared;
+if(!current){
+const legacy=normalize(dataState.caches.muggingOwnBattleStats);
+if(legacy)current={...legacy,source:'legacy-torn-cache-migration'};
+}
+if(!current)return {};
+const accountId=Number(dataState.sessions?.permission?.userId)||0;
+if(current.accountId && accountId && Number(current.accountId)!==accountId)return {};
+dataState.caches.ownBattleStats=current;
+delete dataState.caches.muggingOwnBattleStats;
+if(!durable||durable.total!==current.total||durable.level!==current.level||durable.checkedAt!==current.checkedAt)storageWrite(OWN_BATTLE_STATS_STORAGE_KEY,current);
+return current;
+}
+async function pdaOwnBattleStats(force = false) {
+const record=await pdaSharedData().personal({key:currentApiKey(),force,maxAgeMs:MUGGING_OWN_STATS_TTL_MS,requireLevel:true});
+return record.total;
+}
+function queueMuggingContributionObservation(playerId, record, mode) {
+const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object' ? dataState.caches.muggingPendingSync : {};
+pending[String(playerId)] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, pendingSync:true };
+const rows = Object.values(pending).sort((left, right) => Number(right.observedAt) - Number(left.observedAt)).slice(0, 500);
+dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [String(row.playerId), row]));
+}
+function muggingContributorReport(row, client) {
+const record = row?.record && typeof row.record === 'object' ? row.record : {};
+const playerId = validPlayerIntelligenceId(row?.playerId ?? record.playerId ?? record.id) || 0;
+const observedAt = Math.max(0, Number(row?.observedAt ?? record.observedAt) || Date.now());
+return {
+report_id:`${client}:${playerId}:${Math.trunc(observedAt)}`,
+player_id:playerId,
+name:String(record.name || '').slice(0, 80),
+observed_at:observedAt,
+state:String(record.state ?? record.status?.state ?? '').slice(0, 40),
+description:String(record.description ?? record.status?.description ?? '').slice(0, 500),
+until:Math.max(0, Math.trunc(Number(record.until ?? record.status?.until) || 0)),
+level:Math.max(0, Number(record.level) || 0),
+bountyCount:Math.max(0, Math.trunc(Number(record.bountyCount) || 0)),
+bountyTotal:Math.max(0, Number(record.bountyTotal) || 0),
+battleStatsEstimate:record.battleStatsEstimate != null && typeof record.battleStatsEstimate !== 'boolean' && Number.isFinite(Number(record.battleStatsEstimate)) && Number(record.battleStatsEstimate) > 0 ? Number(record.battleStatsEstimate) : null,
+battle_stats_observed_at:Math.max(0,Number(record.fieldMeta?.battleStatsEstimate?.at ?? record.battleStatsCheckedAt)||0),
+fairFight:null // Observer-dependent values are not portable contributor intelligence.
+};
+}
+async function syncMuggingContributorReports(force = false) {
+const now = Date.now();
+const previous = dataState.caches.muggingSync || {};
+const retryAt=Number(previous.nextAttemptAt)||Number(previous.lastAttemptAt||0)+(previous.error?MUGGING_SYNC_RETRY_MS:MUGGING_SYNC_INTERVAL_MS);
+if (!force && now < retryAt) return previous;
+if (!Object.keys(dataState.caches.muggingPendingSync||{}).length) return previous;
+if (!dataState.settings.mugging.enabled || !hasScope('slink.mugging')) return previous;
+if (muggingSyncBusy) return previous;
+muggingSyncBusy = true;
+const client = muggingClientId();
+let accepted = 0;
+let batches = 0;
+try {
+while (batches < MUGGING_SYNC_MAX_BATCHES) {
+const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object'
+? dataState.caches.muggingPendingSync
+: {};
+const rows = Object.values(pending).slice(0, MUGGING_SYNC_BATCH_SIZE);
+if (!rows.length) break;
+const reports = rows.map(row => muggingContributorReport(row, client)).filter(report => report.player_id > 0);
+if (!reports.length) {
+dataState.caches.muggingPendingSync = {};
+writeDataState();
+break;
+}
+const response = await muggingRequest('/api/contributor/reports', {
+method:'POST',
+body:{ client_id:client, reports }
+});
+batches++;
+const acknowledged = new Set(Array.isArray(response?.acknowledged_report_ids) ? response.acknowledged_report_ids.map(String) : []);
+if (!acknowledged.size) throw new Error('The Mugging Worker did not acknowledge the contributor batch.');
+const latest = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object'
+? dataState.caches.muggingPendingSync
+: {};
+for (const [playerId, row] of Object.entries(latest)) {
+if (acknowledged.has(muggingContributorReport(row, client).report_id)) delete latest[playerId];
+}
+dataState.caches.muggingPendingSync = latest;
+accepted += acknowledged.size;
+writeDataState();
+if (rows.length < MUGGING_SYNC_BATCH_SIZE) break;
+}
+const status = {
+lastAttemptAt:now,
+lastSuccessAt:Date.now(),
+nextAttemptAt:now+MUGGING_SYNC_INTERVAL_MS,
+consecutiveFailures:0,
+accepted,
+batches,
+pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+error:''
+};
+dataState.caches.muggingSync = status;
+writeDataState();
+return status;
+} catch (error) {
+const status = {
+...previous,
+lastAttemptAt:now,
+nextAttemptAt:now+Math.min(MUGGING_SYNC_INTERVAL_MS,MUGGING_SYNC_RETRY_MS*2**Math.min(3,Number(previous.consecutiveFailures)||0)),
+consecutiveFailures:(Number(previous.consecutiveFailures)||0)+1,
+accepted:0,
+batches,
+pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+error:errorMessage(error)
+};
+dataState.caches.muggingSync = status;
+writeDataState();
+return status;
+} finally {
+muggingSyncBusy = false;
+}
+}
+async function runMuggingContribution(force = false) {
+const now = Date.now();
+const settings = dataState.settings.mugging;
+const previous = dataState.caches.muggingContribution || {};
+if (!settings.enabled || !hasScope('slink.mugging') || !currentApiKey()) return previous;
+if (!force && now - Number(previous.at || 0) < MUGGING_CONTRIBUTION_INTERVAL_MS) return previous;
+if (muggingContributionBusy) return previous;
+muggingContributionBusy = true;
+try {
+const mode = muggingContributionMode(now);
+const capacity = contributionCapacity(readApiLedger(now));
+const response = capacity.available > 0
+? await muggingRequest('/api/contributor/tasks', {
+method:'POST',
+body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(100, capacity.available * 4) }
+})
+: { tasks:[] };
+let fetched = 0, skipped = 0, errors = 0;
+const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
+for (const task of tasks) {
+if (fetched >= capacity.available) break;
+try {
+const result = await refreshPlayerIntelligence({
+playerId:task.player_id,
+maxAgeMs:15 * 60_000,
+priority:'contribution',
+contribution:true,
+wait:false
+});
+if (!result?.fetched) { skipped++; continue; }
+fetched++;
+queueMuggingContributionObservation(task.player_id, result.record, mode);
+} catch (error) {
+errors++;
+if (error?.code === 'SLINK_TORN_API_LIMIT') break;
+}
+}
+let assignmentsRefreshed = false;
+const assignmentCache = muggingCache();
+const ownStats = Number(pdaStoredOwnBattleStats()?.total) || 0;
+if (mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
+try {
+await refreshMugging(false, { userBattleStats:ownStats, touch:false, background:true });
+assignmentsRefreshed = true;
+} catch {}
+}
+const sync = await syncMuggingContributorReports(false);
+const status = {
+at:Date.now(), enabled:true, mode, apiBudgetPerMinute:capacity.available,
+contributionCeiling:CONTRIBUTION_CEILING,
+interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE,
+sharedUsageAtStart:capacity.count,
+tasksOffered:tasks.length, fetched, skipped, errors, assignmentsRefreshed,
+pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+lastSyncAt:Math.max(0, Number(sync?.lastSuccessAt) || 0),
+synced:Math.max(0, Number(sync?.accepted) || 0),
+syncError:String(sync?.error || '')
+};
+dataState.caches.muggingContribution = status;
+writeDataState();
+renderMugging();
+return status;
+} catch (error) {
+const status = { ...previous, at:Date.now(), enabled:true, mode:muggingContributionMode(), error:errorMessage(error) };
+dataState.caches.muggingContribution = status;
+writeDataState();
+return status;
+} finally {
+muggingContributionBusy = false;
+}
+}
+function muggingLevelBadge(targetLevel, userLevel) {
+const target = Math.max(0, Math.trunc(Number(targetLevel) || 0));
+const own = Math.max(0, Math.trunc(Number(userLevel) || 0));
+if (!target) return '<span class="badge">Level unknown</span>';
+if (!own) return `<span class="badge">Level ${target}</span>`;
+const difference = target - own;
+const intensity = Math.min(1, Math.abs(difference) / 50);
+const hue = difference === 0 ? 48 : difference < 0 ? 128 : 0;
+const saturation = Math.round(72 + intensity * 22);
+const lightness = Math.round(48 - intensity * 23);
+const relation = difference === 0 ? 'same as you' : difference < 0 ? `${Math.abs(difference)} below you` : `${difference} above you`;
+return `<span class="badge" style="background:hsl(${hue} ${saturation}% ${lightness}%);color:#fff;border-color:rgba(255,255,255,.24);font-weight:800" title="${escapeHtml(`Level ${target} · ${relation}`)}">Level ${target}</span>`;
+}
+function muggingCache() {
+const value = dataState.caches.mugging && typeof dataState.caches.mugging === 'object'
+? dataState.caches.mugging
+: {};
+const ownStats=pdaStoredOwnBattleStats();
+return {
+updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
+estimateKind:String((value.estimateKind ?? value.estimate_kind) || 'rough'),
+estimateSource:String((value.estimateSource ?? value.estimate_source) || 'cached battle-stat estimate'),
+userBattleStats:Math.max(0, Number(ownStats?.total) || 0),
+userLevel:Math.max(0, Math.trunc(Number(ownStats?.level) || 0)),
+pool:{
+total:Math.max(0, Number(value.pool?.total) || 0),
+estimable:Math.max(0, Number(value.pool?.estimable) || 0),
+eligible:Math.max(0, Number(value.pool?.eligible) || 0),
+excluded:value.pool?.excluded && typeof value.pool.excluded === 'object' ? value.pool.excluded : null
+},
+targets:(Array.isArray(value.targets) ? value.targets : []).map(target => ({
+...target,
+id:validPlayerIntelligenceId(target?.id ?? target?.playerId),
+level:Math.max(0, Math.trunc(Number(target?.level) || 0)),
+fairFight:finite(target?.fairFight ?? target?.fair_fight),
+battleStatsEstimate:finite(target?.battleStatsEstimate ?? target?.battle_stats_estimate),
+estimateKind:String((target?.estimateKind ?? target?.estimate_kind) || 'rough'),
+estimateSource:String((target?.estimateSource ?? target?.estimate_source) || 'cached'),
+confidence:String(target?.confidence || '')
+})).filter(target => target.id)
+};
+}
+async function refreshMugging(force = false, options = {}) {
+const settings = dataState.settings.mugging;
+const current = moduleState.mugging;
+if (!hasScope('slink.mugging')) { renderMugging(); return; }
+if (!settings.enabled) {
+if (force) current.error = 'Enable Mugging on this PDA installation before requesting assignments.';
+renderMugging();
+return;
+}
+if (current.busy) return;
+current.busy = true;
+current.error = '';
+current.notice = '';
+if (options.touch !== false) touchMuggingActivity();
+renderMugging();
+try {
+const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats(force === true && options.background !== true);
+const response = await muggingRequest('/api/assignments/rough', {
+method:'POST',
+body:{
+user_battle_stats:userBattleStats,
+min_fair_fight:Number(settings.minFairFight) || 1,
+max_fair_fight:Number(settings.maxFairFight) || 3,
+limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
+}
+});
+dataState.caches.mugging = {
+...response,
+userBattleStats,
+userLevel:Math.max(0, Math.trunc(Number(pdaStoredOwnBattleStats()?.level) || 0)),
+ownBattleStatsCheckedAt:Math.max(0,Number(pdaStoredOwnBattleStats()?.checkedAt)||0),
+updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
+};
+writeDataState();
+const cache = muggingCache();
+current.notice = `Loaded ${cache.targets.length} rough Fair Fight assignments from cached Mugging intelligence.`;
+} catch (error) {
+current.error = errorMessage(error);
+} finally {
+current.busy = false;
+renderMugging();
+}
+}
+function renderMugging() {
+const root = moduleRoot('mugging');
+if (!root) return;
+if (!hasScope('slink.mugging')) {
+root.innerHTML = '';
+return;
+}
+const settings = dataState.settings.mugging;
+const state = moduleState.mugging;
+const cache = muggingCache();
+const contribution = dataState.caches.muggingContribution || {
+mode:settings.enabled ? muggingContributionMode() : 'disabled',
+apiBudgetPerMinute:settings.enabled ? (muggingContributionMode() === 'active' ? 10 : 5) : 0,
+fetched:0,
+pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
+lastSyncAt:Math.max(0, Number(dataState.caches.muggingSync?.lastSuccessAt) || 0),
+synced:Math.max(0, Number(dataState.caches.muggingSync?.accepted) || 0),
+syncError:String(dataState.caches.muggingSync?.error || '')
+};
+const rows = cache.targets.map(target => {
+const status = target?.status || {};
+const stateLabel = String(status.state || status.label || 'Unknown');
+const statusLabel = Number(status.until) > Date.now() / 1000 && PLAYER_INTELLIGENCE_TIMED_STATES.has(stateLabel)
+? `${stateLabel} · ${duration(Number(status.until) - Date.now() / 1000)}`
+: stateLabel;
+const profile = `https://www.torn.com/profiles.php?XID=${target.id}`;
+const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
+const fairFight = finite(target?.fairFight);
+const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
+const levelBadge = muggingLevelBadge(target.level, cache.userLevel);
+return `<article class="target-card"><div>
+<strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
+<small>${levelBadge} · ${escapeHtml(statusLabel)} · Rough FF ${fairFight === null ? '?' : number(fairFight, 2)} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
+</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
+}).join('');
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
+<div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div><div class="stat"><strong>${escapeHtml(contribution.mode || 'disabled')}</strong><span>${Number(contribution.fetched) || 0}/${Number(contribution.apiBudgetPerMinute) || 0} contributor checks</span></div></div>
+${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}
+${cache.pool.excluded ? moduleMessage(`Pool exclusions: ${Number(cache.pool.excluded.no_estimate)||0} without estimates · ${Number(cache.pool.excluded.timed_unavailable)||0} hospital/jail timers · ${Number(cache.pool.excluded.mug_cooldown)||0} post-mug cooldowns · ${Number(cache.pool.excluded.fair_fight_range)||0} outside your FF range.`) : ''}
+<div class="bounty-form">
+<label class="check-row wide"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
+<label>Minimum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-min-ff" value="${Number(settings.minFairFight) || 1}"></label>
+<label>Maximum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-max-ff" value="${Number(settings.maxFairFight) || 3}"></label>
+<label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
+<div class="bounty-form-actions wide"><button type="button" data-action="refresh-mugging" ${state.busy ? 'disabled' : ''}>${state.busy ? 'Finding targets…' : 'Find targets'}</button></div>
+</div>
+${contribution.lastSyncAt ? `<div class="module-message">Last sync ${escapeHtml(new Date(contribution.lastSyncAt).toLocaleString())}</div>` : ''}
+<div class="target-stack">${rows || moduleMessage('No rough assignments are cached yet. Enable Mugging and press Find targets.')}</div>
+</article></div>`;
+}
+function targetListStatusLabel(target) {
+const status = target.status || {};
+if (PLAYER_INTELLIGENCE_TIMED_STATES.has(status.state) && Number(status.until) > Date.now() / 1000) return `${status.state} · ${duration(Number(status.until) - Date.now() / 1000)}`;
+return status.state || 'Unknown';
+}
+function renderTargetList() {
+const root = moduleRoot('targetList');
+if (!root) return;
+root.dataset.uiExplicitCommit = 'true';
+const state = moduleState.targetList, targets = pdaTargetListEntries();
+const pollingSettings = targetPollingSettings(), pollingRuntime = targetPollingRuntime();
+const stakeout = targetStakeoutStatus();
+const pollingEligible = targetPollingEligible(pollingSettings);
+const pollingEstimate = pollingEligible.length ? Math.ceil(pollingEligible.length / pollingSettings.intervalMinutes) : 0;
+const editing = targets.find(target => target.id === Number(state.editingId)) || null;
+const selectedTags = new Set(editing?.tags || ['Target']);
+const form = state.formOpen ? `<div class="target-list-form" data-target-editor>
+<label>Player ID<input type="number" min="1" inputmode="numeric" data-field="target-list-id" value="${editing?.id || ''}" ${editing ? 'disabled' : ''} placeholder="123456"></label>
+<label>Name (optional)<input type="text" maxlength="80" data-field="target-list-name" value="${escapeHtml(editing?.name || '')}" placeholder="Player name"></label>
+<label class="wide">Notes<textarea maxlength="500" data-field="target-list-description" placeholder="Why are you tracking this player?">${escapeHtml(editing?.description || '')}</textarea></label>
+<label class="check-row wide"><input type="checkbox" data-field="target-list-stakeout" ${editing?.stakeout ? 'checked' : ''}>Stakeout — monitor this target substantially more often</label>
+<label>Stakeout interval (seconds)<input type="number" min="10" max="3600" step="1" data-field="target-list-stakeout-interval" value="${Number(editing?.stakeoutIntervalSeconds) || TARGET_STAKEOUT_DEFAULT_SECONDS}"></label>
+<div class="target-list-tags wide">${TARGET_LIST_DEFAULT_TAGS.map(tag => `<label class="check-row"><input type="checkbox" data-target-list-tag="${escapeHtml(tag)}" ${selectedTags.has(tag) ? 'checked' : ''}>${escapeHtml(tag)}</label>`).join('')}</div>
+<div class="target-list-form-actions wide"><button type="button" data-action="save-target-list">${editing ? 'Save changes' : 'Add target'}</button><button type="button" data-action="cancel-target-list">Cancel</button></div>
+</div>` : '';
+const pollingForm = state.pollingOpen ? `<div class="target-list-form" data-target-polling>
+<label class="check-row wide"><input type="checkbox" data-field="target-poll-enabled" ${pollingSettings.enabled ? 'checked' : ''}>Automatically check saved targets</label>
+<label>Complete each rolling cycle every<input type="number" min="1" max="1440" step="1" data-field="target-poll-interval" value="${pollingSettings.intervalMinutes}"></label>
+<label class="check-row"><input type="checkbox" data-field="target-poll-mug-only" ${pollingSettings.mugOnly ? 'checked' : ''}>Only auto-check targets tagged Mug</label>
+<div class="module-message wide">${pollingEligible.length} rolling-poll targets · up to ${pollingEstimate} scheduled checks/min before cache and timer skips${pollingRuntime.lastRunAt ? ` · last cycle ${escapeHtml(relativeTime(pollingRuntime.lastRunAt))}` : ''}${pollingRuntime.lastError ? ` · ${escapeHtml(pollingRuntime.lastError)}` : ''}</div>
+<div class="module-message wide"><strong>Stakeout:</strong> ${stakeout.targetCount} targets · up to ${stakeout.estimatedChecksPerMinute} evaluations/min before DOM, cache, and known-timer skips. Use sparingly; Stakeout can consume substantially more Torn API capacity.</div>
+<div class="target-list-form-actions wide"><button type="button" data-action="save-target-polling">Save polling</button></div>
+</div>` : '';
+const rows = targets.map(target => {
+const profile = `https://www.torn.com/profiles.php?XID=${target.id}`, attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
+return `<article class="target-card target-list-card${target.stakeout ? ' is-stakeout' : ''}" data-target-list-id="${target.id}"><div>
+<strong>${escapeHtml(target.name)} [${target.id}]</strong>${target.stakeout ? ` <span class="target-list-stakeout">Stakeout · ${target.stakeoutIntervalSeconds}s</span>` : ''}
+<div class="target-list-tags">${target.tags.map(tag => `<span class="target-list-tag">${escapeHtml(tag)}</span>`).join('')}</div>
+${target.description ? `<div class="target-list-description">${escapeHtml(target.description)}</div>` : ''}
+<small>${escapeHtml(targetListStatusLabel(target))} · observed ${escapeHtml(relativeTime(target.lastChecked))}${target.intelligence?.lastDomObservedAt ? ` · DOM ${escapeHtml(relativeTime(target.intelligence.lastDomObservedAt))}` : ''}${target.intelligence?.lastApiCheckAt ? ` · API ${escapeHtml(relativeTime(target.intelligence.lastApiCheckAt))}` : ''}${target.lastSeenMugged ? ` · mugged ${escapeHtml(relativeTime(target.lastSeenMugged))}` : ''}${target.bountyCount ? ` · ${target.bountyCount} bounties / ${money(target.bountyTotal)}` : ''}</small>
+<div class="target-list-sources">${target.sources.map(source => `<span>${escapeHtml(source.label || source.source)}</span>`).join('')}</div>
+</div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="toggle-target-stakeout">${target.stakeout ? 'Stop Stakeout' : 'Stakeout'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
+}).join('');
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><div class="target-actions"><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button><button type="button" data-action="toggle-target-polling">${state.pollingOpen ? 'Close polling' : 'Polling'}</button></div></div>
+<div class="module-message">Other SLINK target feeds are not copied here automatically.${pollingSettings.enabled ? ` Rolling checks are spread across ${pollingSettings.intervalMinutes} minutes.` : ''}</div>
+${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}${pollingForm}
+${stakeout.activeAlerts.length ? `<div class="alert-list">${stakeout.activeAlerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('')}</div>` : ''}
+<div class="target-stack">${rows || moduleMessage('No saved targets yet. Use Add target to save one manually.')}</div>
+</article></div>`;
+}
+async function refreshBounties(force = false) {
+const current = moduleState.bounties, settings = bountySettings();
+if (!hasScope(BOUNTY_SCOPE)) { renderBounties(); return; }
+if (!settings.enabled || !bountyActive()) { renderBounties(); return; }
+if (current.busy) return;
+current.busy = true; current.error = ''; renderBounties();
+try {
+let runtime = bountyRuntime();
+if ((force && runtime.completed) || !runtime.nextUrl || (runtime.completed && Date.now() >= Number(runtime.nextRefreshAt || 0))) runtime = dataState.caches.bounties = freshBountyRuntime(runtime);
+if (runtime.completed) return;
+for (let page = 0; page < BOUNTY_PAGES_PER_BATCH; page++) {
+const data = await bountyTornJson(cleanBountyNext(runtime.nextUrl) || `/v2/torn/bounties?limit=${BOUNTY_PAGE_LIMIT}&offset=${runtime.scannedRows}`);
+const rows = Array.isArray(data?.bounties) ? data.bounties : [];
+const eligible = settings.scanFullList ? rows : rows.filter(row => Number(row?.reward) >= settings.minimumReward);
+runtime.targets = mergeBountyRows(runtime.targets, eligible);
+runtime.scannedRows += rows.length; runtime.pagesFetched += 1;
+runtime.reportedTotal = Math.max(Number(data?._metadata?.total) || 0, runtime.reportedTotal || 0);
+runtime.snapshotTimestamp = Math.max(Number(data?.bounties_timestamp) || 0, runtime.snapshotTimestamp || 0);
+runtime.cacheDelaySeconds = Math.max(1, Number(data?.bounties_delay) || runtime.cacheDelaySeconds || 30);
+runtime.nextUrl = cleanBountyNext(data?._metadata?.links?.next);
+const crossed = !settings.scanFullList && rows.some(row => Number(row?.reward) < settings.minimumReward);
+const exhausted = rows.length < BOUNTY_PAGE_LIMIT || !runtime.nextUrl || (runtime.reportedTotal > 0 && runtime.scannedRows >= runtime.reportedTotal);
+runtime.stoppedAtMinimum = crossed; runtime.completed = crossed || exhausted; runtime.at = Date.now();
+dataState.caches.bounties = runtime; writeDataState();
+if (runtime.completed) break;
+}
+await enrichBountyFairFight(runtime, runtime.targets);
+if (runtime.completed) runtime.nextRefreshAt = Math.max(Date.now() + runtime.cacheDelaySeconds * 1000, (runtime.snapshotTimestamp + runtime.cacheDelaySeconds) * 1000);
+runtime.at = Date.now(); dataState.caches.bounties = runtime; current.data = runtime; writeDataState();
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderBounties(); }
+}
+function saveBountySettings() {
+const root = moduleRoot('bounties'); if (!root) return;
+const previous = { ...bountySettings() };
+dataState.settings.bounties = {
+enabled:root.querySelector('[data-field="bounty-enabled"]')?.checked === true,
+minimumReward:root.querySelector('[data-field="bounty-minimum"]')?.value,
+scanFullList:root.querySelector('[data-field="bounty-full-list"]')?.checked === true,
+minFF:root.querySelector('[data-field="bounty-min-ff"]')?.value,
+maxFF:root.querySelector('[data-field="bounty-max-ff"]')?.value,
+maxBattleStats:root.querySelector('[data-field="bounty-max-bs"]')?.value,
+statusFilter:root.querySelector('[data-field="bounty-status"]')?.value,
+includeUnknownEstimates:root.querySelector('[data-field="bounty-unknown"]')?.checked === true,
+includeAbroad:root.querySelector('[data-field="bounty-abroad"]')?.checked === true,
+tornCallsPerMinute:root.querySelector('[data-field="bounty-torn-rate"]')?.value,
+ffBatchesPerMinute:root.querySelector('[data-field="bounty-ff-rate"]')?.value
+};
+bountySettings();
+if (previous.minimumReward !== dataState.settings.bounties.minimumReward || previous.scanFullList !== dataState.settings.bounties.scanFullList) dataState.caches.bounties = freshBountyRuntime(bountyRuntime());
+if (dataState.settings.bounties.enabled) touchBounties(); else writeDataState();
+moduleState.bounties.error = ''; renderBounties(); void refreshBounties(false);
+}
+function parseProfileTimer(text) {
+const lower = String(text || '').toLowerCase();
+let total = [[/([0-9]+)\s*d(?:ay)?s?/,86400],[/([0-9]+)\s*h(?:our)?s?/,3600],[/([0-9]+)\s*m(?:in(?:ute)?)?s?/,60],[/([0-9]+)\s*s(?:ec(?:ond)?)?s?/,1]]
+.reduce((sum,[pattern,unit]) => sum + Number(lower.match(pattern)?.[1] || 0) * unit, 0);
+if (total) return total;
+const clock = lower.match(/(?:(\d+)\s*d(?:ays?)?\s*)?(\d{1,2}):(\d{2}):(\d{2})/);
+if (!clock) return 0;
+return (Number(clock[1]) || 0) * 86400 + Number(clock[2]) * 3600 + Number(clock[3]) * 60 + Number(clock[4]);
+}
+function detectProfileDomState(text) {
+const lower = String(text || '').toLowerCase();
+if (lower.includes('federal jail')) return 'Federal';
+if (lower.includes('hiding out')) return 'Hiding Out';
+if (lower.includes('hospitalized') || lower.includes('in hospital') || lower.includes('hospital')) return 'Hospital';
+if (lower.includes('in jail') || /\bjailed\b/.test(lower)) return 'Jail';
+if (lower.includes('traveling') || lower.includes('travelling') || lower.includes('flying') || lower.includes('returning to torn')) return 'Traveling';
+if (lower.includes('abroad')) return 'Abroad';
+if (/\bokay\b/.test(lower)) return 'Okay';
+return '';
+}
+function rememberPlayerProfileIntent(id, source = 'profile') {
+const playerId = validPlayerIntelligenceId(id);
+if (!playerId) return false;
+try {
+global.sessionStorage.setItem(PLAYER_PROFILE_INTENT_KEY, JSON.stringify({
+playerId,
+source:String(source || 'profile').slice(0, 80),
+expiresAt:Date.now() + BOUNTY_ACTIVE_GRACE_MS
+}));
+return true;
+} catch {
+return false;
+}
+}
+function rememberBountyProfileIntent(id) {
+return rememberPlayerProfileIntent(id, 'bounties');
+}
+function readPlayerProfileIntent() {
+try {
+const value = JSON.parse(global.sessionStorage.getItem(PLAYER_PROFILE_INTENT_KEY) || 'null');
+const playerId = validPlayerIntelligenceId(value?.playerId);
+if (!playerId || Number(value?.expiresAt) <= Date.now()) {
+global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY);
+return null;
+}
+return { playerId, source:String(value.source || 'profile'), expiresAt:Number(value.expiresAt) };
+} catch {
+try { global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY); } catch {}
+return null;
+}
+}
+function clearPlayerProfileIntent() {
+try { global.sessionStorage.removeItem(PLAYER_PROFILE_INTENT_KEY); } catch {}
+}
+function activeProfilePage(expectedId = 0) {
+if (!pdaDomActive()) return null;
+let url;
+try { url = new URL(global.location.href); } catch { return null; }
+if (!/^\/profiles\.php$/i.test(url.pathname)) return null;
+const playerId = validPlayerIntelligenceId(url.searchParams.get('XID'));
+if (!playerId || (expectedId && Number(expectedId) !== playerId)) return null;
+return { playerId, url };
+}
+function profileUntil(node, text) {
+const values = [node, ...node.querySelectorAll?.('[data-until],[data-timestamp],[data-time],time[datetime]') || []];
+for (const candidate of values) {
+for (const attribute of ['data-until','data-timestamp','data-time','datetime']) {
+const raw = candidate.getAttribute?.(attribute);
+const numeric = Number(raw);
+if (Number.isFinite(numeric) && numeric > 0) {
+const seconds = numeric > 10_000_000_000 ? numeric / 1000 : numeric;
+if (seconds > Date.now() / 1000 - 86400) return Math.trunc(seconds);
+}
+const parsed = Date.parse(String(raw || ''));
+if (Number.isFinite(parsed) && parsed > Date.now() - 86_400_000) return Math.trunc(parsed / 1000);
+}
+}
+const remaining = parseProfileTimer(text);
+return remaining ? Math.floor(Date.now() / 1000 + remaining) : 0;
+}
+function visibleProfileName(playerId) {
+for (const selector of ['h1 [class*="name"]','[class*="profile"] h1','[class*="user-information"] [class*="name"]','h1']) {
+const text = String(document.querySelector(selector)?.textContent || '').trim();
+if (!text) continue;
+const cleaned = text.replace(new RegExp('\\s*\\[' + playerId + '\\].*$'), '').trim();
+if (cleaned && cleaned.length <= 80) return cleaned;
+}
+return '';
+}
+function visibleProfileBounties() {
+const text = [...document.querySelectorAll('[class*="bount"],[data-testid*="bount"]')]
+.map(node => String(node.innerText || node.textContent || '')).join(' ');
+const rewards = [...text.matchAll(/\$\s*([0-9][0-9,]*)/g)]
+.map(match => Number(match[1].replaceAll(',', ''))).filter(Number.isFinite);
+return rewards.length ? {
+bountyCount:rewards.length,
+bountyTotal:rewards.reduce((sum, reward) => sum + reward, 0)
+} : {};
+}
+async function observeActiveProfileDom({ playerId = 0, source = 'profile', requireIntent = true } = {}) {
+if (!pdaDomActive()) return { observed:false, reason:'inactive-page' };
+if (playerDomObservationBusy) return { observed:false, reason:'busy' };
+const profile = activeProfilePage(playerId);
+if (!profile) return { observed:false, reason:'inactive-or-different-page' };
+const intent = readPlayerProfileIntent();
+if (requireIntent && (!intent || intent.playerId !== profile.playerId)) return { observed:false, reason:'no-matching-intent' };
+const candidates = [];
+const seen = new Set();
+for (const selector of ['[class*="profile"] [class*="status"]','[class*="basic-information"]','[data-testid*="status"]','[class*="status"]']) {
+for (const node of document.querySelectorAll(selector)) {
+if (seen.has(node)) continue;
+seen.add(node);
+const text = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+if (!text || text.length > 1000) continue;
+const state = detectProfileDomState(text);
+if (state) candidates.push({ node, text, state });
+}
+}
+candidates.sort((left, right) => left.text.length - right.text.length);
+const match = candidates[0];
+if (!match) return { observed:false, reason:'status-not-found' };
+const until = profileUntil(match.node, match.text);
+const signature = `${profile.playerId}:${match.state}:${until}:${match.text}`;
+if (signature === playerDomLastSignature) {
+if (requireIntent) clearPlayerProfileIntent();
+return { observed:false, reason:'unchanged' };
+}
+playerDomObservationBusy = true;
+try {
+const now = Date.now();
+const record = observePlayerIntelligence({
+playerId:profile.playerId,
+name:visibleProfileName(profile.playerId),
+state:match.state,
+until,
+description:match.text.slice(0, 500),
+...visibleProfileBounties(),
+source:`dom:${String(intent?.source || source).replace(/^dom:/, '').slice(0, 70)}`,
+observationKind:'dom',
+lastDomObservedAt:now,
+observedAt:now,
+checkedAt:now
+});
+playerDomLastSignature = signature;
+if (requireIntent) clearPlayerProfileIntent();
+return { observed:true, reason:'dom', record };
+} finally {
+playerDomObservationBusy = false;
+}
+}
+async function scanIntendedProfileDom() {
+const result = await observeActiveProfileDom({ requireIntent:true });
+if (!result.observed) return result;
+const runtime = bountyRuntime();
+runtime.statuses = playerIntelligenceCache();
+dataState.caches.bounties = runtime;
+if (moduleRoot('bounties')) renderBounties();
+if (moduleRoot('targetList')) renderTargetList();
+return result;
+}
+function warFactionEntries(factions) {
+if (Array.isArray(factions)) return factions.map(row => [Math.trunc(Number(row?.id ?? row?.faction_id ?? row?.faction?.id) || 0), row]).filter(([id]) => id > 0);
+return Object.entries(factions || {}).map(([key, row]) => [Math.trunc(Number(row?.id ?? row?.faction_id ?? row?.faction?.id ?? key) || 0), row]).filter(([id]) => id > 0);
+}
+function currentRankedWar(payload, ownFactionId) {
+const now = Math.floor(Date.now() / 1000);
+const source = payload?.rankedwars ?? payload?.ranked_wars ?? payload?.wars ?? [];
+const rows = Array.isArray(source) ? source : Object.values(source || {});
+return rows.map(war => {
+const start = Number(war?.war?.start ?? war?.start ?? war?.started ?? 0);
+const end = Number(war?.war?.end ?? war?.end ?? war?.ended ?? 0);
+const opponent = warFactionEntries(war?.factions ?? war?.war?.factions).find(([id]) => id !== Number(ownFactionId));
+if (!start || (end && end <= now) || !opponent) return null;
+return { war, start, opponentId:opponent[0], opponentName:String(opponent[1]?.name || `Faction ${opponent[0]}`) };
+}).filter(Boolean).sort((a, b) => (a.start <= now ? 0 : 1) - (b.start <= now ? 0 : 1) || Math.abs(a.start - now) - Math.abs(b.start - now))[0] || null;
+}
+function makeWarId(ownFactionId, opponentId, startedAtSeconds) {
+return `rw_${Math.trunc(Number(ownFactionId))}_${Math.trunc(Number(opponentId))}_${Math.trunc(Number(startedAtSeconds))}`;
+}
+function parseMugResultText(value) {
+const match = String(value || '').replace(/\s+/g, ' ').trim().match(/^You mugged (.+?) and stole \$([\d,]+)$/i);
+const amount = Number(String(match?.[2] || '').replaceAll(',', ''));
+return match && Number.isSafeInteger(amount) && amount > 0 ? { victimName:match[1].trim(), amount } : null;
+}
+function attackPageUrl() {
+try {
+const url = new URL(global.location.href);
+return url.pathname.endsWith('/page.php') && url.searchParams.get('sid') === 'attack' ? url : null;
+} catch {
+return null;
+}
+}
+function attackPageTargetId() {
+return Math.trunc(Number(attackPageUrl()?.searchParams.get('user2ID')) || 0);
+}
+function pdaMugReports() {
+if (!Array.isArray(dataState.caches.warMugReports)) dataState.caches.warMugReports = [];
+return dataState.caches.warMugReports;
+}
+function mugStatsForWar(warId) {
+const reports = pdaMugReports().filter(report => report.warId === warId);
+const amounts = reports.map(report => Number(report.amount) || 0).filter(amount => amount > 0);
+const total = amounts.reduce((sum, amount) => sum + amount, 0);
+return { reports, count:amounts.length, total, min:amounts.length ? Math.min(...amounts) : 0, max:amounts.length ? Math.max(...amounts) : 0, average:amounts.length ? Math.round(total / amounts.length) : 0 };
+}
+function saveMugResult(result, active) {
+if (!active || active.phase !== 'active') return false;
+const victimId = attackPageTargetId();
+const fingerprint = `${active.warId}|${victimId}|${result.victimName.toLowerCase()}|${result.amount}`;
+const now = Date.now();
+for (const [key, at] of recentMugResults) if (now - at > MUG_RESULT_DEDUPE_MS) recentMugResults.delete(key);
+if (recentMugResults.has(fingerprint) || pdaMugReports().some(report => report.fingerprint === fingerprint && now - Number(report.at || 0) <= MUG_RESULT_DEDUPE_MS)) return false;
+recentMugResults.set(fingerprint, now);
+dataState.caches.warMugReports = [...pdaMugReports(), { warId:active.warId, victimId, victimName:result.victimName, amount:result.amount, at:now, fingerprint, source:'torn_attack_result_dom' }].slice(-1_000);
+writeDataState();
+if (dashboardOpen && state.page === 'combat' && state.combatTab === 'war') renderWar();
+return true;
+}
+function recordMugResultNode(node) {
+if (!node || reportedMugNodes.has(node)) return;
+const result = parseMugResultText(node.textContent);
+if (!result) return;
+// Torn mutates the result dialog repeatedly. Claim the node before any
+// asynchronous work so those mutations cannot start recursive refreshes.
+reportedMugNodes.add(node);
+const active = moduleState.war.data?.activeWar;
+if (active?.phase === 'active') {
+saveMugResult(result, active);
+return;
+}
+if (!currentApiKey() || !hasScope('slink.war')) return;
+// Refresh at most once. If there is still no active war, this mug simply
+// remains unassigned instead of recursively refreshing the attack frame.
+void refreshWar(false).then(() => {
+saveMugResult(result, moduleState.war.data?.activeWar);
+}).catch(error => {
+console.debug('[SLINK PDA] Mug result report paused:', message(error));
+});
+}
+function scanAttackMugResults() {
+if (!pdaDomActive()) return;
+if (!attackPageUrl() || attackMugScanTimer) return;
+attackMugScanTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+attackMugScanTimer = null;
+if (!attackPageUrl()) return;
+document.querySelectorAll('div[class*="dialog___"] div[class*="title___"],div[class*="green___"] div[class*="title___"]').forEach(recordMugResultNode);
+}, 120);
+}
+function warOfficer() {
+return hasScope('slink.war.officer') || hasScope('admin.*');
+}
+function warArmoryOfficer() {
+return warOfficer() || hasScope('slink.officer.armory');
+}
+function warMemberId(member) {
+return Math.trunc(Number(member?.id ?? member?.user_id ?? member?.player_id ?? member?.attackerId) || 0);
+}
+function warMemberStatus(member) {
+return String(member?.statusState ?? member?.status?.state ?? member?.status ?? 'Unknown');
+}
+function warMemberActivity(member) {
+return String(member?.activity ?? member?.last_action?.status ?? member?.lastAction?.status ?? 'Unknown');
+}
+const WAR_TRAVEL_LOCATION_ALIASES = Object.freeze([
+['Mexico', ['mexico']], ['Cayman Islands', ['cayman islands']], ['Canada', ['canada']],
+['Hawaii', ['hawaii']], ['United Kingdom', ['united kingdom', 'uk']], ['Argentina', ['argentina']],
+['Switzerland', ['switzerland']], ['Japan', ['japan']], ['China', ['china']],
+['United Arab Emirates', ['united arab emirates', 'uae']], ['South Africa', ['south africa']]
+]);
+function warTravelLocation(member) {
+const explicit = String(member?.travelLocation ?? member?.travel_location ?? member?.location?.name ?? (typeof member?.location === 'string' ? member.location : '')).trim();
+const status = `${warMemberStatus(member)} ${member?.statusDescription ?? member?.status?.description ?? ''} ${explicit}`.toLowerCase();
+for (const [location, aliases] of WAR_TRAVEL_LOCATION_ALIASES) {
+if (aliases.some(alias => status.includes(alias))) return location;
+}
+return '';
+}
+function warMemberIsAbroad(member) {
+if (warTravelLocation(member)) return true;
+return /\babroad\b|\btravel(?:ing|ling)\b|\breturning to torn\b/i.test(`${warMemberStatus(member)} ${member?.statusDescription ?? member?.status?.description ?? ''}`);
+}
+function warTravelLocations(rows) {
+return [...new Set((Array.isArray(rows) ? rows : []).map(warTravelLocation).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+function warStatusSeconds(member) {
+const until = Number(member?.statusUntil ?? member?.status?.until) || 0;
+return Math.max(0, until - Math.floor(Date.now() / 1000));
+}
+function warTctTime(seconds) {
+if (!seconds) return '';
+return new Date(Number(seconds) * 1000).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' });
+}
+function warSortMembers(rows, sort = 'availability') {
+const values = [...(Array.isArray(rows) ? rows : [])];
+return values.sort((left, right) => {
+const leftValue = ffNumber(left?.fairFight ?? left?.fair_fight), rightValue = ffNumber(right?.fairFight ?? right?.fair_fight);
+if ((leftValue === null) !== (rightValue === null)) return leftValue === null ? 1 : -1;
+const leftFf = leftValue ?? 0, rightFf = rightValue ?? 0;
+if (sort === 'fairFightAsc') return leftFf - rightFf;
+if (sort === 'fairFightDesc') return rightFf - leftFf;
+const score = member => {
+const status = warMemberStatus(member).toLowerCase();
+const activity = warMemberActivity(member).toLowerCase();
+if (status === 'okay' && activity === 'online') return 0;
+if (status === 'okay' && activity === 'idle') return 1;
+if (status === 'okay') return 2;
+if (status.includes('hospital')) return 3 + warStatusSeconds(member) / 100000;
+return 4;
+};
+return score(left) - score(right) || leftFf - rightFf;
+});
+}
+function warMemberContext(member) {
+const description = String(member?.statusDescription ?? member?.status?.description ?? '').trim();
+if (!description || description.toLowerCase() === warMemberStatus(member).toLowerCase()) return '';
+return `<span class="war-context">${escapeHtml(description)}</span>`;
+}
+function warTargetShareKey(member) {
+return `war:target:${warMemberId(member)}`;
+}
+function warRetalShareKey(retal) {
+return `war:retal:${String(retal?.attackId || retal?.attackerId || '')}`;
+}
+function warCallout(member) {
+const id = warMemberId(member);
+const status = warMemberStatus(member);
+const activity = warMemberActivity(member);
+const ff = finite(member?.fairFight ?? member?.fair_fight);
+const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate ?? member?.bs_estimate);
+const profile = `https://www.torn.com/profiles.php?XID=${id}`;
+const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
+const details = [attackLink(attack), `Status: ${escapeHtml(status)} / ${escapeHtml(activity)}`];
+if (/hospital/i.test(status) && warStatusSeconds(member)) {
+const readyAt = warTctTime(Number(member?.statusUntil ?? member?.status?.until));
+details.push(`Hospital: ${duration(warStatusSeconds(member))}${readyAt ? ` / ready ${readyAt} TCT` : ''}`);
+}
+const statusDescription = String(member?.statusDescription ?? member?.status?.description ?? '').trim();
+if (statusDescription && statusDescription.toLowerCase() !== status.toLowerCase()) details.push(`Status detail: ${escapeHtml(statusDescription)}`);
+if (estimate !== null) details.push(`Estimated BS: ${number(estimate)}`);
+if (ff !== null) details.push(`FF: ${number(ff, 2)}`);
+const name = escapeHtml(member?.name || `Player ${id}`);
+return `${chatLink(`${name} [${id}]`, profile)} - ${details.join(' - ')}`;
+}
+function warRetalCallout(retal) {
+const id = Number(retal?.attackerId) || 0;
+const name = String(retal?.attackerName || `Player ${id}`);
+const defender = escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`);
+const status = escapeHtml(retal?.attackerStatus || retal?.attackerActivity || 'Unknown');
+const profile = `https://www.torn.com/profiles.php?XID=${id}`;
+const attack = `https://www.torn.com/page.php?sid=attack&user2ID=${id}`;
+const stats = [finite(retal?.fairFight) !== null ? `FF ${number(retal.fairFight, 2)}${retal.fairFightStale ? ' (cached estimate)' : ''}` : '', finite(retal?.battleStatsEstimate) !== null ? `~${number(retal.battleStatsEstimate)} total` : ''].filter(Boolean).join(' | ') || 'N/A';
+return `🚨 Retaliation: Please Hospitalize 🚨<br>⚫ ${chatLink(name, profile)} [${id}] - ${attackLink(attack)} - (Stats: ${escapeHtml(stats)})<br>Attacked: ${defender} • Status: ${status}`;
+}
+function warInsideGate(targetId) {
+const data = moduleState.war.data || {};
+const config = data.snapshot?.config || dataState.settings.war;
+const chain = Math.max(0, Number(data.panelStats?.chain?.current) || 0);
+const range = [[0, 100], [200, 250], [450, 500], [950, 1000], [2350, 2500], [4850, 5000], [9900, 10000]].find(([minimum, maximum]) => chain >= minimum && chain <= maximum);
+const opponentIds = new Set((data.snapshot?.members || []).map(warMemberId));
+const mode = ['off', 'warn', 'block'].includes(config.insideBlockMode) ? config.insideBlockMode : 'warn';
+return { active:Boolean(config.mode === 'termed' && mode !== 'off' && range && opponentIds.has(Number(targetId))), mode, chain, range };
+}
+function warInsideMessage(gate) {
+return `Inside hits disabled: chain ${gate.chain} is inside the ${gate.range?.[0]}–${gate.range?.[1]} major bonus window.`;
+}
+function warMemberCard(member, outside = false) {
+const id = warMemberId(member);
+const status = warMemberStatus(member);
+const activity = warMemberActivity(member);
+const hospitalized = /hospital/i.test(status);
+const remaining = warStatusSeconds(member);
+const ff = finite(member?.fairFight ?? member?.fair_fight);
+const estimate = finite(member?.battleStatsEstimate ?? member?.battle_stats_estimate ?? member?.bs_estimate);
+const gate = outside ? { active:false } : warInsideGate(id);
+const attack = `<a class="action-link ${gate.active ? 'war-inside-attack' : ''}" href="https://www.torn.com/page.php?sid=attack&user2ID=${id}" ${gate.active ? `data-action="war-inside-attack" data-war-target="${id}" data-war-gate="${gate.mode}"` : ''}>${gate.active && gate.mode === 'block' ? 'INSIDES DISABLED' : '【ATTACK】'}</a>`;
+return `<article class="war-card ${gate.active ? 'war-inside-blocked' : ''}"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(member?.name || `Player ${id}`)} [${id}]</a><span>Lv ${number(member?.level)}</span></div><div class="war-meta"><span class="war-pill ${/^online$/i.test(activity) ? 'online' : ''}">${escapeHtml(activity)}</span><span class="war-pill ${hospitalized ? 'hospital' : ''}">${escapeHtml(status)}${hospitalized && remaining ? ` · ${duration(remaining)} · ${warTctTime(Number(member?.statusUntil ?? member?.status?.until))} TCT` : ''}</span><span class="war-pill">BS ${estimate === null ? '?' : number(estimate)}</span><span class="war-pill">FF ${escapeHtml(ffLabel(member))}</span>${warMemberContext(member)}</div>${gate.active ? `<div class="war-inside-warning">${escapeHtml(warInsideMessage(gate))}</div>` : ''}<div class="target-actions">${attack}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}<button type="button" data-action="copy-war-target" data-war-target="${id}" data-war-outside="${outside ? 'true' : 'false'}">Copy</button><button type="button" data-action="send-war-target" data-war-target="${id}" data-war-outside="${outside ? 'true' : 'false'}">Send to Faction</button><button type="button" data-action="save-source-target" data-target-source="${outside ? 'outside-targets' : 'war'}" data-target-id="${id}">Save Target</button></div></article>`;
+}
+function warTargetView(snapshot) {
+const settings = dataState.settings.war;
+const minimum = Math.min(Number(settings.targetMinFF) || 1, Number(settings.targetMaxFF) || 3);
+const maximum = Math.max(Number(settings.targetMinFF) || 1, Number(settings.targetMaxFF) || 3);
+const source = snapshot?.members || snapshot?.targets || [];
+const locations = warTravelLocations(source);
+if (!locations.includes(settings.targetLocation)) settings.targetLocation = 'all';
+const locationOptions = ['<option value="all">All locations</option>', ...locations.map(location => `<option value="${escapeHtml(location)}" ${settings.targetLocation === location ? 'selected' : ''}>${escapeHtml(location)}</option>`)].join('');
+const members = warSortMembers(source, settings.targetSort).filter(member => {
+const ff = finite(member?.fairFight ?? member?.fair_fight);
+const okay = /^okay$/i.test(warMemberStatus(member).trim());
+if (ff !== null && (ff < minimum || ff > maximum)) return false;
+if (settings.targetStatus === 'okay' && !okay) return false;
+if (settings.targetStatus === 'notOkay' && okay) return false;
+const abroad = warMemberIsAbroad(member);
+if (settings.targetAbroad === 'hide' && abroad) return false;
+if (settings.targetAbroad === 'only' && !abroad) return false;
+if (settings.targetAbroad === 'only' && settings.targetLocation !== 'all' && warTravelLocation(member) !== settings.targetLocation) return false;
+return true;
+});
+return `<div class="war-filters"><label>Minimum FF<input type="number" min="0" step="0.1" data-field="war-target-min" value="${minimum}"></label><label>Maximum FF<input type="number" min="0" step="0.1" data-field="war-target-max" value="${maximum}"></label><label>Status<select data-field="war-target-status"><option value="all" ${settings.targetStatus === 'all' ? 'selected' : ''}>All</option><option value="okay" ${settings.targetStatus === 'okay' ? 'selected' : ''}>Okay</option><option value="notOkay" ${settings.targetStatus === 'notOkay' ? 'selected' : ''}>Not okay</option></select></label><label>Abroad<select data-field="war-target-abroad"><option value="all" ${settings.targetAbroad === 'all' ? 'selected' : ''}>Show all targets</option><option value="hide" ${settings.targetAbroad === 'hide' ? 'selected' : ''}>Hide abroad</option><option value="only" ${settings.targetAbroad === 'only' ? 'selected' : ''}>Abroad only</option></select></label><label ${settings.targetAbroad === 'only' ? '' : 'hidden'}>Location<select data-field="war-target-location">${locationOptions}</select></label><label>Sort<select data-field="war-target-sort"><option value="availability" ${settings.targetSort === 'availability' ? 'selected' : ''}>Availability</option><option value="fairFightDesc" ${settings.targetSort === 'fairFightDesc' ? 'selected' : ''}>FF high to low</option><option value="fairFightAsc" ${settings.targetSort === 'fairFightAsc' ? 'selected' : ''}>FF low to high</option></select></label></div><div class="war-stack">${members.length ? members.map(member => warMemberCard(member)).join('') : moduleMessage('No ranked-war opponents match the current Fair Fight, status, and travel filters.')}</div>`;
+}
+function warOutsideView(data) {
+const settings = dataState.settings.war;
+const members = warSortMembers(data?.outsideTargets || [], 'fairFightAsc');
+return `<div class="war-filters"><label>Minimum FF<input type="number" min="1" max="3" step="0.1" data-field="war-outside-min" value="${Number(settings.outsideMinFF) || 1}"></label><label>Maximum FF<input type="number" min="1" max="3" step="0.1" data-field="war-outside-max" value="${Number(settings.outsideMaxFF) || 3}"></label><div class="war-filter-action"><button type="button" data-action="refresh-war-outside" ${moduleState.war.outsideBusy ? 'disabled' : ''}>${moduleState.war.outsideBusy ? 'Polling…' : 'Poll up to 50 outside targets'}</button></div></div>${moduleState.war.outsideError ? moduleMessage(moduleState.war.outsideError, 'error') : ''}<div class="war-stack">${members.length ? members.map(member => warMemberCard(member, true)).join('') : moduleMessage('Choose a Fair Fight range and poll FFScouter for outside targets.')}</div>`;
+}
+function warClaimForm(snapshot) {
+const officer = warOfficer();
+const members = Array.isArray(snapshot?.members) ? snapshot.members : [];
+return `<div class="war-claim-form"><label>Target<select data-field="war-claim-target"><option value="">Select a war target</option>${members.map(member => `<option value="${warMemberId(member)}">${escapeHtml(member?.name || `Player ${warMemberId(member)}`)} [${warMemberId(member)}]</option>`).join('')}</select></label>${officer ? '<label>Assign Torn ID (optional)<input type="number" min="1" data-field="war-claim-assignee" placeholder="Leave blank to claim for yourself"></label>' : ''}<button type="button" data-action="claim-war-target">Claim med-out target</button></div>`;
+}
+function warClaimsView(snapshot) {
+const session = dataState.sessions.permission || {};
+const claims = Array.isArray(snapshot?.claims) ? snapshot.claims : [];
+return `${warClaimForm(snapshot)}<div class="war-stack">${claims.length ? claims.map(claim => {
+const mine = Number(claim?.claimedById ?? claim?.claimed_by_id) === Number(session.userId);
+const targetId = Number(claim?.targetId ?? claim?.target_id) || 0;
+const expiresAt = Number(claim?.expiresAt ?? claim?.expires_at) || 0;
+return `<article class="war-card"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${targetId}">${escapeHtml(claim?.targetName ?? claim?.target_name ?? `Player ${targetId}`)} [${targetId}]</a><span>${duration((expiresAt - Date.now()) / 1000)}</span></div><div class="war-meta"><span class="war-pill">Claimed by ${escapeHtml(claim?.claimedByName ?? claim?.claimed_by_name ?? claim?.claimedById ?? claim?.claimed_by_id ?? 'Unknown')}</span></div>${mine || warOfficer() ? `<div class="target-actions"><button type="button" data-action="release-war-claim" data-war-target="${targetId}">Release claim</button></div>` : ''}</article>`;
+}).join('') : moduleMessage('No med-out targets are currently claimed.')}</div>`;
+}
+function warVisibleRetals(snapshot, active) {
+const settings = dataState.settings.war;
+const now = Math.floor(Date.now() / 1000);
+const dismissed = settings.dismissedRetals && typeof settings.dismissedRetals === 'object' ? settings.dismissedRetals : {};
+const opponentIds = new Set((snapshot?.members || []).map(warMemberId));
+return (Array.isArray(snapshot?.retals) ? snapshot.retals : []).filter(retal => {
+const expiresAt = Number(retal?.expiresAt ?? retal?.expires_at) || now + 300;
+const key = `user:${Number(retal?.attackerId) || String(retal?.attackId || '')}`;
+const opponentRetal = settings.mode === 'termed' && (Number(retal?.attackerFactionId) === Number(active?.opponentId) || opponentIds.has(Number(retal?.attackerId)));
+return expiresAt > now && !opponentRetal && Number(dismissed[key] || dismissed[String(retal?.attackId)]) <= now;
+});
+}
+function warRetalCards(snapshot, active) {
+const now = Math.floor(Date.now() / 1000);
+const retals = warVisibleRetals(snapshot, active);
+if (!retals.length) return '';
+return `<section class="war-alert-block"><strong>Active retaliation alerts</strong><div class="war-stack">${retals.map(retal => {
+const id = Number(retal?.attackerId) || 0;
+const attackId = String(retal?.attackId || id);
+const status = String(retal?.attackerStatus || retal?.attackerActivity || 'Unknown');
+const expires = Number(retal?.expiresAt) || now + 300;
+const faction = retal?.attackerFactionName || (retal?.attackerFactionId ? `Faction ${retal.attackerFactionId}` : 'No faction');
+return `<article class="war-card war-retal"><button class="war-dismiss" type="button" data-action="dismiss-war-retal" data-war-retal="${escapeHtml(attackId)}" aria-label="Dismiss retaliation alert">×</button><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(retal?.attackerName || `Player ${id}`)} [${id}]</a><span>${duration(expires - now)}</span></div><div class="war-retal-report"><span>Faction</span><strong>${escapeHtml(faction)}</strong><span>Attacked</span><strong>${escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`)}</strong><span>Status</span><strong>${escapeHtml(status)}</strong><span>Fair Fight</span><strong>${number(retal?.fairFight, 2)}</strong></div><div class="target-actions"><button type="button" data-action="copy-war-retal" data-war-retal="${escapeHtml(attackId)}">Copy</button><button type="button" data-action="send-war-retal" data-war-retal="${escapeHtml(attackId)}">Send to Faction</button>${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}</div></article>`;
+}).join('')}</div></section>`;
+}
+function warItemRequests(snapshot) {
+if (!warOfficer()) return '';
+const requests = Array.isArray(snapshot?.itemRequests) ? snapshot.itemRequests : [];
+if (!requests.length) return '';
+return `<section class="war-alert-block"><strong>Armory item requests</strong><div class="war-stack">${requests.map(request => `<article class="war-card"><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${Number(request?.requesterId) || 0}">${escapeHtml(request?.requesterName || `Player ${request?.requesterId || '?'}`)} [${Number(request?.requesterId) || '?'}]</a><span>${escapeHtml(request?.bonusName || 'Ranked')}</span></div><div class="war-meta"><span class="war-pill">${escapeHtml(request?.itemName || 'Item')}</span><span class="war-pill">Held by ${escapeHtml(request?.holderName || `Player ${request?.holderId || '?'}`)}</span><span class="war-context">${escapeHtml(request?.holderStatus || 'Unknown')} · ${escapeHtml(request?.holderLastAction || 'Unknown')}</span></div><div class="target-actions">${actionLink('Open armory', request?.armoryUrl || 'https://www.torn.com/factions.php?step=your#/tab=armoury')}<button type="button" data-action="resolve-war-armory-request" data-war-request="${escapeHtml(request?.requestId || '')}">Dismiss</button></div></article>`).join('')}</div></section>`;
+}
+function warLogsView(data) {
+const rows = Array.isArray(data?.logs) ? data.logs : [];
+if (!rows.length) return moduleMessage('No loss, escape, or online-hit counters yet.');
+const grouped = new Map();
+for (const row of rows) {
+const id = Number(row?.attacker_id ?? row?.attackerId) || 0;
+if (!grouped.has(id)) grouped.set(id, { id, name:String(row?.attacker_name ?? row?.attackerName ?? `Player ${id}`), total:0, rows:[] });
+const group = grouped.get(id); group.total += Number(row?.event_count ?? row?.eventCount) || 0; group.rows.push(row);
+}
+return `<div class="war-stack">${[...grouped.values()].sort((a, b) => b.total - a.total).map(group => `<details class="war-log"><summary><strong>${escapeHtml(group.name)} [${group.id}]</strong><span>${number(group.total)} recorded</span></summary>${group.rows.map(row => `<div class="war-log-event"><strong>${escapeHtml(String(row?.outcome || 'unknown').replaceAll('_', ' '))} × ${number(row?.event_count ?? row?.eventCount)}</strong><span>${escapeHtml(row?.defender_name ?? row?.defenderName ?? `Player ${row?.defender_id ?? row?.defenderId ?? '?'}`)} · ${new Date(Number(row?.last_seen_at ?? row?.lastSeenAt) || 0).toLocaleString()}</span></div>`).join('')}</details>`).join('')}</div>`;
+}
+function activeWarArmoryTab() {
+return [document.querySelector('[id="tab=armoury&sub=weapons"]'), document.querySelector('[id="tab=armoury&sub=armour"]')].filter(Boolean).find(tab => tab.getAttribute('aria-hidden') !== 'true' && global.getComputedStyle(tab).display !== 'none') || null;
+}
+function warArmoryBorrower(row) {
+const link = row.querySelector('.loaned a[href*="XID="]');
+const match = link?.getAttribute('href')?.match(/[?&]XID=(\d+)/i);
+return match ? { id:String(match[1]), name:link.textContent.trim() || match[1] } : null;
+}
+function warArmoryEligible(row, tab) {
+const borrower = warArmoryBorrower(row);
+const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+if (!borrower || whitelist.has(borrower.id) || !row.querySelector('.item-action [data-role="retrieve"].active')) return null;
+const image = row.querySelector('.img-wrap img.torn-item');
+if (!image || !['glow-yellow', 'glow-orange', 'glow-red'].some(name => image.classList.contains(name))) return null;
+const proficience = Boolean(row.querySelector('.bonus-attachment-experience'));
+const mode = dataState.settings.war.armoryMode || 'ranked-all';
+if (mode === 'ranked-no-prof' && proficience) return null;
+if (mode === 'proficience-15-plus') {
+const isWeapons = tab?.id?.includes('sub=weapons');
+const member = (dataState.caches.warArmoryMembers?.members || []).find(item => String(item.id) === borrower.id);
+if (!isWeapons || !proficience || !member || !Number.isFinite(Number(member.level)) || Number(member.level) < 15) return null;
+}
+if (!['ranked-all', 'ranked-no-prof', 'proficience-15-plus'].includes(mode)) return null;
+return borrower;
+}
+async function refreshWarArmoryMembers(force = false) {
+const cached = dataState.caches.warArmoryMembers;
+if (!force && cached?.at && Date.now() - cached.at < 12 * 60 * 60_000 && cached?.members?.length) return cached.members;
+const response = await tornJson('/v2/faction/members', 'SLINK PDA Armory roster');
+const source = response?.members ?? response?.faction?.members ?? [];
+const rows = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+const members = rows.map(row => ({ id:String(warMemberId(row)), name:String(row?.name || `Player ${warMemberId(row)}`), level:Number(row?.level) || 0, rank:String(row?.position?.name ?? row?.position_name ?? row?.position ?? row?.rank ?? 'Member').trim() || 'Member', statusState:String(row?.status?.state || 'Unknown'), statusDescription:String(row?.status?.description || ''), lastActionRelative:String(row?.last_action?.relative || 'Unknown') })).filter(row => Number(row.id) > 0).sort((left, right) => left.rank.localeCompare(right.rank, undefined, { sensitivity:'base', numeric:true }) || left.name.localeCompare(right.name, undefined, { sensitivity:'base', numeric:true }));
+if (!members.length) throw new Error('Torn returned no faction members. A faction-capable API key may be required.');
+dataState.caches.warArmoryMembers = { at:Date.now(), members };
+writeDataState();
+return members;
+}
+// Retrieval and pagination adapted from Considious Armory Recaller 1.2.6.
+function warArmoryPageFocused() {
+return pdaDomActive();
+}
+function warArmorySetStatus(message, state = 'normal') {
+moduleState.war.armoryStatus = message;
+moduleState.war.error = state === 'error' ? message : '';
+renderWar();
+}
+async function retrieveOneWarArmoryItem(row, borrower) {
+const open = row.querySelector('.item-action [data-role="retrieve"].active');
+if (!open) throw new Error('Retrieve control was not found.');
+warArmorySetStatus(`Retrieving ${(row.querySelector('.name')?.textContent.trim() || 'item')} from ${borrower.name}…`);
+open.click();
+for (let attempt = 0; attempt < 20; attempt += 1) {
+await new Promise(resolve => setTimeout(resolve, 50));
+if (!warArmoryPageFocused()) throw new Error('The Torn page lost focus before confirmation. Nothing else was clicked.');
+const confirm = row.querySelector('.retrieve-cont .retrieve-yes');
+if (confirm && confirm.getClientRects().length > 0) {
+confirm.click();
+return;
+}
+}
+throw new Error('Torn did not display the retrieval confirmation.');
+}
+function findNextWarArmoryPageControl(tab) {
+const roots = [tab, document.querySelector('#faction-armoury'), document].filter(Boolean);
+const selectors = [
+'.gallery-wrapper.pagination a[href] > i.pagination-right',
+'.pagination a[href] > i.pagination-right',
+'.pagination a.next:not(.disabled)',
+'.pagination .next:not(.disabled) a',
+'a[aria-label="Next"]',
+'a[title="Next"]',
+'[data-page="next"]',
+];
+for (const root of roots) {
+for (const selector of selectors) {
+const found = root.querySelector(selector);
+if (!found) continue;
+const control = found.matches('a, button') ? found : found.closest('a, button');
+if (!control || control.disabled || control.classList.contains('disable') || control.classList.contains('disabled')) continue;
+return control;
+}
+}
+return [...(tab?.querySelectorAll('a, button') || [])].find((el) => {
+const values = [el.textContent, el.getAttribute('aria-label'), el.getAttribute('title')].map((v) => (v || '').trim().toLowerCase());
+return values.includes('next') && !el.disabled && !el.classList.contains('disabled') && !el.classList.contains('disable');
+}) || null;
+}
+async function retrieveWarArmoryItem() {
+const current = moduleState.war;
+if (current.armoryBusy) return;
+current.armoryBusy = true;
+try {
+renderWar();
+if (!warArmoryPageFocused()) throw new Error('Focus this Torn page before retrieving an item.');
+const tab = activeWarArmoryTab();
+if (!tab) throw new Error('Open the Weapons or Armor tab in Faction Armoury first.');
+if (dataState.settings.war.armoryMode === 'proficience-15-plus') await refreshWarArmoryMembers(false);
+if (!warArmoryPageFocused()) throw new Error('The Torn page lost focus. Nothing was retrieved.');
+let skippedWhitelist = 0;
+const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+for (const row of tab.querySelectorAll('ul.item-list > li')) {
+if (whitelist.has(warArmoryBorrower(row)?.id)) skippedWhitelist++;
+const borrower = warArmoryEligible(row, tab);
+if (!borrower) continue;
+const item = row.querySelector('.name')?.textContent.trim() || 'item';
+await retrieveOneWarArmoryItem(row, borrower);
+current.error = ''; current.armoryStatus = `Retrieved one ${item} from ${borrower.name}.`; return;
+}
+current.armoryStatus = skippedWhitelist ? `No eligible items. Skipped ${skippedWhitelist} whitelisted loan${skippedWhitelist === 1 ? '' : 's'}.` : 'No eligible items remain on this page.';
+current.error = '';
+} catch (error) { current.error = errorMessage(error); }
+finally { current.armoryBusy = false; renderWar(); }
+}
+function nextWarArmoryPage() {
+if (!warArmoryPageFocused()) return warArmorySetStatus('Page is not focused. Page was not changed.', 'error');
+const tab = activeWarArmoryTab();
+if (!tab) return warArmorySetStatus('Open the Weapons or Armor armory tab.', 'error');
+const next = findNextWarArmoryPageControl(tab);
+if (!next) return warArmorySetStatus('No enabled Next Page control was found.', 'done');
+const href = next.getAttribute('href');
+next.click();
+// Torn's armory pagination is hash-routed. Fall back to assigning the
+// exact href when another script prevents the synthetic click.
+if (href?.startsWith('#') && global.location.hash !== href) {
+global.location.hash = href.slice(1);
+}
+warArmorySetStatus('Moved to the next page.');
+}
+function discordTimestamp(value) {
+// TCT is UTC. Never parse the datetime-local input as the device's local time.
+if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(value))) return null;
+const date = new Date(`${value}:00Z`);
+if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 16) !== value) return null;
+return {
+code:`<t:${Math.floor(date.getTime() / 1000)}:R>`,
+local:date.toLocaleString(undefined, { year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short' })
+};
+}
+function armoryTimestampHtml(value) {
+const result = discordTimestamp(value);
+const escape = escapeHtml;
+return `<div data-armory-timestamp style="display:grid;gap:5px;margin:10px 0;min-width:0">
+<label>TCT date &amp; time (UTC) <input type="datetime-local" data-armory-time value="${escape(value)}" style="max-width:100%;box-sizing:border-box"></label>
+<small data-armory-local>${escape(result ? `Your time: ${result.local}` : 'Enter a valid TCT date and time.')}</small>
+<div style="display:flex;flex-wrap:wrap;gap:5px"><input type="text" data-armory-code aria-label="Relative Discord timestamp" readonly value="${escape(result?.code || '')}" style="min-width:0;flex:1"><button type="button" data-armory-copy ${result ? '' : 'disabled'}>Copy relative timestamp</button></div>
+<small data-armory-time-message role="status">Discord shows “in X hours” or “X hours ago”.</small>
+</div>`;
+}
+function updateArmoryTimestamp(root, value) {
+const result = discordTimestamp(value);
+root.querySelector('[data-armory-local]').textContent = result ? `Your time: ${result.local}` : 'Enter a valid TCT date and time.';
+root.querySelector('[data-armory-code]').value = result?.code || '';
+root.querySelector('[data-armory-copy]').disabled = !result;
+root.querySelector('[data-armory-time-message]').textContent = 'Discord shows “in X hours” or “X hours ago”.';
+}
+function warArmoryView(snapshot) {
+moduleState.war.armoryTimestampValue ??= new Date().toISOString().slice(0, 16);
+const requests = Array.isArray(snapshot?.itemRequests) ? snapshot.itemRequests : [];
+const onArmory = Boolean(activeWarArmoryTab());
+const members = dataState.caches.warArmoryMembers?.members || [];
+const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
+const ranks = [...new Set(members.map(member => member.rank))];
+return `<div class="war-stack"><article class="war-card"><div class="war-card-head"><strong>Officer Armory Recaller</strong><span>${requests.length} request${requests.length === 1 ? '' : 's'}</span></div>${onArmory ? '' : `<p class="muted">Open Torn's armory, then choose Weapons or Armor.</p><div class="target-actions">${actionLink('Open faction armory', 'https://www.torn.com/factions.php?step=your#/tab=armoury')}</div>`}<div class="war-armory-controls"><label>Recall mode<select data-field="war-armory-mode"><option value="ranked-all" ${dataState.settings.war.armoryMode === 'ranked-all' ? 'selected' : ''}>All ranked items</option><option value="ranked-no-prof" ${dataState.settings.war.armoryMode === 'ranked-no-prof' ? 'selected' : ''}>Ranked except Proficience</option><option value="proficience-15-plus" ${dataState.settings.war.armoryMode === 'proficience-15-plus' ? 'selected' : ''}>Proficience from level 15+</option></select></label><div class="target-actions"><button type="button" data-action="retrieve-war-armory" ${onArmory && !moduleState.war.armoryBusy ? '' : 'disabled'}>${moduleState.war.armoryBusy ? 'Working…' : 'Retrieve Next'}</button><button type="button" data-action="next-war-armory" ${onArmory ? '' : 'disabled'}>Next Page</button></div></div><span class="muted">${escapeHtml(moduleState.war.armoryStatus || 'Retrieval only runs after you press Retrieve Next.')}</span>${armoryTimestampHtml(moduleState.war.armoryTimestampValue)}<details class="war-armory-manager"><summary>Never retrieve from (${whitelist.size})</summary><input type="search" data-field="war-armory-search" placeholder="Search name, rank, or ID"><div class="target-actions"><button type="button" data-action="refresh-war-armory-members">Refresh roster</button><button type="button" data-action="select-shown-war-armory">Select shown</button><button type="button" data-action="clear-shown-war-armory">Clear shown</button></div><div class="war-armory-ranks">${ranks.map(rank => { const rankMembers = members.filter(member => member.rank === rank); const selected = rankMembers.filter(member => whitelist.has(String(member.id))).length; return `<button type="button" data-action="toggle-war-armory-rank" data-armory-rank="${escapeHtml(rank)}">${escapeHtml(rank)} ${selected}/${rankMembers.length}</button>`; }).join('')}</div><div class="war-armory-members">${members.length ? members.map(member => `<label data-armory-search-row="${escapeHtml(`${member.name} ${member.rank} ${member.id}`.toLowerCase())}"><input type="checkbox" data-war-armory-member="${member.id}" ${whitelist.has(String(member.id)) ? 'checked' : ''}><span><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.rank)} · level ${member.level || '?'} · ID ${member.id}</small></span></label>`).join('') : moduleMessage('Refresh the faction roster to manage the whitelist.')}</div></details></article>${requests.length ? warItemRequests(snapshot) : moduleMessage('No active armory item requests.')}</div>`;
+}
+function warSettingsView(snapshot) {
+const config = snapshot?.config || {};
+const settings = dataState.settings.war;
+return `<div class="war-settings"><label>Faction War mode<select data-field="war-mode"><option value="war" ${(config.mode || settings.mode) === 'war' ? 'selected' : ''}>Real war</option><option value="termed" ${(config.mode || settings.mode) === 'termed' ? 'selected' : ''}>Termed war</option></select></label><label>Faction idle filter<input type="number" min="0" max="60" data-field="war-idle" value="${Number(config.idleMinutes ?? settings.idleMinutes) || 0}"></label><label>Inside-hit cap<input type="number" min="0" max="9999" data-field="war-inside-cap" value="${Number(config.insideHitCap ?? settings.insideHitCap) || 0}"></label><label>Major-window inside gate<select data-field="war-inside-mode"><option value="off" ${(config.insideBlockMode || settings.insideBlockMode) === 'off' ? 'selected' : ''}>Off</option><option value="warn" ${(config.insideBlockMode || settings.insideBlockMode || 'warn') === 'warn' ? 'selected' : ''}>Warning with override</option><option value="block" ${(config.insideBlockMode || settings.insideBlockMode) === 'block' ? 'selected' : ''}>Hard block</option></select></label><div class="war-settings-note">These faction-wide controls apply to every SLINK War user. Major-window gating only activates in Termed mode.</div><button type="button" data-action="save-war-settings">Save War settings</button></div>`;
+}
+

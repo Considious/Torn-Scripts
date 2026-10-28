@@ -25,3 +25,4 @@ assert.ok(!source.includes("qualityOfLife:['racing','abroadStocks','travelSafety
 assert.ok(source.includes('hasAdminScope() || hasGrantedScope(required)'));
 assert.ok(!source.includes('TRAVEL_SAFETY_SCOPE'));
 console.log('PDA permission and navigation validation passed.');
+

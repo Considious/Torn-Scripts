@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 
 const root = new URL('../', import.meta.url);
@@ -13,9 +14,13 @@ export const addons = (manifest.startupAddons || []).map(addon => read(addon.sou
 export function assertVersionConsistency() {
   const version = launcher.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim();
   assert.ok(version, 'Launcher version is missing');
-  assert.equal(version, manifest.revision, 'Launcher and source manifest versions differ');
   assert.equal(JSON.parse(read('package.json')).version, version, 'Package and launcher versions differ');
-  assert.ok(fragments.get('src/00-runtime-core.part').includes(`const CLIENT_VERSION = '${version}';`), 'Runtime and launcher versions differ');
+  const digest = 'sha256-' + createHash('sha256').update([runtime, ...((manifest.startupAddons || []).map(addon => read(addon.source)))].join('\n;\n'), 'utf8').digest('hex');
+  assert.equal(manifest.revision, digest, 'Manifest must identify the exact current runtime/add-on content.');
+  const core = fragments.get('src/00-runtime-core.part');
+  assert.match(core, /global\.__SLINK_PDA_BOOTSTRAP__\?\.sourceRevision/,'Runtime identity must be supplied by the dynamic manifest.');
+  assert.ok(!core.includes(`const CLIENT_VERSION = '${version}';`), 'Runtime must not duplicate the installer version.');
+  assert.ok(launcher.includes('sourceRevision:e.revision'), 'Launcher must pass through the live content revision.');
   new vm.Script(launcher);
   new vm.Script(runtime);
   return version;
@@ -39,3 +44,4 @@ export function extractFunction(name, fragment) {
   }
   throw new Error(`Runtime function could not be parsed: ${name}`);
 }
+

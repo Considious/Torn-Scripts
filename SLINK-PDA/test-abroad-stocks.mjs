@@ -39,3 +39,4 @@ const flatItems = abroad.normalizeProvider('tornIntel', {
 assert(flatItems.length === 1 && flatItems[0].countryCode === 'mex' && flatItems[0].quantity === 5, 'Flat item lists were not normalized.');
 
 console.log('PDA Abroad Stocks validation passed.');
+

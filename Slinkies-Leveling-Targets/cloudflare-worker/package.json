@@ -1,8 +1,0 @@
-{
-    "name": "slinky-leveling-cloudflare-worker",
-    "private": true,
-    "type": "module",
-    "scripts": {
-        "test": "node --test worker.test.js client.test.js"
-    }
-}

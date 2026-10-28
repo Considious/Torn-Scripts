@@ -53,7 +53,7 @@ ctx.document.visibilityState='hidden';emit('visibilitychange');emit('resize');em
 ctx.document.visibilityState='visible';emit('visibilitychange');ctx.state.minimizedMode='bubble';ctx.state.bubblePosition={left:200,top:300};ctx.innerWidth=0;ctx.innerHeight=0;ctx.writeState=()=>{viewportWrites++;};ctx.launcher={dataset:{}};
 vm.runInContext(extractFunction('clampLauncher','src/90-shell-bootstrap.part'),ctx);const beforeClamp=viewportWrites;ctx.clampLauncher(true);assert.equal(viewportWrites,beforeClamp);assert.deepEqual(ctx.state.bubblePosition,{left:200,top:300},'Transient zero-size viewport must not erase the saved position');
 console.log('PDA repeated pagehide/pageshow, hidden startup/resume, singleton timers/observers, stale callback exclusion, scroll restoration and saved state retention passed.');
-const build=core.match(/^const BUILD = '([^']+)'/m)[1];let reopened=0;
+const build='direct-source';let reopened=0;
 const existingActivity={marker:'keep'};
 const reuse=vm.createContext({document:{getElementById:()=>({dataset:{slinkReady:'true'}})},SLINK_PDA_DASHBOARD:{build,open:()=>{reopened++;}},SLINK_PDA_PAGE_ACTIVITY:existingActivity,__SLINK_PDA_BOOTSTRAP__:{synthetic:'not-retained'}});reuse.global=reuse;
 const early=core.slice(core.indexOf('(function installSlinkPdaDashboard'),core.indexOf('// PDA visibility is authoritative;'));
@@ -73,3 +73,4 @@ assert(macroTimer);macroGeneration++;macroButton.disabled=false;macroTimer();awa
 assert.equal(macroClicks,0,'A pre-hide custom-message action must not send after resume');assert.equal(macro.armed,null);assert.equal(macro.sending,false);
 macro.armed={macroId:'one',contextId:'faction',message:'draft',expiresAt:Date.now()+10000};
 await macro.handleMacroClick({id:'one'},{isConnected:true});assert.equal(macroClicks,1,'A new explicit confirmation may send while active');
+
