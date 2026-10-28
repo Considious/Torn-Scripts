@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-c9fdfad5b1df64dff06989686de2ddfb8498edff2bfc13486f2b371d155b483f",
+  "revision": "sha256-20c83530578753b0877120ad89a5959354fbff7a1977958785aa2c24a8dd63fc",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -27,8 +27,13 @@
       "source": "src/addons/faction-officers.addon.js"
     },
     {
+      "source": "src/addons/chat-giphy.addon.js"
+    },
+    {
+      "source": "src/addons/chat-giphy-ui.addon.js"
+    },
+    {
       "source": "src/addons/chat.addon.js"
     }
   ]
 }
-

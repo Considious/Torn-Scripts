@@ -1198,11 +1198,13 @@ company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinu
 };
 }
 function portableBackupPayload() {
+const settings=JSON.parse(JSON.stringify(dataState.settings || {}));
+if(settings.plugins?.chat?.giphy)delete settings.plugins.chat.giphy.apiKey;
 return {
 schema:1,
 client:'pda',
 createdAt:Date.now(),
-settings:JSON.parse(JSON.stringify(dataState.settings || {})),
+settings,
 targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {})),
 uiState:{
 page:state.page,
@@ -1225,7 +1227,12 @@ throw new Error('The saved SLINK backup is invalid or incompatible.');
 }
 if (pdaTargetRecords) await pdaTargetRecords.replace(backup.targetList);
 else dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
+const localGiphyKey=dataState.settings?.plugins?.chat?.giphy?.apiKey;
 dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
+if(dataState.settings.plugins?.chat?.giphy){
+delete dataState.settings.plugins.chat.giphy.apiKey;
+if(localGiphyKey)dataState.settings.plugins.chat.giphy.apiKey=localGiphyKey;
+}
 if (storedRecord(backup.uiState)) {
 const restoredUi = backup.uiState;
 if (['combat','efficiency','quality-of-life','access'].includes(restoredUi.page)) state.page = restoredUi.page;
@@ -2572,7 +2579,3 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
-
-
-
-

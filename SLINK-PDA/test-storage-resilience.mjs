@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
 const core = fs.readFileSync(new URL('./src/00-runtime-core.part', import.meta.url), 'utf8');
 const dashboard = fs.readFileSync(new URL('./src/30-dashboard-combat.part', import.meta.url), 'utf8');
@@ -21,10 +22,17 @@ assert(loader.includes('using the last-known-working runtime.'), 'A failed sourc
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
 assert(loader.includes('primaryFailed')&&loader.includes('await gmWrite(n,selected)'), 'Mirror repair must not overwrite primary storage after a failed primary read, and must repair the primary when safe.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
-assert(core.includes("settings:JSON.parse(JSON.stringify(dataState.settings || {}))"), 'The backup must include user settings.');
+const backupFunction=core.slice(core.indexOf('function portableBackupPayload()'),core.indexOf('async function restorePortableBackup'));
+const backupContext=vm.createContext({dataState:{apiKey:'torn-secret',sessions:{token:'secret'},settings:{ordinary:42,plugins:{chat:{giphy:{enabled:true,apiKey:'giphy-secret'}}}},caches:{targetList:{one:{note:'keep'}}}},state:{page:'qualityOfLife',qualityOfLifeTab:'chat'}});
+vm.runInContext(backupFunction+';globalThis.backup=portableBackupPayload();',backupContext);
+assert.equal(backupContext.backup.settings.ordinary,42,'The backup must retain ordinary settings.');
+assert.equal(backupContext.backup.settings.plugins.chat.giphy.enabled,true);
+assert.equal(backupContext.backup.settings.plugins.chat.giphy.apiKey,undefined,'Do not upload custom GIPHY keys.');
+assert.equal(backupContext.dataState.settings.plugins.chat.giphy.apiKey,'giphy-secret','Redaction must not erase the local key.');
+assert.equal(backupContext.backup.apiKey,undefined);
+assert.equal(backupContext.backup.sessions,undefined);
 assert(core.includes("targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))"), 'The backup must include saved targets.');
 assert(core.includes('uiState:{'), 'The backup must include dashboard layout and tab preferences.');
-assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('apiKey'), 'Portable backups must not include API keys.');
 assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('sessions'), 'Portable backups must not include login sessions.');
 assert(dashboard.includes('API keys and login sessions are never included'), 'The Access UI must clearly explain backup exclusions.');
 assert(shell.includes("data-action=\"restore-data-backup\"") || shell.includes("action === 'restore-data-backup'"), 'The Access UI restore action must be wired.');
@@ -38,4 +46,3 @@ assert(!dashboard.includes('if (!allowed.includes(state[stateKey])) state[stateK
 assert(/applyPermissionGates\(\);\s+if \(state\.qualityOfLifeTab === id\) selectSubpage\('qualityOfLife', id, false\);/.test(shell), 'Plugin registration must restore the exact saved Quality of Life module after applying its permission gate.');
 
 console.log('PDA durable local storage and API-key-free backup wiring are verified.');
-
