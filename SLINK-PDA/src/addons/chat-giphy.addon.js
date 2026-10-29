@@ -18,16 +18,78 @@
         (url.hostname === 'giphy.com' || url.hostname.endsWith('.giphy.com')) ? String(value) : '';
     } catch { return ''; }
   }
-  function resultRow(gif) {
+  function resultRow(gif, type = 'gif') {
     const images = gif?.images || {};
-    return { id:String(gif?.id || ''), title:String(gif?.title || 'GIF'),
+    const previewUrl=mediaUrl(images.fixed_width_still?.url || images.fixed_height_still?.url || images.original_still?.url);
+    const imageUrl=mediaUrl(images.fixed_width?.url || images.fixed_height?.url || images.original?.url);
+    const permalink=mediaUrl(gif?.url);
+    return { id:String(gif?.id || ''), provider:'giphy', type, title:String(gif?.title || (type==='sticker'?'Sticker':'GIF')),
+      previewUrl, imageUrl, permalink, animated:true,
+      width:Number(images.fixed_width?.width)||null,height:Number(images.fixed_width?.height)||null,
       creator:String(gif?.user?.display_name || gif?.username || ''), url:mediaUrl(gif?.url),
-      still:mediaUrl(images.fixed_width_still?.url || images.fixed_height_still?.url || images.original_still?.url),
-      mp4:mediaUrl(images.fixed_width?.mp4 || images.fixed_height?.mp4 || images.downsized_small?.mp4),
+      shareUrl:type==='sticker'?imageUrl:permalink, still:previewUrl,
+      mp4:type==='sticker'?'':mediaUrl(images.fixed_width?.mp4 || images.fixed_height?.mp4 || images.downsized_small?.mp4),
       image:mediaUrl(images.fixed_width?.webp || images.fixed_height?.webp || images.fixed_width?.url || images.original?.url) };
+  }
+  function stickerUrl(value, permalink=false) {
+    try {
+      const url=new URL(value);
+      const hosts=permalink?['chatsticker.com','www.chatsticker.com']:['stickershop.line-scdn.net','chatsticker.com','www.chatsticker.com'];
+      return url.protocol==='https:'&&!url.username&&!url.password&&hosts.includes(url.hostname)&&(!url.port||url.port==='443')?String(value):'';
+    } catch { return ''; }
+  }
+  function chatStickerRow(item) {
+    const previewUrl=stickerUrl(item?.image_url), animatedUrl=stickerUrl(item?.animated_url);
+    const imageUrl=item?.animated===true&&animatedUrl?animatedUrl:previewUrl;
+    const permalink=stickerUrl(item?.permalink,true);
+    return {id:String(item?.sticker_item_id||item?.sticker_id||''),provider:'chatsticker',type:'sticker',
+      title:String(item?.name||'Sticker'),creator:String(item?.author||''),previewUrl,imageUrl,permalink,
+      animated:item?.animated===true,animationAvailable:!!animatedUrl,width:Number(item?.width)||null,height:Number(item?.height)||null,
+      still:previewUrl,image:imageUrl,mp4:'',url:permalink,shareUrl:imageUrl};
+  }
+  function dedupeStickers(rows) {
+    const seen=new Set();return rows.filter(row=>{
+      if(!row.imageUrl)return false;
+      const keys=[row.imageUrl,row.permalink,row.id&&row.provider+':'+row.id].filter(Boolean);
+      if(keys.some(key=>seen.has(key)))return false;keys.forEach(key=>seen.add(key));return true;
+    });
   }
   function createClient({ read, write, authorize, request, now = Date.now }) {
     let saves = Promise.resolve(), pending = null, blockedUntil = 0, lastRequest = -Infinity;
+    let stickerBlockedUntil=0,stickerLastRequest=-Infinity;
+    const stickerCache=new Map(),stickerPending=new Map();
+    async function fetchResponse(url) {
+      let timer;
+      try {return await Promise.race([Promise.resolve().then(()=>request(url)),new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(Error('Media request timed out.')),12000);
+      })]);} finally {clearTimeout(timer);}
+    }
+    async function searchChatSticker(input,settings,query,offset) {
+      const cacheKey=JSON.stringify([query.trim().toLowerCase(),offset]);
+      const cached=stickerCache.get(cacheKey);
+      if(cached&&cached.until>now())return structuredCopy(cached.result);
+      if(stickerPending.has(cacheKey))return stickerPending.get(cacheKey);
+      if(now()<stickerBlockedUntil||now()-stickerLastRequest<1100)throw Error('Sticker search is temporarily unavailable.');
+      const url=new URL('https://chatsticker.com/api/v1/'+(query.trim()?'search':'top'));
+      if(query.trim())url.searchParams.set('q',query.trim());else url.searchParams.set('range','week');
+      url.searchParams.set('limit','12');url.searchParams.set('page',String(Math.floor(offset/12)+1));
+      stickerLastRequest=now();
+      const task=(async()=>{
+        try {
+          const response=await fetchResponse(url.href),status=Number(response.status);
+          if(status===429)stickerBlockedUntil=now()+Math.max(60000,Math.min(3600000,Number(response.retryAfter||60)*1000));
+          if(status<200||status>=300||!Array.isArray(response.body?.data))throw Error('Provider unavailable');
+          await authorize();const current=normalize(await read());
+          if(!current.enabled||current.keyMode!==settings.keyMode||current.apiKey!==settings.apiKey)throw Error('Settings changed');
+          const raw=response.body.data,result={rows:dedupeStickers(raw.map(chatStickerRow)),offset,nextOffset:offset+12,
+            hasMore:raw.length>0&&offset+raw.length<Number(response.body.total||0)};
+          if(stickerCache.size>=20)stickerCache.delete(stickerCache.keys().next().value);
+          stickerCache.set(cacheKey,{until:now()+180000,result});return structuredCopy(result);
+        } catch {throw Error('Sticker search is temporarily unavailable.');}
+        finally {stickerPending.delete(cacheKey);}
+      })();stickerPending.set(cacheKey,task);return task;
+    }
+    function structuredCopy(value){return JSON.parse(JSON.stringify(value));}
     async function get() { await authorize(); await saves.catch(()=>{}); return publicSettings(await read()); }
     function patch(changes = {}) {
       const captured = { ...changes };
@@ -51,17 +113,19 @@
       await authorize(); await saves.catch(()=>{});
       const settings = normalize(await read());
       if (!settings.enabled) throw Error('Enable the GIF picker first.');
+      const query = String(input.query || '');
+      if (query.length > 50) throw Error('Media searches can contain up to 50 characters.');
+      const offset = Math.max(0, Math.min(query.trim() ? 4999 : 499, Math.floor(Number(input.offset) || 0)));
+      if(input.provider==='chatsticker')return searchChatSticker(input,settings,query,offset);
+      const type=input.type==='sticker'?'sticker':'gif';
       const key = settings.keyMode === 'custom' ? settings.apiKey : APPLICATION_KEY;
       if (!key) throw Error('Add your GIPHY API key or choose the integrated key.');
-      const query = String(input.query || '');
-      if (query.length > 50) throw Error('GIPHY searches can contain up to 50 characters.');
-      const offset = Math.max(0, Math.min(query.trim() ? 4999 : 499, Math.floor(Number(input.offset) || 0)));
       if (pending) throw Error('A GIF request is still running. Please wait.');
       if (now() < blockedUntil) throw Error('GIPHY request limit reached. Please try again later.');
       if (now() - lastRequest < 1000) throw Error('Please wait a moment before searching again.');
-      const url = new URL('https://api.giphy.com/v1/gifs/' + (query.trim() ? 'search' : 'trending'));
+      const url = new URL('https://api.giphy.com/v1/'+(type==='sticker'?'stickers':'gifs')+'/' + (query.trim() ? 'search' : 'trending'));
       url.searchParams.set('api_key',key); url.searchParams.set('limit','12');
-      url.searchParams.set('offset',String(offset)); url.searchParams.set('rating','pg-13');
+      url.searchParams.set('offset',String(offset)); url.searchParams.set('rating',type==='sticker'?'g':'pg-13');
       if (query.trim()) url.searchParams.set('q',query);
       lastRequest = now();
       let timeout;
@@ -81,7 +145,7 @@
         await authorize();
         const current = normalize(await read());
         if (!current.enabled || current.keyMode !== settings.keyMode || current.apiKey !== settings.apiKey) throw Error('GIF settings changed. Please search again.');
-        return { rows:response.body.data.map(resultRow), offset, nextOffset:offset+response.body.data.length,
+        return { rows:response.body.data.map(row=>resultRow(row,type)), offset, nextOffset:offset+response.body.data.length,
           hasMore:response.body.data.length > 0 && offset+response.body.data.length < Number(response.body.pagination?.total_count || 0) && offset < (query.trim()?4999:499) };
       } catch (error) {
         // Native transport errors can contain the key-bearing URL. Never expose them.
@@ -121,5 +185,5 @@
       write:async value=>{api.settings('chat',{}).giphy=value; await api.save();},
       authorize:async()=>{await api.ensurePermission(false);if(!api.hasScope('slink.qol.chat')&&!api.hasScope('admin.*'))throw Error('Chat permission is required.');}, request });
   }
-  global.SLINK_GIPHY = Object.freeze({createClient,client,request,publicSettings,mediaUrl,resultRow});
+  global.SLINK_GIPHY = Object.freeze({createClient,client,request,publicSettings,mediaUrl,resultRow,chatStickerRow,stickerUrl,dedupeStickers});
 })(globalThis);

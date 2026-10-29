@@ -1,4 +1,6 @@
-# SLINK PDA audit tester build — candidate 34
+# SLINK PDA audit tester build — candidate 35
+
+Current PDA **0.4.120**, extension **0.19.13.8**. Quality of Life → Chat's optional media picker adds Stickers using GIPHY and ChatSticker in separate sections. Existing settings, keys and manual copy/paste/send remain unchanged. Use Candidate 35 in the single extension TESTER-CHANGELOG.md. Update the existing audit script in place, not by uninstalling. Older version notes below are historical; main/stable remains untouched.
 
 Current PDA installer: **0.4.119**. This includes optional Torn-page theming following the existing selected theme; enable “Apply my SLINK theme to Torn” in the Themes/recovery controls. Extension counterpart is 0.19.13.7. See Candidate 34 in the single extension TESTER-CHANGELOG.md for the combined checklist. Update the existing audit script in place; do not uninstall or clear data. Main/stable is unchanged. Earlier entries below are historical.
 
