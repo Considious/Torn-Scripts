@@ -124,4 +124,3 @@ function start(){if(api.hasScope(SCOPE))void refresh(false).catch(()=>undefined)
 api.register({id:ID,title:'Events',shortTitle:'Events',scope:SCOPE,render,refresh,start,test:Object.freeze({eventRows,mergeCalendars,selectedEvent,timestampMs,basketRank,recommendations,isHalloween,UPGRADE_ORDER})});
 })(globalThis);
 
-

@@ -1,0 +1,1265 @@
+function renderMarketSuggestions(query = '') {
+const root = moduleRoot('market');
+const input = root?.querySelector('[data-field="market-item"]');
+const suggestions = root?.querySelector('[data-market-item-suggestions]');
+if (!input || !suggestions || input.disabled) return;
+const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+const rows = marketSuggestionRows(query || input.value, catalog);
+suggestions.innerHTML = rows.map(item => `<button type="button" data-market-item-option="${item.id}"><strong>${escapeHtml(item.name)} [${item.id}]</strong><small>${item.shopSellPrice > 0 ? `Shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${escapeHtml(item.shopSellName)}` : ''}` : `${escapeHtml(item.type || 'Item')} · no shop sell price`}</small></button>`).join('');
+suggestions.hidden = rows.length === 0;
+input.setAttribute('aria-expanded', String(rows.length > 0));
+}
+function selectMarketSuggestion(itemId) {
+const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+const item = catalog.find(row => Number(row.id) === Number(itemId));
+const root = moduleRoot('market');
+const input = root?.querySelector('[data-field="market-item"]');
+const suggestions = root?.querySelector('[data-market-item-suggestions]');
+if (!item || !input) return;
+input.value = marketItemLabel(item);
+if (suggestions) suggestions.hidden = true;
+input.setAttribute('aria-expanded', 'false');
+captureMarketDraft();
+}
+function renderMarketUnlessEditing() {
+const active = shadow?.activeElement;
+if (active?.closest?.('[data-module-root="market"] .market-form')) {
+captureMarketDraft();
+moduleState.market.renderPending = true;
+return;
+}
+moduleState.market.renderPending = false;
+renderMarket();
+}
+function renderMarket(preserveForm = true) {
+const root = moduleRoot('market');
+if (!root) return;
+if (preserveForm) captureMarketDraft();
+const current = moduleState.market;
+const limit = marketWatchLimit();
+if (!limit) { root.innerHTML = `${lockedModule('a slink.adhd.marketwatch tier (.5 through .40)', 'SLINK Market Watch')}${current.error ? moduleMessage(current.error, 'error') : ''}<div class="market-bulk-actions"><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing permissions…' : 'Refresh permissions'}</button></div>`; return; }
+const runtime = current.data || marketRuntime();
+const settings = marketSettings();
+const deals = marketOpportunities(runtime);
+const pricelistItems = weaverPricelistItems(runtime.weaverPricelist?.items || []);
+const pricelistStatus = runtime.weaverPricelist?.lastError
+? `Weaver sync issue: ${runtime.weaverPricelist.lastError}`
+: runtime.weaverPricelist?.fetchedAt ? `${number(pricelistItems.length)} active Weaver prices synced ${relativeTime(runtime.weaverPricelist.fetchedAt)}.`
+: settings.weaverPricelistEnabled ? 'Weaver price list will sync on refresh.' : 'Weaver price list is off.';
+const usage = apiUsage();
+const edit = settings.watches.find(watch => watch.uid === current.editingUid) || null;
+const form = current.draft || edit || { marketType:'item', itemId:0, label:'', itemText:'', maxPrice:'', priority:settings.lastPriority, marketEnabled:true, bazaarEnabled:true };
+const catalog = Array.isArray(runtime.catalog?.items) ? runtime.catalog.items : [];
+const selectedItem = catalog.find(item => item.id === Number(form.itemId));
+const itemValue = form.itemText || (selectedItem ? marketItemLabel(selectedItem) : form.label ? `${form.label}${form.itemId ? ` [${form.itemId}]` : ''}` : '');
+const error = current.error || runtime.lastError;
+root.innerHTML = `<div class="grid">
+<article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2></div><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>Refresh permissions</button><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
+${error ? moduleMessage(error, 'error') : ''}
+<div class="market-form">
+<label>Watch type<select data-field="market-type"><option value="item" ${form.marketType === 'item' ? 'selected' : ''}>Item</option><option value="points" ${form.marketType === 'points' ? 'selected' : ''}>Points Market</option></select></label>
+<div class="market-item-field"><label for="slink-market-item-input">Item</label><div class="market-item-picker"><input id="slink-market-item-input" type="text" data-field="market-item" value="${escapeHtml(itemValue)}" placeholder="Type an item name" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" ${form.marketType === 'points' ? 'disabled' : ''}><div class="market-item-suggestions" data-market-item-suggestions role="listbox" hidden></div></div><small>${catalog.length ? `Type a name or ID to search ${number(catalog.length)} API catalog items.` : 'Loading Torn item names and shop sell prices automatically…'}</small></div>
+<label>Maximum price<input type="number" inputmode="numeric" min="1" step="1" data-field="market-price" value="${form.maxPrice || ''}" placeholder="Target price"></label>
+<label>Priority<select data-field="market-priority"><option value="high" ${form.priority === 'high' ? 'selected' : ''}>High</option><option value="normal" ${form.priority === 'normal' ? 'selected' : ''}>Normal</option><option value="low" ${form.priority === 'low' ? 'selected' : ''}>Low</option></select></label>
+<fieldset class="market-sources" ${form.marketType === 'points' ? 'disabled' : ''}><legend>Sources</legend><label><input type="checkbox" data-field="market-source" ${form.marketEnabled ? 'checked' : ''}> Item Market</label><label><input type="checkbox" data-field="bazaar-source" ${form.bazaarEnabled ? 'checked' : ''}> Weaver Bazaar</label></fieldset>
+<div class="market-form-actions"><button type="button" data-action="save-market-watch">${edit ? 'Update watch' : 'Save watch'}</button><button type="button" data-action="clear-market-form">Clear</button></div>
+</div>
+<div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-listed-items" ${settings.listedItemsEnabled ? 'checked' : ''}> Listed SLINK watches</label><label><input type="checkbox" data-field="market-weaver-pricelist" ${settings.weaverPricelistEnabled ? 'checked' : ''}> My Weaver price list</label><label>Check first <select data-field="market-weaver-source-order"><option value="listed-first" ${settings.weaverSourceOrder === 'listed-first' ? 'selected' : ''}>Listed SLINK watches</option><option value="pricelist-first" ${settings.weaverSourceOrder === 'pricelist-first' ? 'selected' : ''}>Weaver price list</option></select></label><button type="button" data-action="sync-market-weaver-pricelist" ${current.busy ? 'disabled' : ''}>Sync Weaver price list</button><span class="muted">${escapeHtml(pricelistStatus)}</span><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label>${hasScope('admin.*') ? `<button type="button" data-action="toggle-market-dom-test">${marketPurchaseState.domTestEnabled ? 'Stop Market DOM Test' : 'Market DOM Test'}</button><span class="muted">Admin diagnostic: forces the first compatible visible listing through the real highlight and SLINK Buy path.</span>` : ''}</div><p class="muted">One Weaver marketplace snapshot screens every active ID locally; seller details are requested only for items that can meet a SLINK or Weaver target.</p>
+</article>
+<article class="card full"><div class="card-head"><div><h2>Active deals</h2><span class="muted">Updated ${relativeTime(runtime.fetchedAt)} · Torn API ${usage.count}/${usage.limit} in the shared rolling minute</span></div><span class="badge ${deals.length ? 'ready' : ''}">${deals.length}</span></div>
+<div class="market-bulk-actions"><button type="button" data-action="copy-market-list" ${deals.length ? '' : 'disabled'}>Copy item list</button><button type="button" data-action="send-market-list" ${deals.length ? '' : 'disabled'}>Send list to Faction</button></div>
+<div class="market-deals">${deals.length ? deals.map(deal => `<article class="market-deal"><strong>${escapeHtml(deal.source)} · ${escapeHtml(deal.itemName)}</strong><span>${escapeHtml(deal.detail)}</span><div class="target-actions"><a href="${escapeHtml(deal.href)}">Open &amp; highlight</a><button type="button" data-action="copy-market-deal" data-market-deal="${escapeHtml(deal.id)}">Copy</button><button type="button" data-action="send-market-deal" data-market-deal="${escapeHtml(deal.id)}">Send to Faction</button><button type="button" data-action="dismiss-market-deal" data-market-dismiss="${escapeHtml(deal.dismissKey)}">Dismiss 5m</button></div></article>`).join('') : '<div class="module-message">No watched listing is currently at or below its target.</div>'}</div>
+</article>
+<article class="card full"><div class="card-head"><div><h2>Configured watches</h2><span class="muted">High follows Torn cache timestamp + API delay + 1 second; normal reserves 10 calls/min and low reserves 20 for other features.</span></div></div><div class="market-watch-grid">${settings.watches.length ? settings.watches.map(watch => { const item = catalog.find(row => row.id === watch.itemId); const sell = item?.shopSellPrice > 0 ? ` · shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : ''; return `<article class="market-watch"><strong>${escapeHtml(watch.label || 'Points Market')}${watch.itemId ? ` [${watch.itemId}]` : ''}</strong><span>Target ${marketMoney(watch.maxPrice)} · ${escapeHtml(watch.priority)} · ${watch.marketType === 'points' ? 'Points Market' : [watch.marketEnabled && 'Item Market', watch.bazaarEnabled && 'Weaver Bazaar'].filter(Boolean).join(' + ')}${escapeHtml(sell)}</span><div class="target-actions"><button type="button" data-action="edit-market-watch" data-market-watch="${escapeHtml(watch.uid)}">Edit</button><button class="danger" type="button" data-action="remove-market-watch" data-market-watch="${escapeHtml(watch.uid)}">Remove</button></div></article>`; }).join('') : '<div class="module-message">No watches saved yet.</div>'}</div></article>
+</div>`;
+updateAlertIndicator(alertRows(moduleState.alerts.data).length);
+}
+function readMarketForm() {
+const root = moduleRoot('market');
+const type = root?.querySelector('[data-field="market-type"]')?.value === 'points' ? 'points' : 'item';
+const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+const itemText = String(root?.querySelector('[data-field="market-item"]')?.value || '').trim();
+const bracketId = Number(itemText.match(/\[(\d+)\]/)?.[1]) || 0;
+const exact = catalog.find(item => item.id === bracketId) || catalog.find(item => item.name.toLowerCase() === itemText.toLowerCase());
+return normalizeMarketWatch({
+uid:moduleState.market.editingUid || undefined,
+marketType:type,
+itemId:type === 'points' ? 0 : exact?.id || bracketId,
+label:type === 'points' ? 'Points' : exact?.name || itemText.replace(/\s*\[\d+\].*$/, '').trim(),
+maxPrice:Number(root?.querySelector('[data-field="market-price"]')?.value) || 0,
+priority:root?.querySelector('[data-field="market-priority"]')?.value,
+marketEnabled:root?.querySelector('[data-field="market-source"]')?.checked,
+bazaarEnabled:root?.querySelector('[data-field="bazaar-source"]')?.checked
+});
+}
+function saveMarketWatch() {
+const settings = marketSettings(); const limit = marketWatchLimit(); const watch = readMarketForm();
+if (!(watch.maxPrice > 0)) { moduleState.market.error = 'Enter a maximum price greater than zero.'; renderMarket(); return; }
+const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
+if (watch.marketType === 'item' && (!(watch.itemId > 0) || !catalog.some(item => Number(item.id) === watch.itemId))) { moduleState.market.error = 'Choose an item from the API-loaded name list.'; renderMarket(); return; }
+if (watch.marketType === 'item' && !watch.marketEnabled && !watch.bazaarEnabled) { moduleState.market.error = 'Choose Item Market, Weaver Bazaar, or both.'; renderMarket(); return; }
+const index = settings.watches.findIndex(row => row.uid === watch.uid);
+if (index < 0 && settings.watches.length >= limit) { moduleState.market.error = `Your permission allows ${limit} watches.`; renderMarket(); return; }
+if (index >= 0) settings.watches[index] = watch; else settings.watches.push(watch);
+settings.lastPriority = watch.priority; moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = '';
+const runtime = marketRuntime(); delete runtime.results[watch.uid]; dataState.caches.market = runtime;
+writeDataState(); renderMarket(false); void refreshMarket(false);
+}
+function addMuseumMarketWatch(itemId,maxPrice){
+const id=Math.trunc(Number(itemId)||0),price=Math.trunc(Number(maxPrice)||0),settings=marketSettings(),limit=marketWatchLimit();
+if(!id||price<1)throw new Error('Enter a maximum price greater than zero.');
+const item=(marketRuntime().catalog.items||[]).find(row=>Number(row.id)===id);
+if(!item)throw new Error('Refresh Museum inventory so this item can be matched to Torn’s catalog.');
+if(settings.watches.some(row=>row.marketType==='item'&&Number(row.itemId)===id))throw new Error(item.name+' is already saved in Market Watch.');
+if(settings.watches.length>=limit)throw new Error('Your permission allows '+limit+' Market Watch slots.');
+const watch=normalizeMarketWatch({marketType:'item',itemId:id,label:item.name,maxPrice:price,priority:'normal',enabled:true,marketEnabled:true,bazaarEnabled:false},settings.watches.length);
+settings.watches.push(watch);dataState.caches.market=marketRuntime();writeDataState();renderMarket(false);void refreshMarket(false);return watch
+}
+function focusedTornPage() {
+// Torn PDA's WebView can report hasFocus() as false while the visible
+// Torn page is still interactive.
+return pdaDomActive();
+}
+function elementVisible(element) {
+if (!element?.isConnected) return false;
+const style = getComputedStyle(element);
+if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+const rect = element.getBoundingClientRect();
+return rect.width > 0 && rect.height > 0;
+}
+function syncMarketPurchaseCatalog() {
+const runtime = moduleState.market.data || marketRuntime();
+const catalog = runtime?.catalog && typeof runtime.catalog === 'object' ? runtime.catalog : { fetchedAt:0, items:[] };
+marketPurchaseState.itemCatalog = {
+fetchedAt:Number(catalog.fetchedAt) || 0,
+items:(Array.isArray(catalog.items) ? catalog.items : []).map(item => ({
+...item,
+id:Math.trunc(Number(item?.id) || 0),
+name:String(item?.name || ''),
+sellPrice:Math.max(0, Math.trunc(Number(item?.shopSellPrice ?? item?.sellPrice) || 0))
+}))
+};
+marketPurchaseState.settings.highlightedQuickBuyEnabled = marketSettings().quickBuyEnabled !== false;
+}
+function itemCatalogFresh() {
+return marketPurchaseState.itemCatalog.items.length > 0
+&& Date.now() - Number(marketPurchaseState.itemCatalog.fetchedAt || 0) < 24 * 60 * 60_000;
+}
+function catalogItemBySearch(search) {
+const normalized = String(search || '').trim().toLocaleLowerCase();
+if (!normalized) return null;
+return marketPurchaseState.itemCatalog.items.find(item => item.name.toLocaleLowerCase() === normalized) || null;
+}
+function ownsDashboardNetworkLease() {
+return true;
+}
+async function loadItemCatalog({ force = false } = {}) {
+marketPurchaseState.itemCatalogLoading = true;
+try {
+const runtime = marketRuntime();
+await marketEnsureCatalog(runtime, force);
+dataState.caches.market = runtime;
+moduleState.market.data = runtime;
+writeDataState();
+syncMarketPurchaseCatalog();
+return marketPurchaseState.itemCatalog;
+} finally {
+marketPurchaseState.itemCatalogLoading = false;
+}
+}
+function onBazaarPage() {
+return /\/bazaar\.php$/i.test(location.pathname);
+}
+function onItemMarketPage() {
+const url = new URL(location.href);
+const sid = String(url.searchParams.get('sid') || '').toLowerCase();
+return sid === 'itemmarket'
+|| /\/itemmarket\.php$/i.test(url.pathname)
+|| /(?:^|\/)itemmarket(?:\/|$)/i.test(url.hash.replace(/^#\/?/, ''));
+}
+function onPurchaseOpportunityPage() {
+return marketWatchLimit() > 0 && (onBazaarPage() || onItemMarketPage());
+}
+function targetedBazaarListing() {
+if (!onBazaarPage()) return null;
+const params = new URL(location.href).searchParams;
+if (params.get('highlight') !== '1' && params.get('slinkHighlight') !== '1') return null;
+const sellerId = Math.trunc(Number(params.get('userId')) || 0);
+const itemId = Math.trunc(Number(params.get('itemId')) || 0);
+const price = Math.trunc(Number(params.get('price')) || 0);
+return sellerId > 0 && itemId > 0 && price > 0 ? { sellerId, itemId, price } : null;
+}
+function ensurePurchaseHighlightStyles() {
+if (document.getElementById('tdd-purchase-highlight-styles')) return;
+const style = document.createElement('style');
+style.id = 'tdd-purchase-highlight-styles';
+style.textContent = `
+[data-tdd-bazaar-targeted],
+[data-tdd-bazaar-one-dollar],
+[data-tdd-item-market-one-dollar],
+[data-tdd-market-dom-test] {
+outline: 4px solid #39ff14 !important;
+outline-offset: 2px !important;
+box-shadow: 0 0 18px 5px rgba(57,255,20,.72), inset 0 0 0 2px rgba(57,255,20,.5) !important;
+}
+[data-tdd-bazaar-shop-profit],
+[data-tdd-item-market-shop-profit] {
+outline: 4px solid #ff4fbd !important;
+outline-offset: 2px !important;
+box-shadow: 0 0 18px 5px rgba(255,79,189,.68), inset 0 0 0 2px rgba(255,79,189,.48) !important;
+}
+#tdd-quick-buy-layer {
+position: fixed;
+inset: 0;
+z-index: 2147483646;
+pointer-events: none;
+}
+button[data-tdd-quick-buy] {
+position: fixed;
+box-sizing: border-box;
+margin: 0;
+padding: 0 3px;
+border: 1px solid rgba(255,255,255,.32);
+border-radius: 4px;
+color: #111;
+background: linear-gradient(#b9ff68, #68c51d);
+box-shadow: inset 0 1px rgba(255,255,255,.48), 0 0 7px rgba(112,255,40,.55);
+font: 700 10px/1.1 Arial, sans-serif;
+text-transform: uppercase;
+cursor: pointer;
+pointer-events: auto;
+}
+button[data-tdd-quick-buy][data-tdd-quick-buy-stage="confirm"] {
+color: #fff;
+background: linear-gradient(#ff4fbd, #be197d);
+box-shadow: inset 0 1px rgba(255,255,255,.35), 0 0 8px rgba(255,79,189,.62);
+}
+button[data-tdd-quick-buy]:disabled {
+opacity: .6;
+cursor: wait;
+}
+button[data-tdd-quick-buy][data-tdd-quick-buy-passive="true"] {
+opacity: .45;
+pointer-events: none;
+}
+`;
+document.head?.appendChild(style);
+}
+function bazaarCardPrice(card) {
+const priceElement = card?.querySelector?.('[data-testid="price"]');
+if (!priceElement) return null;
+for (const node of priceElement.childNodes) {
+if (node.nodeType !== Node.TEXT_NODE) continue;
+const match = String(node.textContent || '').replaceAll(',', '').match(/\$?\s*(\d+(?:\.\d+)?)/);
+if (match) return Number(match[1]);
+}
+const match = String(priceElement.textContent || '').match(/^\s*\$?\s*([\d,]+(?:\.\d+)?)/);
+return match ? Number(match[1].replaceAll(',', '')) : null;
+}
+function bazaarCssColorLooksRed(value) {
+const match = String(value || '').match(/rgba?\(\s*(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)(?:\D+(\d+(?:\.\d+)?))?/i);
+if (!match || (match[4] != null && Number(match[4]) === 0)) return false;
+const red = Number(match[1]);
+const green = Number(match[2]);
+const blue = Number(match[3]);
+return red >= 90 && green <= red * 0.65 && blue <= red * 0.8;
+}
+function bazaarCardUnavailable(card) {
+const priceElement = card.querySelector('[data-testid="price"]');
+const blockedPurchaseSelector = '[class*="isBlockedForBuying"], #isBlockedForBuyingTooltip';
+const unavailableSelector = '[aria-disabled="true"], [data-disabled="true"], [class*="disabled" i], [class*="unavailable" i], [class*="soldOut" i], [class*="cannotBuy" i]';
+if (card.querySelector(blockedPurchaseSelector)) return true;
+if (card.matches(unavailableSelector) || priceElement?.matches(unavailableSelector)) return true;
+if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(card.textContent || ''))) return true;
+const purchaseControls = Array.from(card.querySelectorAll('button, [role="button"]')).filter((control) => (
+!control.matches?.('[data-tdd-quick-buy]')
+&& /\b(?:buy|purchase)\b/i.test(`${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('title') || ''}`)
+));
+if (purchaseControls.length && !purchaseControls.some((control) => !control.disabled && control.getAttribute('aria-disabled') !== 'true')) return true;
+const cardStyle = getComputedStyle(card);
+const priceStyle = priceElement ? getComputedStyle(priceElement) : null;
+return bazaarCssColorLooksRed(cardStyle.backgroundColor)
+|| bazaarCssColorLooksRed(cardStyle.borderColor)
+|| bazaarCssColorLooksRed(priceStyle?.color)
+|| bazaarCssColorLooksRed(priceStyle?.backgroundColor);
+}
+function bazaarListingCards() {
+const container = document.querySelector('[data-testid="bazaar-items"]');
+if (!container) return [];
+const direct = Array.from(container.querySelectorAll('[data-testid="item"]'));
+if (direct.length) return direct;
+return [...new Set(Array.from(container.querySelectorAll('img[src*="/images/items/"], img[srcset*="/images/items/"]'))
+.map((image) => image.closest('[class*="item___"]'))
+.filter(Boolean))];
+}
+function bazaarCardItemId(card) {
+const image = card?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+const match = `${image?.getAttribute('src') || ''} ${image?.getAttribute('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
+return match ? Math.trunc(Number(match[1])) : 0;
+}
+function bazaarCardMatchesTarget(card, target = targetedBazaarListing()) {
+if (!target) return false;
+return bazaarCardItemId(card) === target.itemId && bazaarCardPrice(card) === target.price;
+}
+function bazaarCardStock(card) {
+const stockText = card?.querySelector?.('[data-testid="amount-value"]')?.textContent
+|| String(card?.textContent || '').match(/([\d,]+)\s+in stock/i)?.[1]
+|| '';
+const stock = Number(String(stockText).replace(/[^\d]/g, ''));
+return Number.isFinite(stock) && stock > 0 ? Math.trunc(stock) : 0;
+}
+function catalogItemById(itemId) {
+const id = Math.trunc(Number(itemId));
+return id > 0 ? marketPurchaseState.itemCatalog.items.find((item) => item.id === id) || null : null;
+}
+function bazaarCardItemName(card) {
+return String(card?.querySelector?.('[data-testid="name"]')?.textContent || '')
+.replace(/\s+/g, ' ')
+.trim();
+}
+function catalogItemForBazaarCard(card) {
+return catalogItemById(bazaarCardItemId(card)) || catalogItemBySearch(bazaarCardItemName(card));
+}
+function itemCatalogHasSellPrices() {
+return marketPurchaseState.itemCatalog.items.some((item) => Object.hasOwn(item, 'sellPrice'));
+}
+function requestPurchaseSellPriceCatalog() {
+if ((itemCatalogFresh() && itemCatalogHasSellPrices()) || marketPurchaseState.itemCatalogLoading || !marketPurchaseState.settings.apiKey || !ownsDashboardNetworkLease()) return;
+if (Date.now() - Number(marketPurchaseState.bazaarCatalogRequestedAt || 0) < 5 * 60_000) return;
+marketPurchaseState.bazaarCatalogRequestedAt = Date.now();
+void loadItemCatalog({ force: true }).then(() => schedulePurchaseOpportunityFormatting(0));
+}
+function bazaarPurchaseOpportunity(card) {
+const price = bazaarCardPrice(card);
+const available = !bazaarCardUnavailable(card);
+const sellPrice = Number(catalogItemForBazaarCard(card)?.sellPrice) || 0;
+const oneDollar = available && price === 1;
+const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
+return { oneDollar, shopProfit };
+}
+function clearMarketDomTestMarks(kind = '') {
+const selector = kind
+? `[data-tdd-market-dom-test="${kind}"]`
+: '[data-tdd-market-dom-test]';
+document.querySelectorAll(selector).forEach((element) => element.removeAttribute('data-tdd-market-dom-test'));
+}
+function marketDomTestTarget(kind, elements) {
+const candidates = Array.from(elements || []);
+const enabled = hasScope('admin.*') && marketPurchaseState.domTestEnabled;
+const target = enabled ? candidates.find((element) => {
+if (!element?.isConnected || !elementVisible(element)) return false;
+if (kind === 'bazaar') {
+if (bazaarCardUnavailable(element)) return false;
+return Boolean(nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"], button[data-testid="activate-buy-button"]'));
+}
+if (itemMarketRowUnavailable(element)) return false;
+return Boolean(nativeQuickPurchaseControl(element, 'button[class*="buyButton___"], button[aria-label^="Buy "]'));
+}) || null : null;
+document.querySelectorAll(`[data-tdd-market-dom-test="${kind}"]`).forEach((element) => {
+if (element !== target) element.removeAttribute('data-tdd-market-dom-test');
+});
+if (target) target.setAttribute('data-tdd-market-dom-test', kind);
+return target;
+}
+function formatBazaarOneDollarListings() {
+if (!focusedTornPage() || !onBazaarPage()) return;
+ensurePurchaseHighlightStyles();
+requestPurchaseSellPriceCatalog();
+const cards = new Set(bazaarListingCards());
+marketDomTestTarget('bazaar', cards);
+const target = targetedBazaarListing();
+document.querySelectorAll('[data-tdd-bazaar-targeted]').forEach((card) => {
+if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-targeted');
+});
+document.querySelectorAll('[data-tdd-bazaar-one-dollar]').forEach((card) => {
+if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-one-dollar');
+});
+document.querySelectorAll('[data-tdd-bazaar-shop-profit]').forEach((card) => {
+if (!cards.has(card)) card.removeAttribute('data-tdd-bazaar-shop-profit');
+});
+cards.forEach((card) => {
+const { oneDollar, shopProfit } = bazaarPurchaseOpportunity(card);
+card.toggleAttribute('data-tdd-bazaar-targeted', bazaarCardMatchesTarget(card, target));
+card.toggleAttribute('data-tdd-bazaar-one-dollar', oneDollar);
+card.toggleAttribute('data-tdd-bazaar-shop-profit', shopProfit);
+});
+}
+function itemMarketSellerRows() {
+return [...new Set(Array.from(document.querySelectorAll('ul[class*="sellerList___"]'))
+.flatMap((list) => Array.from(list.querySelectorAll('li[class*="rowWrapper___"]')))
+.filter((row) => row.querySelector('[class*="sellerRow___"]')))];
+}
+function itemMarketRowPrice(row) {
+const text = String(row?.querySelector?.('[class*="price___"]')?.textContent || '');
+const match = text.match(/\$\s*([\d,]+(?:\.\d+)?)/);
+return match ? Number(match[1].replaceAll(',', '')) : null;
+}
+function itemImageId(image) {
+const match = `${image?.getAttribute?.('src') || ''} ${image?.getAttribute?.('srcset') || ''}`.match(/\/images\/items\/(\d+)\//i);
+return match ? Math.trunc(Number(match[1])) : 0;
+}
+function itemMarketPageItemId() {
+const locationMatch = `${location.search}&${location.hash}`.match(/(?:^|[?&#/])(?:itemid|item_id)=(\d+)/i);
+if (locationMatch) return Math.trunc(Number(locationMatch[1]));
+const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+const ids = [...new Set(Array.from(main?.querySelectorAll?.('img[src*="/images/items/"], img[srcset*="/images/items/"]') || [])
+.map(itemImageId)
+.filter((itemId) => itemId > 0))];
+return ids.length === 1 ? ids[0] : 0;
+}
+function itemMarketPageItemName(itemId = itemMarketPageItemId()) {
+const main = document.querySelector('#mainContainer, #main-container, [data-testid="main-content"], main[role="main"], main');
+const matchingImage = itemId > 0
+? main?.querySelector?.(`img[src*="/images/items/${itemId}/"], img[srcset*="/images/items/${itemId}/"]`)
+: null;
+return String(matchingImage?.getAttribute('alt') || '')
+.replace(/\s+/g, ' ')
+.trim();
+}
+function itemMarketRowItemId(row) {
+const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+return itemImageId(image) || itemMarketPageItemId();
+}
+function itemMarketRowItemName(row) {
+const image = row?.querySelector?.('img[src*="/images/items/"], img[srcset*="/images/items/"]');
+return String(image?.getAttribute('alt') || itemMarketPageItemName(itemImageId(image) || itemMarketPageItemId()))
+.replace(/\s+/g, ' ')
+.trim();
+}
+function itemMarketRowSellerId(row) {
+const href = row?.querySelector?.('a[href*="profiles.php?XID="]')?.getAttribute('href') || '';
+const match = href.match(/[?&]XID=(\d+)/i);
+return match ? Math.trunc(Number(match[1])) : 0;
+}
+function itemMarketQuantityInput(row) {
+return row?.querySelector?.('input[data-testid="legacy-money-input"]:not([type="hidden"]), input.input-money:not([type="hidden"])') || null;
+}
+function itemMarketRowStock(row) {
+const input = itemMarketQuantityInput(row);
+const declared = Number(String(input?.dataset?.money || '').replace(/[^\d]/g, ''));
+if (Number.isFinite(declared) && declared > 0) return Math.trunc(declared);
+const match = String(row?.querySelector?.('[class*="available___"]')?.textContent || row?.textContent || '').match(/([\d,]+)\s+available/i);
+const stock = Number(String(match?.[1] || '').replaceAll(',', ''));
+return Number.isFinite(stock) && stock > 0 ? Math.trunc(stock) : 0;
+}
+function itemMarketRowUnavailable(row) {
+const input = itemMarketQuantityInput(row);
+const buyButton = Array.from(row?.querySelectorAll?.('button[class*="buyButton___"], button[aria-label^="Buy "]') || [])
+.find((button) => !button.matches('[data-tdd-quick-buy]')) || null;
+const priceElement = row?.querySelector?.('[class*="price___"]');
+if (!input || !buyButton || input.disabled || input.readOnly) return true;
+if (/\b(?:cannot buy|can't buy|unavailable|sold out|purchase limit|buy limit)\b/i.test(String(row.textContent || ''))) return true;
+const rowStyle = getComputedStyle(row);
+const priceStyle = priceElement ? getComputedStyle(priceElement) : null;
+return bazaarCssColorLooksRed(rowStyle.backgroundColor)
+|| bazaarCssColorLooksRed(rowStyle.borderColor)
+|| bazaarCssColorLooksRed(priceStyle?.color)
+|| bazaarCssColorLooksRed(priceStyle?.backgroundColor);
+}
+function catalogItemForItemMarketRow(row) {
+return catalogItemById(itemMarketRowItemId(row)) || catalogItemBySearch(itemMarketRowItemName(row));
+}
+function fillItemMarketPurchaseMaximum(row, price) {
+if (!focusedTornPage()) return false;
+const input = itemMarketQuantityInput(row);
+if (!input || input.disabled || input.readOnly) return false;
+const stock = itemMarketRowStock(row);
+const fillSignature = `${Math.trunc(Number(price) || 0)}:${stock}`;
+if (row.getAttribute('data-tdd-item-market-max-applied') === fillSignature) return true;
+const declaredMax = Number(input.max || input.getAttribute('aria-valuemax') || input.dataset.max || input.dataset.money);
+const moneyText = document.querySelector('#user-money')?.dataset?.money;
+const normalizedMoney = String(moneyText ?? '').replace(/[^\d.-]/g, '');
+const money = normalizedMoney ? Number(normalizedMoney) : null;
+const affordable = Number(price) > 0 && Number.isFinite(money) ? Math.floor(money / Number(price)) : null;
+if (affordable !== null && affordable < 1) return false;
+const candidates = [stock, declaredMax, affordable, 10_000].filter((value) => Number.isFinite(value) && value > 0);
+if (!candidates.length) return false;
+const maximum = Math.max(1, Math.trunc(Math.min(...candidates)));
+row.setAttribute('data-tdd-item-market-max-applied', fillSignature);
+// Use Torn's own maximum control when present so its internal input state is
+// updated, then apply the native setter/events as a fallback for layouts
+// where that control is supplied by another script or reacts asynchronously.
+const nativeMaximumControl = row.querySelector('.input-money-symbol input[type="button"], input.wai-btn[type="button"]');
+if (nativeMaximumControl && !nativeMaximumControl.disabled) nativeMaximumControl.click();
+if (Number(input.value) === maximum) return true;
+const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+if (setter) setter.call(input, String(maximum));
+else input.value = String(maximum);
+input.dispatchEvent(new Event('input', { bubbles: true }));
+input.dispatchEvent(new Event('change', { bubbles: true }));
+return true;
+}
+function formatItemMarketPurchaseOpportunities() {
+if (!focusedTornPage() || !onItemMarketPage()) return;
+const rows = new Set(itemMarketSellerRows());
+marketDomTestTarget('item-market', rows);
+document.querySelectorAll('[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit]').forEach((row) => {
+if (!rows.has(row)) {
+row.removeAttribute('data-tdd-item-market-one-dollar');
+row.removeAttribute('data-tdd-item-market-shop-profit');
+}
+});
+if (!rows.size) return;
+ensurePurchaseHighlightStyles();
+requestPurchaseSellPriceCatalog();
+rows.forEach((row) => {
+const price = itemMarketRowPrice(row);
+const available = !itemMarketRowUnavailable(row);
+const sellPrice = Number(catalogItemForItemMarketRow(row)?.sellPrice) || 0;
+const oneDollar = available && price === 1;
+const shopProfit = available && !oneDollar && price !== null && sellPrice > 0 && price < sellPrice;
+row.toggleAttribute('data-tdd-item-market-one-dollar', oneDollar);
+row.toggleAttribute('data-tdd-item-market-shop-profit', shopProfit);
+if (oneDollar || shopProfit) fillItemMarketPurchaseMaximum(row, price);
+else row.removeAttribute('data-tdd-item-market-max-applied');
+});
+}
+function bazaarPurchaseButton(control) {
+if (!control) return false;
+if (control.matches('[class*="controlPanelButton___"]')) return true;
+const label = `${control.textContent || ''} ${control.getAttribute('aria-label') || ''} ${control.getAttribute('title') || ''}`.trim();
+return /^(?:buy|purchase)\b/i.test(label);
+}
+function bazaarPurchaseQuantityInput(pending) {
+const itemId = Number(pending?.itemId) || 0;
+const currentCard = pending?.card?.isConnected
+? pending.card
+: bazaarListingCards().find((card) => bazaarCardItemId(card) === itemId);
+const roots = [currentCard];
+document.querySelectorAll('[class*="buyMenu__"], [class*="buyForm___"], [role="dialog"], [aria-modal="true"], [class*="modal" i], [class*="dialog" i], [class*="confirm" i]').forEach((root) => {
+if (elementVisible(root)) roots.push(root);
+});
+const active = document.activeElement;
+if (active?.matches?.('[class*="buyAmountInput_"], input[type="number"], input[inputmode="numeric"]') && !active.disabled && !active.readOnly) return active;
+for (const root of roots.filter(Boolean)) {
+const inputs = Array.from(root.querySelectorAll('[class*="buyAmountInput_"], input[type="number"], input[inputmode="numeric"], input[pattern*="0-9"]'))
+.filter((input) => !input.disabled && !input.readOnly && elementVisible(input));
+const labelled = inputs.find((input) => /\b(?:amount|quantity|qty|buy)\b/i.test(`${input.name || ''} ${input.id || ''} ${input.placeholder || ''} ${input.getAttribute('aria-label') || ''}`));
+if (labelled || inputs.length === 1) return labelled || inputs[0];
+}
+return null;
+}
+function fillBazaarPurchaseMaximum(pending) {
+if (!focusedTornPage() || !pending || marketPurchaseState.pendingBazaarPurchase !== pending || Date.now() - pending.clickedAt > 2_000) return false;
+const input = bazaarPurchaseQuantityInput(pending);
+if (!input) return false;
+const declaredMax = Number(input.max || input.getAttribute('aria-valuemax') || input.dataset.max);
+const moneyText = document.querySelector('#user-money')?.dataset?.money;
+const normalizedMoney = String(moneyText ?? '').replace(/[^\d.-]/g, '');
+const money = normalizedMoney ? Number(normalizedMoney) : null;
+const affordable = Number(pending.price) > 0 && Number.isFinite(money) ? Math.floor(money / Number(pending.price)) : null;
+if (affordable !== null && affordable < 1) return false;
+const candidates = [Number(pending.stock), declaredMax, affordable, 10_000].filter((value) => Number.isFinite(value) && value > 0);
+if (!candidates.length) return false;
+const maximum = Math.max(1, Math.trunc(Math.min(...candidates)));
+if (Number(input.value) !== maximum) {
+const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+if (setter) setter.call(input, String(maximum));
+else input.value = String(maximum);
+input.dispatchEvent(new Event('input', { bubbles: true }));
+input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+return true;
+}
+function normalizedPurchaseText(value) {
+return String(value || '')
+.toLocaleLowerCase()
+.replace(/[’']/g, '')
+.replace(/[^a-z0-9]+/g, ' ')
+.replace(/\s+/g, ' ')
+.trim();
+}
+function quickPurchaseListing(kind, element) {
+if (kind === 'bazaar') {
+return {
+kind,
+element,
+itemId: bazaarCardItemId(element),
+itemName: bazaarCardItemName(element),
+price: bazaarCardPrice(element),
+stock: bazaarCardStock(element),
+sellerId: 0,
+};
+}
+return {
+kind,
+element,
+itemId: itemMarketRowItemId(element),
+itemName: itemMarketRowItemName(element),
+price: itemMarketRowPrice(element),
+stock: itemMarketRowStock(element),
+sellerId: itemMarketRowSellerId(element),
+};
+}
+function sameQuickPurchaseListing(flow, listing) {
+if (!flow || !listing || flow.kind !== listing.kind) return false;
+if (flow.element?.isConnected) return listing.element === flow.element;
+if (Number(flow.itemId) > 0 && Number(listing.itemId) > 0 && Number(flow.itemId) !== Number(listing.itemId)) return false;
+if (Number(flow.price) !== Number(listing.price)) return false;
+if (flow.sellerId > 0 && listing.sellerId > 0 && Number(flow.sellerId) !== Number(listing.sellerId)) return false;
+return normalizedPurchaseText(flow.itemName) === normalizedPurchaseText(listing.itemName);
+}
+function sameBazaarQuickPurchaseIdentity(flow, listing) {
+if (!flow || !listing || flow.kind !== 'bazaar' || listing.kind !== 'bazaar') return false;
+let matched = false;
+const flowItemId = Number(flow.itemId) || 0;
+const listingItemId = Number(listing.itemId) || 0;
+if (flowItemId > 0 && listingItemId > 0) {
+if (flowItemId !== listingItemId) return false;
+matched = true;
+}
+const flowName = normalizedPurchaseText(flow.itemName);
+const listingName = normalizedPurchaseText(listing.itemName);
+if (flowName && listingName) {
+if (flowName !== listingName) return false;
+matched = true;
+}
+const flowHasPrice = flow.price !== null && flow.price !== undefined && flow.price !== '';
+const listingHasPrice = listing.price !== null && listing.price !== undefined && listing.price !== '';
+const flowPrice = Number(flow.price);
+const listingPrice = Number(listing.price);
+if (flowHasPrice && listingHasPrice && Number.isFinite(flowPrice) && Number.isFinite(listingPrice)) {
+if (flowPrice !== listingPrice) return false;
+matched = true;
+}
+return matched;
+}
+function mergedBazaarQuickPurchaseListing(flow, listing) {
+if (!listing) return flow || null;
+const listingHasPrice = listing.price !== null && listing.price !== undefined && listing.price !== '';
+return {
+...flow,
+...listing,
+itemId: Number(listing.itemId) > 0 ? listing.itemId : flow?.itemId,
+itemName: listing.itemName || flow?.itemName || '',
+price: listingHasPrice && Number.isFinite(Number(listing.price)) ? listing.price : flow?.price,
+stock: Number(listing.stock) > 0 ? listing.stock : flow?.stock,
+};
+}
+function highlightedQuickPurchaseListing(kind, element) {
+if (!marketPurchaseState.settings.highlightedQuickBuyEnabled || !element?.isConnected) return false;
+if (kind === 'bazaar') {
+return element.hasAttribute('data-tdd-bazaar-targeted')
+|| element.hasAttribute('data-tdd-bazaar-one-dollar')
+|| element.hasAttribute('data-tdd-bazaar-shop-profit')
+|| element.getAttribute('data-tdd-market-dom-test') === 'bazaar';
+}
+return element.hasAttribute('data-tdd-item-market-one-dollar')
+|| element.hasAttribute('data-tdd-item-market-shop-profit')
+|| element.getAttribute('data-tdd-market-dom-test') === 'item-market';
+}
+function quickPurchaseQuantity(listing) {
+const input = listing.kind === 'bazaar'
+? bazaarPurchaseQuantityInput({ ...listing, card: listing.element })
+: itemMarketQuantityInput(listing.element);
+const quantity = Math.trunc(Number(String(input?.value || '').replace(/[^\d]/g, '')) || 0);
+return quantity > 0 ? quantity : 0;
+}
+function quickPurchaseConfirmation(flow) {
+if (!flow || Date.now() - Number(flow.startedAt || 0) > QUICK_PURCHASE_FLOW_TIMEOUT_MS) return null;
+const selector = flow.kind === 'bazaar' ? '[data-testid="buy-confirmation"]' : '[class*="confirmWrapper___"]';
+return Array.from(document.querySelectorAll(selector)).find((wrapper) => elementVisible(wrapper) && quickPurchaseConfirmationMatches(wrapper, flow)) || null;
+}
+function quickPurchaseConfirmationMatches(wrapper, flow) {
+const text = normalizedPurchaseText(wrapper?.textContent);
+const itemName = normalizedPurchaseText(flow?.itemName);
+if (!text || !itemName || !text.includes(itemName)) return false;
+const messageId = wrapper.querySelector('[id^="buy-confirmation-msg-"]')?.id || '';
+const messageItemId = Number(messageId.match(/^buy-confirmation-msg-(\d+)-/i)?.[1]) || 0;
+if (messageItemId > 0 && Number(flow.itemId) > 0 && messageItemId !== Number(flow.itemId)) return false;
+const quantity = Math.max(1, Math.trunc(Number(flow.quantity) || 1));
+const expectedTotal = Math.trunc(Number(flow.price) * quantity);
+const displayedTotals = Array.from(String(wrapper.textContent || '').matchAll(/\$\s*([\d,]+)/g), (match) => Number(match[1].replaceAll(',', '')));
+return expectedTotal <= 0 || !displayedTotals.length || displayedTotals.includes(expectedTotal);
+}
+function quickPurchaseYesButton(wrapper, kind) {
+if (!wrapper) return null;
+if (kind === 'bazaar') return wrapper.querySelector('button[aria-label="Yes"]');
+return Array.from(wrapper.querySelectorAll('button')).find((button) => /^yes$/i.test(String(button.textContent || '').trim())) || null;
+}
+function nativeQuickPurchaseControl(element, selector) {
+return Array.from(element?.querySelectorAll?.(selector) || []).find((control) => (
+control.isConnected
+&& !control.matches('[data-tdd-quick-buy]')
+&& !control.disabled
+&& control.getAttribute('aria-disabled') !== 'true'
+)) || null;
+}
+function measurableQuickPurchaseControl(control) {
+if (!control || !elementVisible(control)) return false;
+const rect = control.getBoundingClientRect();
+return rect.width > 0 && rect.height > 0
+&& Number.isFinite(rect.left) && Number.isFinite(rect.top);
+}
+function highlightedQuickPurchaseElements(kind) {
+const selector = kind === 'bazaar'
+? '[data-tdd-bazaar-targeted], [data-tdd-bazaar-one-dollar], [data-tdd-bazaar-shop-profit], [data-tdd-market-dom-test="bazaar"]'
+: '[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit], [data-tdd-market-dom-test="item-market"]';
+return Array.from(document.querySelectorAll(selector));
+}
+function resolvedQuickPurchaseListing(flow) {
+if (!flow) return null;
+if (flow.kind === 'bazaar') {
+const cards = [...new Set([
+flow.element?.isConnected ? flow.element : null,
+...highlightedQuickPurchaseElements('bazaar'),
+...bazaarListingCards(),
+].filter(Boolean))];
+const listing = cards
+.map((element) => quickPurchaseListing('bazaar', element))
+.find((candidate) => sameBazaarQuickPurchaseIdentity(flow, candidate));
+return mergedBazaarQuickPurchaseListing(flow, listing);
+}
+return highlightedQuickPurchaseElements(flow.kind)
+.map((element) => quickPurchaseListing(flow.kind, element))
+.find((listing) => sameQuickPurchaseListing(flow, listing)) || null;
+}
+function quickPurchaseListingControlKey(listing) {
+if (listing.kind === 'bazaar') {
+const identity = Number(listing.itemId) > 0
+? `item-${Number(listing.itemId)}`
+: `name-${normalizedPurchaseText(listing.itemName)}`;
+return `bazaar:${identity}:price-${Number(listing.price) || 0}`;
+}
+let id = marketPurchaseState.quickPurchaseListingIds.get(listing.element);
+if (!id) {
+id = ++marketPurchaseState.quickPurchaseListingIdCounter;
+marketPurchaseState.quickPurchaseListingIds.set(listing.element, id);
+}
+return `${listing.kind}:${id}`;
+}
+function quickPurchaseAnchor(native, listing) {
+const controlRect = native.getBoundingClientRect();
+const listingRect = listing.element.getBoundingClientRect();
+return {
+offsetLeft: controlRect.left - listingRect.left,
+offsetTop: controlRect.top - listingRect.top,
+viewportLeft: controlRect.left,
+viewportTop: controlRect.top,
+width: controlRect.width,
+height: controlRect.height,
+};
+}
+function desiredFlowStageControl(desired, native, spec, activeFlow) {
+if (!native) return;
+const transitionElapsed = Date.now() - Number(activeFlow.lastActionAt || 0);
+const waitingForNativeTransition = activeFlow?.lastStage === spec.stage && transitionElapsed < 1_500;
+if (waitingForNativeTransition) scheduleQuickPurchaseControlSync(1_500 - transitionElapsed + 20);
+desired.set(activeFlow.controlKey, waitingForNativeTransition
+? { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey, label: 'Wait', disabled: true, passive: true }
+: { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey });
+}
+function activeBazaarQuickPurchaseControl(flow, selector) {
+const resolved = resolvedQuickPurchaseListing(flow);
+let native = nativeQuickPurchaseControl(resolved?.element, selector);
+if (native && !measurableQuickPurchaseControl(native)) native = null;
+if (!native) {
+const candidates = Array.from(document.querySelectorAll(selector)).filter((control) => (
+control.isConnected
+&& !control.matches('[data-tdd-quick-buy]')
+&& !control.disabled
+&& control.getAttribute('aria-disabled') !== 'true'
+&& measurableQuickPurchaseControl(control)
+));
+native = candidates.find((control) => {
+const card = bazaarListingCards().find((candidate) => candidate.contains(control));
+return card && sameBazaarQuickPurchaseIdentity(flow, quickPurchaseListing('bazaar', card));
+}) || (candidates.length === 1 ? candidates[0] : null);
+}
+if (!native) return { native: null, listing: resolved || flow };
+const card = bazaarListingCards().find((candidate) => candidate.contains(native))
+|| native.closest('[data-testid="item"]');
+const listing = card
+? mergedBazaarQuickPurchaseListing(flow, quickPurchaseListing('bazaar', card))
+: resolved || flow;
+return { native, listing };
+}
+function desiredBazaarFlowWaitControl(desired, activeFlow, listing) {
+if (!activeFlow?.lastNative) return;
+const elapsed = Date.now() - Number(activeFlow.lastActionAt || activeFlow.startedAt || 0);
+if (elapsed >= QUICK_PURCHASE_TRANSITION_TIMEOUT_MS) {
+marketPurchaseState.quickPurchaseFlow = null;
+return;
+}
+scheduleQuickPurchaseControlSync(QUICK_PURCHASE_TRANSITION_TIMEOUT_MS - elapsed + 20);
+desired.set(activeFlow.controlKey, {
+stage: 'waiting',
+listing: listing || activeFlow,
+native: activeFlow.lastNative,
+anchor: activeFlow.anchor,
+controlKey: activeFlow.controlKey,
+label: 'Wait',
+disabled: true,
+passive: true,
+});
+}
+function desiredQuickPurchaseControls() {
+const desired = new Map();
+if (!marketPurchaseState.settings.highlightedQuickBuyEnabled) return desired;
+const flow = marketPurchaseState.quickPurchaseFlow;
+if (flow && Date.now() - Number(flow.startedAt || 0) > QUICK_PURCHASE_FLOW_TIMEOUT_MS) marketPurchaseState.quickPurchaseFlow = null;
+const activeFlow = marketPurchaseState.quickPurchaseFlow;
+const confirmation = quickPurchaseConfirmation(activeFlow);
+if (confirmation) {
+const yes = quickPurchaseYesButton(confirmation, activeFlow.kind);
+if (yes && !yes.disabled) {
+const sending = Date.now() - Number(activeFlow.confirmationSentAt || 0) < 2_000;
+desired.set(activeFlow.controlKey, {
+stage: 'confirm',
+listing: resolvedQuickPurchaseListing(activeFlow) || activeFlow,
+native: yes,
+anchor: activeFlow.anchor,
+controlKey: activeFlow.controlKey,
+label: sending ? 'Sending' : 'Yes',
+disabled: sending,
+});
+} else if (activeFlow.kind === 'bazaar') {
+desiredBazaarFlowWaitControl(desired, activeFlow, resolvedQuickPurchaseListing(activeFlow));
+}
+return desired;
+}
+if (activeFlow) {
+if (activeFlow.kind === 'bazaar') {
+const buyControl = activeBazaarQuickPurchaseControl(activeFlow, 'button[data-testid="buy-button"]');
+const activateControl = activeBazaarQuickPurchaseControl(activeFlow, 'button[data-testid="activate-buy-button"]');
+if (buyControl.native) desiredFlowStageControl(desired, buyControl.native, {
+stage: 'buy',
+listing: buyControl.listing,
+native: buyControl.native,
+label: 'Buy max',
+}, activeFlow);
+else if (activateControl.native) desiredFlowStageControl(desired, activateControl.native, {
+stage: 'open',
+listing: activateControl.listing,
+native: activateControl.native,
+label: 'Buy',
+}, activeFlow);
+else desiredBazaarFlowWaitControl(desired, activeFlow, resolvedQuickPurchaseListing(activeFlow));
+} else {
+const listing = resolvedQuickPurchaseListing(activeFlow);
+if (!listing) return desired;
+const buy = nativeQuickPurchaseControl(listing.element, 'button[class*="buyButton___"], button[aria-label^="Buy "]');
+if (buy) desiredFlowStageControl(desired, buy, { stage: 'buy', listing, native: buy, label: 'Buy max' }, activeFlow);
+}
+return desired;
+}
+bazaarListingCards().forEach((element) => {
+if (!highlightedQuickPurchaseListing('bazaar', element)) return;
+const listing = quickPurchaseListing('bazaar', element);
+const buyCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="buy-button"]');
+const activateCandidate = nativeQuickPurchaseControl(element, 'button[data-testid="activate-buy-button"]');
+const buy = measurableQuickPurchaseControl(buyCandidate) ? buyCandidate : null;
+const activate = measurableQuickPurchaseControl(activateCandidate) ? activateCandidate : null;
+const native = buy || activate;
+const controlKey = quickPurchaseListingControlKey(listing);
+const existingButton = marketPurchaseState.quickPurchaseOverlays.get(controlKey);
+const existingSpec = existingButton ? marketPurchaseState.quickPurchaseControlSpecs.get(existingButton) : null;
+if (!native && !existingSpec) return;
+desired.set(controlKey, {
+stage: buy ? 'buy' : activate ? 'open' : existingSpec.stage,
+listing,
+native: native || existingSpec.native,
+anchor: native ? quickPurchaseAnchor(native, listing) : existingSpec.anchor,
+controlKey,
+label: buy ? 'Buy max' : activate ? 'Buy' : existingSpec.label,
+});
+});
+highlightedQuickPurchaseElements('item-market').forEach((element) => {
+const listing = quickPurchaseListing('item-market', element);
+const native = nativeQuickPurchaseControl(element, 'button[class*="buyButton___"], button[aria-label^="Buy "]');
+if (!native) return;
+const controlKey = quickPurchaseListingControlKey(listing);
+desired.set(controlKey, {
+stage: 'buy',
+listing,
+native,
+anchor: quickPurchaseAnchor(native, listing),
+controlKey,
+label: 'Buy max',
+});
+});
+return desired;
+}
+function ensureQuickPurchaseLayer() {
+let layer = document.getElementById('tdd-quick-buy-layer');
+if (layer) return layer;
+layer = document.createElement('div');
+layer.id = 'tdd-quick-buy-layer';
+layer.setAttribute('aria-label', 'Highlighted listing quick-buy controls');
+document.body?.appendChild(layer);
+document.querySelectorAll('[data-tdd-quick-buy-native]').forEach((native) => native.removeAttribute('data-tdd-quick-buy-native'));
+return layer;
+}
+function setQuickPurchaseButtonStyle(button, property, value) {
+if (button.style[property] !== value) button.style[property] = value;
+}
+function positionQuickPurchaseButton(button, spec) {
+const listingElement = spec.listing.element;
+const useListingPosition = listingElement?.isConnected
+&& (spec.listing.kind !== 'bazaar' || elementVisible(listingElement));
+const listingRect = useListingPosition ? listingElement.getBoundingClientRect() : null;
+const left = listingRect ? listingRect.left + Number(spec.anchor.offsetLeft || 0) : Number(spec.anchor.viewportLeft || 0);
+const top = listingRect ? listingRect.top + Number(spec.anchor.offsetTop || 0) : Number(spec.anchor.viewportTop || 0);
+const width = Math.max(1, Number(spec.anchor.width) || spec.native.getBoundingClientRect().width || 1);
+const height = Math.max(1, Number(spec.anchor.height) || spec.native.getBoundingClientRect().height || 1);
+const hidden = left + width < 0 || top + height < 0 || left > innerWidth || top > innerHeight;
+setQuickPurchaseButtonStyle(button, 'display', hidden ? 'none' : 'block');
+setQuickPurchaseButtonStyle(button, 'left', `${Math.round(left * 10) / 10}px`);
+setQuickPurchaseButtonStyle(button, 'top', `${Math.round(top * 10) / 10}px`);
+setQuickPurchaseButtonStyle(button, 'width', `${Math.round(width * 10) / 10}px`);
+setQuickPurchaseButtonStyle(button, 'height', `${Math.round(height * 10) / 10}px`);
+}
+function clearQuickPurchaseControls({ resetFlow = true } = {}) {
+if (marketPurchaseState.bazaarOneDollarTimer) window.clearTimeout(marketPurchaseState.bazaarOneDollarTimer);
+marketPurchaseState.bazaarOneDollarTimer = null;
+if (marketPurchaseState.quickPurchaseSyncTimer) window.clearTimeout(marketPurchaseState.quickPurchaseSyncTimer);
+marketPurchaseState.quickPurchaseSyncTimer = null;
+marketPurchaseState.quickPurchaseOverlays.forEach((button) => button.remove());
+marketPurchaseState.quickPurchaseOverlays.clear();
+document.getElementById('tdd-quick-buy-layer')?.remove();
+if (resetFlow) marketPurchaseState.quickPurchaseFlow = null;
+}
+function syncHighlightedQuickPurchaseControls() {
+if (!focusedTornPage()) return;
+if (!onPurchaseOpportunityPage() && !marketPurchaseState.quickPurchaseFlow) {
+clearQuickPurchaseControls();
+return;
+}
+const desired = desiredQuickPurchaseControls();
+const now = Date.now();
+marketPurchaseState.quickPurchaseOverlays.forEach((button, controlKey) => {
+if (desired.has(controlKey) && button.isConnected) return;
+const previous = marketPurchaseState.quickPurchaseControlSpecs.get(button);
+const lastSeenAt = Number(button.dataset.tddQuickBuySeenAt) || 0;
+const bazaarGraceRemaining = previous?.listing?.kind === 'bazaar' ? 900 - (now - lastSeenAt) : 0;
+if (bazaarGraceRemaining > 0 && button.isConnected) {
+scheduleQuickPurchaseControlSync(Math.max(40, bazaarGraceRemaining));
+return;
+}
+button.remove();
+marketPurchaseState.quickPurchaseOverlays.delete(controlKey);
+});
+if (!desired.size && !marketPurchaseState.quickPurchaseOverlays.size) {
+document.getElementById('tdd-quick-buy-layer')?.remove();
+return;
+}
+const layer = desired.size ? ensureQuickPurchaseLayer() : document.getElementById('tdd-quick-buy-layer');
+if (!layer) return;
+desired.forEach((spec, controlKey) => {
+let button = marketPurchaseState.quickPurchaseOverlays.get(controlKey);
+if (!button?.isConnected) {
+button = document.createElement('button');
+button.type = 'button';
+button.setAttribute('data-tdd-quick-buy', 'true');
+layer.appendChild(button);
+marketPurchaseState.quickPurchaseOverlays.set(controlKey, button);
+}
+const ariaLabel = `${spec.label}: ${spec.listing.itemName}`;
+if (button.dataset.tddQuickBuyStage !== spec.stage) button.dataset.tddQuickBuyStage = spec.stage;
+if (button.textContent !== spec.label) button.textContent = spec.label;
+if (button.disabled !== (spec.disabled === true)) button.disabled = spec.disabled === true;
+if (spec.passive === true) button.dataset.tddQuickBuyPassive = 'true';
+else button.removeAttribute('data-tdd-quick-buy-passive');
+if (button.getAttribute('aria-label') !== ariaLabel) button.setAttribute('aria-label', ariaLabel);
+button.dataset.tddQuickBuySeenAt = String(now);
+positionQuickPurchaseButton(button, spec);
+marketPurchaseState.quickPurchaseControlSpecs.set(button, spec);
+});
+}
+function scheduleQuickPurchaseControlSync(delay = 40) {
+if (!focusedTornPage()) return;
+if (!onPurchaseOpportunityPage() && !marketPurchaseState.quickPurchaseFlow && !marketPurchaseState.quickPurchaseOverlays.size) return;
+if (marketPurchaseState.quickPurchaseSyncTimer) return;
+marketPurchaseState.quickPurchaseSyncTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+marketPurchaseState.quickPurchaseSyncTimer = null;
+syncHighlightedQuickPurchaseControls();
+}, delay);
+}
+function refreshPurchaseOpportunityFormattingAfterClick(delay) {
+global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+formatBazaarOneDollarListings();
+formatItemMarketPurchaseOpportunities();
+syncHighlightedQuickPurchaseControls();
+}, delay);
+}
+function handleHighlightedQuickPurchaseClick(event) {
+const button = event.target?.closest?.('button[data-tdd-quick-buy]');
+if (!button) return;
+event.preventDefault();
+event.stopImmediatePropagation();
+const spec = marketPurchaseState.quickPurchaseControlSpecs.get(button);
+if (!event.isTrusted || !marketPurchaseState.settings.highlightedQuickBuyEnabled || !focusedTornPage()) return;
+if (spec?.passive) return;
+if (!spec?.native?.isConnected || spec.native.disabled || spec.native.getAttribute('aria-disabled') === 'true') return;
+const listing = spec.listing;
+if (spec.stage === 'confirm') {
+const flow = marketPurchaseState.quickPurchaseFlow;
+const wrapper = spec.native.closest('[data-testid="buy-confirmation"], [class*="confirmWrapper___"]');
+const sameListing = flow?.kind === 'bazaar'
+? sameBazaarQuickPurchaseIdentity(flow, listing)
+: sameQuickPurchaseListing(flow, listing);
+if (!sameListing || !quickPurchaseConfirmationMatches(wrapper, flow)) return;
+button.disabled = true;
+button.textContent = 'Sending';
+const sentAt = Date.now();
+marketPurchaseState.quickPurchaseFlow = { ...flow, confirmationSentAt: sentAt };
+spec.native.click();
+refreshPurchaseOpportunityFormattingAfterClick(80);
+refreshPurchaseOpportunityFormattingAfterClick(300);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+if (marketPurchaseState.quickPurchaseFlow?.confirmationSentAt === sentAt) marketPurchaseState.quickPurchaseFlow = null;
+refreshPurchaseOpportunityFormattingAfterClick(0);
+}, 2_050);
+return;
+}
+const continuingFlow = marketPurchaseState.quickPurchaseFlow?.controlKey === spec.controlKey;
+if (!continuingFlow && !highlightedQuickPurchaseListing(listing.kind, listing.element)) return;
+if (spec.stage === 'buy') {
+if (listing.kind === 'bazaar') {
+const currentCard = bazaarListingCards().find((candidate) => candidate.contains(spec.native))
+|| spec.native.closest('[data-testid="item"]')
+|| listing.element;
+const currentListing = mergedBazaarQuickPurchaseListing(listing, quickPurchaseListing('bazaar', currentCard));
+const pending = {
+...currentListing,
+card: currentCard,
+clickedAt: Date.now(),
+};
+marketPurchaseState.pendingBazaarPurchase = pending;
+fillBazaarPurchaseMaximum(pending);
+Object.assign(listing, currentListing);
+} else {
+fillItemMarketPurchaseMaximum(listing.element, listing.price);
+}
+listing.quantity = quickPurchaseQuantity(listing);
+if (listing.quantity < 1) return;
+}
+const now = Date.now();
+marketPurchaseState.quickPurchaseFlow = {
+...listing,
+anchor: spec.anchor,
+controlKey: spec.controlKey,
+startedAt: Number(marketPurchaseState.quickPurchaseFlow?.startedAt) || now,
+lastActionAt: now,
+lastStage: spec.stage,
+lastNative: spec.native,
+};
+button.disabled = true;
+button.textContent = 'Opening';
+spec.native.click();
+refreshPurchaseOpportunityFormattingAfterClick(40);
+refreshPurchaseOpportunityFormattingAfterClick(160);
+refreshPurchaseOpportunityFormattingAfterClick(450);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+const currentFlow = marketPurchaseState.quickPurchaseFlow;
+if (currentFlow?.lastActionAt === now) {
+const listingNow = resolvedQuickPurchaseListing(currentFlow);
+const advancedToBuy = currentFlow.lastStage === 'open'
+&& (currentFlow.kind === 'bazaar'
+? activeBazaarQuickPurchaseControl(currentFlow, 'button[data-testid="buy-button"]').native
+: nativeQuickPurchaseControl(listingNow?.element, 'button[data-testid="buy-button"]'));
+if (!advancedToBuy && !quickPurchaseConfirmation(currentFlow)) marketPurchaseState.quickPurchaseFlow = null;
+}
+refreshPurchaseOpportunityFormattingAfterClick(0);
+}, 1_650);
+}
+function handleBazaarPurchaseClick(event) {
+if (!focusedTornPage() || !onBazaarPage()) return;
+const control = event.target?.closest?.('button, [role="button"]');
+if (control?.matches?.('[data-tdd-quick-buy]')) return;
+if (!bazaarPurchaseButton(control)) return;
+const card = bazaarListingCards().find((candidate) => candidate.contains(control));
+if (!card || bazaarCardUnavailable(card)) return;
+const pending = {
+card,
+itemId: bazaarCardItemId(card),
+price: bazaarCardPrice(card),
+stock: bazaarCardStock(card),
+clickedAt: Date.now(),
+};
+marketPurchaseState.pendingBazaarPurchase = pending;
+[0, 60, 180, 420, 900, 1_500].forEach((delay) => global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+fillBazaarPurchaseMaximum(pending);
+if (delay === 1_500 && marketPurchaseState.pendingBazaarPurchase === pending) marketPurchaseState.pendingBazaarPurchase = null;
+}, delay));
+}
+function schedulePurchaseOpportunityFormatting(delay = 200) {
+if (!focusedTornPage() || !onPurchaseOpportunityPage()) return;
+if (marketPurchaseState.bazaarOneDollarTimer) return;
+marketPurchaseState.bazaarOneDollarTimer = global.SLINK_PDA_PAGE_ACTIVITY.defer(() => {
+marketPurchaseState.bazaarOneDollarTimer = null;
+formatBazaarOneDollarListings();
+formatItemMarketPurchaseOpportunities();
+syncHighlightedQuickPurchaseControls();
+}, delay);
+}
+function clearMarketPurchaseFormatting() {
+if (marketPurchaseState.bazaarOneDollarTimer) global.SLINK_PDA_PAGE_ACTIVITY.cancel(marketPurchaseState.bazaarOneDollarTimer);
+if (marketPurchaseState.quickPurchaseSyncTimer) global.SLINK_PDA_PAGE_ACTIVITY.cancel(marketPurchaseState.quickPurchaseSyncTimer);
+marketPurchaseState.bazaarOneDollarTimer = null;
+marketPurchaseState.quickPurchaseSyncTimer = null;
+clearQuickPurchaseControls();
+marketPurchaseState.quickPurchaseFlow = null;
+marketPurchaseState.pendingBazaarPurchase = null;
+const attributes = [
+'data-tdd-bazaar-targeted', 'data-tdd-bazaar-one-dollar', 'data-tdd-bazaar-shop-profit',
+'data-tdd-item-market-one-dollar', 'data-tdd-item-market-shop-profit', 'data-tdd-item-market-max-applied',
+'data-tdd-purchase-reason', 'data-tdd-market-dom-test'
+];
+for (const attribute of attributes) document.querySelectorAll(`[${attribute}]`).forEach(node => node.removeAttribute(attribute));
+document.getElementById('tdd-purchase-highlight-styles')?.remove();
+}
+function renderDollarBazaars() {
+const root = moduleRoot('dollarBazaars');
+if (!root) return;
+if (!hasScope(DOLLAR_BAZAARS_SCOPE)) { root.innerHTML = lockedModule(DOLLAR_BAZAARS_SCOPE, 'Weaver $1 Bazaars'); return; }
+const current = moduleState.dollarBazaars;
+if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Weaver $1 Bazaar listings through its JSON API…'); return; }
+if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+const items = weaverDollarBazaarItems(current.data?.bazaars ? { bazaars:current.data.bazaars } : current.data?.items ? { items:current.data.items } : current.data || {});
+const next = Number(current.data?.nextRefreshAt) ? new Date(current.data.nextRefreshAt).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' }) : '—';
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Weaver $1 Bazaars</h2><span class="muted">Top ${DOLLAR_BAZAAR_LIMIT} seller bazaars ranked by complete bazaar market value. No page scraping and no Torn API usage.</span></div><button type="button" data-action="refresh-dollar-bazaars" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing…' : 'Refresh now'}</button></div>
+${current.error ? moduleMessage(`${current.error}${current.data?.fetchedAt ? ` Showing the saved results from ${relativeTime(current.data.fetchedAt)}.` : ''}`, 'error') : ''}
+<div class="stats"><div class="stat"><strong>${number(items.length)}</strong><span>Bazaars</span></div><div class="stat"><strong>${current.data?.fetchedAt ? relativeTime(current.data.fetchedAt) : '—'}</strong><span>Updated</span></div><div class="stat"><strong>${escapeHtml(next)}</strong><span>Next update</span></div><div class="stat"><strong>1 hour</strong><span>Cache time</span></div></div>
+<div class="dollar-bazaar-list">${items.length ? items.map(item => `<article class="dollar-bazaar-row"><div><strong>${escapeHtml(item.sellerName)} [${Number(item.sellerId)}]</strong><small>${number(item.itemCount)} $1 item type${Number(item.itemCount) === 1 ? '' : 's'}</small></div><div class="dollar-bazaar-value"><strong>${marketMoney(item.totalValue)}</strong><small>Complete bazaar value</small></div><a class="action-link" href="${escapeHtml(item.href)}">Open bazaar</a></article>`).join('') : moduleMessage('Weaver returned no active $1 Bazaars.')}</div>
+<div class="module-toolbar"><span>One shared Weaver JSON request per hour. Last successful results remain available after an API error.</span><a class="action-link" href="https://weav3r.dev/dollar-bazaars">Weaver source</a></div>
+</article></div>`;
+}
+async function refreshDollarBazaars(force = false) {
+const current = moduleState.dollarBazaars;
+if (current.busy) return false;
+const cached = dataState.caches.dollarBazaars;
+if (!force && Number(cached?.nextRefreshAt) > Date.now()) { current.data = cached; renderDollarBazaars(); return false; }
+current.lastAttemptAt = Date.now();
+current.busy = true;
+current.error = '';
+renderDollarBazaars();
+try {
+await ensurePermissionSession(false);
+if (!hasScope(DOLLAR_BAZAARS_SCOPE)) throw new Error(`Your SLINK account does not have ${DOLLAR_BAZAARS_SCOPE} permission.`);
+const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
+const fetchedAt = Date.now();
+current.data = dataState.caches.dollarBazaars = {
+fetchedAt,
+nextRefreshAt:fetchedAt + DOLLAR_BAZAAR_REFRESH_MS,
+sourceUrl:'https://weav3r.dev/dollar-bazaars',
+bazaars:weaverDollarBazaarItems(body)
+};
+writeDataState();
+} catch (error) {
+current.error = errorMessage(error);
+} finally {
+current.busy = false;
+renderDollarBazaars();
+}
+return true;
+}
+function cleanAwardText(value) {
+return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+function numericRequirementText(award) {
+const units = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19 };
+const tens = { twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90 };
+const word = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)';
+return cleanAwardText(award?.description || award?.name).replace(new RegExp(`\\b${word}(?:[ -]+${word})*\\b`, 'gi'), phrase => {
+let value = 0;
+for (const token of phrase.toLowerCase().split(/[ -]+/)) {
+if (Object.hasOwn(units, token)) value += units[token];
+else if (Object.hasOwn(tens, token)) value += tens[token];
+else if (token === 'hundred') value = Math.max(1, value) * 100;
+}
+return String(value);
+});
+}
+function awardTargets(award) {
+const matches = numericRequirementText(award).match(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi) || [];
+const multipliers = { k:1e3, thousand:1e3, m:1e6, mil:1e6, million:1e6, b:1e9, bn:1e9, billion:1e9, t:1e12, trillion:1e12 };
+return matches.map(match => {
+const clean = match.toLowerCase().replace(/[$,\s]/g, '').replace(/(?:st|nd|rd|th)$/i, '');
+const unit = clean.match(/(thousand|million|billion|trillion|mil|bn|[kmbt])$/i)?.[1]?.toLowerCase() || '';
+return Number(unit ? clean.slice(0, -unit.length) : clean) * (multipliers[unit] || 1);
+}).filter(Number.isFinite);
+}
+function awardFamily(award) {
+const text = numericRequirementText(award).toLowerCase().replace(/\b(year|month|week|day|hour|minute|second)s?\b/g, '$1');
+if (/\breach (?:the )?rank of\b/.test(text)) return `${award.kind}|${award?.type?.id ?? award?.type?.title ?? ''}|player-rank`;
+if (!awardTargets(award).length) return '';
+return `${award.kind}|${award?.type?.id ?? award?.type?.title ?? ''}|${text.replace(/\$?\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:thousand|million|billion|trillion|mil|bn|[kmbt])\b|\s*(?:st|nd|rd|th)\b)?/gi, '#').replace(/\s+/g, ' ').trim()}`;
+}
+function meritGoals(data) {
+if (!data) return [];
+const completedMedals = new Set((data.player?.medals || []).map(row => Number(row?.id ?? row)));
+const completedHonors = new Set((data.player?.honors || []).map(row => Number(row?.id ?? row)));
+const catalog = [
+...(Array.isArray(data.catalog?.medals) ? data.catalog.medals : []).map(row => ({ ...row, kind:'medal' })),
+...(Array.isArray(data.catalog?.honors) ? data.catalog.honors : []).map(row => ({ ...row, kind:'honor' }))
+].filter(row => Number(row?.id) > 0 && row?.name)
+.filter(row => row.kind === 'medal' ? !completedMedals.has(Number(row.id)) : !completedHonors.has(Number(row.id)));
+const pinned = new Set(dataState.settings.merits.pinned || []);
+const families = new Map();
+for (const award of catalog.map(row => ({ ...row, key:`${row.kind}:${row.id}` }))) {
+const familyKey = awardFamily(award) || `unique:${award.key}`;
+if (!families.has(familyKey)) families.set(familyKey, []);
+families.get(familyKey).push(award);
+}
+const goals = [];
+for (const family of families.values()) {
+family.sort((a, b) => {
+const left = awardTargets(a), right = awardTargets(b);
+for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+if ((left[index] || 0) !== (right[index] || 0)) return (left[index] || 0) - (right[index] || 0);
+}
+return Number(a.id) - Number(b.id);
+});
+const pinnedKey = family.find(award => pinned.has(award.key))?.key || '';
+goals.push({
+...family[0],
+pinned:Boolean(pinnedKey),
+pinKey:pinnedKey || family[0].key,
+laterMilestones:family.slice(1).map(award => ({ name:String(award.name), targets:awardTargets(award) }))
+});
+}
+return goals.sort((a, b) => Number(b.pinned) - Number(a.pinned)
+|| String(a?.type?.title || '').localeCompare(String(b?.type?.title || ''))
+|| String(a.name).localeCompare(String(b.name)));
+}
+function renderMerits() {
+const root = moduleRoot('merits');
+if (!root) return;
+if (!hasScope(MERITS_SCOPE)) { root.innerHTML = lockedModule(MERITS_SCOPE, 'Merit tracking'); return; }
+const current = moduleState.merits;
+if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading award catalog and progress…'); return; }
+if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+const allGoals = meritGoals(current.data?.data);
+const filter = /^(?:all|medal|honor)$/.test(String(dataState.settings.merits.filter)) ? String(dataState.settings.merits.filter) : 'all';
+const goals = filter === 'all' ? allGoals : allGoals.filter(award => award.kind === filter);
+const pageSize = Math.max(10, Math.min(50, Number(dataState.settings.merits.pageSize) || 20));
+const totalPages = Math.max(1, Math.ceil(goals.length / pageSize));
+const page = Math.max(1, Math.min(totalPages, Number(dataState.settings.merits.page) || 1));
+dataState.settings.merits.page = page;
+const visibleGoals = goals.slice((page - 1) * pageSize, page * pageSize);
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Merit farm</h2><span class="muted">Only the next incomplete award in each milestone family is shown; later tiers stay summarized on its tile.</span></div><span class="badge ready">${(dataState.settings.merits.pinned || []).length} / 3 pinned</span></div>
+<div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · ${number(goals.length)} next milestones · page ${page} / ${totalPages}</span><label>Show <select data-field="merit-filter"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="medal" ${filter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${filter === 'honor' ? 'selected' : ''}>Honors</option></select></label><label>Refresh <select data-field="merit-refresh"><option value="15" ${Number(dataState.settings.merits.refreshMinutes) === 15 ? 'selected' : ''}>15m</option><option value="30" ${Number(dataState.settings.merits.refreshMinutes) === 30 ? 'selected' : ''}>30m</option><option value="60" ${Number(dataState.settings.merits.refreshMinutes) === 60 ? 'selected' : ''}>1h</option></select></label></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+<div class="merit-list">${visibleGoals.length ? visibleGoals.map(award => { const later = award.laterMilestones || []; const shown = later.slice(0, 8); return `<article class="merit merit-row"><div class="award-emblem ${escapeHtml(award.kind)}" aria-hidden="true">${award.kind === 'medal' ? '★' : 'H'}</div><div class="merit-copy"><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award?.type?.title || (award.kind === 'medal' ? 'Medal' : 'Honor'))}</small><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span>${later.length ? `<span class="merit-later">Later: ${escapeHtml(shown.map(row => row.targets.length ? row.targets.map(value => number(value)).join(' / ') : row.name).join(' · '))}${later.length > shown.length ? ` · +${later.length - shown.length} more` : ''}</span>` : ''}</div><button type="button" data-action="pin-merit" data-merit-key="${escapeHtml(award.pinKey)}">${award.pinned ? 'Unpin' : 'Pin'}</button></article>`; }).join('') : moduleMessage('No incomplete awards match this filter.')}</div>
+<nav class="pagination" aria-label="Merit pages"><button type="button" data-action="merit-page" data-merit-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${page} of ${totalPages}</span><button type="button" data-action="merit-page" data-merit-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button></nav>
+</article></div>`;
+}
+async function refreshMerits(force = false) {
+const current = moduleState.merits;
+const cached = dataState.caches.merits;
+const ttl = Math.max(5, Number(dataState.settings.merits.refreshMinutes) || 15) * 60_000;
+if (!force && cached?.at && Date.now() - cached.at < ttl) { current.data = cached; renderMerits(); return; }
+current.busy = true; current.error = ''; renderMerits();
+try {
+await ensurePermissionSession(false);
+if (!hasScope(MERITS_SCOPE)) throw new Error(`Your SLINK account does not have ${MERITS_SCOPE} permission.`);
+const [player, personalStats, catalog] = await Promise.all([
+tornJson('/v2/user?selections=profile,faction,medals,honors,merits', 'SLINK PDA Merit farm'),
+tornJson('/v2/user/personalstats?cat=all', 'SLINK PDA Merit progress'),
+tornJson('/v2/torn?selections=medals,honors', 'SLINK PDA award catalog')
+]);
+current.data = dataState.caches.merits = { at:Date.now(), data:{ player, personalStats, catalog } };
+writeDataState();
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderMerits(); }
+}

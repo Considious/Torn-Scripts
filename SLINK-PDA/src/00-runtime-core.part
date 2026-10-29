@@ -2579,3 +2579,6 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
+
+
+

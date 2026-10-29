@@ -1,4 +1,6 @@
-# SLINK PDA audit tester build — candidate 31
+# SLINK PDA audit tester build — candidate 34
+
+Current PDA installer: **0.4.119**. This includes optional Torn-page theming following the existing selected theme; enable “Apply my SLINK theme to Torn” in the Themes/recovery controls. Extension counterpart is 0.19.13.7. See Candidate 34 in the single extension TESTER-CHANGELOG.md for the combined checklist. Update the existing audit script in place; do not uninstall or clear data. Main/stable is unchanged. Earlier entries below are historical.
 
 Testing branch only, not stable/main. Installer version **0.4.117**. The running dashboard reports a short prefix of its source-content digest, not a separately maintained runtime version.
 
@@ -29,4 +31,3 @@ Candidate 1 changes the Racing helper's repeated scanning/highlighting and norma
 After testing, disable the audit script and re-enable the stable script. Avoid deleting either script's data. An actual Android PDA session is required to confirm native installation and foreground behavior; desktop userscript/VM results alone do not provide that confirmation.
 
 For developer checks, run `npm run test:audit`. Existing baseline failures outside the focused checks remain documented in the shared test notes.
-

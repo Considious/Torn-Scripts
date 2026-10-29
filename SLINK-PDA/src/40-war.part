@@ -1,0 +1,1063 @@
+function renderWar(force = false) {
+const root = moduleRoot('war');
+if (!root) return;
+if (!force && moduleState.war.data && root.contains(shadow?.activeElement) && shadow.activeElement.matches('input,select,textarea')) {
+moduleState.war.renderPending = true;
+return;
+}
+moduleState.war.renderPending = false;
+if (!hasScope('slink.war')) { root.innerHTML = lockedModule('slink.war', 'SLINK War'); return; }
+const current = moduleState.war;
+if (current.busy && !current.data) { root.innerHTML = moduleMessage('Finding your ranked war…'); return; }
+if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+if (!current.data?.activeWar) {
+if (warArmoryOfficer() && dataState.settings.war.activeTab === 'armory') { root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Armory Recaller</h2><span class="muted">Available outside ranked wars for faction officers.</span></div><span class="badge ready">Officer</span></div><nav class="war-tabs"><button type="button" data-action="select-war-tab" data-war-tab="armory" aria-selected="true">Armory</button></nav><div class="war-tab-body">${warArmoryView({})}</div></article></div>`; return; }
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK War</h2><span class="muted">Assigned and active ranked-war detection</span></div><span class="badge">No war</span></div>${current.error ? moduleMessage(current.error, 'error') : moduleMessage('No assigned or active ranked war was found.')}</article></div>`; return;
+}
+const active = current.data.activeWar;
+const snapshot = current.data.snapshot || {};
+const members = Array.isArray(snapshot.members) ? snapshot.members : Array.isArray(snapshot.targets) ? snapshot.targets : [];
+const officer = warOfficer();
+const armoryOfficer = warArmoryOfficer();
+const settings = dataState.settings.war;
+const allowedTabs = ['targets', 'outside', 'claims', ...(armoryOfficer ? ['armory'] : []), ...(officer ? ['logs', 'settings'] : [])];
+if (!allowedTabs.includes(settings.activeTab)) settings.activeTab = 'targets';
+const tab = settings.activeTab;
+const tabBody = tab === 'targets' ? warTargetView(snapshot) : tab === 'outside' ? warOutsideView(current.data) : tab === 'claims' ? warClaimsView(snapshot) : tab === 'armory' ? warArmoryView(snapshot) : tab === 'logs' ? warLogsView(current.data) : warSettingsView(snapshot);
+const mugStats = mugStatsForWar(active.warId);
+const panelStats = current.data.panelStats || {};
+const chain = panelStats?.chain?.current ? `${number(panelStats.chain.current)}${panelStats.chain.target ? `/${number(panelStats.chain.target)}` : ''}` : 'None';
+const itemRequestCount = armoryOfficer && Array.isArray(snapshot.itemRequests) ? snapshot.itemRequests.length : 0;
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>${escapeHtml(active.opponentName)}</h2><span class="muted">${active.phase === 'active' ? 'Ranked war active' : `Assigned · starts ${new Date(active.start * 1000).toLocaleString()}`}</span></div><span class="badge ${officer ? 'ready' : ''}">${officer ? 'Officer' : 'Member'}</span></div><nav class="war-tabs">${allowedTabs.map(name => `<button type="button" data-action="select-war-tab" data-war-tab="${name}" aria-selected="${tab === name}">${name[0].toUpperCase()}${name.slice(1)}${name === 'armory' && itemRequestCount ? `<span class="nav-count">${itemRequestCount > 99 ? '99+' : itemRequestCount}</span>` : ''}</button>`).join('')}</nav>${tab === 'armory' ? '' : `<div class="stats"><div class="stat"><strong>${number(panelStats.attacks || 0)}</strong><span>Attacks</span></div><div class="stat"><strong>${number(panelStats.warAttacks || 0)}${Number(snapshot?.config?.insideHitCap) ? `/${number(snapshot.config.insideHitCap)}` : ''}</strong><span>War / cap</span></div><div class="stat"><strong>${number(mugStats.count)}</strong><span>Mugs</span></div><div class="stat"><strong>${chain}</strong><span>Chain</span></div></div><article class="mug-report"><div><strong>Mug report</strong><span>${mugStats.count ? `${number(mugStats.count)} mugs · ${money(mugStats.total)} total · ${money(mugStats.average)} average · ${money(mugStats.min)} min · ${money(mugStats.max)} max` : 'No completed war mugs captured on this device yet.'}</span></div><button type="button" data-action="copy-war-mug-report" ${mugStats.count ? '' : 'disabled'}>Copy report</button></article>${warItemRequests(snapshot)}${warRetalCards(snapshot, active)}`}<div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · ${members.length} ranked-war opponents${current.busy ? ' · refreshing…' : ''}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}<div class="war-tab-body">${tabBody}</div></article></div>`;
+}
+function warAttackRows(payload) {
+const source = payload?.attacks ?? payload?.data ?? [];
+return Array.isArray(source) ? source : Object.values(source || {});
+}
+function updateWarPersonalStats(attacks, active, session) {
+if (!Array.isArray(attacks) || !attacks.length) return;
+const cache = dataState.caches.warPersonalStats?.warId === active.warId ? dataState.caches.warPersonalStats : { warId:active.warId, attacks:0, warAttacks:0, seen:[] };
+const seen = new Set(cache.seen || []);
+for (const attack of attacks) {
+const attackId = String(attack?.id ?? attack?.attack_id ?? '');
+const attackerId = Number(attack?.attacker?.id ?? attack?.attacker_id) || 0;
+if (!attackId || seen.has(attackId) || attackerId !== Number(session.userId)) continue;
+seen.add(attackId); cache.attacks += 1;
+const factionId = Number(attack?.defender?.faction?.id ?? attack?.defender?.faction_id ?? attack?.defender_faction_id) || 0;
+if (attack?.is_ranked_war === true || factionId === Number(active.opponentId)) cache.warAttacks += 1;
+}
+cache.seen = [...seen].slice(-1000);
+dataState.caches.warPersonalStats = cache;
+}
+async function refreshWar(force = false) {
+const current = moduleState.war;
+const cached = dataState.caches.war;
+if (!force && cached?.at && Date.now() - cached.at < 30_000) { current.data = cached; renderWar(); return; }
+current.busy = true; current.error = ''; renderWar();
+try {
+const session = await ensurePermissionSession(false);
+await ensureWarSession(false);
+if (!session.factionId) throw new Error('Your permission session does not include a faction.');
+let activeWar = cached?.activeWar || null;
+if (force || !Number(cached?.detectedAt) || Date.now() - Number(cached.detectedAt) >= 5 * 60_000) {
+const wars = await tornJson(`/v2/faction/${encodeURIComponent(session.factionId)}/rankedwars?sort=desc&limit=10`, 'SLINK PDA ranked war detection');
+const found = currentRankedWar(wars, session.factionId);
+activeWar = found ? { opponentId:found.opponentId, opponentName:found.opponentName, start:found.start, phase:found.start * 1000 <= Date.now() ? 'active' : 'assigned', warId:makeWarId(session.factionId, found.opponentId, found.start) } : null;
+}
+if (!activeWar) {
+current.data = dataState.caches.war = { at:Date.now(), detectedAt:Date.now(), activeWar:null, snapshot:null, outsideTargets:cached?.outsideTargets || [] };
+} else {
+const body = { opponent_faction_id:activeWar.opponentId };
+if (activeWar.phase === 'active') {
+const heartbeat = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/heartbeat`, { method:'POST', body });
+if (heartbeat?.collectStatus && Date.now() - Number(dataState.settings.war.lastStatusAt || 0) >= 30_000) {
+const response = await tornJson(`/v2/faction/${encodeURIComponent(activeWar.opponentId)}/members`, 'SLINK PDA War opponent status');
+const source = response?.members ?? response?.faction?.members ?? [];
+const members = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+if (members.length) {
+await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/status`, { method:'POST', body:{ ...body, observedAt:Date.now(), members } });
+dataState.settings.war.lastStatusAt = Date.now();
+}
+}
+if (heartbeat?.collectAttacks && hasScope('slink.war.faction') && Date.now() - Number(dataState.settings.war.lastAttackAt || 0) >= 30_000) {
+const now = Math.floor(Date.now() / 1000);
+const from = Math.max(now - 600, Number(dataState.settings.war.lastAttackEnded || 0) - 60);
+const response = await tornJson(`/v2/faction/attacks?from=${from}&to=${now}&limit=100&sort=desc`, 'SLINK PDA War attack collection');
+const attacks = warAttackRows(response);
+await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/attacks`, { method:'POST', body:{ ...body, attacks } });
+updateWarPersonalStats(attacks, activeWar, session);
+dataState.settings.war.lastAttackAt = Date.now();
+dataState.settings.war.lastAttackEnded = attacks.reduce((maximum, attack) => Math.max(maximum, Number(attack?.ended ?? attack?.ended_at) || 0), Number(dataState.settings.war.lastAttackEnded) || 0);
+}
+}
+const query = new URLSearchParams({ opponent_faction_id:String(activeWar.opponentId), mode:String(dataState.settings.war.mode || 'war'), idle_minutes:String(dataState.settings.war.idleMinutes || 5) });
+const snapshot = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/snapshot?${query}`);
+if (activeWar.phase !== 'active' && !snapshot?.members?.length) {
+const response = await tornJson(`/v2/faction/${encodeURIComponent(activeWar.opponentId)}/members`, 'SLINK PDA scheduled War roster');
+const source = response?.members ?? response?.faction?.members ?? [];
+snapshot.members = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+snapshot.retals = [];
+}
+if (Array.isArray(snapshot?.members)) snapshot.members = await refineWithFfScouter(snapshot.members);
+if (Array.isArray(snapshot?.retals) && snapshot.retals.length) {
+const rows = snapshot.retals.map(retal => ({ id:retal.attackerId, name:retal.attackerName, ...retal }));
+const refined = await refineWithFfScouter(rows);
+snapshot.retals = snapshot.retals.map((retal, index) => ({ ...retal, fairFight:refined[index]?.fairFight ?? refined[index]?.fair_fight ?? retal.fairFight, battleStatsEstimate:refined[index]?.battleStatsEstimate ?? retal.battleStatsEstimate, fairFightStale:Boolean(refined[index]?.fairFightStale), fairFightCheckedAt:Number(refined[index]?.fairFightCheckedAt) || 0 }));
+}
+if (snapshot?.config) {
+dataState.settings.war.mode = snapshot.config.mode || dataState.settings.war.mode;
+dataState.settings.war.idleMinutes = Number(snapshot.config.idleMinutes ?? dataState.settings.war.idleMinutes) || 0;
+dataState.settings.war.insideHitCap = Number(snapshot.config.insideHitCap) || 0;
+dataState.settings.war.insideBlockMode = snapshot.config.insideBlockMode || 'warn';
+}
+let logs = cached?.logs || [];
+let logsAt = Number(cached?.logsAt) || 0;
+if (warOfficer() && activeWar.phase === 'active' && (force || Date.now() - logsAt >= 10 * 60_000)) {
+try {
+const response = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/logs?limit=200&include_stored=1`);
+logs = [...(Array.isArray(response?.stored) ? response.stored : []), ...(Array.isArray(response?.pending) ? response.pending : [])];
+logsAt = Date.now();
+} catch (error) { current.error = `War logs: ${errorMessage(error)}`; }
+}
+let chain = cached?.panelStats?.chain || null;
+try {
+const response = await tornJson('/v2/faction/chain', 'SLINK PDA War chain');
+const value = response?.chain ?? response;
+chain = { current:Number(value?.current ?? value?.hits ?? value?.length) || 0, target:Number(value?.max ?? value?.target) || 0, secondsLeft:Number(value?.timeout ?? value?.seconds_left ?? value?.time_left) || 0 };
+} catch {}
+const personal = dataState.caches.warPersonalStats?.warId === activeWar.warId ? dataState.caches.warPersonalStats : { attacks:0, warAttacks:0 };
+current.data = dataState.caches.war = { at:Date.now(), detectedAt:cached?.activeWar?.warId === activeWar.warId ? Number(cached.detectedAt) || Date.now() : Date.now(), activeWar, snapshot, logs, logsAt, outsideTargets:cached?.outsideTargets || [], panelStats:{ attacks:Number(personal.attacks) || 0, warAttacks:Number(personal.warAttacks) || 0, chain } };
+}
+writeDataState();
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderWar(); }
+}
+async function refreshWarAlerts() {
+const current = moduleState.war;
+const cached = dataState.caches.war;
+const activeWar = cached?.activeWar;
+if (current.busy || !activeWar?.warId || activeWar.phase !== 'active') return;
+if (Date.now() - Number(cached?.alertsAt || 0) < 9_000) return;
+try {
+await ensureWarSession(false);
+const query = new URLSearchParams({
+opponent_faction_id:String(activeWar.opponentId),
+mode:String(dataState.settings.war.mode || 'war'),
+idle_minutes:String(dataState.settings.war.idleMinutes || 5)
+});
+const fresh = await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/snapshot?${query}`);
+const previousSnapshot = cached?.snapshot && typeof cached.snapshot === 'object' ? cached.snapshot : {};
+const previousRetals = new Map((Array.isArray(previousSnapshot.retals) ? previousSnapshot.retals : []).map(retal => [
+String(retal.attackId || retal.attackerId || ''),
+retal
+]));
+const retals = (Array.isArray(fresh?.retals) ? fresh.retals : []).map(retal => ({
+...(previousRetals.get(String(retal.attackId || retal.attackerId || '')) || {}),
+...retal
+}));
+current.data = dataState.caches.war = {
+...cached,
+alertsAt:Date.now(),
+snapshot:{
+...previousSnapshot,
+...fresh,
+members:Array.isArray(previousSnapshot.members) ? previousSnapshot.members : (fresh?.members || []),
+retals
+}
+};
+writeDataState();
+renderWar();
+} catch (error) {
+console.debug('[SLINK PDA] War alert refresh paused:', errorMessage(error));
+}
+}
+async function refreshWarOutside() {
+const current = moduleState.war;
+if (current.outsideBusy) return;
+const settings = dataState.settings.war;
+const root = moduleRoot('war');
+const minimum = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="war-outside-min"]')?.value ?? settings.outsideMinFF) || 1));
+const maximum = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="war-outside-max"]')?.value ?? settings.outsideMaxFF) || 3));
+if (minimum > maximum) { current.outsideError = 'Minimum Fair Fight cannot be higher than maximum Fair Fight.'; renderWar(); return; }
+const key = currentFfKey();
+if (!key) { current.outsideError = 'Save an FFScouter API key under Access before polling outside targets.'; renderWar(); return; }
+current.outsideBusy = true; current.outsideError = ''; renderWar();
+try {
+const query = new URLSearchParams({ key, minlevel:'1', maxlevel:'100', inactiveonly:'0', factionless:'0', minff:String(minimum), maxff:String(maximum), limit:'50' });
+const response = await requestJson(`https://ffscouter.com/api/v1/get-targets?${query}`);
+if (response?.error) throw new Error(String(response.error?.message || response.error));
+const now = Math.floor(Date.now() / 1000);
+const rows = (Array.isArray(response?.targets) ? response.targets : []).map(row => {
+const lastAction = Number(row?.last_action ?? row?.lastAction) || 0;
+const hospitalUntil = Number(row?.hospital_until ?? row?.status_until) || 0;
+const minutes = lastAction ? Math.max(0, Math.floor((now - lastAction) / 60)) : null;
+return { id:warMemberId(row), name:String(row?.name || `Player ${warMemberId(row)}`), level:Number(row?.level) || 0, activity:minutes === null ? 'Unknown' : minutes < 5 ? 'Online' : minutes < 15 ? 'Idle' : 'Offline', lastActionRelative:minutes === null ? '' : `${minutes}m ago`, statusState:hospitalUntil > now ? 'Hospital' : 'Unknown', statusUntil:hospitalUntil, fairFight:finite(row?.fair_fight ?? row?.fairFight ?? row?.ff), battleStatsEstimate:finite(row?.bs_estimate ?? row?.battle_stats_estimate ?? row?.total_stats) };
+}).filter(row => row.id > 0).slice(0, 50);
+settings.outsideMinFF = minimum; settings.outsideMaxFF = maximum;
+current.data = dataState.caches.war = { ...(current.data || dataState.caches.war || {}), outsideTargets:rows, at:Number(current.data?.at || dataState.caches.war?.at) || Date.now() };
+writeDataState();
+} catch (error) { current.outsideError = errorMessage(error); }
+finally { current.outsideBusy = false; renderWar(); }
+}
+async function updateWarClaim(operation, targetId = 0) {
+const current = moduleState.war;
+const active = current.data?.activeWar;
+if (!active) return;
+const root = moduleRoot('war');
+if (operation === 'claim') targetId = Number(root?.querySelector('[data-field="war-claim-target"]')?.value) || 0;
+if (!targetId) { current.error = 'Select a med-out target first.'; renderWar(); return; }
+const member = (current.data?.snapshot?.members || []).find(row => warMemberId(row) === targetId);
+const assigneeId = warOfficer() ? Number(root?.querySelector('[data-field="war-claim-assignee"]')?.value) || 0 : 0;
+try {
+const response = await productRequest('war', `/api/wars/${encodeURIComponent(active.warId)}/claims`, { method:'POST', body:{ opponent_faction_id:active.opponentId, operation, targetId, targetName:String(member?.name || `Player ${targetId}`), assigneeId, minutes:30 } });
+current.data.snapshot.claims = Array.isArray(response?.claims) ? response.claims : current.data.snapshot.claims;
+current.error = ''; writeDataState(); renderWar();
+} catch (error) { current.error = errorMessage(error); renderWar(); }
+}
+async function resolveWarArmoryRequest(requestId) {
+const current = moduleState.war;
+const active = current.data?.activeWar;
+if (!active || !requestId) return;
+try {
+const response = await productRequest('war', `/api/wars/${encodeURIComponent(active.warId)}/item-requests`, { method:'POST', body:{ opponent_faction_id:active.opponentId, operation:'resolve', requestId } });
+current.data.snapshot.itemRequests = Array.isArray(response?.itemRequests) ? response.itemRequests : [];
+current.error = ''; writeDataState(); renderWar();
+} catch (error) { current.error = errorMessage(error); renderWar(); }
+}
+async function saveWarOfficerSettings() {
+const current = moduleState.war;
+const active = current.data?.activeWar;
+const root = moduleRoot('war');
+if (!active || !warOfficer()) return;
+const body = { opponent_faction_id:active.opponentId, mode:root?.querySelector('[data-field="war-mode"]')?.value === 'termed' ? 'termed' : 'war', idleMinutes:Math.max(0, Math.min(60, Number(root?.querySelector('[data-field="war-idle"]')?.value) || 0)), insideHitCap:Math.max(0, Math.min(9999, Number(root?.querySelector('[data-field="war-inside-cap"]')?.value) || 0)), insideBlockMode:root?.querySelector('[data-field="war-inside-mode"]')?.value || 'warn' };
+try {
+const response = await productRequest('war', `/api/wars/${encodeURIComponent(active.warId)}/config`, { method:'POST', body });
+const config = response?.config || body;
+current.data.snapshot.config = config;
+Object.assign(dataState.settings.war, { mode:config.mode, idleMinutes:config.idleMinutes, insideHitCap:config.insideHitCap, insideBlockMode:config.insideBlockMode });
+current.error = ''; writeDataState(); renderWar();
+} catch (error) { current.error = errorMessage(error); renderWar(); }
+}
+const PLAYER_STATS = ['xantaken','energydrinkused','refills','attackswon','respectforfaction','retals','timeplayed','networth'];
+function personalStatMap(response) {
+return Object.fromEntries((Array.isArray(response?.personalstats) ? response.personalstats : []).map(row => [String(row?.name || ''), finite(row?.value)]).filter(([key, value]) => key && value !== null));
+}
+function statDelta(current, previous, name) {
+return finite(current[name]) === null || finite(previous[name]) === null ? null : Number(current[name]) - Number(previous[name]);
+}
+function statsPeriod(current, previous, days) {
+return { days, xanax:statDelta(current, previous, 'xantaken'), cans:statDelta(current, previous, 'energydrinkused'), refills:statDelta(current, previous, 'refills'), attacks:statDelta(current, previous, 'attackswon'), respect:statDelta(current, previous, 'respectforfaction'), retals:statDelta(current, previous, 'retals'), activity:statDelta(current, previous, 'timeplayed'), networth:statDelta(current, previous, 'networth') };
+}
+function perDay(value, days, digits = 2) {
+return finite(value) === null ? '—' : `${number(value, digits)} (${number(Number(value) / days, digits)}/d)`;
+}
+function renderStats() {
+const root = moduleRoot('stats');
+if (!root) return;
+const current = moduleState.stats;
+if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading your daily Torn snapshot…'); return; }
+if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
+const data = current.data?.data;
+if (!data) { root.innerHTML = moduleMessage('Your daily player snapshot has not been loaded yet.'); return; }
+const seven = data.periods[7], thirty = data.periods[30];
+const table = (title, rows) => `<article class="card"><h2>${escapeHtml(title)}</h2><div class="stat-table"><div class="stat-row head"><span></span><strong>7 days</strong><strong>30 days</strong></div>${rows.map(([label, key, digits = 2, formatter = perDay]) => `<div class="stat-row"><span>${escapeHtml(label)}</span><strong>${formatter(seven[key], 7, digits)}</strong><strong>${formatter(thirty[key], 30, digits)}</strong></div>`).join('')}</div></article>`;
+root.innerHTML = `<div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · Torn historical stats update daily</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}<div class="grid">
+${table('Consumables', [['Xanax','xanax'],['Energy cans','cans'],['Refills','refills']])}
+${table('Combat', [['Attacks','attacks'],['Respect','respect'],['Retals','retals'],['Activity','activity',1,(value, days) => finite(value) === null ? '—' : `${number(Number(value) / 3600 / days, 2)}h/d`]])}
+<article class="card"><h2>Networth</h2><div class="value-list"><div><span>Current</span><strong>${money(data.networth.current)}</strong></div><div><span>Yesterday</span><strong>${money(data.networth.yesterday, true)}</strong></div><div><span>Day before</span><strong>${money(data.networth.dayBefore, true)}</strong></div><div><span>7 days</span><strong>${money(data.networth.seven, true)}</strong></div><div><span>30 days</span><strong>${money(data.networth.thirty, true)}</strong></div></div></article>
+<article class="card"><h2>Working stats</h2><div class="two-column"><div class="mini"><span>Manual</span><strong>${number(data.work.manual)}</strong></div><div class="mini"><span>Intelligence</span><strong>${number(data.work.intelligence)}</strong></div><div class="mini"><span>Endurance</span><strong>${number(data.work.endurance)}</strong></div><div class="mini"><span>Total</span><strong>${number(data.work.total)}</strong></div></div></article>
+<article class="card full"><div class="value-list"><div><span>Current faction armory balance</span><strong>${money(data.armoryBalance)}</strong></div></div></article>
+</div>`;
+}
+async function refreshStats(force = false) {
+const current = moduleState.stats;
+if (!hasScope(PLAYER_STATS_SCOPE)) { renderStats(); return; }
+const cached = dataState.caches.stats;
+const today = Math.floor(Date.now() / 86_400_000);
+if (!force && cached?.day === today) { current.data = cached; renderStats(); return; }
+current.busy = true; current.error = ''; renderStats();
+try {
+const baseline = today * 86_400_000;
+const statParam = PLAYER_STATS.join(',');
+const [now, one, two, seven, thirty] = await Promise.all([
+tornJson(`/v2/user?selections=personalstats,money,workstats&stat=${statParam}`, 'SLINK PDA daily player stats'),
+tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 86_400_000) / 1000)}`, 'SLINK PDA player history'),
+tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 2 * 86_400_000) / 1000)}`, 'SLINK PDA player history'),
+tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 7 * 86_400_000) / 1000)}`, 'SLINK PDA player history'),
+tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 30 * 86_400_000) / 1000)}`, 'SLINK PDA player history')
+]);
+const maps = [now, one, two, seven, thirty].map(personalStatMap);
+const moneyBody = now?.money || {};
+const work = now?.workstats || {};
+const data = {
+periods:{ 7:statsPeriod(maps[0], maps[3], 7), 30:statsPeriod(maps[0], maps[4], 30) },
+networth:{ current:maps[0].networth, yesterday:statDelta(maps[0], maps[1], 'networth'), dayBefore:statDelta(maps[1], maps[2], 'networth'), seven:statDelta(maps[0], maps[3], 'networth'), thirty:statDelta(maps[0], maps[4], 'networth') },
+work:{ manual:work.manual_labor, intelligence:work.intelligence, endurance:work.endurance, total:work.total },
+armoryBalance:finite(moneyBody?.faction?.money ?? moneyBody?.faction_balance?.money ?? (typeof moneyBody?.faction === 'number' ? moneyBody.faction : null))
+};
+current.data = dataState.caches.stats = { at:Date.now(), day:today, data };
+writeDataState();
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderStats(); }
+}
+function refillAvailable(refills, type) {
+const row = refills?.[type];
+if (row && typeof row === 'object') {
+if (typeof row.available === 'boolean') return row.available;
+if (typeof row.used === 'boolean') return !row.used;
+}
+if (typeof row === 'boolean') return !row;
+return false;
+}
+function acceptedMissions(missions) {
+const givers = Array.isArray(missions?.givers) ? missions.givers : Array.isArray(missions) ? missions : [];
+return givers.flatMap(giver => Array.isArray(giver?.contracts) ? giver.contracts : []).filter(contract => /^accepted$/i.test(String(contract?.status || '')));
+}
+function personalStat(response, statName) {
+const target = String(statName || '').toLowerCase();
+const direct = personalStatMap(response)[target];
+if (direct !== undefined) return direct;
+const visited = new Set();
+function search(value, depth = 0) {
+if (!value || typeof value !== 'object' || depth > 8 || visited.has(value)) return null;
+visited.add(value);
+if (String(value?.name || '').toLowerCase() === target && finite(value?.value) !== null) return finite(value.value);
+for (const [key, child] of Object.entries(value)) {
+if (String(key).toLowerCase() === target && finite(child) !== null) return finite(child);
+const found = search(child, depth + 1);
+if (found !== null) return found;
+}
+return null;
+}
+return search(response);
+}
+function cityShopTargetStockPda(body) {
+const found = new Map();
+const targetById = new Map(PDA_CITY_SHOP_TARGETS.map(target => [target.id, target]));
+for (const shop of Array.isArray(body?.cityshops) ? body.cityshops : []) {
+for (const item of Array.isArray(shop?.items) ? shop.items : []) {
+const target = targetById.get(Number(item?.id));
+if (!target || String(shop?.name || '').toLowerCase() !== target.shop.toLowerCase()) continue;
+const current = finite(item?.stock?.current);
+const normal = finite(item?.stock?.default);
+found.set(target.id, {
+...target,
+shopName:String(shop?.name || target.shop),
+price:Math.max(0, Number(item?.price) || 0),
+stock:current === null ? null : Math.max(0, Math.trunc(current)),
+defaultStock:normal === null ? null : Math.max(0, Math.trunc(normal))
+});
+}
+}
+return PDA_CITY_SHOP_TARGETS.map(target => found.get(target.id) || { ...target, stock:null, defaultStock:null, price:0 });
+}
+function utcDay(timestamp = Date.now()) {
+return Math.floor(Number(timestamp) / 86_400_000);
+}
+function cooldownSeconds(body, name, fetchedAt) {
+const value = finite(body?.cooldowns?.[name]);
+const observedAt = Math.max(0, Number(fetchedAt) || 0);
+// A locally predicted expiry is not proof that a cooldown is clear: the user
+// may have consumed another item while a later API refresh failed.
+if (value === null || !observedAt || Date.now() - observedAt > 10 * 60_000) return null;
+return Math.max(0, Math.ceil(value));
+}
+function apiRows(value, nestedKey) {
+if (Array.isArray(value)) return value;
+if (Array.isArray(value?.[nestedKey])) return value[nestedKey];
+if (value && typeof value === 'object') return Object.values(value);
+return [];
+}
+function raceActive(races, profileStatus = {}, icons = []) {
+const states = apiRows(races, 'races').flatMap(race => [race?.status, race?.state, race?.status?.state, race?.status?.description, race?.description]);
+states.push(profileStatus?.state, profileStatus?.description, profileStatus?.details, typeof profileStatus === 'string' ? profileStatus : '');
+states.push(...apiRows(icons, 'icons').flatMap(icon => [icon?.title, icon?.description, typeof icon === 'string' ? icon : '']));
+return states.some(value => {
+const text = String(value ?? '').trim();
+return /^(?:open|in[_ -]?progress|waiting|scheduled|pending|racing)$/i.test(text)
+|| /\bwaiting\s+for\s+(?:a\s+)?race\b/i.test(text)
+|| /\b(?:currently\s+)?in\s+(?:a\s+)?race\b/i.test(text)
+|| /\b(?:currently\s+)?racing\b/i.test(text)
+|| /\brace\s+(?:in[_ -]?progress|waiting|scheduled|pending)\b/i.test(text);
+});
+}
+function googlePlayPointsAccess() {
+const userAgent = String(global.navigator?.userAgent || '');
+const maxTouchPoints = Number(global.navigator?.maxTouchPoints) || 0;
+if (/android/i.test(userAgent)) return {
+detail:'Open the Play Store app, then use Profile → Play Points → Perks. If the app opens its home page, follow that same path.',
+links:[['Open Play Store app',GOOGLE_PLAY_POINTS_ANDROID_INTENT],['Official instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+};
+if (/windows/i.test(userAgent)) return {
+detail:'Open Google Play Games on your PC, then choose Play Points → Perks → Claim. Google does not provide a reliable web link into that screen.',
+links:[['Official PC instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+};
+if (/iphone|ipad|ipod/i.test(userAgent) || (/macintosh/i.test(userAgent) && maxTouchPoints > 1)) return {
+detail:'Google does not support claiming the weekly prize on iPhone or iPad. Use the Play Store app on Android or Google Play Games on Windows.',
+links:[['Official claiming instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+};
+return {
+detail:'Claim in the Play Store app on Android or Google Play Games on Windows, then mark it claimed here.',
+links:[['Official claiming instructions',GOOGLE_PLAY_POINTS_HELP_URL]]
+};
+}
+let crimeUniqueRefreshBusy = false;
+function crimeUniqueCompletedRowsPda(payload) {
+return Array.isArray(payload?.crimes?.uniques) ? payload.crimes.uniques : [];
+}
+function clusterRingAchievedPda(payload) {
+return crimeUniqueCompletedRowsPda(payload).some(unique => (unique?.rewards?.items || []).some(item => Number(item?.id ?? item?.item_id) === 1465));
+}
+function crimeUniqueProgressRowsPda() {
+const cache = dataState.caches.crimeUniques || {};
+const catalogRows = Array.isArray(cache?.catalog?.crimes) ? cache.catalog.crimes : [];
+const users = cache.user && typeof cache.user === 'object' ? cache.user : {};
+return PDA_ALERT_TYPES.filter(definition => Number(definition.crimeId) > 0).map(definition => {
+const catalog = catalogRows.find(row => Number(row?.id) === Number(definition.crimeId)) || {};
+const user = users[definition.crimeId] || {};
+const completedIds = [...new Set(crimeUniqueCompletedRowsPda(user).map(row => Number(row?.id)).filter(Number.isFinite))];
+const expectedIds = [...new Set((Array.isArray(catalog?.unique_outcomes_ids) ? catalog.unique_outcomes_ids : []).map(Number).filter(Number.isFinite))];
+const total = Math.max(0, Number(catalog?.unique_outcomes_count) || expectedIds.length || 0);
+const completed = total ? Math.min(total, completedIds.length) : completedIds.length;
+const skill = Math.max(0, finite(user?.crimes?.skill) || 0);
+let eligibleTotal = skill > 0 ? total : 0;
+if (Number(definition.crimeId) === 13) eligibleTotal = ARSON_UNIQUE_SKILL_THRESHOLDS.filter(threshold => skill >= threshold).length;
+const expectedIdSet = new Set(expectedIds);
+const knownShopliftingOutcomes = Number(definition.crimeId) === 4
+? SHOPLIFTING_UNIQUE_WINDOWS.filter(outcome => expectedIdSet.has(outcome.id))
+: [];
+if (Number(definition.crimeId) === 4) eligibleTotal = knownShopliftingOutcomes.filter(outcome => skill >= outcome.skill).length;
+const missingIds = expectedIds.filter(id => !completedIds.includes(id));
+const canSpawnMissing = Number(definition.crimeId) === 4 && knownShopliftingOutcomes.length
+? knownShopliftingOutcomes.some(outcome => skill >= outcome.skill && !completedIds.includes(outcome.id))
+: total > 0 && completed < total && eligibleTotal > completed;
+return {
+...definition,
+name:String(catalog?.name || definition.label.replace(/ unique.*$/i, '')),
+skill,
+completed,
+total,
+eligibleTotal,
+complete:total > 0 && completed >= total,
+canSpawnMissing,
+completedIds,
+expectedIds,
+missingIds
+};
+});
+}
+function shopliftingStatusRowsPda(payload) {
+const raw = payload?.shoplifting;
+if (Array.isArray(raw)) return raw;
+if (!raw || typeof raw !== 'object') return [];
+return Object.entries(raw).map(([name, status]) => ({ name, status:Array.isArray(status) ? status : [] }));
+}
+function shopliftingShopKeyPda(value) {
+const normalized = String(value || '').normalize('NFKD').replace(/[’']/g, '').replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '').toLowerCase();
+if (/sally/.test(normalized)) return 'sallys_sweet_shop';
+if (/bits.*bobs/.test(normalized)) return 'bits_n_bobs';
+if (/tc.*clothing/.test(normalized)) return 'tc_clothing';
+if (/super.*store/.test(normalized)) return 'super_store';
+if (/pharmacy/.test(normalized)) return 'pharmacy';
+if (/cyber.*force/.test(normalized)) return 'cyber_force';
+if (/jewelry/.test(normalized)) return 'jewelry_store';
+if (/big.*al/.test(normalized)) return 'big_als';
+return normalized;
+}
+function shopliftingSecurityMapPda() {
+const cache = dataState.caches.crimeUniques || {};
+const subcrimes = Array.isArray(cache?.shopliftingSubcrimes?.subcrimes) ? cache.shopliftingSubcrimes.subcrimes : [];
+const namesById = new Map(subcrimes.map(row => [Number(row?.id), row?.name]));
+return Object.fromEntries(shopliftingStatusRowsPda(cache.shopliftingStatus).map(row => {
+const key = shopliftingShopKeyPda(row?.name || namesById.get(Number(row?.id)));
+const status = Array.isArray(row?.status) ? row.status : [];
+const disabled = pattern => {
+const found = status.find(entry => pattern.test(String(entry?.title || '')));
+return found ? found.disabled === true : null;
+};
+return [key, { camerasOff:disabled(/camera/i), checkpointOff:disabled(/checkpoint/i), guardsOff:disabled(/guard/i) }];
+}).filter(([key]) => key));
+}
+function shopliftingConditionMatchesPda(outcome, state) {
+if (!state) return false;
+if (outcome.cameras && state.camerasOff !== (outcome.cameras === 'off')) return false;
+if (outcome.checkpoint && state.checkpointOff !== (outcome.checkpoint === 'off')) return false;
+if (outcome.guards && state.guardsOff !== (outcome.guards === 'off')) return false;
+return true;
+}
+function shopliftingUniqueOpportunitiesPda(progress) {
+const expectedIds = new Set(Array.isArray(progress?.expectedIds) ? progress.expectedIds.map(Number) : []);
+if (!expectedIds.size) return [];
+const completed = new Set(Array.isArray(progress?.completedIds) ? progress.completedIds.map(Number) : []);
+const skill = Math.max(0, finite(progress?.skill) || 0);
+const security = shopliftingSecurityMapPda();
+return SHOPLIFTING_UNIQUE_WINDOWS.flatMap(outcome => {
+const id = Number(outcome.id);
+if (!expectedIds.has(id) || completed.has(id) || skill < outcome.skill || !shopliftingConditionMatchesPda(outcome, security[outcome.shop])) return [];
+const extra = outcome.notoriety ? ` · requires ${outcome.notoriety} notoriety` : '';
+return [{ ...outcome, id, detail:`${outcome.shopLabel}: ${outcome.label} (skill ${outcome.skill})${extra}` }];
+});
+}
+function clusterRingReadyPda() {
+const cache = dataState.caches.crimeUniques || {};
+const user = cache.user?.[4];
+if (!user || clusterRingAchievedPda(user) || Number(user?.crimes?.skill || 0) < 100) return false;
+const states = shopliftingStatusRowsPda(cache.shopliftingStatus);
+if (!states.length) return false;
+const subcrimes = Array.isArray(cache?.shopliftingSubcrimes?.subcrimes) ? cache.shopliftingSubcrimes.subcrimes : [];
+const jewelry = subcrimes.find(row => /jewelry\s+store/i.test(String(row?.name || '')));
+const row = states.find(entry => (jewelry && Number(entry?.id) === Number(jewelry.id)) || /jewelry[\s_]+store/i.test(String(entry?.name || '')));
+const status = row?.status;
+if (!Array.isArray(status)) return false;
+const camera = status.find(entry => /camera/i.test(String(entry?.title || '')));
+const guard = status.find(entry => /guard/i.test(String(entry?.title || '')));
+return camera?.disabled === true && guard?.disabled === true;
+}
+function searchForCashOpportunitiesPda(skillValue, now = Date.now()) {
+const skill = Math.max(0, finite(skillValue) || 0);
+if (skill < 1) return [];
+const raw = dataState.caches.crimeUniques?.searchForCashStatus?.searchforcash;
+const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.entries(raw).map(([name, value]) => ({ name, ...(value && typeof value === 'object' ? value : {}) })) : [];
+const byId = id => rows.find(row => Number(row?.id) === id);
+const opportunities = [];
+const date = new Date(now);
+const day = date.getUTCDay();
+const time = date.getUTCHours() * 60 + date.getUTCMinutes();
+const within = (start, end) => time >= start && time < end;
+const add = (label, minimumSkill = 1) => { if (skill >= minimumSkill) opportunities.push(label); };
+if (day === 1 && within(6 * 60, 18 * 60)) add('Trash collection window');
+if (day >= 1 && day <= 5 && within(9 * 60, 16 * 60)) add('Junkyard crushing window', 5);
+if (day >= 1 && day <= 5 && within(9 * 60, 17 * 60)) add('Cemetery groundskeeping window');
+if (date.getUTCDate() === 1 && within(13 * 60, 16 * 60)) add('Fountain collection window', 75);
+const subway = byId(2);
+const subwayPercentage = finite(subway?.percentage);
+if (/rush|on[- ]?peak/i.test(String(subway?.title || ''))) add('Subway rush-hour window');
+if (subwayPercentage !== null && subwayPercentage <= 23) add('Low subway ridership');
+const junkyardPercentage = finite(byId(3)?.percentage);
+if (junkyardPercentage !== null && junkyardPercentage <= 23) add('Very low crushing rating', 5);
+const tidePercentage = finite(byId(4)?.percentage);
+if (tidePercentage !== null && (tidePercentage <= 20 || tidePercentage >= 80)) add('Extreme tide');
+return [...new Set(opportunities)];
+}
+function dailyCrimeUniqueDuePda(progress, now = Date.now()) {
+if (!progress?.canSpawnMissing) return false;
+const date = new Date(now);
+if (date.getUTCHours() === 0 && date.getUTCMinutes() < 5) return false;
+return Number(dataState.settings.alerts.crimeUniqueDoneDay?.[progress.id]) !== utcDay(now);
+}
+async function refreshCrimeUniqueProgress(force = false) {
+const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+const definitions = PDA_ALERT_TYPES.filter(definition => Number(definition.crimeId) > 0 && enabled[definition.id] !== false);
+if (!definitions.length) return dataState.caches.crimeUniques || {};
+const now = Date.now();
+const previous = dataState.caches.crimeUniques || {};
+const cache = { ...previous, user:{ ...(previous.user || {}) }, userFetchedAt:{ ...(previous.userFetchedAt || {}) } };
+if (force || !cache.catalog || Number(cache.catalogFetchedAt || 0) + 7 * 86_400_000 <= now) {
+cache.catalog = await tornJson('/v2/torn/crimes', 'SLINK PDA crime unique catalog');
+cache.catalogFetchedAt = now;
+}
+for (const definition of definitions) {
+if (!force && cache.user[definition.crimeId] && Number(cache.userFetchedAt[definition.crimeId] || 0) + 86_400_000 > now) continue;
+cache.user[definition.crimeId] = await tornJson(`/v2/user/${definition.crimeId}/crimes`, `SLINK PDA ${definition.label} progress`);
+cache.userFetchedAt[definition.crimeId] = now;
+}
+dataState.caches.crimeUniques = cache;
+for (const progress of crimeUniqueProgressRowsPda()) {
+if (!progress.complete || dataState.settings.alerts.enabledTypes[progress.id] === false) continue;
+dataState.settings.alerts.enabledTypes[progress.id] = false;
+cache.autoDisabledAt = now;
+}
+return cache;
+}
+async function refreshCrimeUniqueWindows(force = false) {
+if (crimeUniqueRefreshBusy) return;
+const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+const liveEnabled = PDA_ALERT_TYPES.some(definition => definition.mode === 'live' && enabled[definition.id] !== false);
+if (!liveEnabled || !currentApiKey() || !hasScope('slink.adhd.alerts')) return;
+const cache = dataState.caches.crimeUniques || {};
+if (!force && Number(cache.nextLiveAt || 0) > Date.now()) return;
+crimeUniqueRefreshBusy = true;
+try {
+await ensurePermissionSession(false);
+const now = Date.now();
+const progress = crimeUniqueProgressRowsPda();
+const search = progress.find(row => row.id === 'searchCashUnique');
+const cluster = progress.find(row => row.id === 'clusterRing');
+if (search && !search.complete && enabled.searchCashUnique !== false) {
+cache.searchForCashStatus = await tornJson('/v2/torn/searchforcash', 'SLINK PDA Search for Cash unique windows');
+cache.searchForCashFetchedAt = now;
+}
+if (cluster && !cluster.complete && enabled.clusterRing !== false) {
+cache.shopliftingStatus = await tornJson('/v2/torn/shoplifting', 'SLINK PDA Shoplifting unique status');
+cache.shopliftingFetchedAt = now;
+if (!cache.shopliftingSubcrimes || Number(cache.shopliftingSubcrimesFetchedAt || 0) + 7 * 86_400_000 <= now) {
+cache.shopliftingSubcrimes = await tornJson('/v2/torn/4/subcrimes', 'SLINK PDA Shoplifting unique map');
+cache.shopliftingSubcrimesFetchedAt = now;
+}
+}
+cache.nextLiveAt = now + 60_000;
+cache.lastError = '';
+dataState.caches.crimeUniques = cache;
+reconcileAlertNotifications(moduleState.alerts.data);
+writeDataState();
+renderAlerts();
+} catch (error) {
+cache.nextLiveAt = Date.now() + 60_000;
+cache.lastError = errorMessage(error);
+dataState.caches.crimeUniques = cache;
+writeDataState();
+} finally {
+crimeUniqueRefreshBusy = false;
+}
+}
+function alertRows(snapshot) {
+const body = snapshot?.body || {};
+const fetchedAt = Number(snapshot?.at) || 0;
+const snapshotFresh = fetchedAt > 0 && Date.now() - fetchedAt <= 15 * 60_000;
+const snoozed = dataState.settings.alerts.snoozedUntil || {};
+const rows = [];
+const add = (id, active, title, detail, links = []) => {
+if (id !== 'timer24' && !snapshotFresh) return;
+if (dataState.settings.alerts.enabledTypes?.[id] === false) return;
+if (Number(dataState.settings.alerts.stackModeSince) > 0 && ['energyFull', 'energyRefill'].includes(id)) return;
+if (active && Number(snoozed[id] || 0) <= Date.now()) rows.push({ id, title, detail, links });
+};
+const energy = body?.bars?.energy || {};
+const nerve = body?.bars?.nerve || {};
+const drug = cooldownSeconds(body, 'drug', fetchedAt);
+const medical = cooldownSeconds(body, 'medical', fetchedAt);
+const booster = cooldownSeconds(body, 'booster', fetchedAt);
+const missions = acceptedMissions(body?.missions);
+const cityBought = finite(snapshot?.cityBought);
+const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
+const profile = body?.profile || {};
+const travel = body?.travel || {};
+const travelSeconds = Number(travel?.arrival_at) * 1_000 > Date.now() ? Math.ceil((Number(travel.arrival_at) * 1_000 - Date.now()) / 1_000) : Math.max(0, Number(travel?.time_left) || 0);
+const away = ['traveling', 'abroad'].includes(String(profile?.status?.state || '').toLowerCase()) || travelSeconds > 0;
+const activeRace = raceActive(body?.races, profile?.status, body?.icons);
+const racewayKnown = body?.enlistedcars !== undefined || body?.races !== undefined || body?.icons !== undefined;
+const playPoints = googlePlayPointsAccess();
+const timerEnd = Number(dataState.settings.alerts.timer24EndsAt) || 0;
+const crimeProgress = crimeUniqueProgressRowsPda();
+const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
+const searchOpportunities = searchForCashOpportunitiesPda(crimeById.searchCashUnique?.skill);
+add('timer24', timerEnd > 0 && timerEnd <= Date.now(), '24-hour timer finished', 'Your countdown has finished. Dismiss it or start another timer.');
+add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
+add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
+add('boosterCooldown', booster === 0, 'Booster cooldown is clear', 'You can use a booster now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
+add('energyFull', finite(energy.current) !== null && finite(energy.maximum) !== null && Number(energy.current) >= Number(energy.maximum), 'Energy is full', `${number(energy.current)} / ${number(energy.maximum)}`, [['Gym','https://www.torn.com/gym.php']]);
+add('nerveFull', finite(nerve.current) !== null && finite(nerve.maximum) !== null && Number(nerve.current) >= Number(nerve.maximum), 'Nerve is full', `${number(nerve.current)} / ${number(nerve.maximum)}`, [['Crimes','https://www.torn.com/page.php?sid=crimes']]);
+add('energyRefill', refillAvailable(body?.refills, 'energy'), 'Energy refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
+add('nerveRefill', refillAvailable(body?.refills, 'nerve'), 'Nerve refill is unused', 'Your daily point refill is available.', [['Points','https://www.torn.com/points.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
+add('missions', missions.length > 0, missions.length >= 3 ? 'Mission cap reached' : `${missions.length} unfinished mission${missions.length === 1 ? '' : 's'}`, missions.length >= 3 ? 'Complete one before another arrives so you do not miss mission credits.' : missions.map(row => row?.title).filter(Boolean).slice(0, 2).join(' / '), [['Missions','https://www.torn.com/page.php?sid=missions']]);
+add('googlePlayPoints', Number(dataState.settings.alerts.googlePlayPointsClaimedAt || 0) + WEEK_MS <= Date.now(), 'Claim your weekly Google Play Points prize', `${playPoints.detail} This reminder returns seven days after confirmation.`, playPoints.links);
+add('cityItems', !cityHidden && cityBought !== null && cityBought < 100, 'Buy 100 city items', `${number(cityBought)} / 100 bought since daily reset. Once the shared cap reaches 100, every city-item reminder stops.`, [['City','https://www.torn.com/city.php']]);
+for (const item of cityShopTargetStockPda(snapshot?.cityShops)) {
+add(`cityStock:${item.id}`, !cityHidden && cityBought !== null && cityBought < 100 && Number(item.stock) > 0, `${item.label} in stock at ${item.shopName || item.shop}`, `${number(item.stock)} available${item.defaultStock !== null ? ` (normal restock ${number(item.defaultStock)})` : ''}. ${number(cityBought)} / 100 total city items bought today.`, [[item.shopName || item.shop,item.href]]);
+}
+add('raceOrFly', racewayKnown && !activeRace && !away, 'Start a race or take a flight', 'You are on the ground and not entered in an active race.', [['Raceway','https://www.torn.com/page.php?sid=racing'],['Travel','https://www.torn.com/travelagency.php']]);
+add('landing', travelSeconds > 0 && travelSeconds <= 10 * 60, 'Landing soon', `${travel?.destination ? `Arriving in ${travel.destination} in ` : 'Landing in '}${duration(travelSeconds)}`, [['Travel','https://www.torn.com/index.php']]);
+add('organizedCrime', Number(profile?.faction_id || 0) > 0 && (body?.organizedcrime ?? body?.organizedCrime) === null, 'Join an organized crime', 'No current organized crime was returned for your faction membership.', [['Faction crimes','https://www.torn.com/factions.php?step=your#/tab=crimes']]);
+add('education', Boolean(body?.education) && body.education.current === null, 'Start an education course', 'No active education course was returned.', [['Education','https://www.torn.com/education.php']]);
+add('casinoTokens', Number(body?.casino?.tokens) > 0, 'Spend casino tokens', `${number(body?.casino?.tokens)} token${Number(body?.casino?.tokens) === 1 ? '' : 's'} available.`, [['Casino','https://www.torn.com/casino.php']]);
+const stocks = Array.isArray(body?.stocks) ? body.stocks : [];
+const catalogRows = Array.isArray(snapshot?.stockCatalog?.stocks) ? snapshot.stockCatalog.stocks : Array.isArray(snapshot?.stockCatalog) ? snapshot.stockCatalog : [];
+const stockCatalog = new Map(catalogRows.map(stock => [Number(stock?.id), stock]));
+const readyStocks = stocks.flatMap(stock => {
+const definition = stockCatalog.get(Number(stock?.id));
+if (stock?.bonus?.available !== true || definition?.bonus?.passive !== false) return [];
+return [{ ...stock, name:definition?.name, acronym:definition?.acronym }];
+});
+add('stockBenefits', readyStocks.length > 0, 'Stock benefit ready', readyStocks.map(stock => stock?.name ? `${stock.name}${stock.acronym ? ` (${stock.acronym})` : ''}` : stock?.acronym || `Stock ${stock?.id}`).join(', '), [['Stocks','https://www.torn.com/page.php?sid=stocks']]);
+const modifiers = ['strength','defense','speed','dexterity'].flatMap(name => Array.isArray(body?.battlestats?.[name]?.modifiers) ? body.battlestats[name].modifiers : []).filter(row => /addiction/i.test(`${row?.effect || ''} ${row?.type || ''}`));
+const addiction = modifiers.length ? Math.max(...modifiers.map(row => Math.abs(Number(row?.value) || 0))) : 0;
+add('playerAddiction', addiction >= 15, 'Player addiction needs attention', `${number(addiction, 1)}% battle-stat penalty.`, [['Travel','https://www.torn.com/travelagency.php']]);
+add('searchCashUnique', crimeById.searchCashUnique?.canSpawnMissing && searchOpportunities.length > 0, 'Search for Cash unique window may be active', `${searchOpportunities.join(', ')}. ${crimeById.searchCashUnique?.completed || 0}/${crimeById.searchCashUnique?.total || 0} completed; check the starred options.`, [['Check Search for Cash','https://www.torn.com/page.php?sid=crimes#/search-for-cash']]);
+const shopliftingOpportunities = shopliftingUniqueOpportunitiesPda(crimeById.clusterRing);
+const shopliftingSummary = shopliftingOpportunities.slice(0, 6).map(row => row.detail).join('; ');
+const shopliftingExtra = shopliftingOpportunities.length > 6 ? `; +${shopliftingOpportunities.length - 6} more` : '';
+add('clusterRing', crimeById.clusterRing?.canSpawnMissing && shopliftingOpportunities.length > 0, `${shopliftingOpportunities.length} missing Shoplifting unique${shopliftingOpportunities.length === 1 ? '' : 's'} match current security`, `${shopliftingSummary}${shopliftingExtra}. ${crimeById.clusterRing?.completed || 0}/${crimeById.clusterRing?.total || 0} completed.`, [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']]);
+add('disposalUnique', dailyCrimeUniqueDuePda(crimeById.disposalUnique), 'Check today’s Disposal jobs for missing uniques', `${crimeById.disposalUnique?.completed || 0}/${crimeById.disposalUnique?.total || 0} completed. Jobs refresh daily; check starred options before using today’s jobs.`, [['Check Disposal','https://www.torn.com/page.php?sid=crimes#/disposal']]);
+add('arsonUnique', dailyCrimeUniqueDuePda(crimeById.arsonUnique), 'Check today’s Arson targets for missing uniques', `${crimeById.arsonUnique?.completed || 0}/${crimeById.arsonUnique?.total || 0} completed at skill ${Math.floor(crimeById.arsonUnique?.skill || 0)}. Only skill-eligible missing targets trigger this reminder.`, [['Check Arson','https://www.torn.com/page.php?sid=crimes#/arson']]);
+return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows];
+}
+function updateAlertIndicator(count, rows = []) {
+const alertTotal = Math.max(0, Number(count) || 0);
+const marketTotal = marketWatchLimit() > 0 ? marketOpportunities(moduleState.market.data || marketRuntime()).length : 0;
+const total = alertTotal + marketTotal;
+pdaChatButtonAlertCount = total;
+syncPdaChatButtonAlert();
+const badge = shadow?.querySelector?.('.launcher-alert-count');
+const summary = shadow?.querySelector?.('.launcher-summary');
+if (!badge) return;
+badge.hidden = total === 0;
+badge.textContent = total > 99 ? '99+' : String(total);
+launcher.classList.toggle('has-alerts', total > 0);
+const firstAlert = Array.isArray(rows) ? rows.find(row => row?.title) : null;
+const summaryText = firstAlert
+? `${alertTotal} alert${alertTotal === 1 ? '' : 's'} · ${String(firstAlert.title)}`
+: marketTotal > 0
+? `${marketTotal} market opportunit${marketTotal === 1 ? 'y' : 'ies'}`
+: 'No active alerts';
+if (summary) {
+summary.textContent = summaryText;
+summary.title = summaryText;
+}
+launcher.setAttribute('aria-label', total > 0 ? `Open SLINK dashboard, ${total} active alert${total === 1 ? '' : 's'}` : 'Open SLINK dashboard');
+}
+function openAlertDestination(href) {
+try {
+const destination = new URL(String(href || ''), global.location.href);
+const androidIntent = destination.protocol === 'intent:' && /android/i.test(String(global.navigator?.userAgent || ''));
+if (!/^https?:$/.test(destination.protocol) && !androidIntent) return false;
+global.location.href = destination.href;
+return true;
+} catch {
+return false;
+}
+}
+function pdaNotificationId(value) {
+let hash = 2166136261;
+for (const character of String(value || 'slink')) {
+hash ^= character.charCodeAt(0);
+hash = Math.imul(hash, 16777619);
+}
+return 1000 + ((hash >>> 0) % 8000);
+}
+function showFallbackSystemAlert(alert, title, text, href) {
+try {
+if (typeof GM_API.notify === 'function') {
+const silent = (alert.id.startsWith('abroad:') && dataState.settings.abroadStocks?.soundEnabled !== true)
+|| (alert.id.startsWith('money-property:') && dataState.settings.plugins?.moneyProperty?.soundEnabled !== true);
+GM_API.notify({ title, text, tag:`slink-efficiency-${alert.id}`, timeout:12_000, silent, ...(href ? { onclick:() => openAlertDestination(href) } : {}) });
+return;
+}
+} catch {}
+try {
+if (typeof global.Notification === 'function' && global.Notification.permission === 'granted') {
+const notification = new global.Notification(title, { body:text, tag:`slink-efficiency-${alert.id}` });
+if (href) notification.onclick = () => { notification.close(); openAlertDestination(href); };
+}
+} catch {}
+}
+function showSystemAlert(alert) {
+const title = `SLINK Efficiency: ${alert.title}`;
+const href = String(alert.href || alert.links?.[0]?.[1] || '');
+const text = `${String(alert.detail || 'Open Torn PDA to review this alert.')}${href ? ' Tap to open.' : ''}`;
+const bridge = global.flutter_inappwebview;
+if (bridge && typeof bridge.callHandler === 'function') {
+try {
+const request = bridge.callHandler('scheduleNotification', {
+title,
+subtitle:text,
+id:pdaNotificationId(alert.id),
+timestamp:Date.now() + 1500,
+overwriteID:true,
+launchNativeToast:false,
+...(href && /^https?:/i.test(href) ? { urlCallback:href } : {})
+});
+Promise.resolve(request).then(response => {
+if (response?.status === 'error') showFallbackSystemAlert(alert, title, text, href);
+}).catch(() => showFallbackSystemAlert(alert, title, text, href));
+return;
+} catch {}
+}
+showFallbackSystemAlert(alert, title, text, href);
+}
+function reconcileAlertNotifications(snapshot) {
+const active = alertRows(snapshot);
+const currentIds = active.map(alert => alert.id);
+const prior = dataState.caches.alertNotificationIds;
+if (Array.isArray(prior)) {
+const priorIds = new Set(prior.map(String));
+active.filter(alert => !priorIds.has(alert.id)).forEach(showSystemAlert);
+}
+dataState.caches.alertNotificationIds = currentIds;
+updateAlertIndicator(active.length, active);
+}
+function endStackIfSpent(snapshot) {
+const since = Number(dataState.settings.alerts.stackModeSince) || 0;
+const energy = finite(snapshot?.body?.bars?.energy?.current);
+if (since > 0 && Number(snapshot?.energyObservedAt ?? snapshot?.at) > since && energy !== null && energy >= 0 && energy < 150) {
+dataState.settings.alerts.stackModeSince = 0;
+return true;
+}
+return false;
+}
+function timer24Label() {
+const end = Number(dataState.settings.alerts.timer24EndsAt) || 0;
+const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+return !end ? '24-hour timer: not started' : remaining ? `24-hour timer: ${duration(remaining)} remaining` : '24-hour timer finished';
+}
+function alertSettingsHtml() {
+const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+dataState.settings.alerts.enabledTypes = enabled;
+const enabledCount = PDA_ALERT_TYPES.filter(definition => enabled[definition.id]).length;
+const groups = [...new Set(PDA_ALERT_TYPES.map(definition => definition.group))];
+const crimeProgress = crimeUniqueProgressRowsPda();
+const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
+return `<details class="alert-settings" data-ui-key="alerts.settings" ${state.panels?.['alerts.settings'] ? 'open' : ''}><summary>Alert settings · ${enabledCount}/${PDA_ALERT_TYPES.length} enabled</summary>
+<p>Disabled alerts are removed from both the PDA alert list and phone notification flow.</p>
+<div class="alert-settings-actions"><button type="button" data-action="alerts-enable-all">Enable all</button><button type="button" data-action="alerts-disable-all">Disable all</button></div>
+<div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${PDA_ALERT_TYPES.filter(definition => definition.group === group).map(definition => { const progress = crimeById[definition.id]; const suffix = progress?.total ? ` · ${progress.completed}/${progress.total} · skill ${Math.floor(progress.skill || 0)}` : ''; return `<label><input type="checkbox" data-ui-autosave="true" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label + suffix)}</span></label>`; }).join('')}</fieldset>`).join('')}</div>
+</details>`;
+}
+function renderAlerts() {
+const root = moduleRoot('alerts');
+if (!root) return;
+const permitted = hasScope('slink.adhd.alerts');
+const stakeoutAlerts = stakeoutAlertRows();
+const abroadAlerts = PDA_ABROAD.alerts();
+const companyAlerts = companyAlertRows();
+const pluginAlerts = pdaPluginAlerts();
+if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+const current = moduleState.alerts;
+const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
+const cityBought = finite(current.data?.cityBought);
+const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
+const cityStatus = cityHidden
+? 'City reminder hidden until the next daily reset'
+: cityBought === null ? 'City purchase total unavailable'
+: cityBought >= 100 ? 'City cap complete · 100 / 100 bought today'
+: `${number(cityBought)} / 100 city items bought today`;
+updateAlertIndicator(alerts.length, alerts);
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
+<div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+<div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
+<div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
+${alertSettingsHtml()}
+<div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}${['disposalUnique', 'arsonUnique'].includes(alert.id) ? `<button type="button" data-action="crime-unique-checked" data-alert-id="${escapeHtml(alert.id)}">Checked today</button>` : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
+</article></div>`;
+}
+async function refreshAlerts(force = false) {
+const current = moduleState.alerts;
+if (current.busy) return;
+const cached = dataState.caches.alerts;
+if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.lastAttemptAt = Number(cached.at) || Date.now(); current.data = cached; syncThemeHealthAssets(); renderAlerts(); return; }
+current.lastAttemptAt = Date.now();
+current.busy = true; current.error = ''; renderAlerts();
+try {
+await ensurePermissionSession(false);
+if (!hasScope('slink.adhd.alerts')) throw new Error('Your SLINK account does not have slink.adhd.alerts permission.');
+const selections = 'bars,cooldowns,travel,education,organizedcrime,refills,missions,casino,profile,races,enlistedcars,icons,stocks,battlestats';
+const day = utcDay();
+const reset = day * 86_400_000;
+const energyObservedAt = Date.now();
+const [body, cityResult] = await Promise.all([
+tornJson(`/v2/user?selections=${selections}`, 'SLINK PDA efficiency alerts'),
+tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total')
+.then(value => ({ value }))
+.catch(error => ({ error }))
+]);
+let currentBought = finite(cached?.cityTotal);
+let resetBought = cached?.cityDay === day && Number(cached?.cityBaselineVersion) === 2 ? finite(cached.cityAtReset) : null;
+let cityError = cityResult.error ? errorMessage(cityResult.error) : '';
+if (!cityError) {
+try {
+currentBought = personalStat(cityResult.value, 'cityitemsbought');
+if (resetBought === null) {
+const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000) - 1}`, 'SLINK PDA city item baseline');
+resetBought = personalStat(atReset, 'cityitemsbought');
+}
+if (currentBought === null || resetBought === null) cityError = 'Torn returned no usable city-item purchase total.';
+} catch (error) { cityError = errorMessage(error); }
+}
+let stockCatalog = dataState.caches.stockCatalog?.data || null;
+if (!dataState.caches.stockCatalog?.at || Date.now() - dataState.caches.stockCatalog.at >= 7 * 86_400_000) {
+stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
+dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
+}
+let cityShops = cached?.cityShops || null;
+const cityStockEnabled = PDA_CITY_SHOP_TARGETS.some(target => dataState.settings.alerts.enabledTypes?.[`cityStock:${target.id}`] === true);
+const cityProgressComplete = Number(dataState.settings.alerts.cityDoneDay) === day || (currentBought !== null && resetBought !== null && currentBought - resetBought >= 100);
+if (cityStockEnabled && !cityProgressComplete && (force || !Number(cityShops?.fetchedAt) || Date.now() - Number(cityShops.fetchedAt) >= 5 * 60_000)) {
+try { cityShops = { ...(await tornJson('/v2/torn/cityshops', 'SLINK PDA city stock alerts')), fetchedAt:Date.now() }; }
+catch (error) { cityError = [cityError, `City stock alerts: ${errorMessage(error)}`].filter(Boolean).join(' '); }
+}
+try {
+const crimeCache = await refreshCrimeUniqueProgress(force);
+crimeCache.nextLiveAt = 0;
+crimeCache.lastError = '';
+} catch (crimeError) {
+dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), lastError:errorMessage(crimeError), lastErrorAt:Date.now() };
+}
+current.data = dataState.caches.alerts = {
+at:Date.now(), energyObservedAt, body, stockCatalog,
+cityDay:cityError ? Number(cached?.cityDay) || day : day,
+cityBaselineVersion:2,
+cityTotal:currentBought,
+cityAtReset:resetBought,
+cityBought:currentBought !== null && resetBought !== null ? Math.max(0, currentBought - resetBought) : finite(cached?.cityBought),
+cityShops
+};
+current.error = cityError ? `City item reminder: ${cityError}` : '';
+endStackIfSpent(current.data);
+reconcileAlertNotifications(current.data);
+writeDataState();
+syncThemeHealthAssets();
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderAlerts(); }
+}
+function copyText(text) {
+if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text).then(() => true, () => false);
+const textarea = document.createElement('textarea');
+textarea.value = text; textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+document.body.append(textarea); textarea.select();
+const copied = document.execCommand('copy'); textarea.remove();
+return Promise.resolve(copied);
+}
+const FACTION_COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."],textarea[class*="_resizable-chat_"],textarea[class*="textarea___"]';
+const FACTION_SEND_ICON_PATH_PREFIX = 'M18,0l-4.5,16.5-6.1-5.43';
+const FACTION_PRIME_TTL_MS = 120_000;
+let primedFactionMessage = null;
+function factionContainer() {
+const current = document.querySelector('#faction');
+if (current) return current;
+const exact = [...document.querySelectorAll('[id^="faction-"]')].find(node => node.querySelector(FACTION_COMPOSER_SELECTOR));
+if (exact) return exact;
+return [...document.querySelectorAll('div,section')].find(node => {
+const composer = node.querySelector(FACTION_COMPOSER_SELECTOR);
+const header = node.querySelector('button[data-prevent-flyout-swipe="true"][class*="header___"]');
+return composer && Boolean(header?.querySelector('svg[class*="arrowIcon___"]'));
+}) || null;
+}
+function factionLauncher() {
+const currentHeader = document.querySelector('#faction button[data-prevent-flyout-swipe="true"][class*="header___"]');
+if (currentHeader) return currentHeader;
+return [...document.querySelectorAll('button,a,[role="button"]')].find(node => {
+const label = [node.getAttribute?.('aria-label'), node.getAttribute?.('title'), node.textContent].filter(Boolean).join(' ').trim().toLowerCase();
+return label === 'faction' || label.includes('faction chat') || label.includes('open faction');
+}) || null;
+}
+function factionComposer(container) {
+return container?.querySelector(FACTION_COMPOSER_SELECTOR) || null;
+}
+function factionSendPath(path) {
+return String(path?.getAttribute?.('d') || '').replace(/\s+/g, '');
+}
+function isFactionSendButton(button) {
+const path = button?.querySelector?.('svg[viewBox="0 0 18 18"] path');
+const label = [button?.getAttribute?.('aria-label'), button?.getAttribute?.('title'), button?.textContent]
+.filter(Boolean).join(' ').trim().toLowerCase();
+return factionSendPath(path).startsWith(FACTION_SEND_ICON_PATH_PREFIX)
+|| label === 'send'
+|| label.includes('send message');
+}
+function factionSendButton(container, composer) {
+const scopes = [...new Set([composer?.parentElement, container].filter(Boolean))];
+for (const scope of scopes) {
+const button = [...scope.querySelectorAll('button,[role="button"]')].find(isFactionSendButton);
+if (button) return button;
+}
+return null;
+}
+async function waitFor(check, timeoutMs = 2_000) {
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
+const started = Date.now();
+while (Date.now() - started < timeoutMs) {
+if (!global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return null;
+const value = check(); if (value) return value;
+await new Promise(resolve => global.setTimeout(resolve, 75));
+}
+return null;
+}
+async function sendToFaction(text) {
+text = normalizeChatHtml(text);
+if (!pdaDomActive()) return false;
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
+let container = factionContainer(); let input = factionComposer(container);
+if (!input) {
+const launcher = factionLauncher(); if (!launcher) return false;
+launcher.click();
+const found = await waitFor(() => { const next = factionContainer(); const field = factionComposer(next); return field ? { next, field } : null; });
+container = found?.next; input = found?.field;
+}
+if (!input || !global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return false;
+input.focus();
+if (input.matches('textarea,input')) {
+const prototype = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+if (setter) setter.call(input, text); else input.value = text;
+} else input.textContent = text;
+input.dispatchEvent(new Event('input', { bubbles:true, composed:true }));
+input.dispatchEvent(new Event('change', { bubbles:true, composed:true }));
+const send = await waitFor(() => {
+const button = factionSendButton(container, input);
+return button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null;
+}, 1_500);
+if (!send || !global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return false;
+send.click(); return true;
+}
+function currentPrimedFactionMessage(key = '') {
+if (primedFactionMessage && primedFactionMessage.expiresAt <= Date.now()) primedFactionMessage = null;
+if (!primedFactionMessage) return null;
+return key && primedFactionMessage.key !== String(key) ? null : primedFactionMessage;
+}
+function isFactionMessagePrimed(key) {
+return Boolean(currentPrimedFactionMessage(String(key || '')));
+}
+async function primeFactionMessage(text, key) {
+text = normalizeChatHtml(text);
+const value = String(text || '').trim();
+const normalizedKey = String(key || '');
+if (!value) return { ok:false, label:'Nothing to copy' };
+const copied = await copyText(value);
+if (!copied) return { ok:false, label:'Copy failed' };
+primedFactionMessage = { key:normalizedKey, text:value, expiresAt:Date.now() + FACTION_PRIME_TTL_MS };
+return { ok:true, label:'Copied' };
+}
+async function sendPrimedFactionMessage(key) {
+const message = currentPrimedFactionMessage(String(key || ''));
+if (!message) return { ok:false, label:'Copy this message first' };
+const ok = await sendToFaction(message.text);
+if (ok && primedFactionMessage === message) primedFactionMessage = null;
+return { ok, label:ok ? 'Sent to Faction' : 'Open/focus Faction Chat' };
+}
+function reconcileMarketNotifications(runtime) {
+const deals = marketOpportunities(runtime);
+const currentIds = deals.map(deal => deal.dismissKey);
+const prior = dataState.caches.marketNotificationIds;
+if (Array.isArray(prior)) {
+const seen = new Set(prior.map(String));
+deals.filter(deal => !seen.has(deal.dismissKey)).forEach(deal => showSystemAlert({ id:`market-${deal.id}`, title:`${deal.itemName} at ${marketMoney(deal.price)}`, detail:`${deal.source}: ${deal.detail}`, href:deal.href }));
+}
+dataState.caches.marketNotificationIds = currentIds;
+const minimizedAlerts = alertRows(moduleState.alerts.data);
+updateAlertIndicator(minimizedAlerts.length, minimizedAlerts);
+}
+function marketItemLabel(item) {
+return `${item.name} [${item.id}]${item.shopSellPrice > 0 ? ` · shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : ''}`;
+}
+function captureMarketDraft() {
+const root = moduleRoot('market');
+const itemInput = root?.querySelector('[data-field="market-item"]');
+if (!itemInput) return moduleState.market.draft;
+const itemText = String(itemInput.value || '').trim();
+moduleState.market.draft = {
+uid:moduleState.market.editingUid || '',
+marketType:root.querySelector('[data-field="market-type"]')?.value === 'points' ? 'points' : 'item',
+itemText,
+itemId:Number(itemText.match(/\[(\d+)\]/)?.[1]) || 0,
+label:itemText.replace(/\s*\[\d+\].*$/, '').trim(),
+maxPrice:String(root.querySelector('[data-field="market-price"]')?.value || ''),
+priority:normalizeMarketPriority(root.querySelector('[data-field="market-priority"]')?.value),
+marketEnabled:Boolean(root.querySelector('[data-field="market-source"]')?.checked),
+bazaarEnabled:Boolean(root.querySelector('[data-field="bazaar-source"]')?.checked),
+enabled:true
+};
+return moduleState.market.draft;
+}
+function marketSuggestionRows(query, catalog) {
+const needle = String(query || '').trim().toLowerCase();
+if (!needle) return [];
+const numeric = /^\d+$/.test(needle) ? Number(needle) : 0;
+return catalog.map(item => {
+const name = String(item.name || '').toLowerCase();
+const score = numeric && Number(item.id) === numeric ? 0 : name.startsWith(needle) ? 1 : name.includes(needle) ? 2 : String(item.id).startsWith(needle) ? 3 : 99;
+return { item, score };
+}).filter(row => row.score < 99).sort((a, b) => a.score - b.score || String(a.item.name).localeCompare(String(b.item.name))).slice(0, MARKET_SUGGESTION_LIMIT).map(row => row.item);
+}
+
+
+
+

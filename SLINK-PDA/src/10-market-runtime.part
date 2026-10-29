@@ -1,0 +1,737 @@
+function normalizeMarketPriority(value) {
+return Object.hasOwn(MARKET_PRIORITIES, value) ? String(value) : 'normal';
+}
+function normalizeMarketWatch(input = {}, index = 0) {
+const marketType = input.marketType === 'points' ? 'points' : 'item';
+return {
+uid:String(input.uid || `watch-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`).slice(0, 100),
+marketType,
+itemId:marketType === 'item' ? Math.max(0, Math.trunc(Number(input.itemId) || 0)) : 0,
+label:marketType === 'points' ? 'Points' : String(input.label || '').trim().slice(0, 120),
+maxPrice:Math.max(0, Math.trunc(Number(input.maxPrice) || 0)),
+priority:normalizeMarketPriority(input.priority),
+marketEnabled:marketType === 'points' ? true : input.marketEnabled !== false,
+bazaarEnabled:marketType === 'item' && input.bazaarEnabled !== false,
+enabled:input.enabled !== false
+};
+}
+function marketSettings() {
+const input = dataState.settings.market && typeof dataState.settings.market === 'object' ? dataState.settings.market : {};
+dataState.settings.market = {
+enabled:input.enabled !== false,
+quickBuyEnabled:input.quickBuyEnabled !== false,
+lastPriority:normalizeMarketPriority(input.lastPriority),
+listedItemsEnabled:input.listedItemsEnabled !== false,
+weaverPricelistEnabled:input.weaverPricelistEnabled === true,
+weaverSourceOrder:input.weaverSourceOrder === 'pricelist-first' ? 'pricelist-first' : 'listed-first',
+watches:(Array.isArray(input.watches) ? input.watches : []).map(normalizeMarketWatch),
+dismissals:input.dismissals && typeof input.dismissals === 'object' ? input.dismissals : {}
+};
+return dataState.settings.market;
+}
+function marketRuntime() {
+const stored = dataState.caches.market && typeof dataState.caches.market === 'object' ? dataState.caches.market : {};
+return {
+catalog:stored.catalog && typeof stored.catalog === 'object' ? stored.catalog : { fetchedAt:0, items:[] },
+results:stored.results && typeof stored.results === 'object' ? stored.results : {},
+pricelistResults:stored.pricelistResults && typeof stored.pricelistResults === 'object' ? stored.pricelistResults : {},
+weaverSummary:stored.weaverSummary && typeof stored.weaverSummary === 'object' ? stored.weaverSummary : { fetchedAt:0, items:[] },
+weaverPricelist:stored.weaverPricelist && typeof stored.weaverPricelist === 'object' ? stored.weaverPricelist : { userId:null, fetchedAt:0, nextCheckAt:0, items:[], lastError:'' },
+weaver:stored.weaver && typeof stored.weaver === 'object' ? stored.weaver : { events:[], cooldownUntil:0 },
+fetchedAt:Number(stored.fetchedAt) || 0,
+lastError:String(stored.lastError || '')
+};
+}
+function catalogItems(body = {}) {
+const rows = Array.isArray(body.items) ? body.items : Object.values(body.items || {});
+return rows.filter(item => Number(item?.id) > 0 && item?.name && item?.is_tradable !== false && item?.is_masked !== true).map(item => {
+const shops = Array.isArray(item?.value?.shops) ? item.value.shops : [];
+const sell = shops.map(shop => ({ price:Number(shop?.sell_price) || 0, shop:String(shop?.shop || ''), country:String(shop?.country || '') }))
+.filter(row => row.price > 0).sort((left, right) => right.price - left.price)[0]
+|| { price:Number(item?.value?.sell_price) || 0, shop:String(item?.value?.vendor?.name || ''), country:String(item?.value?.vendor?.country || '') };
+return { id:Math.trunc(Number(item.id)), name:String(item.name), type:String(item.type || 'Other'), image:String(item.image || ''), marketPrice:Math.max(0, Math.trunc(Number(item?.value?.market_price) || 0)), shopSellPrice:Math.max(0, Math.trunc(sell.price || 0)), shopSellName:sell.shop, shopSellCountry:sell.country };
+}).sort((left, right) => left.name.localeCompare(right.name));
+}
+function marketListings(body = {}) {
+const source = body?.itemmarket || body?.data?.itemmarket || body;
+return (Array.isArray(source?.listings) ? source.listings : []).map(row => ({ price:Math.max(0, Math.trunc(Number(row?.price) || 0)), quantity:Math.max(0, Math.trunc(Number(row?.amount ?? row?.quantity) || 0)) })).filter(row => row.price > 0).sort((a, b) => a.price - b.price);
+}
+function pointsListings(body = {}) {
+const source = body?.pointsmarket || body?.data?.pointsmarket || body;
+const rows = Array.isArray(source?.listings) ? source.listings : Array.isArray(source) ? source : Object.values(source?.listings || source || {});
+return rows.map(row => ({ price:Math.max(0, Math.trunc(Number(row?.cost ?? row?.price ?? row?.price_per_point ?? row?.pricePerPoint) || 0)), quantity:Math.max(0, Math.trunc(Number(row?.quantity ?? row?.amount ?? row?.points) || 0)) })).filter(row => row.price > 0).sort((a, b) => a.price - b.price);
+}
+function externalTimestampMs(value) {
+const numeric = Number(value);
+if (Number.isFinite(numeric) && numeric > 0) return numeric > 10_000_000_000 ? numeric : numeric * 1000;
+const parsed = Date.parse(String(value || ''));
+return Number.isFinite(parsed) ? parsed : 0;
+}
+function bazaarUrl(sellerId, itemId, price, updatedAt = 0) {
+const url = new URL('https://www.torn.com/bazaar.php');
+url.searchParams.set('userId', String(Math.trunc(Number(sellerId))));
+url.searchParams.set('itemId', String(Math.trunc(Number(itemId))));
+url.searchParams.set('price', String(Math.trunc(Number(price))));
+url.searchParams.set('highlight', '1');
+if (updatedAt > 0) url.searchParams.set('v', String(Math.trunc(updatedAt / 1000)));
+url.hash = '/';
+return url.toString();
+}
+function sellerBazaarUrl(sellerId) {
+const url = new URL('https://www.torn.com/bazaar.php');
+url.searchParams.set('userId', String(Math.trunc(Number(sellerId))));
+url.hash = '/';
+return url.toString();
+}
+function weaverListings(body = {}, itemId = 0) {
+const candidates = [body?.listings, body?.bazaarListings, body?.bazaar_listings, body?.marketplace?.listings, body?.item?.listings, body?.data?.listings, body?.data?.bazaarListings, body?.data?.bazaar_listings, body];
+const rows = candidates.find(Array.isArray) || [];
+return rows.map(row => {
+const nested = row?.listing && typeof row.listing === 'object' ? row.listing : row?.bazaar && typeof row.bazaar === 'object' ? row.bazaar : row?.offer && typeof row.offer === 'object' ? row.offer : null;
+const source = nested ? { ...row, ...nested } : row;
+const seller = source?.seller || source?.player || source?.user || source?.owner || {};
+const sellerId = Math.trunc(Number(source?.sellerId ?? source?.seller_id ?? source?.playerId ?? source?.player_id ?? source?.userId ?? source?.user_id ?? seller?.id ?? seller?.playerId ?? seller?.userId));
+const price = Math.trunc(Number(source?.price ?? source?.cost ?? source?.priceEach ?? source?.price_each ?? source?.price_per_item ?? source?.pricePerUnit));
+if (!(sellerId > 0) || !(price > 0)) return null;
+const quantity = Math.max(0, Math.trunc(Number(source?.quantity ?? source?.amount ?? source?.stock ?? source?.available ?? source?.item_count) || 0));
+const sellerName = String(source?.sellerName ?? source?.seller_name ?? source?.playerName ?? source?.player_name ?? source?.userName ?? source?.user_name ?? seller?.name ?? `Player ${sellerId}`).trim() || `Player ${sellerId}`;
+const updatedAt = externalTimestampMs(source?.lastUpdatedAt ?? source?.last_updated_at ?? source?.updatedAt ?? source?.updated_at ?? source?.lastChecked ?? source?.timestamp);
+return { sellerId, sellerName, price, quantity, updatedAt, href:bazaarUrl(sellerId, itemId, price, updatedAt) };
+}).filter(Boolean).sort((a, b) => a.price - b.price);
+}
+function weaverMarketplaceItems(body = {}) {
+const rows = Array.isArray(body?.items) ? body.items : Array.isArray(body?.data?.items) ? body.data.items : [];
+return rows.map(row => ({
+itemId:Math.max(0, Math.trunc(Number(row?.item_id ?? row?.itemId ?? row?.id) || 0)),
+name:String(row?.item_name ?? row?.itemName ?? row?.name ?? '').trim(),
+lowestPrice:Math.max(0, Math.trunc(Number(row?.lowest_price ?? row?.lowestPrice) || 0))
+})).filter(row => row.itemId > 0 && row.lowestPrice > 0);
+}
+function weaverDollarBazaarItems(body = {}) {
+const bazaarRows = Array.isArray(body?.bazaars) ? body.bazaars : Array.isArray(body?.data?.bazaars) ? body.data.bazaars : [];
+if (bazaarRows.length) return bazaarRows.map(row => {
+const sellerId = Math.max(0, Math.trunc(Number(row?.playerId ?? row?.player_id ?? row?.sellerId ?? row?.seller_id) || 0));
+return {
+sellerId,
+sellerName:String(row?.name ?? row?.sellerName ?? row?.seller_name ?? row?.playerName ?? row?.player_name ?? `Player ${sellerId}`).trim().slice(0, 160),
+itemCount:Math.max(0, Math.trunc(Number(row?.itemCount ?? row?.item_count) || 0)),
+totalValue:Math.max(0, Math.trunc(Number(row?.totalMarketValue ?? row?.total_market_value ?? row?.totalValue ?? row?.total_value) || 0)),
+href:sellerBazaarUrl(sellerId)
+};
+}).filter(row => row.sellerId > 0 && row.itemCount > 0 && row.totalValue > 0)
+.sort((left, right) => right.totalValue - left.totalValue || right.itemCount - left.itemCount || left.sellerName.localeCompare(right.sellerName))
+.slice(0, DOLLAR_BAZAAR_LIMIT);
+// Group the item-oriented cache used by 0.4.3-0.4.4 so saved results
+// immediately follow the new one-row-per-bazaar presentation.
+const itemRows = Array.isArray(body?.items) ? body.items : Array.isArray(body?.data?.items) ? body.data.items : [];
+const grouped = new Map();
+for (const row of itemRows) {
+const sellerId = Math.max(0, Math.trunc(Number(row?.playerId ?? row?.player_id ?? row?.sellerId ?? row?.seller_id) || 0));
+if (!sellerId) continue;
+const marketPrice = Math.max(0, Math.trunc(Number(row?.marketPrice ?? row?.market_price) || 0));
+const quantity = Math.max(0, Math.trunc(Number(row?.quantity ?? row?.amount) || 0));
+const current = grouped.get(sellerId) || {
+sellerId,
+sellerName:String(row?.sellerName ?? row?.seller_name ?? row?.playerName ?? row?.player_name ?? `Player ${sellerId}`).trim().slice(0, 160),
+itemCount:0,
+totalValue:0,
+href:sellerBazaarUrl(sellerId)
+};
+current.itemCount += Math.max(1, Math.trunc(Number(row?.itemCount ?? row?.item_count) || 1));
+current.totalValue += Math.max(0, Math.trunc(Number(row?.totalValue ?? row?.total_value) || marketPrice * quantity));
+grouped.set(sellerId, current);
+}
+return [...grouped.values()]
+.filter(row => row.totalValue > 0)
+.sort((left, right) => right.totalValue - left.totalValue || right.itemCount - left.itemCount || left.sellerName.localeCompare(right.sellerName))
+.slice(0, DOLLAR_BAZAAR_LIMIT);
+}
+function weaverPricelistItems(body = {}) {
+const rows = Array.isArray(body) ? body : Array.isArray(body?.items) ? body.items : Array.isArray(body?.data) ? body.data : [];
+return rows.map(row => ({
+itemId:Math.trunc(Number(row?.itemId ?? row?.item_id ?? row?.id) || 0),
+name:String(row?.name ?? row?.itemName ?? row?.item_name ?? '').trim(),
+buyPrice:Math.max(0, Math.trunc(Number(row?.buyPrice ?? row?.buy_price) || 0)),
+bulkThreshold:Math.max(0, Math.trunc(Number(row?.bulkThreshold ?? row?.bulk_threshold) || 0)),
+bulkBuyPrice:Math.max(0, Math.trunc(Number(row?.bulkBuyPrice ?? row?.bulk_buy_price) || 0))
+})).filter(row => row.itemId > 0 && row.buyPrice > 0);
+}
+function weaverPricelistTarget(item = {}, quantity = 0) {
+const bulk = item.bulkThreshold > 0 && Number(quantity) >= item.bulkThreshold && item.bulkBuyPrice > 0;
+return Math.max(0, Math.trunc(Number(bulk ? item.bulkBuyPrice : item.buyPrice) || 0));
+}
+function itemMarketUrl(itemId, price = 0) {
+return `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${encodeURIComponent(Math.trunc(Number(itemId)))}${price > 0 ? `&slinkPrice=${encodeURIComponent(Math.trunc(Number(price)))}` : ''}`;
+}
+function marketMoney(value) {
+return `$${Math.max(0, Math.trunc(Number(value) || 0)).toLocaleString('en-US')}`;
+}
+function marketPriorityFor(watch, previous = {}) {
+const listings = watch.marketType === 'points' ? previous?.points?.listings : previous?.market?.listings || previous?.bazaar?.listings;
+const cheapest = Number(Array.isArray(listings) ? listings[0]?.price : 0) || 0;
+return cheapest > 0 && watch.maxPrice > 0 && cheapest <= watch.maxPrice ? 'high' : normalizeMarketPriority(watch.priority);
+}
+function dealDismissKey(deal) {
+return `${String(deal.id || '')}|${Math.max(0, Number(deal.price) || 0)}|${Math.max(0, Number(deal.quantity) || 0)}`;
+}
+function marketOpportunities(runtime = marketRuntime()) {
+const settings = marketSettings();
+const limit = marketWatchLimit();
+const catalog = new Map((runtime.catalog?.items || []).map(item => [Number(item.id), item]));
+const now = Date.now();
+settings.dismissals = Object.fromEntries(Object.entries(settings.dismissals || {}).filter(([, until]) => Number(until) > now));
+const rows = (settings.listedItemsEnabled ? settings.watches.slice(0, limit) : []).flatMap(watch => {
+if (!watch.enabled || !(watch.maxPrice > 0)) return [];
+const result = runtime.results?.[watch.uid] || {};
+if (watch.marketType === 'points') {
+const listing = result.points?.listings?.[0];
+if (!listing || listing.price > watch.maxPrice) return [];
+const href = 'https://www.torn.com/pmarket.php';
+return [{ id:`points:${watch.uid}`, watchUid:watch.uid, source:'Points Market', itemName:'Points', itemId:0, price:listing.price, quantity:listing.quantity, href, detail:`${marketMoney(listing.price)} per point${listing.quantity ? ` × ${number(listing.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}`, shareText:`Points Market | ${marketMoney(listing.price)} per point | target ${marketMoney(watch.maxPrice)} | ${chatLink('Open Points Market', href)}` }];
+}
+const item = catalog.get(watch.itemId) || {};
+const name = watch.label || item.name || `Item ${watch.itemId}`;
+const sellText = item.shopSellPrice > 0 ? `${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : '';
+const rows = [];
+const market = result.market?.listings?.[0];
+if (watch.marketEnabled && market && market.price <= watch.maxPrice) {
+const href = itemMarketUrl(watch.itemId, market.price);
+rows.push({ id:`market:${watch.uid}`, watchUid:watch.uid, source:'Item Market', itemId:watch.itemId, itemName:name, price:market.price, quantity:market.quantity, shopSellPrice:item.shopSellPrice || 0, href, detail:`${marketMoney(market.price)}${market.quantity ? ` × ${number(market.quantity)}` : ''} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Item Market | ${escapeHtml(name)} | ${marketMoney(market.price)} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${chatLink('Open Item Market', href)}` });
+}
+const best = new Map();
+for (const listing of result.bazaar?.listings || []) if (!best.has(listing.sellerId) || listing.price < best.get(listing.sellerId).price) best.set(listing.sellerId, listing);
+if (watch.bazaarEnabled) for (const listing of [...best.values()].filter(row => row.price <= watch.maxPrice).slice(0, 5)) rows.push({ id:`bazaar:${watch.uid}:${listing.sellerId}`, watchUid:watch.uid, source:'Bazaar', itemId:watch.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · target ${marketMoney(watch.maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Bazaar | ${escapeHtml(name)} | ${marketMoney(listing.price)} | ${escapeHtml(listing.sellerName)} | target ${marketMoney(watch.maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${chatLink('Open Bazaar', listing.href)}` });
+return rows;
+});
+if (settings.weaverPricelistEnabled) for (const priceItem of weaverPricelistItems(runtime.weaverPricelist?.items || [])) {
+const result = runtime.pricelistResults?.[priceItem.itemId] || {};
+const item = catalog.get(priceItem.itemId) || {};
+const name = priceItem.name || item.name || `Item ${priceItem.itemId}`;
+const sellText = item.shopSellPrice > 0 ? `${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : '';
+const best = new Map();
+for (const listing of result.bazaar?.listings || []) if (!best.has(listing.sellerId) || listing.price < best.get(listing.sellerId).price) best.set(listing.sellerId, listing);
+for (const listing of [...best.values()].slice(0, 5)) {
+const maxPrice = weaverPricelistTarget(priceItem, listing.quantity);
+if (!(maxPrice > 0) || listing.price > maxPrice) continue;
+rows.push({ id:`bazaar:weaver-pricelist:${priceItem.itemId}:${listing.sellerId}`, watchUid:'', source:'Weaver Pricelist', itemId:priceItem.itemId, itemName:name, sellerId:listing.sellerId, sellerName:listing.sellerName, price:listing.price, quantity:listing.quantity, shopSellPrice:item.shopSellPrice || 0, href:listing.href, detail:`${marketMoney(listing.price)}${listing.quantity ? ` × ${number(listing.quantity)}` : ''} from ${listing.sellerName} · Weaver target ${marketMoney(maxPrice)}${sellText ? ` · shop sells ${sellText}` : ''}`, shareText:`Weaver Pricelist | ${escapeHtml(name)} | ${marketMoney(listing.price)} | ${escapeHtml(listing.sellerName)} | target ${marketMoney(maxPrice)}${sellText ? ` | shop sell ${sellText}` : ''} | ${chatLink('Open Bazaar', listing.href)}` });
+}
+}
+const unique = new Map();
+for (const row of rows) {
+const key = `${row.source === 'Bazaar' || row.source === 'Weaver Pricelist' ? 'bazaar' : row.source}:${row.itemId}:${row.sellerId || 0}:${row.price}`;
+if (!unique.has(key)) unique.set(key, row);
+}
+return [...unique.values()].map(row => ({ ...row, dismissKey:dealDismissKey(row) })).filter(row => !settings.dismissals[row.dismissKey]).sort((a, b) => a.price - b.price);
+}
+async function marketTornJson(url, endpoint, priority) {
+const key = currentApiKey();
+if (!key) throw new Error('Save a Torn API key under Access first.');
+const normalized = normalizeMarketPriority(priority);
+await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:normalized });
+const body = await requestJson(url, { headers:{ Authorization:`ApiKey ${key}` } });
+if (body?.error) throw new Error(body.error.message || body.error.error || 'Torn API request failed.');
+return body;
+}
+async function marketEnsureCatalog(runtime, force = false) {
+runtime.catalog=await pdaSharedData().catalog({key:currentApiKey(),force,maxAgeMs:86_400_000,needPrices:true});
+return runtime.catalog;
+}
+function marketDue(source, force) {
+return force || !Number(source?.nextCheckAt) || Number(source.nextCheckAt) <= Date.now();
+}
+async function marketWeaverJson(url, runtime) {
+let now = Date.now();
+const prior = runtime.weaver || {};
+const events = (Array.isArray(prior.events) ? prior.events : []).map(Number).filter(at => at > now - WEAVER_RATE_WINDOW_MS && at <= now + 5_000).sort((a, b) => a - b);
+const retryAt = Math.max(Number(prior.cooldownUntil) || 0, Number(events.at(-1) || 0) + WEAVER_MIN_REQUEST_SPACING_MS, events.length >= WEAVER_RATE_LIMIT ? Number(events[0]) + WEAVER_RATE_WINDOW_MS : 0);
+runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0 };
+if (retryAt > now && retryAt - now <= WEAVER_MIN_REQUEST_SPACING_MS + 100) {
+await new Promise(resolve => global.setTimeout(resolve, retryAt - now)); now = Date.now();
+runtime.weaver.events = runtime.weaver.events.filter(at => at > now - WEAVER_RATE_WINDOW_MS);
+} else if (retryAt > now) { const error = new Error('Weaver request budget is reserved for a later watch.'); error.code = 'SLINK_WEAVER_RATE_LIMIT'; error.retryAfterMs = retryAt - now; throw error; }
+runtime.weaver.events.push(now);
+try { return await requestJson(url); }
+catch (error) {
+if (Number(error?.status) === 429) runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
+throw error;
+}
+}
+async function syncMarketWeaverPricelist(runtime, force = false) {
+const session = validSession('permission');
+const userId = Number(session?.userId) || 0;
+if (!(userId > 0)) throw new Error('Refresh SLINK permissions so Weaver can identify your Torn account.');
+const previous = runtime.weaverPricelist || {};
+if (!force && Number(previous.userId) === userId && Number(previous.nextCheckAt) > Date.now()) return previous;
+try {
+const body = await marketWeaverJson(`${URLS.weaver}/api/pricelist/${encodeURIComponent(userId)}`, runtime); const now = Date.now();
+runtime.weaverPricelist = { userId, fetchedAt:now, nextCheckAt:now + WEAVER_PRICELIST_REFRESH_MS, items:weaverPricelistItems(body), lastError:'' };
+} catch (error) {
+runtime.weaverPricelist = { ...previous, userId, nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || 15_000), lastError:errorMessage(error) };
+}
+return runtime.weaverPricelist;
+}
+async function marketWeaverSummary(runtime, force = false, maxAgeMs = WEAVER_SUMMARY_REFRESH_MS) {
+if (!force && runtime.weaverSummary?.items?.length && Date.now() - Number(runtime.weaverSummary.fetchedAt) < maxAgeMs) return runtime.weaverSummary;
+const body = await marketWeaverJson(`${URLS.weaver}/api/marketplace`, runtime); const now = Date.now();
+runtime.weaverSummary = { fetchedAt:now, items:weaverMarketplaceItems(body) };
+return runtime.weaverSummary;
+}
+function marketWeaverTargets(settings, allowed, runtime) {
+const targets = new Map();
+const add = (itemId, threshold, source, priority) => {
+if (!(itemId > 0) || !(threshold > 0)) return;
+const target = targets.get(itemId) || { itemId, threshold:0, priority, manual:[], pricelist:false };
+target.threshold = Math.max(target.threshold, threshold);
+if (MARKET_PRIORITIES[priority] < MARKET_PRIORITIES[target.priority]) target.priority = priority;
+if (source === 'pricelist') target.pricelist = true; else target.manual.push(source);
+targets.set(itemId, target);
+};
+if (settings.listedItemsEnabled) for (const watch of allowed) if (watch.enabled && watch.marketType === 'item' && watch.bazaarEnabled) add(watch.itemId, watch.maxPrice, watch, marketPriorityFor(watch, runtime.results[watch.uid]));
+if (settings.weaverPricelistEnabled) for (const item of weaverPricelistItems(runtime.weaverPricelist?.items || [])) add(item.itemId, Math.max(item.buyPrice, item.bulkBuyPrice || 0), 'pricelist', 'normal');
+const priceFirst = settings.weaverSourceOrder === 'pricelist-first';
+return [...targets.values()].sort((left, right) => {
+const leftRank = priceFirst ? (left.pricelist ? 0 : 1) : (left.manual.length ? 0 : 1);
+const rightRank = priceFirst ? (right.pricelist ? 0 : 1) : (right.manual.length ? 0 : 1);
+return leftRank - rightRank || MARKET_PRIORITIES[left.priority] - MARKET_PRIORITIES[right.priority] || left.itemId - right.itemId;
+});
+}
+function storeMarketWeaverResult(target, runtime, payload) {
+for (const watch of target.manual) {
+const result = runtime.results[watch.uid] || { errors:{} }; result.errors ||= {};
+result.bazaar = payload; delete result.errors.bazaar; runtime.results[watch.uid] = result;
+}
+if (target.pricelist) runtime.pricelistResults[target.itemId] = { bazaar:payload, errors:{} };
+}
+async function pollMarketWeaverTargets(settings, allowed, runtime, force) {
+const targets = marketWeaverTargets(settings, allowed, runtime).filter(target => force
+|| target.manual.some(watch => marketDue(runtime.results[watch.uid]?.bazaar))
+|| (target.pricelist && marketDue(runtime.pricelistResults?.[target.itemId]?.bazaar)));
+if (!targets.length) return;
+let summary;
+try { summary = await marketWeaverSummary(runtime, force, WEAVER_SUMMARY_REFRESH_MS); }
+catch (error) {
+const retryAt = Date.now() + (Number(error?.retryAfterMs) || WEAVER_SUMMARY_REFRESH_MS);
+for (const target of targets) storeMarketWeaverResult(target, runtime, { nextCheckAt:retryAt, listings:[] });
+throw error;
+}
+const lowest = new Map(summary.items.map(item => [item.itemId, item.lowestPrice]));
+for (const target of targets) {
+const now = Date.now();
+const nextCheckAt = Math.max(now + 1_000, Number(summary.fetchedAt) + WEAVER_SUMMARY_REFRESH_MS);
+const lowestPrice = Number(lowest.get(target.itemId)) || 0;
+if (!(lowestPrice > 0) || lowestPrice > target.threshold) {
+storeMarketWeaverResult(target, runtime, { fetchedAt:now, nextCheckAt, screenedAt:summary.fetchedAt, lowestPrice, listings:[] });
+continue;
+}
+const url = `${URLS.weaver}/api/marketplace/${encodeURIComponent(target.itemId)}?maxPrice=${encodeURIComponent(target.threshold)}&limit=5`;
+try {
+const body = await marketWeaverJson(url, runtime);
+storeMarketWeaverResult(target, runtime, { fetchedAt:Date.now(), nextCheckAt, screenedAt:summary.fetchedAt, lowestPrice, sourceUrl:url, listings:weaverListings(body, target.itemId) });
+} catch (error) {
+storeMarketWeaverResult(target, runtime, { nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || WEAVER_SUMMARY_REFRESH_MS), screenedAt:summary.fetchedAt, lowestPrice, listings:[] });
+if (error?.code === 'SLINK_WEAVER_RATE_LIMIT') break;
+}
+}
+}
+function marketErrorSummary(watches, results) {
+const capacity = [];
+const other = [];
+for (const watch of watches) for (const [source, message] of Object.entries(results[watch.uid]?.errors || {})) {
+if (/shared Torn API capacity/i.test(message)) capacity.push(watch.label || 'Points');
+else other.push(`${watch.label || 'Points'} ${source === 'bazaar' ? 'Weaver Bazaar' : source === 'points' ? 'Points Market' : 'Item Market'}: ${message}`);
+}
+if (capacity.length) other.unshift(`${capacity.length} Market Watch check${capacity.length === 1 ? '' : 's'} queued for shared Torn API capacity.`);
+return other.join(' · ');
+}
+function scheduleMarketWake(runtime = marketRuntime()) {
+if (marketWakeTimer) global.clearTimeout(marketWakeTimer);
+marketWakeTimer = null;
+if (!moduleIsActive('market') || !marketSettings().enabled || marketWatchLimit() <= 0) return;
+const settings = marketSettings();
+const activeWatches = settings.listedItemsEnabled ? settings.watches.slice(0, marketWatchLimit()) : [];
+const times = activeWatches.filter(watch => watch.enabled && watch.maxPrice > 0).flatMap(watch => {
+const result = runtime.results?.[watch.uid] || {};
+return watch.marketType === 'points'
+? [Number(result.points?.nextCheckAt) || Date.now()]
+: [watch.marketEnabled ? Number(result.market?.nextCheckAt) || Date.now() : 0, watch.bazaarEnabled ? Number(result.bazaar?.nextCheckAt) || Date.now() : 0].filter(Boolean);
+});
+if (settings.weaverPricelistEnabled) {
+times.push(Number(runtime.weaverPricelist?.nextCheckAt) || Date.now());
+for (const item of weaverPricelistItems(runtime.weaverPricelist?.items || [])) times.push(Number(runtime.pricelistResults?.[item.itemId]?.bazaar?.nextCheckAt) || Date.now());
+}
+if (!times.length) return;
+const delay = Math.max(1_000, Math.min(...times) - Date.now());
+marketWakeTimer = global.setTimeout(() => { marketWakeTimer = null; void refreshMarket(false); }, delay);
+}
+async function refreshMarket(force = false) {
+const current = moduleState.market;
+if (force) touchModuleActivity('market');
+if (!force && !moduleIsActive('market')) {
+if (marketWakeTimer) global.clearTimeout(marketWakeTimer);
+marketWakeTimer = null;
+current.data = dataState.caches.market || current.data;
+renderMarketUnlessEditing();
+return;
+}
+if (current.busy) return;
+current.busy = true; current.error = ''; current.lastAttemptAt = Date.now();
+if (dashboardOpen) renderMarketUnlessEditing();
+const runtime = marketRuntime();
+try {
+const refreshPermissions = moduleState.market.refreshPermissions;
+moduleState.market.refreshPermissions = false;
+await ensurePermissionSession(refreshPermissions);
+const limit = marketWatchLimit();
+if (!limit) throw new Error('Your account does not have a SLINK Market Watch tier (.5 through .40).');
+const settings = marketSettings();
+await marketEnsureCatalog(runtime, false);
+if (!settings.enabled) {
+runtime.fetchedAt = runtime.fetchedAt || Date.now(); current.data = dataState.caches.market = runtime; writeDataState(); return;
+}
+const allowed = settings.watches.slice(0, limit);
+const valid = new Set(allowed.map(watch => watch.uid));
+runtime.results = Object.fromEntries(Object.entries(runtime.results).filter(([uid]) => valid.has(uid)));
+if (settings.weaverPricelistEnabled) await syncMarketWeaverPricelist(runtime, force);
+else runtime.pricelistResults = {};
+const ordered = [...(settings.listedItemsEnabled ? allowed : [])].sort((a, b) => MARKET_PRIORITIES[marketPriorityFor(a, runtime.results[a.uid])] - MARKET_PRIORITIES[marketPriorityFor(b, runtime.results[b.uid])]);
+let tornBlockedUntil = 0;
+for (const watch of ordered) {
+if (!watch.enabled || !(watch.maxPrice > 0)) continue;
+const previous = runtime.results[watch.uid] || {};
+const next = { ...previous, errors:{ ...(previous.errors || {}) } };
+if (watch.marketType === 'points') {
+if (marketDue(previous.points, force)) {
+if (tornBlockedUntil > Date.now()) {
+next.errors.points = 'Waiting for shared Torn API capacity.';
+next.points = { ...(previous.points || {}), nextCheckAt:tornBlockedUntil };
+} else try {
+const body = await marketTornJson(`${URLS.torn}/v2/market?selections=pointsmarket&limit=100`, '/v2/market?selections=pointsmarket', 'high');
+const now = Date.now(); next.points = { fetchedAt:now, nextCheckAt:now + POINTS_MARKET_REFRESH_MS, listings:pointsListings(body) }; delete next.errors.points;
+} catch (error) {
+const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.points = errorMessage(error); next.points = { ...(previous.points || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
+}
+}
+} else if (watch.itemId > 0) {
+if (watch.marketEnabled && marketDue(previous.market, force)) {
+if (tornBlockedUntil > Date.now()) {
+next.errors.market = 'Waiting for shared Torn API capacity.'; next.market = { ...(previous.market || {}), nextCheckAt:tornBlockedUntil };
+} else try {
+const priority = marketPriorityFor(watch, previous);
+const body = await marketTornJson(`${URLS.torn}/v2/market/${encodeURIComponent(watch.itemId)}/itemmarket?limit=5`, `/v2/market/${watch.itemId}/itemmarket`, priority);
+const source = body?.itemmarket || body?.data?.itemmarket || body;
+const now = Date.now(); const cacheTimestamp = Math.max(0, Math.trunc(Number(source?.cache_timestamp) || 0)); const delay = Number(source?.cache_delay); const cacheDelayMs = Number.isFinite(delay) && delay >= 0 ? Math.ceil(delay * 1_000) : null;
+const stale = cacheTimestamp > 0 && cacheTimestamp === Number(previous.market?.cacheTimestamp); const cacheRetryCount = stale ? Number(previous.market?.cacheRetryCount || 0) + 1 : 0;
+const nextCheckAt = stale ? now + Math.min(5_000, 2_000 + Math.max(0, cacheRetryCount - 1) * 1_000) : cacheTimestamp > 0 && cacheDelayMs !== null ? Math.max(cacheTimestamp * 1_000 + cacheDelayMs + 1_000, now + 1_000) : now + ITEM_MARKET_FALLBACK_MS;
+next.market = { fetchedAt:now, listings:marketListings(body), cacheTimestamp, cacheDelayMs, cacheRetryCount, nextCheckAt }; delete next.errors.market;
+} catch (error) {
+const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.market = errorMessage(error); next.market = { ...(previous.market || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
+}
+}
+}
+runtime.results[watch.uid] = next;
+}
+await pollMarketWeaverTargets(settings, allowed, runtime, force);
+runtime.fetchedAt = Date.now(); runtime.lastError = marketErrorSummary(allowed, runtime.results);
+current.data = dataState.caches.market = runtime;
+reconcileMarketNotifications(runtime);
+writeDataState();
+} catch (error) { current.error = errorMessage(error); runtime.lastError = current.error; current.data = dataState.caches.market = runtime; writeDataState(); }
+finally { current.busy = false; syncMarketPurchaseCatalog(); renderMarketUnlessEditing(); schedulePurchaseOpportunityFormatting(); scheduleMarketWake(current.data || runtime); }
+}
+async function refreshMarketPermissions() {
+const current = moduleState.market;
+if (current.busy) return;
+current.busy = true;
+current.error = '';
+renderMarket();
+try {
+await ensurePermissionSession(true);
+current.refreshPermissions = false;
+} catch (error) {
+current.error = errorMessage(error);
+} finally {
+current.busy = false;
+renderAllModules();
+}
+if (marketWatchLimit() > 0) void refreshMarket(false);
+}
+async function syncMarketPricelistNow() {
+const current = moduleState.market;
+if (current.busy) return;
+current.busy = true; current.error = ''; renderMarket();
+const runtime = marketRuntime();
+try {
+await ensurePermissionSession(true);
+const synced = await syncMarketWeaverPricelist(runtime, true);
+current.data = dataState.caches.market = runtime; writeDataState();
+if (synced.lastError) throw new Error(synced.lastError);
+} catch (error) { current.error = errorMessage(error); }
+finally { current.busy = false; renderMarket(); }
+if (marketSettings().weaverPricelistEnabled) void refreshMarket(false);
+}
+function validSession(name) {
+const session = dataState.sessions[name];
+return session?.token && Number(session.expiresAt) > Date.now() + 60_000 ? session : null;
+}
+async function fetchAllTerms(force = false) {
+const cached = dataState.terms;
+if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < 60 * 60_000 && cached.permission?.version && cached.leveling?.version && cached.war?.version) return cached;
+const [permissionResponse, levelingResponse, warResponse] = await Promise.all([
+requestJson(`${URLS.permission}/api/permissions/terms`),
+requestJson(`${URLS.leveling}/api/terms`),
+requestJson(`${URLS.war}/api/terms`)
+]);
+const terms = {
+fetchedAt:Date.now(),
+permission:{
+version:String(permissionResponse?.terms?.version || ''),
+sha256:String(permissionResponse?.terms?.sha256 || ''),
+url:String(permissionResponse?.terms?.url || ''),
+summary:String(permissionResponse?.terms?.summary || '')
+},
+leveling:{
+version:String(levelingResponse?.version || ''),
+sha256:String(levelingResponse?.document_sha256 || ''),
+disclosureVersion:String(levelingResponse?.disclosure_version || ''),
+disclosureSha256:String(levelingResponse?.disclosure_sha256 || ''),
+url:String(levelingResponse?.document_url || ''),
+summary:String(levelingResponse?.leveling_service_summary || '')
+},
+war:{
+version:String(warResponse?.terms?.version || ''),
+sha256:String(warResponse?.terms?.sha256 || ''),
+url:String(warResponse?.terms?.url || ''),
+summary:String(warResponse?.terms?.summary || '')
+}
+};
+if (!terms.permission.version || !terms.permission.sha256 || !terms.leveling.version || !terms.leveling.sha256 || !terms.leveling.disclosureVersion || !terms.leveling.disclosureSha256 || !terms.war.version || !terms.war.sha256) {
+throw new Error('One or more SLINK services returned incomplete terms metadata.');
+}
+dataState.terms = terms;
+writeDataState();
+return terms;
+}
+function termsAccepted(name) {
+const terms = dataState.terms?.[name];
+const accepted = dataState.accepted?.[name];
+if (!terms || !accepted || accepted.version !== terms.version || accepted.sha256 !== terms.sha256) return false;
+if (name === 'leveling') return accepted.disclosureVersion === terms.disclosureVersion && accepted.disclosureSha256 === terms.disclosureSha256;
+return true;
+}
+function acceptCurrentTerms() {
+const now = Date.now();
+for (const name of ['permission', 'leveling', 'war']) {
+const terms = dataState.terms?.[name];
+if (!terms?.version || !terms?.sha256) throw new Error('Load the current SLINK terms before accepting them.');
+dataState.accepted[name] = {
+version:terms.version,
+sha256:terms.sha256,
+disclosureVersion:terms.disclosureVersion || '',
+disclosureSha256:terms.disclosureSha256 || '',
+acceptedAt:now
+};
+}
+writeDataState();
+}
+function normalizeSession(response) {
+return {
+token:String(response?.session_token || ''),
+expiresAt:Date.parse(response?.expires_at) || 0,
+userId:Number(response?.user_id) || 0,
+userName:String(response?.user_name || `Player ${response?.user_id || ''}`).trim(),
+factionId:Number(response?.faction_id) || 0,
+roles:Array.isArray(response?.roles) ? response.roles.map(String) : [],
+scopes:Array.isArray(response?.scopes) ? response.scopes.map(String) : [],
+scopeSources:response?.scope_sources && typeof response.scope_sources === 'object' ? { ...response.scope_sources } : {}
+};
+}
+async function ensurePermissionSession(force = false) {
+const key = currentApiKey();
+if (!key) throw new Error('Save a Torn API key first.');
+const currentKeyFingerprint = await apiKeyFingerprint(key);
+if (
+!force &&
+validSession('permission') &&
+dataState.sessions.permission?.apiKeyFingerprint === currentKeyFingerprint
+) return dataState.sessions.permission;
+await fetchAllTerms(false);
+if (!termsAccepted('permission')) throw new Error('Accept the current SLINK terms before authenticating.');
+await reserveTornApi('/v2/user/basic');
+const response = await requestJson(`${URLS.permission}/api/permissions/auth`, {
+method:'POST',
+body:{
+api_key:key,
+terms_accepted:true,
+terms_version:dataState.terms.permission.version,
+terms_sha256:dataState.terms.permission.sha256,
+client_name:CLIENT_NAME,
+client_version:CLIENT_VERSION
+}
+});
+const session = normalizeSession(response);
+if (!session.token || !session.scopes.length) throw new Error('SLINK returned no active feature permissions for this account.');
+session.apiKeyFingerprint = currentKeyFingerprint;
+dataState.sessions.permission = session;
+writeDataState();
+return session;
+}
+async function ensureLevelingSession(force = false) {
+if (!hasScope('slink.level')) throw new Error('Your SLINK account does not have slink.level permission.');
+if (!force && validSession('leveling')) return dataState.sessions.leveling;
+await fetchAllTerms(false);
+if (!termsAccepted('leveling')) throw new Error('Accept the current SLINK Leveling terms and disclosure under Access.');
+await reserveTornApi('/v2/user/basic');
+const terms = dataState.terms.leveling;
+const response = await requestJson(`${URLS.leveling}/api/auth`, {
+method:'POST',
+body:{
+api_key:currentApiKey(), terms_accepted:true,
+terms_version:terms.version, terms_sha256:terms.sha256,
+disclosure_version:terms.disclosureVersion, disclosure_sha256:terms.disclosureSha256,
+client_name:CLIENT_NAME, client_version:CLIENT_VERSION, contributor_only:false
+}
+});
+const session = normalizeSession(response);
+if (!session.token || !session.scopes.some(scope => scopeMatches(scope, 'slink.level'))) throw new Error('SLINK Leveling did not return slink.level permission.');
+dataState.sessions.leveling = session;
+writeDataState();
+return session;
+}
+async function ensureWarSession(force = false) {
+if (!hasScope('slink.war')) throw new Error('Your SLINK account does not have slink.war permission.');
+if (!force && validSession('war')) return dataState.sessions.war;
+await fetchAllTerms(false);
+if (!termsAccepted('war')) throw new Error('Accept the current SLINK War terms under Access.');
+await reserveTornApi('/v2/user/basic');
+const terms = dataState.terms.war;
+const response = await requestJson(`${URLS.war}/api/auth`, {
+method:'POST',
+body:{ api_key:currentApiKey(), terms_accepted:true, terms_version:terms.version, terms_sha256:terms.sha256, client_name:CLIENT_NAME, client_version:CLIENT_VERSION }
+});
+const session = normalizeSession(response);
+if (!session.token || !session.scopes.some(scope => scopeMatches(scope, 'slink.war'))) throw new Error('SLINK War did not return slink.war permission.');
+dataState.sessions.war = session;
+writeDataState();
+return session;
+}
+async function productRequest(name, path, options = {}, retried = false) {
+const session = name === 'leveling' ? await ensureLevelingSession(false) : await ensureWarSession(false);
+try {
+return await requestJson(`${URLS[name]}${path}`, {
+...options,
+headers:{ Authorization:`Bearer ${session.token}`, ...(options.headers || {}) }
+});
+} catch (error) {
+if (error?.status === 401 && !retried) {
+dataState.sessions[name] = null;
+writeDataState();
+if (name === 'leveling') await ensureLevelingSession(true); else await ensureWarSession(true);
+return productRequest(name, path, options, true);
+}
+throw error;
+}
+}
+function clearSessions() {
+dataState.sessions = {};
+writeDataState();
+}
+function escapeHtml(value) {
+return String(value ?? '').replace(/[&<>'"]/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[character]);
+}
+function finite(value) {
+if (value === null || value === undefined || value === '') return null;
+const number = Number(value);
+return Number.isFinite(number) ? number : null;
+}
+function number(value, digits = 0) {
+const parsed = finite(value);
+return parsed === null ? '—' : parsed.toLocaleString(undefined, { maximumFractionDigits:digits, minimumFractionDigits:digits });
+}
+function money(value, signed = false) {
+const parsed = finite(value);
+if (parsed === null) return '—';
+return `${signed && parsed > 0 ? '+' : parsed < 0 ? '-' : ''}$${Math.abs(parsed).toLocaleString(undefined, { maximumFractionDigits:0 })}`;
+}
+function relativeTime(timestamp) {
+const elapsed = Math.max(0, Date.now() - Number(timestamp || 0));
+if (!timestamp) return 'never';
+if (elapsed < 60_000) return `${Math.max(1, Math.floor(elapsed / 1000))}s ago`;
+if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+return `${Math.floor(elapsed / 86_400_000)}d ago`;
+}
+function duration(seconds) {
+const total = Math.max(0, Math.ceil(Number(seconds) || 0));
+if (total >= 3600) return `${Math.floor(total / 3600)}h ${Math.floor(total % 3600 / 60)}m`;
+if (total >= 60) return `${Math.floor(total / 60)}m`;
+return `${total}s`;
+}
+function moduleRoot(name) {
+const root = shadow?.querySelector?.(`[data-module-root="${name}"]`) || null;
+return root ? installModuleRenderGuard(root) : null;
+}
+function moduleMessage(text, kind = '') {
+return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(text)}</div>`;
+}
+function actionLink(label, href) {
+return `<a class="action-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+}
+function normalizeChatHtml(value) {
+  // Torn accepts HTML input but may convert it to another internal format.
+  // Keep numeric IDs outside link labels to avoid nested square brackets.
+  return String(value ?? '').replace(/<a\b([^>]*?)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+    (_match, before, doubleQuoted, singleQuoted, bare) => `<a${before}href="${String(doubleQuoted ?? singleQuoted ?? bare ?? '').replace(/&(?!(?:[a-z][a-z0-9]+|#\d+|#x[\da-f]+);)/gi, '&amp;').replaceAll('"', '&quot;')}"`)
+    .replace(/<a\b([^>]*\bhref="https:\/\/www\.torn\.com\/profiles\.php\?[^">]*"[^>]*)>([^<]*?)\s*(\[\d+\])\s*<\/a>/gi,
+      (_match, attributes, name, id) => `<a${attributes}>${name.trim()}</a> ${id}`);
+}
+
+global.SLINK_NORMALIZE_CHAT_HTML = normalizeChatHtml;
+function ffNumber(value) {
+if (typeof value === 'boolean') return null;
+const score = finite(value);
+return score !== null && score >= 1 && score <= 3 ? score : null;
+}
+function ffLabel(row) {
+const value = ffNumber(row?.fairFight ?? row?.fair_fight);
+if (value === null) return 'N/A — unverified';
+return number(value, 2) + (row?.fairFightStale ? ' (cached estimate)' : '');
+}
+function chatLink(label, href) {
+return normalizeChatHtml(`<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`);
+}
+function attackLink(href) {
+return chatLink('【ATTACK】', href);
+}
+function lockedModule(scope, label) {
+if (!currentApiKey()) return moduleMessage('Add your Torn API key under Access to start this module.', 'locked');
+if (!validSession('permission')) return moduleMessage('Authenticate under Access so SLINK can load your feature permissions.', 'locked');
+return moduleMessage(`${label} requires ${scope}. Ask a SLINK administrator to grant that scope.`, 'locked');
+}
+let racingAssistant = { status:'waiting', track:null, nickname:'', message:'Open an official race to receive a recommendation.' };
+let racingScanTimer = null;
+const RACING_HIGHLIGHT_STYLE_ID = 'slink-pda-racing-highlight-style';
+const RACING_HIGHLIGHT_CLASS = 'slink-pda-racing-recommended-car';
+const RACING_LABEL_ATTRIBUTE = 'data-slink-pda-racing-label';
+function racingSettings() {
+dataState.settings.racing = normalizeRacingState(dataState.settings.racing);
+return dataState.settings.racing;
+}
+function ensureRacingHighlightStyle() {
+let style = document.getElementById(RACING_HIGHLIGHT_STYLE_ID);
+if (style) return style;
+style = document.createElement('style');
+style.id = RACING_HIGHLIGHT_STYLE_ID;
+style.textContent = `
+.${RACING_HIGHLIGHT_CLASS}{display:inline-block!important;padding:3px 6px!important;border:3px solid #ff39bb!important;border-radius:6px!important;background:#152317!important;color:#fff!important;box-shadow:0 0 0 2px #111,0 0 12px #ff39bb!important;font-weight:900!important}
+[${RACING_LABEL_ATTRIBUTE}]{display:inline-block;margin-left:6px;padding:2px 6px;border:1px solid #111;border-radius:999px;background:#ff39bb;color:#fff;font:bold 10px/1.4 Arial,sans-serif;vertical-align:middle}
+`;
+(document.head || document.documentElement).append(style);
+return style;
+}
+function clearRacingHighlight() {
+racingHighlightedNode?.classList.remove(RACING_HIGHLIGHT_CLASS);
+racingRecommendationLabel?.remove();
+racingHighlightedNode = null;
+racingRecommendationLabel = null;
+racingRecommendationKey = '';
+}

@@ -397,4 +397,3 @@ if (api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) vo
 }
 api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
 })(globalThis);
-

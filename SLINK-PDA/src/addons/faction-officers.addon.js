@@ -44,4 +44,3 @@ function start(){bindAlertActions();if(SCOPES.some(api.hasScope)||api.hasScope(A
 api.register({id:ID,title:'Faction Officers',shortTitle:'Officers',scopes:[OFFICER,ARMORY,OC,ADMIN],render,refresh,alerts:allAlerts,start,test:Object.freeze({normalizeMembers,shortages,missingItems})});
 })(globalThis);
 
-

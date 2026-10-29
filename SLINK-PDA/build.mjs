@@ -74,4 +74,3 @@ console.log(
   addonSources.map(addon => addon.path + ' ' + addon.bytes + ' bytes').join('; ') +
   '; source revision ' + sourceRevision.slice(0, 20) + '.'
 );
-

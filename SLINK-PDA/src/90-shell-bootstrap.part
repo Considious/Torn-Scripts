@@ -727,6 +727,28 @@ if (pendingPlugin) state.qualityOfLifeTab = requestedTab;
 else if (persist) writeState();
 if (dashboardOpen) void loadActiveModule(false);
 }
+let tornPageTheme=null,tornPageSettingsPanel=null,tornPageSettingsQueue=Promise.resolve();
+function syncTornPageTheme(){
+if(!global.SLINK_TORN_THEME)return;
+tornPageTheme||=global.SLINK_TORN_THEME.create({document,activity:global.SLINK_PDA_PAGE_ACTIVITY});
+const computed=global.getComputedStyle(host),tokens={};
+for(const [name,property]of Object.entries(THEME_TOKEN_MAP))tokens[name]=computed.getPropertyValue(property).trim();
+tokens['--slink-link']=computed.getPropertyValue('--s-alt').trim();
+const assetCss={};
+for(const kind of ['background','frame','panelSmoke','healthRoses','healthBlood']){
+const suffix={panelSmoke:'panel-smoke',healthRoses:'health-roses',healthBlood:'health-blood'}[kind]||kind;
+assetCss['--slink-theme-'+suffix+'-image']=host.style.getPropertyValue('--s-theme-'+suffix+'-image');
+}
+tornPageTheme.update({theme:{tokens},settings:dataState.settings.tornTheme||{},assetCss});
+if(!tornPageSettingsPanel){const container=shadow.querySelector('.theme-row')?.parentElement;
+if(container)tornPageSettingsPanel=global.SLINK_TORN_THEME.mountSettings(container,{
+read:()=>dataState.settings.tornTheme||{},
+patch:changes=>{const task=tornPageSettingsQueue.catch(()=>{}).then(async()=>{
+dataState.settings.tornTheme={...(dataState.settings.tornTheme||{}),...changes};
+await savePdaChanges();syncTornPageTheme();return dataState.settings.tornTheme;
+});tornPageSettingsQueue=task;return task;}
+});}
+}
 function setTheme(theme, persist = true) {
 const requestedTheme = String(theme || defaults.theme);
 const requestedDefinition = themeCatalog().find(item => item.id === requestedTheme) || null;
@@ -780,6 +802,7 @@ syncPdaChatButtonTheme();
 shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
 syncThemePanelOpacityControls();
 syncThemeItemOpacityControls();
+syncTornPageTheme();
 if (persist) writeState();
 }
 function themeHealthState(current, maximum) {
@@ -824,6 +847,7 @@ host.dataset.themeHealthSource=life?'bars-or-page':'unknown';
 if(life){host.dataset.themeHealthCurrent=String(life.current);host.dataset.themeHealthMaximum=String(life.maximum);}else{delete host.dataset.themeHealthCurrent;delete host.dataset.themeHealthMaximum;}
 host.style.setProperty('--s-theme-health-roses-image',roses?`url("${roses}")`:'none');
 host.style.setProperty('--s-theme-health-blood-image',blood?`url("${blood}")`:'none');
+if(tornPageTheme)syncTornPageTheme();
 }
 function lockTornScroll() {
 if (!document.documentElement.dataset[ROOT_OVERFLOW_KEY]) document.documentElement.dataset[ROOT_OVERFLOW_KEY] = document.documentElement.style.overflow || ' ';
@@ -1865,7 +1889,6 @@ refresh:refreshPlayerIntelligence
 });
 host.dataset.slinkReady = 'true';
 })(globalThis);
-
 
 
 
