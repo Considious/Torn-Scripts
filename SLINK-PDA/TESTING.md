@@ -1,4 +1,6 @@
-# SLINK PDA audit tester build — candidate 37
+# SLINK PDA audit tester build — candidate 38
+
+PDA **0.4.123**, extension **0.19.13.11**. Enable **QOL → Chat → Fair Fight in chat** (initially off). Saved FFScouter key, shared public backup and observer-bound intelligence provide values; † identifies fallback. No automatic profiles/messages or extra Torn requests. Existing settings/keys are preserved. Use Candidate 38 in the one extension tester changelog; physical PDA/live Torn remains acceptance work. No main/live backend changes.
 
 Current PDA **0.4.122**, extension **0.19.13.10**. Passive public BSS backup uses a separate IndexedDB cache with the shared client engine, preserving all settings/keys. Backend source/migration/snapshot code is testing-only, disabled until a deliberate setup; no live backend deployment or production schema change occurred. No new FF chat badges yet. Update the existing tester script in place and use Candidate 37 in the single extension tester changelog.
 

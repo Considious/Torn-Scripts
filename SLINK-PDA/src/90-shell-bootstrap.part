@@ -1827,6 +1827,11 @@ global.SLINK_PDA_PLUGIN_API = Object.freeze({
 register:registerPdaPlugin,
 root:moduleRoot,
 settings:pdaPluginSettings,
+chatFairFight:global.SLINK_CHAT_FF.createLookup({
+state:async()=>{const session=validSession('permission'),own=dataState.caches.ownBattleStats;return {allowed:!!session&&(hasScope('slink.qol.chat')||hasScope('admin.*'))&&pdaPluginSettings('chat',{}).ffBubbles===true,key:currentFfKey(),context:{observerId:session?.userId??session?.user_id,ownStatsAt:Number(own?.accountId)===Number(session?.userId??session?.user_id)?own?.statsAt||0:0}};},
+request:(ids,key)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(key)+'&targets='+ids.join(',')),
+intelligence:async id=>playerIntelligenceRecord(id),backup:ids=>fairFightBackup().fallback(ids)
+}),
 cache:pdaPluginCache,
 save:savePdaChanges,
 listen:listenPdaAction,
