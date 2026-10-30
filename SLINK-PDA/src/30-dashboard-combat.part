@@ -160,7 +160,7 @@ const id = Math.trunc(Number(row?.player_id ?? row?.id ?? row?.user_id) || 0);
 if (!id || !targets.includes(id)) continue;
 returned.add(id);
 const score = ffNumber(row?.fair_fight ?? row?.fairFight ?? row?.ff), stats = finite(row?.bs_estimate ?? row?.battle_stats_estimate ?? row?.total_stats);
-if (score !== null || stats !== null) cache[id] = { fairFight:score ?? cache[id]?.fairFight ?? null, battleStats:stats ?? cache[id]?.battleStats ?? null, source:String(row?.source || 'FFScouter'), checkedAt:score !== null ? now : Number(cache[id]?.checkedAt) || 0 };
+if (score !== null || stats !== null) cache[id] = { fairFight:row?.backup?score:score ?? cache[id]?.fairFight ?? null, battleStats:stats ?? cache[id]?.battleStats ?? null, source:String(row?.source || 'FFScouter'), checkedAt:row?.backup?Number(row.last_updated)*1000:score !== null ? now : Number(cache[id]?.checkedAt) || 0 };
 }
 for (const id of targets) if (!returned.has(id) && !cache[id]) cache[id] = { fairFight:null, battleStats:null, source:'FFScouter', checkedAt:now };
 } catch { break; /* Estimates are optional: keep the War/Leveling snapshot usable. */ }
@@ -172,11 +172,11 @@ const id = Math.trunc(Number(row?.id ?? row?.target_id ?? row?.user_id) || 0);
 const refined = cache[id] || {};
 return {
 ...row,
-fair_fight:ffNumber(refined.fairFight) ?? ffNumber(row?.fair_fight),
-fairFight:ffNumber(refined.fairFight) ?? ffNumber(row?.fairFight),
+fair_fight:String(refined.source||'').startsWith('SLINK Backup')?ffNumber(refined.fairFight):ffNumber(refined.fairFight) ?? ffNumber(row?.fair_fight),
+fairFight:String(refined.source||'').startsWith('SLINK Backup')?ffNumber(refined.fairFight):ffNumber(refined.fairFight) ?? ffNumber(row?.fairFight),
 bs_estimate:finite(refined.battleStats) ?? row?.bs_estimate,
 battleStatsEstimate:finite(refined.battleStats) ?? row?.battleStatsEstimate,
-fairFightSource:finite(refined.fairFight) === null ? row?.fairFightSource : refined.source,
+fairFightSource:String(refined.source||'').startsWith('SLINK Backup')?refined.source:finite(refined.fairFight) === null ? row?.fairFightSource : refined.source,
 fairFightCheckedAt:Number(refined.checkedAt) || 0,
 fairFightStale:!refined.checkedAt || now - Number(refined.checkedAt) >= 5 * 60_000
 };
@@ -199,7 +199,7 @@ const id = Math.trunc(Number(row?.id ?? row?.target_id) || 0);
 const name = String(row?.name || `Player ${id}`);
 const ff = finite(row?.fair_fight ?? row?.fairFight);
 const status = String(row?.status ?? row?.previous_status ?? 'Unknown');
-return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>Level ${number(row?.level)} · ${escapeHtml(status)}${ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}<button type="button" data-action="save-source-target" data-target-source="leveling" data-target-id="${id}">Save Target</button></div></article>`;
+return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</strong><small>Level ${number(row?.level)} · ${escapeHtml(status)}${String(row?.fairFightSource||'').startsWith('SLINK Backup') ? ' · FF '+escapeHtml(ffLabel(row)) : ff === null ? '' : ` · FF ${number(ff, 2)}`}</small></div><div class="target-actions">${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}<button type="button" data-action="save-source-target" data-target-source="leveling" data-target-id="${id}">Save Target</button></div></article>`;
 }).join('') : moduleMessage('No targets are currently loaded. Press Refresh to start or restart the five-minute Leveling cycle.')}</div>
 </article></div>`;
 }
@@ -350,7 +350,7 @@ for (const row of bountyFfRows(response)) {
 const id = Math.trunc(Number(row?.player_id ?? row?.id) || 0);
 if (!id || !chunk.includes(id)) continue;
 returned.add(id);
-runtime.fairFight[id] = { fairFight:finite(row?.fair_fight), battleStats:finite(row?.bs_estimate), source:String(row?.source || 'FFScouter'), checkedAt:now };
+runtime.fairFight[id] = { fairFight:finite(row?.fair_fight), battleStats:finite(row?.bs_estimate), source:String(row?.source || 'FFScouter'), checkedAt:row?.backup?Number(row.last_updated)*1000:now };
 }
 for (const id of chunk) if (!returned.has(id) && !runtime.fairFight[id]) runtime.fairFight[id] = { fairFight:null, battleStats:null, source:'FFScouter', checkedAt:now };
 dataState.caches.bounties = runtime; writeDataState();
@@ -381,7 +381,7 @@ const settings = bountySettings();
 const low = Math.min(settings.minFF, settings.maxFF), high = Math.max(settings.minFF, settings.maxFF);
 return runtime.targets.map(target => {
 const estimate = runtime.fairFight[target.id] || {};
-return { ...target, fairFight:finite(estimate.fairFight), battleStats:finite(estimate.battleStats), fairFightStale:Date.now()-Number(estimate.checkedAt||0)>=BOUNTY_FF_CACHE_MS, fairFightCheckedAt:Number(estimate.checkedAt)||0, status:effectiveBountyStatus(runtime.statuses[target.id]) };
+return { ...target, estimateSource:String(estimate.source||''), fairFight:finite(estimate.fairFight), battleStats:finite(estimate.battleStats), fairFightStale:Date.now()-Number(estimate.checkedAt||0)>=BOUNTY_FF_CACHE_MS, fairFightCheckedAt:Number(estimate.checkedAt)||0, status:effectiveBountyStatus(runtime.statuses[target.id]) };
 }).filter(target => {
 if (!settings.scanFullList && target.highestReward < settings.minimumReward) return false;
 if (target.fairFight === null || target.battleStats === null) { if (!settings.includeUnknownEstimates) return false; }

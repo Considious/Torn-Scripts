@@ -1,4 +1,6 @@
-# SLINK PDA audit tester build — candidate 36
+# SLINK PDA audit tester build — candidate 37
+
+Current PDA **0.4.122**, extension **0.19.13.10**. Passive public BSS backup uses a separate IndexedDB cache with the shared client engine, preserving all settings/keys. Backend source/migration/snapshot code is testing-only, disabled until a deliberate setup; no live backend deployment or production schema change occurred. No new FF chat badges yet. Update the existing tester script in place and use Candidate 37 in the single extension tester changelog.
 
 Current PDA **0.4.121**, extension **0.19.13.9**. In Torn chat, click **✦** beside the minimize control for **Custom buttons / GIFs / Stickers**. No need to open QOL → Chat first. Media is copied/pasted and sent manually; existing custom presets retain their load/confirm-send steps. Update the existing audit script in place, never uninstall/clear data. See Candidate 36 in the single extension tester changelog. Main/stable remains untouched.
 

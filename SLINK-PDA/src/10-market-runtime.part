@@ -693,6 +693,8 @@ return score !== null && score >= 1 && score <= 3 ? score : null;
 }
 function ffLabel(row) {
 const value = ffNumber(row?.fairFight ?? row?.fair_fight);
+const backup=String(row?.backupSource||row?.fairFightSource||row?.estimateSource||'');
+if(backup.startsWith('SLINK Backup'))return (value===null?'N/A — unverified':number(value,2))+' ('+backup+')';
 if (value === null) return 'N/A — unverified';
 return number(value, 2) + (row?.fairFightStale ? ' (cached estimate)' : '');
 }

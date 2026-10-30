@@ -1507,8 +1507,19 @@ throw error;
 return parsed ?? {};
 }
 const ffScouterRetryAt = new Map();
+let pdaFfBackup=null;
+function fairFightBackup(){
+if(!global.SLINK_FF_BACKUP)return null;
+return pdaFfBackup||=(global.SLINK_FF_BACKUP.create({store:global.SLINK_FF_BACKUP.openStore(),active:()=>global.SLINK_PDA_PAGE_ACTIVITY.eligible(),
+session:async()=>{const s=dataState.sessions.permission;return s?.token&&Number(s.expiresAt)>Date.now()?s:null;},
+ownScore:async()=>{const s=dataState.sessions.permission,own=dataState.caches.ownBattleStats;return Number(own?.accountId)===Number(s?.userId??s?.user_id)?Number(own?.score)||null:null;},
+transport:(action,body,token)=>requestJsonRaw('https://slinkcontributionworker.richard-johnson554.workers.dev/api/fair-fight/backup/'+action,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),timeout:4000})}));
+}
 async function requestJson(url, options = {}) {
 if (new URL(url).hostname !== 'ffscouter.com') return requestJsonRaw(url, options);
+if(/\/get-(stats|targets)$/.test(new URL(url).pathname)&&fairFightBackup())return fairFightBackup().run(url,async()=>{
+let timer;try{return await Promise.race([requestJsonRaw(url,{...options,timeout:5000}),new Promise((_,reject)=>{timer=global.setTimeout(()=>reject(Error('FFScouter timed out.')),5000);})]);}finally{global.clearTimeout(timer);}
+});
 const audience = new URL(url).searchParams.get('key') || '';
 if (Date.now() < (ffScouterRetryAt.get(audience) || 0)) throw new Error('FFScouter temporarily unavailable; using cached estimates or N/A.');
 let timer;

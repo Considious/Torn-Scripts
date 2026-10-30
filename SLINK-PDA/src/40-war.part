@@ -102,7 +102,7 @@ if (Array.isArray(snapshot?.members)) snapshot.members = await refineWithFfScout
 if (Array.isArray(snapshot?.retals) && snapshot.retals.length) {
 const rows = snapshot.retals.map(retal => ({ id:retal.attackerId, name:retal.attackerName, ...retal }));
 const refined = await refineWithFfScouter(rows);
-snapshot.retals = snapshot.retals.map((retal, index) => ({ ...retal, fairFight:refined[index]?.fairFight ?? refined[index]?.fair_fight ?? retal.fairFight, battleStatsEstimate:refined[index]?.battleStatsEstimate ?? retal.battleStatsEstimate, fairFightStale:Boolean(refined[index]?.fairFightStale), fairFightCheckedAt:Number(refined[index]?.fairFightCheckedAt) || 0 }));
+snapshot.retals = snapshot.retals.map((retal, index) => ({ ...retal, fairFightSource:refined[index]?.fairFightSource||'', fairFight:refined[index]?.fairFightSource ? refined[index]?.fairFight ?? refined[index]?.fair_fight ?? null : refined[index]?.fairFight ?? refined[index]?.fair_fight ?? retal.fairFight, battleStatsEstimate:refined[index]?.battleStatsEstimate ?? retal.battleStatsEstimate, fairFightStale:Boolean(refined[index]?.fairFightStale), fairFightCheckedAt:Number(refined[index]?.fairFightCheckedAt) || 0 }));
 }
 if (snapshot?.config) {
 dataState.settings.war.mode = snapshot.config.mode || dataState.settings.war.mode;
