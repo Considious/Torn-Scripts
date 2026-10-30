@@ -1,4 +1,6 @@
-# SLINK PDA audit tester build — candidate 35
+# SLINK PDA audit tester build — candidate 36
+
+Current PDA **0.4.121**, extension **0.19.13.9**. In Torn chat, click **✦** beside the minimize control for **Custom buttons / GIFs / Stickers**. No need to open QOL → Chat first. Media is copied/pasted and sent manually; existing custom presets retain their load/confirm-send steps. Update the existing audit script in place, never uninstall/clear data. See Candidate 36 in the single extension tester changelog. Main/stable remains untouched.
 
 Current PDA **0.4.120**, extension **0.19.13.8**. Quality of Life → Chat's optional media picker adds Stickers using GIPHY and ChatSticker in separate sections. Existing settings, keys and manual copy/paste/send remain unchanged. Use Candidate 35 in the single extension TESTER-CHANGELOG.md. Update the existing audit script in place, not by uninstalling. Older version notes below are historical; main/stable remains untouched.
 

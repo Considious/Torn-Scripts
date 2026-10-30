@@ -2,7 +2,7 @@
   'use strict';
   // SLINK implementation, inspired by Carol [4021053]'s MIT-licensed
   // Torn Chat GIF & Image Embedder. No original source or key is redistributed.
-  global.SLINK_GIPHY_PANEL = function createPanel(client = global.SLINK_GIPHY.client()) {
+  global.SLINK_GIPHY_PANEL = function createPanel(client = global.SLINK_GIPHY.client(), options = {}) {
     const host = document.createElement('section');
     host.dataset.slinkGiphy = ''; host.dataset.uiExplicitCommit = 'true';
     // An isolated UI avoids Torn's/theme CSS stretching controls or modifying them.
@@ -38,10 +38,10 @@
     const $ = selector=>root.querySelector(selector);
     // Approved GIPHY attribution artwork, loaded from the provider, not recreated.
     $('[data-attribution]').src = 'data:image/png;base64,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';
-    let model, stopped=false, revision=0, dirty={}, saveQueue=Promise.resolve(), timer, searchTimer, searching=false, query='', mediaType='gif', cursors={}, queued=null,lastSearch=-Infinity;
+    let model, stopped=false, suspended=false, revision=0, dirty={}, saveQueue=Promise.resolve(), timer, searchTimer, searching=false, query='', mediaType='gif', cursors={}, queued=null,lastSearch=-Infinity;
     const enabled=$('[data-enabled]'),mode=$('[data-mode]'),key=$('[data-key]'),saveStatus=$('[data-save]'),status=$('[data-status]'),results=$('[data-results]');
     const activity=global.SLINK_EXTENSION?.core?.pageActivity || global.SLINK_PDA_PAGE_ACTIVITY;
-    const active=()=>!stopped&&host.isConnected&&!document.hidden&&(!activity||activity.eligible());
+    const active=()=>!stopped&&!suspended&&options.isActive?.()!==false&&host.isConnected&&!document.hidden&&(!activity||activity.eligible());
     function stopMedia(){for(const video of results.querySelectorAll('video'))video.pause();for(const image of results.querySelectorAll('img[data-playing]')){image.src=image.dataset.still||'';delete image.dataset.playing;}}
     function state(){
       $('[data-key-label]').hidden=mode.value!=='custom';$('[data-clear]').hidden=!model?.hasCustomKey;
@@ -142,9 +142,39 @@
     const unsubscribe=activity?.subscribe(visibility);
     const visibleObserver=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{if(entries.some(e=>!e.isIntersecting))stopMedia();}):null;
     visibleObserver?.observe(host);
-    const ready=client.get().then(settings=>{if(stopped)return;model=settings;enabled.checked=settings.enabled;mode.value=settings.keyMode;
+    function applySettings(settings){if(stopped)return;model=settings;enabled.checked=settings.enabled;mode.value=settings.keyMode;
       enabled.disabled=false;mode.disabled=false;key.placeholder=settings.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';saveStatus.textContent='Settings save automatically.';state();
-    }).catch(error=>{if(!stopped)saveStatus.textContent='Could not load settings: '+error.message;});
-    return {host,ready,async stop(){stopped=true;revision++;queued=null;stopMedia();clearTimeout(timer);clearTimeout(searchTimer);document.removeEventListener('visibilitychange',visibility);if(typeof unsubscribe==='function')unsubscribe();visibleObserver?.disconnect();await save();}};
+    }
+    const ready=client.get().then(applySettings).catch(error=>{if(!stopped)saveStatus.textContent='Could not load settings: '+error.message;});
+    function suspend(){suspended=true;revision++;queued=null;clearTimeout(searchTimer);stopMedia();}
+    if(options.chatWindow){root.querySelector('h3').hidden=true;root.querySelector('[aria-label="Media type"]').hidden=true;}
+    return {host,ready,suspend,async open(type){
+      const opening=++revision;suspended=false;await ready;await save();if(opening!==revision||!active())return;
+      const ticket=revision;
+      try{const settings=await client.get();if(ticket===revision&&!Object.keys(dirty).length&&active())applySettings(settings);}catch{status.textContent='Could not refresh media settings. Please retry.';return;}
+      if(opening!==revision||!active())return;mediaType=type==='sticker'?'sticker':'gif';cursors={};
+      for(const tab of root.querySelectorAll('[data-media-type]'))tab.setAttribute('aria-pressed',String(tab.dataset.mediaType===mediaType));
+      if(enabled.checked)schedule($('[data-query]').value,false,0);
+    },async stop(){stopped=true;suspend();clearTimeout(timer);document.removeEventListener('visibilitychange',visibility);if(typeof unsubscribe==='function')unsubscribe();visibleObserver?.disconnect();await save();}};
+  };
+  // Retain the media node across macro updates; its owner supplies activity/placement.
+  global.SLINK_CHAT_WINDOW_MEDIA = function attachMedia({menu,macros,isActive,layout}) {
+    const tabs=document.createElement('div');tabs.className='ccb-media-tabs';tabs.setAttribute('aria-label','SLINK chat tools');
+    const surface=document.createElement('div');surface.dataset.ccbMedia='';surface.hidden=true;
+    let panel=null,current='macros';
+    function select(type){
+      if(!isActive())return;current=type;macros.hidden=type!=='macros';surface.hidden=type==='macros';
+      menu.dataset.ccbMediaOpen=String(type!=='macros');
+      for(const button of tabs.querySelectorAll('button'))button.setAttribute('aria-pressed',String(button.dataset.ccbView===type));
+      if(type==='macros')panel?.suspend();else {
+        if(!panel){panel=global.SLINK_GIPHY_PANEL(undefined,{chatWindow:true,isActive:()=>isActive()&&!surface.hidden&&!menu.hidden});surface.append(panel.host);}
+        void panel.open(type==='stickers'?'sticker':'gif');
+      }layout();
+    }
+    for(const [type,label] of [['macros','Custom buttons'],['gifs','GIFs'],['stickers','Stickers']]){
+      const button=document.createElement('button');button.type='button';button.textContent=label;button.dataset.ccbView=type;button.setAttribute('aria-pressed',String(type==='macros'));button.onclick=()=>select(type);tabs.append(button);
+    }
+    menu.append(tabs,macros,surface);
+    return {select,suspend(){panel?.suspend();},resume(){select(current);}};
   };
 })(globalThis);

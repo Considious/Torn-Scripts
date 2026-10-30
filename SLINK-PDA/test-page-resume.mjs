@@ -63,7 +63,7 @@ assert.equal(reopened,4);assert.equal(reuse.SLINK_PDA_PAGE_ACTIVITY,existingActi
 let macroGeneration=0,macroTimer,macroClicks=0;
 const macroButton={isConnected:true,disabled:true,getAttribute:()=>null,click(){macroClicks++;}};
 const macro=vm.createContext({Date,Promise,activity:{eligible:()=>true,token:()=>macroGeneration,current:token=>token===macroGeneration},
- window:{setTimeout:fn=>{macroTimer=fn;}},sending:false,armed:{macroId:'one',contextId:'faction',message:'draft',expiresAt:Date.now()+10000},
+ window:{setTimeout:fn=>{macroTimer=fn;}},enabled:true,sending:false,armed:{macroId:'one',contextId:'faction',message:'draft',expiresAt:Date.now()+10000},
  contextComposer:()=>({}),contextId:()=> 'faction',contextContent:()=> 'draft',contextSendButton:()=>macroButton,
  renderMenu(){},clearArmed(){macro.armed=null;},isNewsletterRoot:()=>false,menu:null,menuStatus:''});
 const macroSource=fs.readFileSync(new URL('./src/addons/chat.addon.js',import.meta.url),'utf8');
@@ -73,4 +73,3 @@ assert(macroTimer);macroGeneration++;macroButton.disabled=false;macroTimer();awa
 assert.equal(macroClicks,0,'A pre-hide custom-message action must not send after resume');assert.equal(macro.armed,null);assert.equal(macro.sending,false);
 macro.armed={macroId:'one',contextId:'faction',message:'draft',expiresAt:Date.now()+10000};
 await macro.handleMacroClick({id:'one'},{isConnected:true});assert.equal(macroClicks,1,'A new explicit confirmation may send while active');
-
