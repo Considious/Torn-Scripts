@@ -478,18 +478,20 @@ async function pdaOwnBattleStats(force = false) {
 const record=await pdaSharedData().personal({key:currentApiKey(),force,maxAgeMs:MUGGING_OWN_STATS_TTL_MS,requireLevel:true});
 return record.total;
 }
-function queueMuggingContributionObservation(playerId, record, mode) {
+const muggingFairFightChecks=global.SLINK_MUGGING_FF.create({key:async()=>currentFfKey(),request:(ids,key,signal)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(key)+'&targets='+ids.join(','),{signal,timeout:6000}),queue:async rows=>{for(const row of rows)queueMuggingContributionObservation(row.playerId,row.record,'fair-fight',true);await writeDataState();}});
+function queueMuggingContributionObservation(playerId, record, mode, estimateOnly=false) {
 const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object' ? dataState.caches.muggingPendingSync : {};
-pending[String(playerId)] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, pendingSync:true };
+pending[String(playerId)+(estimateOnly?':ff':'')] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, estimateOnly, pendingSync:true };
 const rows = Object.values(pending).sort((left, right) => Number(right.observedAt) - Number(left.observedAt)).slice(0, 500);
-dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [String(row.playerId), row]));
+dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [String(row.playerId)+(row.estimateOnly?':ff':''), row]));
 }
 function muggingContributorReport(row, client) {
 const record = row?.record && typeof row.record === 'object' ? row.record : {};
 const playerId = validPlayerIntelligenceId(row?.playerId ?? record.playerId ?? record.id) || 0;
 const observedAt = Math.max(0, Number(row?.observedAt ?? record.observedAt) || Date.now());
 return {
-report_id:`${client}:${playerId}:${Math.trunc(observedAt)}`,
+report_id:`${client}:${playerId}:${Math.trunc(observedAt)}${row.estimateOnly?':ff':''}`,
+estimate_only:row.estimateOnly===true,
 player_id:playerId,
 name:String(record.name || '').slice(0, 80),
 observed_at:observedAt,
@@ -589,14 +591,15 @@ muggingContributionBusy = true;
 try {
 const mode = muggingContributionMode(now);
 const capacity = contributionCapacity(readApiLedger(now));
-const response = capacity.available > 0
+const response = capacity.available > 0 || currentFfKey()
 ? await muggingRequest('/api/contributor/tasks', {
 method:'POST',
-body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(100, capacity.available * 4) }
+body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(40,Math.max(20, capacity.available * 4)) }
 })
 : { tasks:[] };
 let fetched = 0, skipped = 0, errors = 0;
 const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
+await muggingFairFightChecks.check(tasks).catch(()=>null);
 for (const task of tasks) {
 if (fetched >= capacity.available) break;
 try {
@@ -708,7 +711,7 @@ if (options.touch !== false) touchMuggingActivity();
 renderMugging();
 try {
 const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats(force === true && options.background !== true);
-const response = await muggingRequest('/api/assignments/rough', {
+const loadAssignments=()=>muggingRequest('/api/assignments/rough', {
 method:'POST',
 body:{
 user_battle_stats:userBattleStats,
@@ -717,6 +720,9 @@ max_fair_fight:Number(settings.maxFairFight) || 3,
 limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
 }
 });
+let response=await loadAssignments();
+const checked=await muggingFairFightChecks.check(response?.targets||[]).catch(()=>({queued:0}));
+if(checked.queued>0){const synced=await syncMuggingContributorReports(true);if(Number(synced.accepted)>0)response=await loadAssignments();}
 dataState.caches.mugging = {
 ...response,
 userBattleStats,
@@ -726,7 +732,7 @@ updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
 };
 writeDataState();
 const cache = muggingCache();
-current.notice = `Loaded ${cache.targets.length} rough Fair Fight assignments from cached Mugging intelligence.`;
+current.notice = checked.keyMissing?'Save your FFScouter key in Access to check unknown targets.':checked.error||`Loaded ${cache.targets.length} assignments; unchecked targets are labeled separately.`;
 } catch (error) {
 current.error = errorMessage(error);
 } finally {
@@ -766,8 +772,8 @@ const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
 const levelBadge = muggingLevelBadge(target.level, cache.userLevel);
 return `<article class="target-card"><div>
 <strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
-<small>${levelBadge} · ${escapeHtml(statusLabel)} · Rough FF ${fairFight === null ? '?' : number(fairFight, 2)} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
-</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
+<small>${levelBadge} · ${escapeHtml(statusLabel)} · ${target.estimateKind==='unchecked'?'FF check pending':`Rough FF ${fairFight === null ? '?' : number(fairFight, 2)}`} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
+</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${target.estimateKind==='unchecked'?'':actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
 }).join('');
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
 <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div><div class="stat"><strong>${escapeHtml(contribution.mode || 'disabled')}</strong><span>${Number(contribution.fetched) || 0}/${Number(contribution.apiBudgetPerMinute) || 0} contributor checks</span></div></div>

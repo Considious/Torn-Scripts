@@ -1,4 +1,6 @@
-# SLINK PDA audit tester build — candidate 38
+# SLINK PDA audit tester build — candidate 39
+
+Current PDA **0.4.125**, extension **0.19.14.1** carries the complete main Mugging recovery repair while retaining all audit/chat/media/theme/storage improvements. Update in place, not by clearing data. Test Find targets → pending FF checks → acknowledged upload → refreshed estimated targets. Use Candidate39 in the single extension tester changelog. Physical PDA and live authenticated catch-up remain acceptance work.
 
 PDA **0.4.123**, extension **0.19.13.11**. Enable **QOL → Chat → Fair Fight in chat** (initially off). Saved FFScouter key, shared public backup and observer-bound intelligence provide values; † identifies fallback. No automatic profiles/messages or extra Torn requests. Existing settings/keys are preserved. Use Candidate 38 in the one extension tester changelog; physical PDA/live Torn remains acceptance work. No main/live backend changes.
 
