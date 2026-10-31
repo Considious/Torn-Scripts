@@ -1,10 +1,11 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "0.4.113",
-  "sourceRef": "0ec293cbf704c7600ecda2f6018578dffc97b6ee",
+  "revision": "0.4.124",
+  "sourceRef": "d889dd54d6f574293a4a96bee4d6357b8fe7ea0b",
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
+    "src/00-mugging-ff.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
     "src/20-quality-of-life.part",
@@ -30,6 +31,3 @@
   ],
   "loaderMaxBytes": 18000
 }
-
-
-
