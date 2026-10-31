@@ -43,23 +43,29 @@
  }
  function mount({lookup,activity,enabled,document=global.document}){
   document.__slinkChatFfController?.stop();
-  let root=null,observer=null,discovery=null,visibility=null,timer=null,epoch=0,busy=false,again=false,lastLookup=0;
+  let root=null,observer=null,discovery=null,visibility=null,timer=null,epoch=0,busy=false,again=false,lastLookup=0,stopped=false;
+  const remembered=new Map();
   const entries=new Map();
-  const active=()=>enabled()&&activity.eligible();
-  const selector='a[href*="profiles.php"][href*="XID="]';
+  const active=()=>!stopped&&enabled()&&activity.eligible();
+  const selector='a[data-label="avatar"][href*="profiles.php"][href*="XID="]';
   function remove(anchor,entry){visibility?.unobserve(anchor);entry.badge.remove();entries.delete(anchor);}
   function eligible(anchor){return anchor.isConnected&&root?.contains(anchor)&&anchor.getClientRects().length>0&&!anchor.closest('textarea,[contenteditable="true"],[hidden],[aria-hidden="true"]');}
-  function consider(node){if(!active()||node.nodeType!==1)return;const anchors=[...(node.matches?.(selector)?[node]:[]),...node.querySelectorAll(selector)];for(const anchor of anchors){const id=playerId(anchor);if(!id||entries.has(anchor))continue;const badge=document.createElement('span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;const entry={id,badge,visible:!visibility,at:0};entries.set(anchor,entry);visibility?.observe(anchor);}while(entries.size>300){const [anchor,entry]=entries.entries().next().value;remove(anchor,entry);}}
+  function rowScope(anchor){return anchor.closest('[class*="virtualItem___"],[class*="chat-box-message"],[data-slink-chat-row]')||anchor.parentElement;}
+  function samePlace(a,b){return rowScope(a)===rowScope(b)&&playerId(a)===playerId(b);}
+  function consider(node){if(!active()||node.nodeType!==1)return;const anchors=[...(node.matches?.(selector)?[node]:[]),...node.querySelectorAll(selector)];for(const anchor of anchors){const id=playerId(anchor);if(!id||entries.has(anchor)||[...entries.keys()].some(a=>a.isConnected&&samePlace(a,anchor)))continue;const badge=document.createElement('span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;const entry={id,badge,visible:!visibility,at:0};entries.set(anchor,entry);visibility?.observe(anchor);const row=remembered.get(id);if(row&&eligible(anchor))paint(anchor,entry,row);}while(entries.size>300){const [anchor,entry]=entries.entries().next().value;remove(anchor,entry);}}
   function schedule(){if(!active()||timer!==null)return;timer=global.setTimeout(()=>{timer=null;void flush();},Math.max(100,5000-(Date.now()-lastLookup)));}
-  function externalBadge(anchor){return [anchor.previousElementSibling,anchor.nextElementSibling,...anchor.children].some(node=>node?.matches?.('.ffscouter-marker-wrapper,.ffscouter-bubble')||node?.querySelector?.('.ffscouter-bubble'));}
+  function externalBadge(anchor){
+   // Only this exact avatar container owns placement; never search neighbours.
+   return !!anchor.querySelector('.ffscouter-marker-wrapper,.ffscouter-bubble');
+  }
   function paint(anchor,entry,row){
-   entry.row=row;if(externalBadge(anchor)){entry.badge.remove();entry.at=Date.now();return;}
+   entry.row=row;remembered.set(entry.id,row);while(remembered.size>300)remembered.delete(remembered.keys().next().value);if(externalBadge(anchor)){entry.badge.remove();entry.at=Date.now();return;}
    const value=positive(row.ff),age=row.at?Math.max(0,Math.floor((Date.now()-row.at)/3600000))+'h old':'age unknown';
    entry.badge.textContent=(value===null?'N/A':value.toFixed(2))+(row.backup?' †':'');
    entry.badge.style.backgroundColor=value===null?'#555b66':value<2?'#25623f':value<=3?'#775b12':'#a52b42';
    entry.badge.title=(value===null?'Fair Fight unavailable':'Fair Fight '+value.toFixed(2))+' · '+row.source+(row.backup?' · '+age:'');
    entry.badge.setAttribute('aria-label',entry.badge.title);entry.badge.hidden=false;
-   if(anchor.nextSibling!==entry.badge)anchor.after(entry.badge);entry.at=Date.now();
+   if(entry.badge.parentElement!==anchor)anchor.append(entry.badge);entry.at=Date.now();
   }
   async function flush(){
    if(!active())return;if(busy){again=true;return;}busy=true;const token=epoch;
@@ -78,17 +84,26 @@
    observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href']});consider(root);schedule();
   }
   function sync(){
+   if(!active()){
+    epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
+    // Focus/visibility loss pauses work, not presentation. Only an explicit
+    // disable/revoked access or stop removes already-rendered badges.
+    if(stopped||!enabled()){for(const [a,e]of entries)remove(a,e);remembered.clear();root=null;}
+    return;
+   }
    if(active()&&root?.isConnected&&observer){consider(root);schedule();return;}
    epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
-   for(const [a,e]of entries)remove(a,e);
-   root=null;if(!active())return;
-   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot .slink-chat-ff-bubble{display:inline-block!important;flex:0 0 auto!important;align-self:center;justify-self:start;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin-inline:4px;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:100%;box-sizing:border-box}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}#chatRoot .ffscouter-marker-wrapper,#chatRoot .ffscouter-bubble{align-self:center!important;flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:24px;line-height:1.3}';(document.head||document.documentElement).append(style);}
+   for(const [a,e]of entries)if(!a.isConnected||!root?.contains(a))remove(a,e);
+   root=null;
+   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot a[data-label="avatar"]:has(> .slink-chat-ff-bubble){position:relative!important;overflow:visible!important}#chatRoot a[data-label="avatar"]>.slink-chat-ff-bubble{position:absolute!important;left:50%!important;top:100%!important;transform:translateX(-50%);z-index:1;pointer-events:none;display:inline-block!important;flex:0 0 auto!important;align-self:center;justify-self:start;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin:0!important;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:100%;box-sizing:border-box}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}#chatRoot .ffscouter-marker-wrapper,#chatRoot .ffscouter-bubble{align-self:center!important;flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:24px;line-height:1.3}';(document.head||document.documentElement).append(style);}
    if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
-   attach();discovery=new global.MutationObserver(mutations=>{if(!active())return;if(!root?.isConnected){attach();}else if(mutations.some(m=>[...m.removedNodes].some(n=>n===root||n.contains?.(root)))){observer?.disconnect();root=null;attach();}});
+   attach();
+   for(const [a,e]of entries){visibility?.observe(a);if(e.row&&eligible(a))paint(a,e,e.row);}
+   discovery=new global.MutationObserver(mutations=>{if(!active())return;if(!root?.isConnected){attach();}else if(mutations.some(m=>[...m.removedNodes].some(n=>n===root||n.contains?.(root)))){observer?.disconnect();root=null;attach();}});
    discovery.observe(document.documentElement,{childList:true,subtree:true});
   }
   const unsubscribe=activity.subscribe(sync);sync();
-  const controller={sync,stop(){unsubscribe?.();observer?.disconnect();discovery?.disconnect();visibility?.disconnect();epoch++;global.clearTimeout(timer);for(const [a,e]of entries)remove(a,e);}};document.__slinkChatFfController=controller;return controller;
+  const controller={sync,stop(){stopped=true;unsubscribe?.();observer?.disconnect();discovery?.disconnect();visibility?.disconnect();epoch++;global.clearTimeout(timer);for(const [a,e]of entries)remove(a,e);remembered.clear();}};document.__slinkChatFfController=controller;return controller;
  }
  global.SLINK_CHAT_FF=Object.freeze({playerId,fromRow,fromIntelligence,createLookup,mount});
 })(globalThis);

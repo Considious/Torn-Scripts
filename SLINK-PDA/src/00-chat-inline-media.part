@@ -174,9 +174,15 @@
    for(const [node]of textSnapshots)if(!node.isConnected)textSnapshots.delete(node);
   }
   function sync() {
-   if(!active()){cleanup();return;}
+   if(!active()){
+    observer?.disconnect();observer=null;
+    // Retain the original renderer's images through a temporary focus loss.
+    // Explicit opt-out/permission loss still restores Torn's original links.
+    if(stopped||!enabled()||!model.enabled||model.inlineMedia===false)cleanup();
+    return;
+   }
    const next=document.getElementById('chatRoot');if(next===root&&observer)return;
-   cleanup();root=next;if(!root)return;
+   if(next!==root)cleanup();root=next;if(!root)return;
    observer=new global.MutationObserver(records=>{
     if(!active())return;
     // Our inserts and src changes do not trigger a whole-chat feedback loop.
@@ -184,7 +190,7 @@
    });
    scan();observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['href']});
   }
-  async function refresh(){const ticket=++generation;try{const saved=await settings();if(ticket!==generation||stopped)return;model=saved;sync();}catch{if(ticket===generation){model={enabled:false};sync();}}}
+  async function refresh(){const ticket=++generation;try{const saved=await settings();if(ticket!==generation||stopped)return;model=saved;sync();}catch{if(ticket===generation)sync();/* Keep the last acknowledged preference on a transient read failure. */}}
   const unsubscribe=activity.subscribe(sync);
   const api={sync,refresh,stop(){stopped=true;generation++;unsubscribe?.();cleanup();}};
   document.__slinkInlineChatMedia=api;return api;
