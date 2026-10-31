@@ -837,9 +837,9 @@ const GM_API = Object.freeze({
 get:typeof GM_getValue === 'function' ? GM_getValue : global.GM_getValue,
 set:typeof GM_setValue === 'function' ? GM_setValue : global.GM_setValue,
 remove:typeof GM_deleteValue === 'function' ? GM_deleteValue : global.GM_deleteValue,
-menu:typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : global.GM_registerMenuCommand,
-request:typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : global.GM_xmlhttpRequest,
-notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notification
+menu:typeof GM_registerMenuCommand === 'function' ? GM_registerMenuCommand : global.GM_registerMenuCommand || global.SLINK_PDA_BROWSER_TRANSPORT?.menu,
+request:typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : global.GM_xmlhttpRequest || global.SLINK_PDA_BROWSER_TRANSPORT?.request,
+notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notification || global.SLINK_PDA_BROWSER_TRANSPORT?.notify
 });
 const PDA_BOOTSTRAP_KEY = '__SLINK_PDA_BOOTSTRAP__';
 const PDA_BOOTSTRAP = global[PDA_BOOTSTRAP_KEY] && typeof global[PDA_BOOTSTRAP_KEY] === 'object' ? global[PDA_BOOTSTRAP_KEY] : {};

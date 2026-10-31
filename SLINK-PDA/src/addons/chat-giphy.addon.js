@@ -162,8 +162,8 @@
       const raw = response?.responseText ?? response?.body ?? response?.data ?? response;
       return { status:Number(response?.status ?? response?.statusCode) || 200, body:typeof raw === 'string' ? JSON.parse(raw) : raw };
     }
-    if (typeof global.GM_xmlhttpRequest === 'function') return new Promise((resolve,reject)=>{
-      global.GM_xmlhttpRequest({method:'GET',url,anonymous:true,timeout:10000,
+    if (typeof (global.GM_xmlhttpRequest || global.SLINK_PDA_BROWSER_TRANSPORT?.request) === 'function') return new Promise((resolve,reject)=>{
+      (global.GM_xmlhttpRequest || global.SLINK_PDA_BROWSER_TRANSPORT.request)({method:'GET',url,anonymous:true,timeout:10000,
         onload:r=>{try{resolve({status:r.status,body:JSON.parse(r.responseText)});}catch{reject(Error('Invalid response'));}},
         onerror:()=>reject(Error('Network error')),ontimeout:()=>reject(Error('Timeout'))});
     });
