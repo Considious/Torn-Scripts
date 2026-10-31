@@ -254,8 +254,8 @@ if(!force&&cached?.fetchedAt&&Date.now()-Number(cached.fetchedAt)<MUSEUM_CACHE_M
 current.busy=true;current.error='';current.notice='';renderMuseums();
 try{
 await ensurePermissionSession(false);if(!hasScope(MUSEUM_SCOPE))throw new Error('Your SLINK account does not have '+MUSEUM_SCOPE+' permission.');
-const runtime=marketRuntime(),catalog=await marketEnsureCatalog(runtime,false),inventoryRows=[];let offset=0;
-for(let page=0;page<20;page++){const body=await tornJson('/v2/user/inventory?limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&inventoryRows.length>=total))break;offset+=rows.length}
+const runtime=marketRuntime(),catalog=await marketEnsureCatalog(runtime,false),inventoryRows=[];const wanted=new Set(MUSEUM_SETS.flatMap(set=>set.items).map(item=>museumKey(museumName(item.name))));const categories=[...new Set((catalog.items||[]).filter(item=>wanted.has(museumKey(museumName(item.name)))).map(item=>String(item.type||'')).filter(Boolean))];if(!categories.length)throw new Error('The item catalog has no Museum inventory categories. Refresh the item catalog before retrying.');for(const category of categories){let offset=0;
+for(let page=0;page<20;page++){const body=await tornJson('/v2/user/inventory?cat='+encodeURIComponent(category)+'&limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&offset+rows.length>=total))break;offset+=rows.length}}
 const status=museumBuildStatus(inventoryRows,catalog.items||[]);current.data=dataState.caches.museums={fetchedAt:Date.now(),...status};dataState.caches.market=runtime;writeDataState();return current.data
 }catch(error){current.error=errorMessage(error);throw error}finally{current.busy=false;renderMuseums()}
 }

@@ -23,3 +23,11 @@ transport='native';context.pdaHttpHandler=()=>async()=>{throw Error('No HTTP ori
 context.GM_API.request=options=>queueMicrotask(()=>options.onload({status:200,responseText:'{"ok":true}'}));
 assert.equal((await context.requestJsonRaw('https://api.torn.com/v2/user')).ok,true);
 console.log('PDA native, GM and fetch transports: provider errors, readable HTTP failure, malformed JSON and native fallback passed.');
+
+context.pdaHttpHandler=()=>async()=>({status:200,data:{terms:{version:'current',sha256:'fingerprint'}}});
+assert.equal((await context.requestJsonRaw('https://slinkwarworker.richard-johnson554.workers.dev/api/terms')).terms.version,'current');
+context.pdaHttpHandler=()=>async()=>({terms:{version:'direct'}});
+assert.equal((await context.requestJsonRaw('https://slinkwarworker.richard-johnson554.workers.dev/api/terms')).terms.version,'direct');
+context.pdaHttpHandler=()=>async()=>({status:200,responseText:''});
+await assert.rejects(context.requestJsonRaw('https://slinkwarworker.richard-johnson554.workers.dev/api/terms'),/empty response/);
+console.log('PDA decoded-native and direct JSON terms payloads accepted; empty payload rejected explicitly.');

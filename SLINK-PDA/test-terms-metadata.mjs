@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const source=fs.readFileSync(new URL('./src/10-market-runtime.part',import.meta.url),'utf8'),start=source.indexOf('async function fetchAllTerms('),end=source.indexOf('function termsAccepted(',start);
+let calls=0,bad=false;const responses={permission:{terms:{version:'current',sha256:'hash',url:'https://example.test/policy'}},leveling:{version:'current',document_sha256:'hash',disclosure_version:'current',disclosure_sha256:'hash'},war:{terms:{version:'current',sha256:'hash'}}};
+const state={terms:null,accepted:{permission:{version:'keep',sha256:'keep'}}};
+const ctx=vm.createContext({dataState:state,Date,URLS:{permission:'permission',leveling:'leveling',war:'war'},errorMessage:e=>String(e?.message||e),writeDataState(){},requestJson:async url=>{calls++;const result=structuredClone(responses[url.split('/')[0]]);if(bad&&url.startsWith('leveling'))delete result.disclosure_sha256;return result;}});
+vm.runInContext(source.slice(start,end),ctx);
+await ctx.fetchAllTerms();assert.equal(calls,3);await ctx.fetchAllTerms();assert.equal(calls,3,'Complete cached metadata should be reused');
+delete state.terms.war.sha256;await ctx.fetchAllTerms();assert.equal(calls,6,'Incomplete cached metadata must not block refresh for an hour');
+const previous=state.terms;bad=true;
+await assert.rejects(ctx.fetchAllTerms(true),e=>{assert.equal(e.code,'SLINK_TERMS_METADATA');assert.match(e.message,/Leveling: missing disclosure fingerprint/);return true;});
+assert.equal(state.terms,previous);assert.equal(state.accepted.permission.sha256,'keep');
+vm.runInContext(fs.readFileSync(new URL('./src/00-errors.part',import.meta.url),'utf8'),ctx);
+assert.match(ctx.SLINK_ERRORS.message(Object.assign(Error('Leveling failed [SLINK_TERMS_METADATA]'),{code:'SLINK_TERMS_METADATA'})),/Leveling/);
+console.log('Complete live-shaped terms, valid cache, invalid cache refresh, named-service failure, preserved acceptance and readable support code passed.');

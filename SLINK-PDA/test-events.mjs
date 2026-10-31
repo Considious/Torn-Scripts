@@ -69,3 +69,7 @@ assert.equal(yearRound.next.name,'Christmas Town');
 assert.equal(yearRound.events.some(event=>event.id==='guide:halloween'&&event.guideOnly),true);
 console.log('PDA Events tests passed.');
 
+
+const official=plugin.test.mergeCalendars({calendar:{competitions:[{title:'Halloween',start:Date.UTC(2026,9,25)/1000,end:Date.UTC(2026,10,1)/1000,fixed_start_time:true}],events:[{title:'Personal event',start:Date.UTC(2026,9,31)/1000,end:Date.UTC(2026,10,1)/1000,fixed_start_time:false}]}},{calendar:{start_time:'12:34:00'}},Date.UTC(2026,9,30));
+assert.equal(official.schemaVersion,2);assert.equal(official.events.length,2);assert.equal(official.events.find(e=>e.name==='Halloween').state,'active');assert.equal(official.events.find(e=>e.name==='Personal event').startAt,Date.UTC(2026,9,31,12,34));assert(!official.events.some(e=>e.guideOnly||e.name==='competitions'));
+console.log('PDA documented nested calendar and personal start clock passed.');

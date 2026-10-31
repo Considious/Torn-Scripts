@@ -479,7 +479,7 @@ return session?.token && Number(session.expiresAt) > Date.now() + 60_000 ? sessi
 }
 async function fetchAllTerms(force = false) {
 const cached = dataState.terms;
-if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < 60 * 60_000 && cached.permission?.version && cached.leveling?.version && cached.war?.version) return cached;
+if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < 60 * 60_000 && cached.permission?.version && cached.permission?.sha256 && cached.leveling?.version && cached.leveling?.sha256 && cached.leveling?.disclosureVersion && cached.leveling?.disclosureSha256 && cached.war?.version && cached.war?.sha256) return cached;
 const [permissionResponse, levelingResponse, warResponse] = await Promise.all([
 requestJson(`${URLS.permission}/api/permissions/terms`),
 requestJson(`${URLS.leveling}/api/terms`),
@@ -509,7 +509,9 @@ summary:String(warResponse?.terms?.summary || '')
 }
 };
 if (!terms.permission.version || !terms.permission.sha256 || !terms.leveling.version || !terms.leveling.sha256 || !terms.leveling.disclosureVersion || !terms.leveling.disclosureSha256 || !terms.war.version || !terms.war.sha256) {
-throw new Error('One or more SLINK services returned incomplete terms metadata.');
+const checks=[['Access',permissionResponse,terms.permission,['version','sha256']],['Leveling',levelingResponse,terms.leveling,['version','sha256','disclosureVersion','disclosureSha256']],['War',warResponse,terms.war,['version','sha256']]];
+const failures=checks.filter(([,raw,value,fields])=>raw?.error||fields.some(field=>!value[field])).map(([name,raw,value,fields])=>name+': '+(raw?.error?errorMessage(raw.error):'missing '+fields.filter(field=>!value[field]).map(field=>({version:'terms version',sha256:'policy fingerprint',disclosureVersion:'disclosure version',disclosureSha256:'disclosure fingerprint'}[field]||field)).join(', ')));
+throw Object.assign(new Error('SLINK could not verify current terms from '+failures.join('; ')+'. Your previous acceptance and saved data have not been cleared. Retry Access; if it continues, report the named service. [SLINK_TERMS_METADATA]'),{code:'SLINK_TERMS_METADATA'});
 }
 dataState.terms = terms;
 writeDataState();

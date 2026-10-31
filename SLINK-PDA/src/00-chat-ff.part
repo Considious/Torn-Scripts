@@ -42,6 +42,7 @@
   };
  }
  function mount({lookup,activity,enabled,document=global.document}){
+  document.__slinkChatFfController?.stop();
   let root=null,observer=null,discovery=null,visibility=null,timer=null,epoch=0,busy=false,again=false,lastLookup=0;
   const entries=new Map();
   const active=()=>enabled()&&activity.eligible();
@@ -50,7 +51,9 @@
   function eligible(anchor){return anchor.isConnected&&root?.contains(anchor)&&anchor.getClientRects().length>0&&!anchor.closest('textarea,[contenteditable="true"],[hidden],[aria-hidden="true"]');}
   function consider(node){if(!active()||node.nodeType!==1)return;const anchors=[...(node.matches?.(selector)?[node]:[]),...node.querySelectorAll(selector)];for(const anchor of anchors){const id=playerId(anchor);if(!id||entries.has(anchor))continue;const badge=document.createElement('span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;const entry={id,badge,visible:!visibility,at:0};entries.set(anchor,entry);visibility?.observe(anchor);}while(entries.size>300){const [anchor,entry]=entries.entries().next().value;remove(anchor,entry);}}
   function schedule(){if(!active()||timer!==null)return;timer=global.setTimeout(()=>{timer=null;void flush();},Math.max(100,5000-(Date.now()-lastLookup)));}
+  function externalBadge(anchor){return [anchor.previousElementSibling,anchor.nextElementSibling,...anchor.children].some(node=>node?.matches?.('.ffscouter-marker-wrapper,.ffscouter-bubble')||node?.querySelector?.('.ffscouter-bubble'));}
   function paint(anchor,entry,row){
+   entry.row=row;if(externalBadge(anchor)){entry.badge.remove();entry.at=Date.now();return;}
    const value=positive(row.ff),age=row.at?Math.max(0,Math.floor((Date.now()-row.at)/3600000))+'h old':'age unknown';
    entry.badge.textContent=(value===null?'N/A':value.toFixed(2))+(row.backup?' †':'');
    entry.badge.style.backgroundColor=value===null?'#555b66':value<2?'#25623f':value<=3?'#775b12':'#a52b42';
@@ -70,20 +73,22 @@
   function attach(){
    if(!active())return;const next=document.getElementById('chatRoot');if(next===root&&observer)return;
    observer?.disconnect();root=next;if(!root)return;
-   observer=new global.MutationObserver(mutations=>{if(!active())return;for(const [a,e]of entries){if(!a.isConnected||playerId(a)!==e.id)remove(a,e);else if(!e.badge.isConnected)e.at=0;}for(const m of mutations){if(m.type==='attributes')consider(m.target);else for(const node of m.addedNodes)if(!node.closest?.('[data-slink-chat-ff]'))consider(node);}schedule();});
+   observer=new global.MutationObserver(mutations=>{if(!active())return;let changed=false;for(const [a,e]of entries){if(!a.isConnected||!root?.contains(a)||playerId(a)!==e.id){remove(a,e);changed=true;}else if(e.row&&eligible(a)){if(externalBadge(a)){if(e.badge.isConnected)e.badge.remove();}else if(!e.badge.isConnected)paint(a,e,e.row);}}
+   for(const m of mutations){if(m.target?.closest?.('[data-slink-chat-ff]'))continue;if(m.type==='attributes'){consider(m.target);changed=true;}else for(const node of m.addedNodes){if(node.nodeType!==1||node.matches?.('[data-slink-chat-ff]')||node.closest?.('[data-slink-chat-ff]'))continue;consider(node);changed=true;}}if(changed)schedule();});
    observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href']});consider(root);schedule();
   }
   function sync(){
+   if(active()&&root?.isConnected&&observer){consider(root);schedule();return;}
    epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
    for(const [a,e]of entries)remove(a,e);
    root=null;if(!active())return;
-   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot .slink-chat-ff-bubble{display:inline-block;vertical-align:middle;margin-inline:4px;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:100%;box-sizing:border-box}#chatRoot .slink-chat-ff-bubble[hidden]{display:none}';(document.head||document.documentElement).append(style);}
+   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot .slink-chat-ff-bubble{display:inline-block!important;flex:0 0 auto!important;align-self:center;justify-self:start;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin-inline:4px;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:100%;box-sizing:border-box}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}#chatRoot .ffscouter-marker-wrapper,#chatRoot .ffscouter-bubble{align-self:center!important;flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:24px;line-height:1.3}';(document.head||document.documentElement).append(style);}
    if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
    attach();discovery=new global.MutationObserver(mutations=>{if(!active())return;if(!root?.isConnected){attach();}else if(mutations.some(m=>[...m.removedNodes].some(n=>n===root||n.contains?.(root)))){observer?.disconnect();root=null;attach();}});
    discovery.observe(document.documentElement,{childList:true,subtree:true});
   }
   const unsubscribe=activity.subscribe(sync);sync();
-  return {sync,stop(){unsubscribe?.();observer?.disconnect();discovery?.disconnect();visibility?.disconnect();epoch++;global.clearTimeout(timer);for(const [a,e]of entries)remove(a,e);}};
+  const controller={sync,stop(){unsubscribe?.();observer?.disconnect();discovery?.disconnect();visibility?.disconnect();epoch++;global.clearTimeout(timer);for(const [a,e]of entries)remove(a,e);}};document.__slinkChatFfController=controller;return controller;
  }
  global.SLINK_CHAT_FF=Object.freeze({playerId,fromRow,fromIntelligence,createLookup,mount});
 })(globalThis);

@@ -77,3 +77,19 @@ const saving=targetContext.saveTarget();await targetContext.saveTarget();assert.
 edited=true;fields.set('target-list-description','After');assert.equal(submitted.description,'Before');resolveSave();await saving;assert.equal(targetState.formOpen,true,'A confirmed older save must not close a newer draft');assert.equal(targetState.saving,false);
 const failedSave=targetContext.saveTarget();await new Promise(resolve=>setImmediate(resolve));rejectSave(Error('native quota'));await failedSave;assert.match(targetState.error,/quota/);assert.equal(targetState.formOpen,true);assert.notEqual(targetState.notice,'Target saved.');
 console.log('PDA native acknowledgement, legacy migration, quota/retry, browser-cache-clear recovery, target deletion/note merges and add-on preference preservation passed.');
+
+ // A native single-key bridge may reject nullable/key payloads on an app build.
+ // The documented getMany/setMany paths must retain the same namespace and data.
+ const originalGet=store.get,originalSet=store.set;
+ store.get=async()=>{throw Error("type 'Null' is not a subtype of type 'String' in type cast");};
+ store.set=store.get;
+ store.getMany=async keys=>Object.fromEntries(keys.map(key=>[key,clone(native.get(key)??null)]));
+ store.setMany=async values=>{for(const [key,value]of Object.entries(values))native.set(key,clone(value));};
+ await ctx.gmWrite('ui',{theme:'halloween-2026'});
+ const saved=clone(native.get('data'));saved.settings.plugins.chat.ffBubbles=true;await ctx.gmWrite('data',saved);
+ browser.clear();
+ assert.equal((await ctx.gmRead('ui',null)).theme,'halloween-2026');
+ assert.equal((await ctx.readPersistedData()).settings.plugins.chat.ffBubbles,true);
+ assert.equal(native.get('data').apiKey,saved.apiKey,'The native key must remain unchanged');
+ store.get=originalGet;store.set=originalSet;
+ console.log('Native batch bridge retains Halloween theme and Chat FF preferences through the exact nullable single-key error and browser-cache loss.');

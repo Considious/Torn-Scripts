@@ -1496,9 +1496,11 @@ const response = typeof direct === 'function'
 ? await direct(url, headers, ...(body === undefined ? [] : [body]))
 : await global.flutter_inappwebview.callHandler(handlerName, url, headers, ...(body === undefined ? [] : [body]));
 const status = Number(response?.status ?? response?.statusCode) || 0;
-const responseText = typeof response === 'string' ? response : String(response?.responseText ?? response?.body ?? response?.data ?? '');
-let parsed = null;
-try { parsed = JSON.parse(responseText || 'null'); } catch { if(!status || status>=200&&status<300)throw new Error('Expected JSON from the requested service.'); }
+const responseBody=typeof response==='string'?response:response?.responseText??response?.body??response?.data??response;
+let parsed=null;
+if(responseBody&&typeof responseBody==='object')parsed=responseBody;
+else try {parsed=JSON.parse(String(responseBody||'null'));}catch{if(!status||status>=200&&status<300)throw new Error('Expected JSON from the requested service.');}
+if(parsed===null)throw new Error('The service returned an empty response instead of JSON data.');
 if (status && (status < 200 || status >= 300)) {
 const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
 error.status = status;
@@ -2600,6 +2602,3 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
-
-
-
