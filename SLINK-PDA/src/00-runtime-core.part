@@ -1481,6 +1481,7 @@ networkQueue = result.catch(() => undefined);
 return result;
 }
 function errorMessage(error) {
+if(global.SLINK_ERRORS)return global.SLINK_ERRORS.message(error);
 return String(error?.message || error || 'Unknown error').replace(/^Error:\s*/i, '').trim();
 }
 function pdaHttpHandler(method) {
@@ -1497,9 +1498,9 @@ const response = typeof direct === 'function'
 const status = Number(response?.status ?? response?.statusCode) || 0;
 const responseText = typeof response === 'string' ? response : String(response?.responseText ?? response?.body ?? response?.data ?? '');
 let parsed = null;
-try { parsed = JSON.parse(responseText || 'null'); } catch {}
+try { parsed = JSON.parse(responseText || 'null'); } catch { if(!status || status>=200&&status<300)throw new Error('Expected JSON from the requested service.'); }
 if (status && (status < 200 || status >= 300)) {
-const error = new Error(parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
+const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
 error.status = status;
 error.body = parsed;
 throw error;
@@ -1536,6 +1537,15 @@ throw error;
 } finally { global.clearTimeout(timer); }
 }
 async function requestJsonRaw(url, options = {}) {
+let provider='SLINK';
+try {
+ const host=new URL(url).hostname;
+ provider=host==='api.torn.com'?'tornApi':host==='ffscouter.com'?'ffscouter':host==='weav3r.dev'?'weaver':host;
+ const result=await requestJsonTransport(url,options);
+ return global.SLINK_ERRORS?.annotateBody(result,{provider}) ?? result;
+} catch(error){if(error&&typeof error==='object')error.provider=provider;throw error;}
+}
+async function requestJsonTransport(url, options = {}) {
 const method = String(options.method || 'GET').toUpperCase();
 const headers = { Accept:'application/json', ...(options.headers || {}) };
 const body = options.body === undefined
@@ -1547,7 +1557,7 @@ if (typeof pdaDirect === 'function' || typeof global.flutter_inappwebview?.callH
 try {
 return await pdaHttpRequest(method, url, headers, body);
 } catch (error) {
-const missingOrigin = /No HTTP origin is configured for\s+\w+/i.test(errorMessage(error));
+const missingOrigin = /No HTTP origin is configured for\s+\w+/i.test(String(error?.message||error));
 if (!missingOrigin || typeof GM_API.request !== 'function') throw error;
 }
 }
@@ -1557,9 +1567,9 @@ GM_API.request({
 method, url, headers, data:body, timeout:Number(options.timeout) || 30_000,
 onload(response) {
 let parsed = null;
-try { parsed = JSON.parse(String(response.responseText || 'null')); } catch {}
+try { parsed = JSON.parse(String(response.responseText || 'null')); } catch { if(Number(response.status)>=200&&Number(response.status)<300){reject(new Error('Expected JSON from the requested service.'));return;} }
 if (Number(response.status) < 200 || Number(response.status) >= 300) {
-const error = new Error(parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
+const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
 error.status = Number(response.status) || 0;
 error.body = parsed;
 reject(error);
@@ -1574,9 +1584,9 @@ onerror(response) { reject(new Error(response?.error || response?.statusText || 
 }
 return global.fetch(url, { method, headers, body, cache:'no-store', credentials:'omit' }).then(async response => {
 let parsed = null;
-try { parsed = await response.json(); } catch {}
+try { parsed = await response.json(); } catch { if(response.ok)throw new Error('Expected JSON from the requested service.'); }
 if (!response.ok) {
-const error = new Error(parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
+const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
 error.status = response.status;
 error.body = parsed;
 throw error;

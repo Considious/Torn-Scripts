@@ -1,3 +1,7 @@
+# SLINK audit tester build — candidate 40
+
+Current extension **0.19.14.2**, PDA **0.4.126**. Clearer errors across the shared UI, request paths, chat and startup; no settings reset or main promotion. Follow Candidate40 in the single TESTER-CHANGELOG.md. Backend changes need a separate testing deployment and are not live from this commit.
+
 # SLINK PDA audit tester build — candidate 39
 
 Current PDA **0.4.125**, extension **0.19.14.1** carries the complete main Mugging recovery repair while retaining all audit/chat/media/theme/storage improvements. Update in place, not by clearing data. Test Find targets → pending FF checks → acknowledged upload → refreshed estimated targets. Use Candidate39 in the single extension tester changelog. Physical PDA and live authenticated catch-up remain acceptance work.

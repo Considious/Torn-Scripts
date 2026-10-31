@@ -1018,7 +1018,7 @@
       clearArmed();
       if(editor===owner&&JSON.stringify(editorDraft)===submitted)closeEditor();
       if(activity.eligible())scanContexts();
-    } catch(error) { window.alert('Custom messages were not saved. Your editor has been kept. '+String(error.message||error)); }
+    } catch(error) { window.alert('Custom messages were not saved. Your editor has been kept. '+(global.SLINK_ERRORS?.message(error)||String(error.message||error))); }
     finally {editorSaving=false;}
   }
 

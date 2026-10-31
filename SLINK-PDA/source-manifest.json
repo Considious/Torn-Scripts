@@ -1,10 +1,11 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-d4d1b945e550deb20f4dde01f79672d3899c89c39b48c9b18851a3e0ae16d0ce",
+  "revision": "sha256-01c564d2616b5c9112101494a0d7e3b233ae60a6da0ac64d108cbbd9879fd6f6",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
+    "src/00-errors.part",
     "src/00-mugging-ff.part",
     "src/00-ff-backup.part",
     "src/00-chat-ff.part",

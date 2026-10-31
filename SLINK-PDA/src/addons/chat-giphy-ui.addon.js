@@ -60,7 +60,7 @@
           if(Object.hasOwn(changes,'apiKey')&&!Object.hasOwn(dirty,'apiKey'))key.value='';
           key.placeholder=model.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';
           saveStatus.textContent=Object.keys(dirty).length?'Newer edits pending…':'Saved on this device.';$('[data-retry]').hidden=true;
-        }catch(error){if(!stopped){saveStatus.textContent='Not saved: '+error.message;$('[data-retry]').hidden=false;}}
+        }catch(error){if(!stopped){saveStatus.textContent='Not saved: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));$('[data-retry]').hidden=false;}}
         if(!stopped)state();
       });saveQueue=task;return task;
     }
@@ -145,7 +145,7 @@
     function applySettings(settings){if(stopped)return;model=settings;enabled.checked=settings.enabled;mode.value=settings.keyMode;
       enabled.disabled=false;mode.disabled=false;key.placeholder=settings.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';saveStatus.textContent='Settings save automatically.';state();
     }
-    const ready=client.get().then(applySettings).catch(error=>{if(!stopped)saveStatus.textContent='Could not load settings: '+error.message;});
+    const ready=client.get().then(applySettings).catch(error=>{if(!stopped)saveStatus.textContent='Could not load settings: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));});
     function suspend(){suspended=true;revision++;queued=null;clearTimeout(searchTimer);stopMedia();}
     if(options.chatWindow){root.querySelector('h3').hidden=true;root.querySelector('[aria-label="Media type"]').hidden=true;}
     return {host,ready,suspend,async open(type){

@@ -244,15 +244,19 @@ let now = Date.now();
 const prior = runtime.weaver || {};
 const events = (Array.isArray(prior.events) ? prior.events : []).map(Number).filter(at => at > now - WEAVER_RATE_WINDOW_MS && at <= now + 5_000).sort((a, b) => a - b);
 const retryAt = Math.max(Number(prior.cooldownUntil) || 0, Number(events.at(-1) || 0) + WEAVER_MIN_REQUEST_SPACING_MS, events.length >= WEAVER_RATE_LIMIT ? Number(events[0]) + WEAVER_RATE_WINDOW_MS : 0);
-runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0 };
+runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0, cooldownReason:prior.cooldownReason || 'unknown' };
 if (retryAt > now && retryAt - now <= WEAVER_MIN_REQUEST_SPACING_MS + 100) {
 await new Promise(resolve => global.setTimeout(resolve, retryAt - now)); now = Date.now();
 runtime.weaver.events = runtime.weaver.events.filter(at => at > now - WEAVER_RATE_WINDOW_MS);
-} else if (retryAt > now) { const error = new Error('Weaver request budget is reserved for a later watch.'); error.code = 'SLINK_WEAVER_RATE_LIMIT'; error.retryAfterMs = retryAt - now; throw error; }
+} else if (retryAt > now) { const external=Number(prior.cooldownUntil)===retryAt; const kind=external?runtime.weaver.cooldownReason:'minute'; const error = new Error(kind==='daily'?'Weaver daily request allowance has been reached. Consider disabling lower-priority Bazaar watches.':kind==='minute'?'Weaver per-minute request budget is capped. Remaining items are queued for the next cycle.':'Weaver request allowance has been reached; the service did not identify the reset period. Checks will retry after the current backoff.'); error.code = kind==='daily'?'SLINK_WEAVER_DAILY_LIMIT':kind==='minute'?'SLINK_WEAVER_RATE_LIMIT':'SLINK_WEAVER_LIMIT_UNKNOWN'; error.retryAfterMs = retryAt - now; throw error; }
 runtime.weaver.events.push(now);
 try { return await requestJson(url); }
 catch (error) {
-if (Number(error?.status) === 429) runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
+if (Number(error?.status) === 429) {
+runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
+const detail=[error?.message,error?.body?.error?.message,error?.body?.error,error?.body?.detail].filter(v=>typeof v==='string').join(' ');
+runtime.weaver.cooldownReason=/\bdaily\b|per[ -]?day/i.test(detail)?'daily':/per[ -]?minute|minute[ -]?(?:limit|quota)/i.test(detail)?'minute':'unknown';
+}
 throw error;
 }
 }
@@ -329,7 +333,7 @@ const body = await marketWeaverJson(url, runtime);
 storeMarketWeaverResult(target, runtime, { fetchedAt:Date.now(), nextCheckAt, screenedAt:summary.fetchedAt, lowestPrice, sourceUrl:url, listings:weaverListings(body, target.itemId) });
 } catch (error) {
 storeMarketWeaverResult(target, runtime, { nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || WEAVER_SUMMARY_REFRESH_MS), screenedAt:summary.fetchedAt, lowestPrice, listings:[] });
-if (error?.code === 'SLINK_WEAVER_RATE_LIMIT') break;
+if (['SLINK_WEAVER_RATE_LIMIT','SLINK_WEAVER_DAILY_LIMIT','SLINK_WEAVER_LIMIT_UNKNOWN'].includes(error?.code)) break;
 }
 }
 }
@@ -671,7 +675,7 @@ const root = shadow?.querySelector?.(`[data-module-root="${name}"]`) || null;
 return root ? installModuleRenderGuard(root) : null;
 }
 function moduleMessage(text, kind = '') {
-return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(text)}</div>`;
+return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(kind==='error'?errorMessage(text):text)}</div>`;
 }
 function actionLink(label, href) {
 return `<a class="action-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
