@@ -47,7 +47,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.113';
+const CLIENT_VERSION = '0.4.124';
 const WEEK_MS = 7 * 86_400_000;
 const PDA_CITY_SHOP_TARGETS = Object.freeze([
 Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
@@ -2342,9 +2342,3 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
-
-
-
-
-
-

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.113
+// @version      0.4.124
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -203,7 +203,7 @@
   }
 
   async function fetchSource(url) {
-    const mirror = url.replace('https://raw.githubusercontent.com/Considious/Torn-Scripts/', 'https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@').replace('@main/', '@' + FALLBACK_SOURCE_REF + '/');
+    const mirror = url.replace('https://raw.githubusercontent.com/Considious/Torn-Scripts/', 'https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@');
     const urls = preferSourceMirror ? [mirror, url] : [url, mirror];
     let failure;
     for (const endpoint of [...new Set(urls)]) {
@@ -387,8 +387,3 @@ if(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';
   installStorageBridge();
   await loadRuntime();
 })();
-
-
-
-
-
