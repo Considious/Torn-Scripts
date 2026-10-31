@@ -592,6 +592,7 @@ const focused = dashboardOpen && keyboardEditable(shadow.activeElement);
 host.toggleAttribute('data-keyboard-open', focused);
 }
 function keepFocusedFieldVisible(node) {
+if (!node || typeof node.closest !== 'function') return;
 const scroller = shadow.querySelector('.scroll');
 if (!scroller || shadow.activeElement !== node) return;
 const field = node.closest('label,.market-item-field,.access-form') || node;

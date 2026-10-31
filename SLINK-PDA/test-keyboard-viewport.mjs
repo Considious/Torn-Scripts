@@ -1,0 +1,15 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const shell=fs.readFileSync(new URL('./src/90-shell-bootstrap.part',import.meta.url),'utf8');
+const start=shell.indexOf('function keepFocusedFieldVisible('),end=shell.indexOf('function guardUnexpectedBottomJump(',start);
+const scroller={scrollTop:0,getBoundingClientRect:()=>({top:0,bottom:500})};
+const context={shadow:{activeElement:null,querySelector:()=>scroller},global:{}};
+vm.runInNewContext(shell.slice(start,end),context);
+assert.doesNotThrow(()=>context.keepFocusedFieldVisible(null),'Viewport resize with no focused shadow element must not call null.closest');
+assert.equal(scroller.scrollTop,0);
+const field={closest(){return this;},getBoundingClientRect:()=>({top:450,bottom:550})};
+context.shadow.activeElement=field;context.keepFocusedFieldVisible(field);
+assert.equal(scroller.scrollTop,60,'Focused fields still move above the keyboard/visible viewport bottom');
+context.keepFocusedFieldVisible(null);assert.equal(scroller.scrollTop,60,'Focus loss must not move the scroller');
+console.log('PDA viewport resize without focus is safe; focused input visibility behavior retained.');
