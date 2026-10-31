@@ -52,19 +52,24 @@ const pdaApiInput = moduleRoot('access')?.querySelector('[data-field="use-pda-ap
 const pdaFfInput = moduleRoot('access')?.querySelector('[data-field="use-pda-ff-key"]');
 const acceptance = moduleRoot('access')?.querySelector('[data-field="accept-terms"]');
 const acceptedHere=acceptance?.checked===true;
+const previousApiKey=currentApiKey();
 dataState.apiKey = String(keyInput?.value || '').trim();
 dataState.ffKey = String(ffInput?.value || '').trim();
 dataState.usePdaApiKey = pdaApiInput ? pdaApiInput.checked : false;
 dataState.usePdaFfKey = pdaFfInput ? pdaFfInput.checked : false;
-clearSessions();
+// A verification retry is not a logout. Retain acknowledged sessions for the
+// same identity until replacement succeeds or the service explicitly rejects it.
+if(currentApiKey()!==previousApiKey)clearSessions();
 moduleState.access.error = '';
 try {
 await fetchAllTerms(false);
 if (!acceptedHere) throw new Error('Accept the current SLINK terms and disclosures before authenticating.');
+if(!termsAccepted('permission'))clearSessions();
 acceptCurrentTerms();
 await ensurePermissionSession(true);
 await Promise.allSettled([hasScope('slink.level') ? ensureLevelingSession(true) : Promise.resolve(), hasScope('slink.war') ? ensureWarSession(true) : Promise.resolve()]);
 } catch (error) {
+if([401,403].includes(Number(error?.status))&&!['SLINK_INVALID_RESPONSE','SLINK_CONNECTION_CHALLENGE'].includes(error?.code))clearSessions();
 moduleState.access.error = errorMessage(error);
 }
 try {await writeDataState();await flushPdaStorage();if (!moduleState.access.error) editableState.commit(ticket);}

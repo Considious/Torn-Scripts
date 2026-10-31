@@ -31,3 +31,17 @@ assert.equal((await context.requestJsonRaw('https://slinkwarworker.richard-johns
 context.pdaHttpHandler=()=>async()=>({status:200,responseText:''});
 await assert.rejects(context.requestJsonRaw('https://slinkwarworker.richard-johnson554.workers.dev/api/terms'),/empty response/);
 console.log('PDA decoded-native and direct JSON terms payloads accepted; empty payload rejected explicitly.');
+
+// Diagnose the actual PDA sign-in boundary without echoing keys or response bodies.
+const authUrl='https://slinkcontributionworker.richard-johnson554.workers.dev/api/permissions/auth?key=never-show-this';
+context.pdaHttpHandler=()=>async()=>({status:200,responseText:'<html>private-body-must-not-appear</html>',responseHeaders:'Content-Type: text/html\r\nCF-Ray: example-123\r\n'});
+await assert.rejects(context.requestJsonRaw(authUrl,{method:'POST',body:{api_key:'private-key-must-not-appear'}}),error=>{
+ assert.equal(error.status,200);assert.match(error.message,/SLINK sign-in/);assert.match(error.message,/HTTP 200; type text\/html; PDA native/);assert.match(error.message,/example-123/);
+ assert.doesNotMatch(error.message,/never-show|private-body|private-key/);return true;
+});
+context.pdaHttpHandler=()=>async()=>({status:503,responseText:'not-json',responseHeaders:'Content-Type: text/plain'});
+await assert.rejects(context.requestJsonRaw(authUrl),error=>{assert.equal(error.status,503);assert.match(context.SLINK_ERRORS.message(error),/HTTP 503/);return true;});
+const challenged=context.pdaJsonResponseError(authUrl,{status:403,responseHeaders:'Content-Type: text/html\r\nCF-Mitigated: challenge'},'invalid JSON','PDA native');
+assert.equal(challenged.code,'SLINK_CONNECTION_CHALLENGE');assert.match(challenged.message,/browser challenge/);
+assert.doesNotMatch(challenged.message,/feature.*grants|never-show/);
+console.log('PDA sign-in diagnostics retain phase/status/content type/reference, distinguish a challenge, and never expose keys, query strings or bodies.');

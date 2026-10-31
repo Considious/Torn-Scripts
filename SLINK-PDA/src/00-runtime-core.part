@@ -1499,8 +1499,8 @@ const status = Number(response?.status ?? response?.statusCode) || 0;
 const responseBody=typeof response==='string'?response:response?.responseText??response?.body??response?.data??response;
 let parsed=null;
 if(responseBody&&typeof responseBody==='object')parsed=responseBody;
-else try {parsed=JSON.parse(String(responseBody||'null'));}catch{if(!status||status>=200&&status<300)throw new Error('Expected JSON from the requested service.');}
-if(parsed===null)throw new Error('The service returned an empty response instead of JSON data.');
+else try {parsed=JSON.parse(String(responseBody||'null'));}catch{if(!status||status>=200&&status<300)throw pdaJsonResponseError(url,response,'invalid JSON','PDA native');}
+if(parsed===null)throw pdaJsonResponseError(url,response,'empty response','PDA native');
 if (status && (status < 200 || status >= 300)) {
 const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
 error.status = status;
@@ -1508,6 +1508,26 @@ error.body = parsed;
 throw error;
 }
 return parsed ?? {};
+}
+// Report only response metadata, never key-bearing URLs, headers, bodies or tokens.
+function pdaJsonResponseError(url,response,reason,transport) {
+let target;try{target=new URL(url);}catch{target={hostname:'SLINK',pathname:''};}
+const status=Number(response?.status??response?.statusCode)||0;
+const headers=response?.responseHeaders;
+function header(name) {
+ if(typeof headers?.get==='function')return String(headers.get(name)||'');
+ if(headers&&typeof headers==='object')return String(Object.entries(headers).find(([key])=>key.toLowerCase()===name)?.[1]||'');
+ return String(headers||'').split(/\r?\n/).map(line=>line.split(':')).filter(([key])=>key.trim().toLowerCase()===name).map(parts=>parts.slice(1).join(':').trim())[0]||'';
+}
+const rawType=header('content-type').split(';')[0].trim().toLowerCase();
+const type=/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(rawType)?rawType:'not supplied';
+const ray=header('cf-ray').replace(/[^a-zA-Z0-9-]/g,'').slice(0,80);
+const phase=target.pathname==='/api/permissions/auth'?'SLINK sign-in':target.pathname==='/api/permissions/terms'?'SLINK access terms':target.hostname;
+const challenge=header('cf-mitigated').toLowerCase()==='challenge';
+const label=status?'HTTP '+status:'HTTP status not supplied';
+const code=challenge?'SLINK_CONNECTION_CHALLENGE':status>=500?'SLINK_SERVICE_UNAVAILABLE':'SLINK_INVALID_RESPONSE';
+const diagnosis=challenge?'Cloudflare requested a browser challenge instead of returning service data.':status===401||status===403?'The request was rejected before a readable service response was received. This alone does not establish a faction-grant problem.':'The service response could not be read as JSON ('+reason+').';
+return Object.assign(new Error(phase+': '+diagnosis+' '+label+'; type '+type+'; '+transport+(ray?'; Cloudflare reference '+ray:'')+'. Your saved key and settings have not been cleared. ['+code+']'),{code,status});
 }
 const ffScouterRetryAt = new Map();
 let pdaFfBackup=null;
@@ -1569,7 +1589,7 @@ GM_API.request({
 method, url, headers, data:body, timeout:Number(options.timeout) || 30_000,
 onload(response) {
 let parsed = null;
-try { parsed = JSON.parse(String(response.responseText || 'null')); } catch { if(Number(response.status)>=200&&Number(response.status)<300){reject(new Error('Expected JSON from the requested service.'));return;} }
+try { parsed = JSON.parse(String(response.responseText || 'null')); } catch { if(Number(response.status)>=200&&Number(response.status)<300){reject(pdaJsonResponseError(url,response,'invalid JSON','PDA userscript HTTP'));return;} }
 if (Number(response.status) < 200 || Number(response.status) >= 300) {
 const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
 error.status = Number(response.status) || 0;
@@ -1586,7 +1606,7 @@ onerror(response) { reject(new Error(response?.error || response?.statusText || 
 }
 return global.fetch(url, { method, headers, body, cache:'no-store', credentials:'omit' }).then(async response => {
 let parsed = null;
-try { parsed = await response.json(); } catch { if(response.ok)throw new Error('Expected JSON from the requested service.'); }
+try { parsed = await response.json(); } catch { if(response.ok)throw pdaJsonResponseError(url,{status:response.status,responseHeaders:response.headers},'invalid JSON','browser HTTP'); }
 if (!response.ok) {
 const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
 error.status = response.status;
