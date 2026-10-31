@@ -2,14 +2,14 @@
   'use strict';
   // Owner explicitly approved publication as a shared client-side application key.
   const APPLICATION_KEY = '3HOMWQm6YvOIVJfRZsTNjiE3g86AqzoW';
-  const DEFAULTS = Object.freeze({ enabled:false, keyMode:'integrated', apiKey:'' });
+  const DEFAULTS = Object.freeze({ enabled:false, inlineMedia:true, keyMode:'integrated', apiKey:'' });
   function normalize(value = {}) {
-    return { ...DEFAULTS, ...value, enabled:value.enabled === true,
+    return { ...DEFAULTS, ...value, enabled:value.enabled === true, inlineMedia:value.inlineMedia !== false,
       keyMode:value.keyMode === 'custom' ? 'custom' : 'integrated', apiKey:String(value.apiKey || '').trim() };
   }
   function publicSettings(value) {
     const settings = normalize(value);
-    return { enabled:settings.enabled, keyMode:settings.keyMode, hasCustomKey:!!settings.apiKey };
+    return { enabled:settings.enabled, inlineMedia:settings.inlineMedia, keyMode:settings.keyMode, hasCustomKey:!!settings.apiKey };
   }
   function mediaUrl(value) {
     try {
@@ -96,6 +96,7 @@
       const task = saves.catch(()=>{}).then(async()=>{
         await authorize(); const previous = normalize(await read()), next = { ...previous };
         if (Object.hasOwn(captured,'enabled')) next.enabled = captured.enabled === true;
+        if (Object.hasOwn(captured,'inlineMedia')) next.inlineMedia = captured.inlineMedia !== false;
         if (Object.hasOwn(captured,'keyMode')) {
           if (!['integrated','custom'].includes(captured.keyMode)) throw Error('Choose a GIPHY key option.');
           next.keyMode = captured.keyMode;
@@ -105,7 +106,7 @@
           if (key && !/^[a-zA-Z0-9_-]{8,128}$/.test(key)) throw Error('Enter a valid GIPHY API key, not a URL or Torn key.');
           next.apiKey = key;
         }
-        await write(next); return publicSettings(next);
+        await write(next);if(global.CustomEvent)global.dispatchEvent?.(new global.CustomEvent('slink-chat-media-settings')); return publicSettings(next);
       });
       saves = task; return task;
     }

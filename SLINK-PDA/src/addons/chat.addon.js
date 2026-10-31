@@ -17,7 +17,7 @@
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
   const CHAT_HEADER_SELECTOR = 'button[class*="header___"], [class*="header___"]';
   const CHAT_HEADER_DISCOVERY_SELECTOR = 'button[data-prevent-flyout-swipe="true"][class*="header___"], button[class*="header___"]';
-  const MINIMIZE_CONTROL_SELECTOR = 'svg[aria-label="Minimize"], svg[class*="minimizeIcon___"]';
+  const MINIMIZE_CONTROL_SELECTOR = '[aria-label="Minimize"], [aria-label^="Minimize "], svg[class*="minimizeIcon___"]';
   const SCOPE_CONTEXTS = Object.freeze({
     faction: ['faction'],
     private: ['private'],
@@ -44,9 +44,11 @@
   let scanTimer = null;
 
   let observer = null;
+  let inlineMedia = null;
   let enabled = false;
   const activity = globalThis.SLINK_PDA_PAGE_ACTIVITY;
   function syncActivity() {
+    inlineMedia?.sync();
     observer?.disconnect();
     if (!enabled || !activity.eligible()) { activity.cancel(scanTimer); scanTimer=null; closeMenu(); return; }
     observer.observe(document.documentElement, { childList:true, subtree:true }); scheduleScan();
@@ -55,17 +57,20 @@
   function enable() {
     if (enabled) return;
     enabled = true;
+    if(!inlineMedia&&globalThis.SLINK_CHAT_MEDIA)inlineMedia=globalThis.SLINK_CHAT_MEDIA.mount({activity,enabled:()=>enabled,settings:()=>globalThis.SLINK_GIPHY.client().get()});
+    void inlineMedia?.refresh();
     addStyles();
     observer = new MutationObserver(mutations => {
       if (!activity.eligible()) return;
       if (menuChatRoot && !menuChatRoot.isConnected) closeMenu();
       const selector = CHAT_ROOT_SELECTOR + ',' + CHAT_HEADER_DISCOVERY_SELECTOR + ',' + COMPOSER_SELECTOR + ',[data-testid="editor-root"]';
-      if (mutations.some(mutation => [...(mutation.addedNodes || [])].some(node => node.nodeType === 1 && (node.matches?.(selector) || node.querySelector?.(selector))))) scheduleScan();
+      if (mutations.some(mutation=>mutation.target?.closest?.(CHAT_HEADER_SELECTOR)) || mutations.some(mutation => [...(mutation.addedNodes || [])].some(node => node.nodeType === 1 && (node.matches?.(selector) || node.querySelector?.(selector))))) scheduleScan();
     });
     syncActivity();
     window.addEventListener('hashchange', scheduleScan);
   }
   window.addEventListener('slink-chat-enable', enable);
+  window.addEventListener('slink-chat-media-settings',()=>{void inlineMedia?.refresh();});
 
   window.addEventListener('resize', () => {
     if (activity.eligible() && menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
@@ -317,6 +322,7 @@
   }
 
   function scanContexts() {
+    inlineMedia?.sync();
     if (!enabled || !activity.eligible()) return;
     const handledHeaders = new Set();
     document.querySelectorAll(CHAT_ROOT_SELECTOR).forEach((root) => {
@@ -377,13 +383,21 @@
     event.stopImmediatePropagation?.();
   }
 
+  function injectMediaTrigger(root,header,container,minimize){
+    if(container.querySelector(':scope > [data-ccb-media-trigger]'))return;
+    const button=document.createElement('span');button.dataset.ccbMediaTrigger='true';button.className='ccb-trigger';button.style.cssText='flex:0 0 34px;width:34px;margin-left:4px;font-size:11px';button.setAttribute('role','button');button.tabIndex=0;button.title='Search GIFs and stickers';button.setAttribute('aria-label','SLINK: search GIFs and stickers');button.textContent='GIF';
+    const open=event=>{stopHeaderAction(event);const current=chatRootFromHeader(header)||root;if(!menu||menu.hidden||menuChatRoot!==current)toggleMenu(current);windowMedia?.select('gifs');};
+    for(const type of ['pointerdown','mousedown','dragstart'])button.addEventListener(type,stopHeaderAction);
+    button.addEventListener('click',open);button.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key))open(event);});
+    container.insertBefore(button,minimize?.parentElement===container?minimize:null);
+  }
   function injectMenuTrigger(root, suppliedHeader = null) {
     const header = suppliedHeader || chatHeader(root);
     if (!header) return;
     const minimize = minimizeControl(header) || minimizeControl(root);
     const actionContainer = minimize?.parentElement || header;
     const current = actionContainer.querySelector(':scope > [data-ccb-trigger]');
-    if (current) return;
+    if (current) { injectMediaTrigger(root,header,actionContainer,minimize);return; }
     const currentRoot = () => chatRootFromHeader(header) || root;
 
     const trigger = document.createElement('span');
@@ -409,6 +423,7 @@
     });
 
     actionContainer.insertBefore(trigger, minimize?.parentElement === actionContainer ? minimize : null);
+    injectMediaTrigger(root,header,actionContainer,minimize);
   }
 
   function ensureMenu() {
@@ -1123,5 +1138,3 @@ function render(){
 function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';api.listen(root,'click',async event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});await api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);await api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);await api.save();clear();scan();render();}});}
 api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(schedule);if(global.SLINK_PDA_PAGE_ACTIVITY.eligible())observer.observe(document.body,{childList:true,subtree:true});scan();},render(){render();bind();},alerts(){return[];}});
 })(globalThis);
-
-

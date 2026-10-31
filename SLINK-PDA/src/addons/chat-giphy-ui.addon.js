@@ -28,7 +28,7 @@
       <p data-save role="status">Loading saved settings…</p>
       <p>Optional. GIF searches contact GIPHY; sticker searches also contact ChatSticker. Animated previews play only when clicked. Your message is never sent automatically.</p>
       <div class="actions" aria-label="Media type"><button type="button" data-media-type="gif" aria-pressed="true" disabled>GIFs</button><button type="button" data-media-type="sticker" aria-pressed="false" disabled>Stickers</button></div>
-      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
+      <label><input type="checkbox" data-inline-media disabled> Show GIF/sticker previews inside chat (animations play only when clicked)</label>\n      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
       <div class="actions"><button type="button" data-search disabled>Search</button><button type="button" data-trending disabled>Trending / popular</button><button type="button" data-next hidden>Next results</button></div>
       <a href="https://giphy.com/" target="_blank" rel="noopener noreferrer"><img class="attribution" data-attribution alt="Powered by GIPHY"></a>
       <p data-status role="status"></p><div data-results></div>
@@ -66,6 +66,7 @@
     }
     function change(name,value,delay=0){dirty[name]=value;revision++;queued=null;clearTimeout(searchTimer);stopMedia();results.replaceChildren();$('[data-next]').hidden=true;state();clearTimeout(timer);timer=setTimeout(save,delay);}
     enabled.addEventListener('change',()=>change('enabled',enabled.checked));
+    $('[data-inline-media]').addEventListener('change',()=>change('inlineMedia',$('[data-inline-media]').checked));
     mode.addEventListener('change',()=>change('keyMode',mode.value));
     key.addEventListener('input',()=>{if(key.value.trim())change('apiKey',key.value.trim(),500);});
     key.addEventListener('blur',()=>void save());
@@ -142,7 +143,7 @@
     const unsubscribe=activity?.subscribe(visibility);
     const visibleObserver=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{if(entries.some(e=>!e.isIntersecting))stopMedia();}):null;
     visibleObserver?.observe(host);
-    function applySettings(settings){if(stopped)return;model=settings;enabled.checked=settings.enabled;mode.value=settings.keyMode;
+    function applySettings(settings){if(stopped)return;model=settings;enabled.checked=settings.enabled;$('[data-inline-media]').checked=settings.inlineMedia!==false;$('[data-inline-media]').disabled=false;mode.value=settings.keyMode;
       enabled.disabled=false;mode.disabled=false;key.placeholder=settings.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';saveStatus.textContent='Settings save automatically.';state();
     }
     const ready=client.get().then(applySettings).catch(error=>{if(!stopped)saveStatus.textContent='Could not load settings: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));});
