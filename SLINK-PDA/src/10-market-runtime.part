@@ -233,11 +233,7 @@ if (body?.error) throw new Error(body.error.message || body.error.error || 'Torn
 return body;
 }
 async function marketEnsureCatalog(runtime, force = false) {
-if (!force && runtime.catalog?.items?.length && Date.now() - Number(runtime.catalog.fetchedAt) < 86_400_000) return runtime.catalog;
-const body = await marketTornJson(`${URLS.torn}/v2/torn/items?cat=All&sort=ASC`, '/v2/torn/items', 'high');
-const items = catalogItems(body);
-if (!items.length) throw new Error('Torn returned an empty item catalog.');
-runtime.catalog = { fetchedAt:Date.now(), items };
+runtime.catalog=await pdaSharedData().catalog({key:currentApiKey(),force,maxAgeMs:86_400_000,needPrices:true});
 return runtime.catalog;
 }
 function marketDue(source, force) {
@@ -248,15 +244,19 @@ let now = Date.now();
 const prior = runtime.weaver || {};
 const events = (Array.isArray(prior.events) ? prior.events : []).map(Number).filter(at => at > now - WEAVER_RATE_WINDOW_MS && at <= now + 5_000).sort((a, b) => a - b);
 const retryAt = Math.max(Number(prior.cooldownUntil) || 0, Number(events.at(-1) || 0) + WEAVER_MIN_REQUEST_SPACING_MS, events.length >= WEAVER_RATE_LIMIT ? Number(events[0]) + WEAVER_RATE_WINDOW_MS : 0);
-runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0 };
+runtime.weaver = { events, cooldownUntil:Number(prior.cooldownUntil) > now ? Number(prior.cooldownUntil) : 0, cooldownReason:prior.cooldownReason || 'unknown' };
 if (retryAt > now && retryAt - now <= WEAVER_MIN_REQUEST_SPACING_MS + 100) {
 await new Promise(resolve => global.setTimeout(resolve, retryAt - now)); now = Date.now();
 runtime.weaver.events = runtime.weaver.events.filter(at => at > now - WEAVER_RATE_WINDOW_MS);
-} else if (retryAt > now) { const error = new Error('Weaver request budget is reserved for a later watch.'); error.code = 'SLINK_WEAVER_RATE_LIMIT'; error.retryAfterMs = retryAt - now; throw error; }
+} else if (retryAt > now) { const external=Number(prior.cooldownUntil)===retryAt; const kind=external?runtime.weaver.cooldownReason:'minute'; const error = new Error(kind==='daily'?'Weaver daily request allowance has been reached. Consider disabling lower-priority Bazaar watches.':kind==='minute'?'Weaver per-minute request budget is capped. Remaining items are queued for the next cycle.':'Weaver request allowance has been reached; the service did not identify the reset period. Checks will retry after the current backoff.'); error.code = kind==='daily'?'SLINK_WEAVER_DAILY_LIMIT':kind==='minute'?'SLINK_WEAVER_RATE_LIMIT':'SLINK_WEAVER_LIMIT_UNKNOWN'; error.retryAfterMs = retryAt - now; throw error; }
 runtime.weaver.events.push(now);
 try { return await requestJson(url); }
 catch (error) {
-if (Number(error?.status) === 429) runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
+if (Number(error?.status) === 429) {
+runtime.weaver.cooldownUntil = Date.now() + 15 * 60_000;
+const detail=[error?.message,error?.body?.error?.message,error?.body?.error,error?.body?.detail].filter(v=>typeof v==='string').join(' ');
+runtime.weaver.cooldownReason=/\bdaily\b|per[ -]?day/i.test(detail)?'daily':/per[ -]?minute|minute[ -]?(?:limit|quota)/i.test(detail)?'minute':'unknown';
+}
 throw error;
 }
 }
@@ -307,7 +307,9 @@ result.bazaar = payload; delete result.errors.bazaar; runtime.results[watch.uid]
 if (target.pricelist) runtime.pricelistResults[target.itemId] = { bazaar:payload, errors:{} };
 }
 async function pollMarketWeaverTargets(settings, allowed, runtime, force) {
-const targets = marketWeaverTargets(settings, allowed, runtime);
+const targets = marketWeaverTargets(settings, allowed, runtime).filter(target => force
+|| target.manual.some(watch => marketDue(runtime.results[watch.uid]?.bazaar))
+|| (target.pricelist && marketDue(runtime.pricelistResults?.[target.itemId]?.bazaar)));
 if (!targets.length) return;
 let summary;
 try { summary = await marketWeaverSummary(runtime, force, WEAVER_SUMMARY_REFRESH_MS); }
@@ -331,7 +333,7 @@ const body = await marketWeaverJson(url, runtime);
 storeMarketWeaverResult(target, runtime, { fetchedAt:Date.now(), nextCheckAt, screenedAt:summary.fetchedAt, lowestPrice, sourceUrl:url, listings:weaverListings(body, target.itemId) });
 } catch (error) {
 storeMarketWeaverResult(target, runtime, { nextCheckAt:Date.now() + (Number(error?.retryAfterMs) || WEAVER_SUMMARY_REFRESH_MS), screenedAt:summary.fetchedAt, lowestPrice, listings:[] });
-if (error?.code === 'SLINK_WEAVER_RATE_LIMIT') break;
+if (['SLINK_WEAVER_RATE_LIMIT','SLINK_WEAVER_DAILY_LIMIT','SLINK_WEAVER_LIMIT_UNKNOWN'].includes(error?.code)) break;
 }
 }
 }
@@ -673,7 +675,7 @@ const root = shadow?.querySelector?.(`[data-module-root="${name}"]`) || null;
 return root ? installModuleRenderGuard(root) : null;
 }
 function moduleMessage(text, kind = '') {
-return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(text)}</div>`;
+return `<div class="module-message ${escapeHtml(kind)}">${escapeHtml(kind==='error'?errorMessage(text):text)}</div>`;
 }
 function actionLink(label, href) {
 return `<a class="action-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
@@ -695,6 +697,8 @@ return score !== null && score >= 1 && score <= 3 ? score : null;
 }
 function ffLabel(row) {
 const value = ffNumber(row?.fairFight ?? row?.fair_fight);
+const backup=String(row?.backupSource||row?.fairFightSource||row?.estimateSource||'');
+if(backup.startsWith('SLINK Backup'))return (value===null?'N/A — unverified':number(value,2))+' ('+backup+')';
 if (value === null) return 'N/A — unverified';
 return number(value, 2) + (row?.fairFightStale ? ' (cached estimate)' : '');
 }
@@ -731,7 +735,9 @@ style.textContent = `
 return style;
 }
 function clearRacingHighlight() {
-document.querySelectorAll(`.${RACING_HIGHLIGHT_CLASS}`).forEach(node => node.classList.remove(RACING_HIGHLIGHT_CLASS));
-document.querySelectorAll(`[${RACING_LABEL_ATTRIBUTE}]`).forEach(node => node.remove());
+racingHighlightedNode?.classList.remove(RACING_HIGHLIGHT_CLASS);
+racingRecommendationLabel?.remove();
+racingHighlightedNode = null;
+racingRecommendationLabel = null;
+racingRecommendationKey = '';
 }
-

@@ -2,12 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
-function extract(name, async = false) {
-  const start = source.indexOf(`  ${async ? 'async ' : ''}function ${name}(`);
-  assert(start >= 0, `Missing ${name}`);
-  return source.slice(start, source.indexOf('\n  }', start) + 4);
-}
+import { extractFunction } from './test-support/runtime.mjs';
+const extract = name => extractFunction(name, 'src/30-dashboard-combat.part');
 function fixture({ mode = 'ranked-all', level = 15, ranked = true, prof = false, skipped = false, confirmation = true, focused = true, loseFocus = false } = {}) {
   const renders = [], delays = [], clicks = [];
   const row = { querySelector(selector) {
@@ -24,13 +20,15 @@ function fixture({ mode = 'ranked-all', level = 15, ranked = true, prof = false,
   const context = vm.createContext({
     moduleState:{ war:state },
     dataState:{ settings:{ war:{ armoryMode:mode, armoryWhitelist:skipped ? ['1'] : [] } }, caches:{ warArmoryMembers:{ members:level === undefined ? [] : [{ id:'1', level }] } } },
-    document:{ visibilityState:'visible', hasFocus:() => focused },
+    document:{ visibilityState:focused ? 'visible' : 'hidden', hasFocus:() => false },
+    pdaPagePresent:true,
     activeWarArmoryTab:() => tab,
     refreshWarArmoryMembers:async () => [],
     renderWar:() => renders.push({ busy:state.armoryBusy, error:state.error, status:state.armoryStatus }),
     errorMessage:error => error.message,
-    setTimeout:(callback, delay) => { delays.push(delay); if (loseFocus) focused = false; callback(); }
+    setTimeout:(callback, delay) => { delays.push(delay); if (loseFocus) context.document.visibilityState = 'hidden'; callback(); }
   });
+  vm.runInContext(extractFunction('pdaDomActive', 'src/00-runtime-core.part'), context);
   for (const name of ['warArmoryPageFocused', 'warArmorySetStatus', 'warArmoryBorrower', 'warArmoryEligible']) vm.runInContext(extract(name), context);
   for (const name of ['retrieveOneWarArmoryItem', 'retrieveWarArmoryItem']) vm.runInContext(extract(name, true), context);
   return { context, state, renders, delays, clicks, row, tab };

@@ -315,11 +315,11 @@ root.addEventListener('click', event => {
 const button = event.target.closest('[data-mp-action="refresh"]');
 if (button) void refresh(true);
 });
-root.addEventListener('change', event => {
+api.listen(root,'change', async event => {
 const target = event.target;
 const config = settings();
 if(target.matches('[data-mp-bank-amount]')){
-if(target.validity.valid){config.bankAmount=Number(target.value);api.save();}
+if(target.validity.valid){config.bankAmount=Number(target.value);await api.save();}
 return;
 }
 if (target.matches('[data-mp-setting]')) {
@@ -327,7 +327,7 @@ const key = target.dataset.mpSetting;
 config[key] = target.type === 'checkbox' ? target.checked : Number(target.value);
 }
 if (target.matches('[data-mp-stock]')) config.stockAlerts[target.dataset.mpStock] = target.checked;
-api.save();
+await api.save();
 api.alertsChanged();
 });
 root.addEventListener('input',event=>{
@@ -371,13 +371,13 @@ current.bankPlanner={...previousPlanner,meritCatalogAt:Date.now()};
 current.bankPlanner={...(current.bankPlanner||previousPlanner),rates,meritCatalog,fetchedAt,userMerits,userStocks:stocksData,tornStocks,error:bankError};
 const user={...achievements,money:moneyData?.money||{},properties:propertiesData?.properties||[],currentProperty:currentPropertyData?.property||currentPropertyData?.properties?.[0]||null,stocks:stocksData?.stocks||[]};
 if (force || !current.itemCatalogAt || Date.now()-current.itemCatalogAt>=CATALOG_MS) {
-const catalogBody = await api.tornJson('/v2/torn/items?sort=ASC','SLINK PDA Money and Property item values');
-current.itemCatalog = api.catalogItems(catalogBody);
-current.itemCatalogAt = Date.now();
+const catalogBody = await api.sharedCatalog({force,maxAgeMs:CATALOG_MS,needPrices:true});
+current.itemCatalog = catalogBody.items;
+current.itemCatalogAt = catalogBody.pricesAt;
 }
 current.status = buildStatus({user,tornStocks,itemCatalog:current.itemCatalog || []});
 current.fetchedAt = Date.now();
-api.save();
+await api.save();
 api.alertsChanged();
 return current.status;
 } catch (caught) {

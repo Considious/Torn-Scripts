@@ -103,6 +103,14 @@ context.SLINK_PDA_PLUGIN_API.tornJson=async path=>{
   if(path==='/v2/user/money')return {money:{wallet:12345}};
   return {};
 };
+context.crypto=(await import('node:crypto')).webcrypto;context.TextEncoder=TextEncoder;
+vm.runInContext(await readFile(new URL('./src/00-shared-data.part',import.meta.url),'utf8'),context);
+const providers=context.SLINK_SHARED_DATA.create({
+read:()=>storedCache.sharedProviders||{},write:value=>{storedCache.sharedProviders=value;},
+normalizeItems:parserContext.catalogItems,
+request:()=>context.SLINK_PDA_PLUGIN_API.tornJson('/v2/torn/items?cat=All&sort=ASC')
+});
+context.SLINK_PDA_PLUGIN_API.sharedCatalog=options=>providers.catalog({key:'fixture',...options});
 assert.equal((await plugin.refresh(true)).money.cashOnHand,12345);
 assert.equal(storedCache.itemCatalog[0].marketPrice,800000);
 assert.equal(plugin.test.bankComparison(storedCache.bankPlanner,2e9).rows.length,5);

@@ -13,7 +13,7 @@ const document={visibilityState:'visible',hasFocus:()=>focused,documentElement:{
  createElement:()=>({}),querySelectorAll(selector){queries++;if(selector.includes('Take Xanax'))return hasAction?[action]:[];energyReads++;return [energy];}};
 class Observer{constructor(fn){this.fn=fn;observers.push(this);}observe(){this.active=true;}disconnect(){this.active=false;}}
 const ctx={document,MutationObserver:Observer,Object,Number,String,Math,Set,console,addEventListener:on,
- setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key),confirm:()=>{confirmed++;return false;}};ctx.global=ctx;
+ setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key),confirm:()=>{confirmed++;return false;}};ctx.global=ctx;ctx.pdaDomActive=()=>document.visibilityState!=='hidden';ctx.SLINK_PDA_PAGE_ACTIVITY={subscribe(){}};ctx.SLINK_EXTENSION={core:{pageActivity:{eligible:()=>document.visibilityState==='visible'&&focused,subscribe(){}}}};
 vm.runInNewContext(source,ctx);const flush=()=>{for(const [key,fn]of[...timers]){timers.delete(key);fn();}};flush();
 assert.equal(energyReads,0,'Without Xanax actions there must be no full-page energy search');queries=0;
 const unrelated={type:'characterData',target:{nodeType:3,parentElement:{closest:()=>null}}};
@@ -27,4 +27,5 @@ document.visibilityState='visible';emit('visibilitychange');assert.equal(observe
 if(!isPda){focused=false;emit('blur');assert.equal(observers[0].active,false);focused=true;emit('focus');assert.equal(observers[0].active,true);}
 emit('pagehide');assert.equal(observers[0].active,false);emit('pageshow');assert.equal(observers[0].active,true);
 console.log('10,000 unrelated attack mutations: zero rescans; live Xanax confirmation and repeated activity resume passed.');
+
 

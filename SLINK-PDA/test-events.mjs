@@ -5,6 +5,7 @@ import vm from 'node:vm';
 let plugin = null;
 const storedSettings = {};
 const context = {
+  SLINK_PDA_PAGE_ACTIVITY:{eligible:()=>true,subscribe(){}},
   console,
   document:{ body:null },
   setInterval() { return 1; },

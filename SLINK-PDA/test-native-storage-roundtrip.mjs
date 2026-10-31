@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const loader=fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js',import.meta.url),'utf8');
-const source=loader.slice(loader.indexOf('  function isRecord(value)'),loader.indexOf('  function validBundle(value)'));
-const dataKey='data',statsKey='own-stats';
+const source=loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)'));
+const dataKey='data',statsKey='own-stats',TARGET_RECORDS_KEY='target-records';
 const local=new Map(),native=new Map([[dataKey,{_savedAt:100,caches:{ownBattleStats:{total:571764,checkedAt:100}}}]]);
 const callbacks=new Map();
 let inFlight=0,maxInFlight=0;
 let finishDataWrite;
 const dataWritten=new Promise(resolve=>{finishDataWrite=resolve;});
-const ctx={DATA_STORAGE_KEY:dataKey,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:statsKey,
+const ctx={DATA_STORAGE_KEY:dataKey,TARGET_RECORDS_KEY,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:statsKey,UI_STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes',
+  n:dataKey,s:'mirror',i:statsKey,l:'ui',c:'snoozes',u:TARGET_RECORDS_KEY,m:'write',d:new Set([dataKey,statsKey,'ui','snoozes',TARGET_RECORDS_KEY]),
   BRIDGED_STORAGE_KEYS:new Set([dataKey,statsKey]),STORAGE_WRITE_EVENT:'write',
   document:{addEventListener(type,callback){callbacks.set(type,callback);}},
   globalThis:{localStorage:{getItem:k=>local.get(k)||null,setItem:(k,v)=>local.set(k,v)},
@@ -18,7 +19,9 @@ const ctx={DATA_STORAGE_KEY:dataKey,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_ST
     GM_setValue:async(k,value)=>{inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);await new Promise(resolve=>setTimeout(resolve,value?.total===571764?20:1));native.set(k,value);inFlight--;if(k===dataKey&&value?._savedAt===200)finishDataWrite();}}
 };
 vm.createContext(ctx);vm.runInContext(source,ctx);
-ctx.installStorageBridge();
+const bridgeStart=loader.indexOf('!function(){let e=Promise.resolve();'),bridgeEnd=loader.indexOf(',await loadRuntime()',bridgeStart);
+assert(bridgeStart>=0&&bridgeEnd>bridgeStart,'The actual PDA launcher must register its storage acknowledgement bridge.');
+vm.runInContext(loader.slice(bridgeStart,bridgeEnd),ctx);
 assert.equal((await ctx.collectBootstrap())[dataKey].caches.ownBattleStats.total,571764,'PDA async primary reads must be awaited.');
 const send=(key,value)=>callbacks.get('write')({detail:JSON.stringify({key,value})});
 send(statsKey,{total:571764,checkedAt:100});

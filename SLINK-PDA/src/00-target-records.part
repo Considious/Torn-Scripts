@@ -1,0 +1,87 @@
+(function installPdaTargetRecords(global) {
+'use strict';
+const copy=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
+const record=value=>value&&typeof value==='object'&&!Array.isArray(value);
+const safe=key=>!['__proto__','constructor','prototype'].includes(key);
+function merge(base,value,current) {
+if(JSON.stringify(base)===JSON.stringify(value))return current;
+if(!record(base)||!record(value)||!record(current))return copy(value);
+const result={...current};
+for(const key of new Set([...Object.keys(base),...Object.keys(value)])){
+if(!safe(key))continue;
+if(!Object.hasOwn(value,key)){if(Object.hasOwn(base,key))delete result[key];}
+else result[key]=merge(base[key],value[key],current[key]);
+}
+return result;
+}
+function valid(op) {
+return record(op)&&op.schema===1&&/^[a-zA-Z0-9:_-]{1,160}$/.test(op.id||'')&&
+['seed','add','patch','remove','migration'].includes(op.kind)&&Number.isFinite(op.clock)&&op.clock>=0&&
+(op.kind==='migration'||Number.isSafeInteger(op.playerId)&&op.playerId>0)&&
+(!['seed','add','patch'].includes(op.kind)||record(op.value)&&record(op.base))&&
+(!['add','patch'].includes(op.kind)||Array.isArray(op.kind==='add'?op.seenDeletes:op.generations));
+}
+function project(operations) {
+const groups=new Map(),targets={},generations={},deletions={};
+for(const op of operations){if(!valid(op))throw Error('Unsupported or damaged target journal. No records were removed.');if(op.kind==='migration')continue;const key=String(op.playerId);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(op);}
+for(const [key,group]of groups){
+const removed=group.filter(op=>op.kind==='remove').map(op=>op.id).sort();deletions[key]=removed;
+const adds=group.filter(op=>op.kind==='seed'?removed.length===0:op.kind==='add'&&removed.every(id=>op.seenDeletes?.includes(id)));
+if(!adds.length)continue;
+const alive=new Set(adds.map(op=>op.id));generations[key]=[...alive].sort();
+const changes=group.filter(op=>alive.has(op.id)||op.kind==='patch'&&op.generations?.some(id=>alive.has(id)));
+changes.sort((a,b)=>(a.kind==='seed'?0:1)-(b.kind==='seed'?0:1)||(a.kind==='seed'?Number(a.value.updatedAt||0)-Number(b.value.updatedAt||0):a.clock-b.clock)||a.id.localeCompare(b.id));
+let value={};for(const op of changes)value=merge(op.base,op.value,value);
+targets[key]=value;
+}
+return{targets,generations,deletions};
+}
+function create({snapshot={},legacy={},write,onChange=()=>{},id=()=>global.crypto.randomUUID()}) {
+const operations=new Map(),pending=new Map();let queue=Promise.resolve(),clock=0,view,error=String(snapshot.error||'');
+function adopt(rows){for(const op of rows||[]){if(!valid(op))throw Error('Unsupported or damaged target journal. No records were removed.');const prior=operations.get(op.id);if(prior&&JSON.stringify(prior)!==JSON.stringify(op))throw Error('Target operation identity collision.');}for(const op of rows||[]){operations.set(op.id,copy(op));clock=Math.max(clock,op.clock);}view=null;}
+function current(){return view||(view=project([...operations.values()]));}
+function publish(){onChange(copy(current().targets));}
+adopt(snapshot.ops);
+function operation(kind,playerId,base={},value={}) {
+const state=['add','patch'].includes(kind)?current():{},key=String(playerId);
+const op={schema:1,id:id(),kind,playerId,clock:kind==='seed'?0:++clock,base:copy(base),value:copy(value)};
+if(kind==='add')op.seenDeletes=state.deletions[key]||[];
+if(kind==='patch')op.generations=state.generations[key]||[];
+adopt([op]);pending.set(op.id,op);return op;
+}
+function synchronize(readOnly=false) {
+const task=queue.catch(()=>{}).then(async()=>{
+if(snapshot.error)throw Error('Target storage could not be read at startup. Reload to retry; existing records were not changed.');
+const batch=readOnly?[]:[...pending.values()];
+const result=await write({ops:copy(batch),readOnly});
+if(!record(result)||!Array.isArray(result.ops))throw Error('Target storage did not confirm its journal.');
+adopt(result.ops);
+if(batch.some(op=>!result.ops.some(saved=>saved.id===op.id&&JSON.stringify(saved)===JSON.stringify(op))))throw Error('Target storage did not retain every edit.');
+for(const op of batch)pending.delete(op.id);
+error='';publish();
+const conflict=batch.some(op=>op.kind==='patch'&&!current().targets[String(op.playerId)]);
+if(conflict)throw Error('This target was deleted on another page. Your edit cannot silently re-add it.');
+return copy(current().targets);
+}).catch(caught=>{error=String(caught.message||caught);throw caught;});
+task.catch(()=>{});queue=task;return task;
+}
+if(!error&&![...operations.values()].some(op=>op.kind==='migration')){
+for(const [key,value]of Object.entries(legacy||{}))if(Number.isSafeInteger(Number(key))&&Number(key)>0&&record(value))operation('seed',Number(key),{},value);
+operation('migration',0);
+}
+const ready= pending.size?synchronize():Promise.resolve(copy(current().targets));ready.catch(()=>{});
+function change(kind,playerId,base,value){
+if(snapshot.error)throw Error(error||snapshot.error);
+if(!['add','patch','remove'].includes(kind)||!Number.isSafeInteger(Number(playerId))||Number(playerId)<=0||!record(base||{})||!record(value||{}))throw Error('Invalid target edit.');
+if(kind==='patch'&&!current().targets[String(playerId)])throw Error('The saved target was removed. Re-add it explicitly.');
+if(kind==='add'&&current().targets[String(playerId)])kind='patch';
+operation(kind,Number(playerId),base||{},value||{});publish();
+return synchronize();
+}
+return Object.freeze({ready,change,refresh:()=>synchronize(true),retry:()=>synchronize(),
+snapshot:()=>copy(snapshot.error?legacy:current().targets),status:()=>({pending:pending.size,error,operations:operations.size}),
+async flush(){await queue;if(error||pending.size)throw Error(error||'Target changes are not yet saved.');},
+replace(values){if(snapshot.error||!record(values)||Object.entries(values).some(([key,value])=>!Number.isSafeInteger(Number(key))||Number(key)<=0||!record(value)))throw Error('Invalid or unavailable target restore. No target changes were made.');for(const key of Object.keys(current().targets))if(!Object.hasOwn(values,key))operation('remove',Number(key));for(const[key,value]of Object.entries(values)){const old=current().targets[key]||{};operation(current().targets[key]?'patch':'add',Number(key),old,value);}publish();return synchronize();}});
+}
+global.SLINK_PDA_TARGET_RECORDS=Object.freeze({create,project,valid});
+})(globalThis);

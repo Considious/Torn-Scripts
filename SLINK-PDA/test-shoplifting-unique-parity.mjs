@@ -9,7 +9,8 @@ const loader = fs.readFileSync(path.join(directory, 'SLINK_PDA_Dashboard.user.js
 const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'source-manifest.json'), 'utf8'));
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-assert(loader.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim() === manifest.revision, 'PDA loader and manifest versions must agree.');
+assert(loader.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim() === JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).version, 'PDA installer version and package metadata must agree.');
+assert(/^sha256-[a-f0-9]{64}$/.test(manifest.revision), 'Runtime manifest must use its generated content digest.');
 
 const match = core.match(/const SHOPLIFTING_UNIQUE_WINDOWS = Object\.freeze\((\[[\s\S]*?\])\.map\(entry => Object\.freeze\(entry\)\)\);/);
 assert(match, 'Shoplifting unique catalog is missing.');

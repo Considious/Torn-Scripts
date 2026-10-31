@@ -2,12 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
-function extract(name) {
-  const start = source.indexOf(`  function ${name}(`);
-  assert(start >= 0, `Missing ${name}`);
-  return source.slice(start, source.indexOf('\n  }', start) + 4);
-}
+import { extractFunction } from './test-support/runtime.mjs';
+const extract = name => extractFunction(name, name === 'finite' ? 'src/00-runtime-core.part' : 'src/40-war.part');
 let now = 1_800_000_000_000;
 const settings = { stackModeSince:now, snoozedUntil:{}, timer24EndsAt:0 };
 const notifications = [];
@@ -18,6 +14,10 @@ const context = vm.createContext({
   utcDay:() => Math.floor(now / 86_400_000),
   number:String, duration:String,
   acceptedMissions:() => [], raceActive:() => false,
+  crimeUniqueProgressRowsPda:()=>[], searchForCashOpportunitiesPda:()=>[],
+  shopliftingUniqueOpportunitiesPda:()=>[], dailyCrimeUniqueDuePda:()=>false,
+  cityShopTargetStockPda:()=>[], stakeoutAlertRows:()=>[], companyAlertRows:()=>[], pdaPluginAlerts:()=>[],
+  PDA_ABROAD:{alerts:()=>[]},
   googlePlayPointsAccess:() => ({ detail:'', links:[] }),
   showSystemAlert:alert => notifications.push(alert.id), updateAlertIndicator:() => {}
 });

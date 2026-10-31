@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.113
+// Runtime identity is derived from the source-manifest content revision.
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -29,10 +29,55 @@
 // ==/UserScript==
 (function installSlinkPdaDashboard(global) {
 'use strict';
-const BUILD = '0.4.113-direct-source';
+const BUILD = String(global.__SLINK_PDA_BOOTSTRAP__?.sourceRevision || 'direct-source').slice(0, 24);
 const HOST_ID = 'slink-pda-dashboard-host';
+if (global.SLINK_PDA_DASHBOARD?.build===BUILD && document.getElementById(HOST_ID)?.dataset?.slinkReady==='true') {
+try {delete global.__SLINK_PDA_BOOTSTRAP__;} catch {}
+global.SLINK_PDA_DASHBOARD.open();
+return;
+}
+// PDA visibility is authoritative; WebView hasFocus() is not reliable.
+let pdaPagePresent = true;
+let pdaActivityGeneration = 0;
+const pdaActivitySubscribers = new Set();
+const pdaDomTimers = new Set();
+function pdaDomActive() { return pdaPagePresent && document.visibilityState !== 'hidden'; }
+let pdaLastActive=pdaDomActive();
+function pdaActivityChanged() {
+const active=pdaDomActive();
+if (active===pdaLastActive) return;
+pdaLastActive=active;
+pdaActivityGeneration += 1;
+if (!active) {for (const timer of pdaDomTimers) global.clearTimeout(timer);pdaDomTimers.clear();}
+for (const callback of pdaActivitySubscribers) {
+try {callback(active);} catch {console.warn('[SLINK PDA] Page activity subscriber failed.');}
+}
+}
+function deferPdaDomWork(callback,delay=0) {
+if (!pdaDomActive()) return null;
+const generation=pdaActivityGeneration;
+const timer=global.setTimeout(()=>{
+pdaDomTimers.delete(timer);
+if (generation===pdaActivityGeneration && pdaDomActive()) callback();
+},delay);
+pdaDomTimers.add(timer);
+return timer;
+}
+function cancelPdaDomWork(timer) {global.clearTimeout(timer);pdaDomTimers.delete(timer);}
+global.SLINK_PDA_PAGE_ACTIVITY = Object.freeze({
+eligible:pdaDomActive,
+defer:deferPdaDomWork,
+cancel:cancelPdaDomWork,
+token:() => pdaActivityGeneration,
+current:token => token === pdaActivityGeneration && pdaDomActive(),
+subscribe(callback) { pdaActivitySubscribers.add(callback); return () => pdaActivitySubscribers.delete(callback); }
+});
+document.addEventListener('visibilitychange', pdaActivityChanged);
+global.addEventListener('pagehide', () => { pdaPagePresent = false; pdaActivityChanged(); });
+global.addEventListener('pageshow', () => { pdaPagePresent = true; pdaActivityChanged(); });
 const STORAGE_KEY = 'slink-pda-dashboard:ui:v1';
 const DATA_STORAGE_KEY = 'slink-pda-dashboard:data:v1';
+const TARGET_RECORDS_KEY = 'slink-pda-dashboard:targets:v1';
 const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1';
 const SETTINGS_STORAGE_KEY = 'slink-pda-dashboard:settings:v1';
 const ALERT_SNOOZE_STORAGE_KEY = 'slink-pda-dashboard:alert-snoozes:v1';
@@ -47,7 +92,7 @@ const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
 const CLIENT_NAME = 'SLINK PDA Dashboard';
-const CLIENT_VERSION = '0.4.124';
+const CLIENT_VERSION = 'pda-' + String(global.__SLINK_PDA_BOOTSTRAP__?.sourceRevision || 'direct-source').slice(0, 16);
 const WEEK_MS = 7 * 86_400_000;
 const PDA_CITY_SHOP_TARGETS = Object.freeze([
 Object.freeze({ id:392, label:'Pepper Spray', shop:"Big Al's Gun Shop", href:'https://www.torn.com/bigalgunshop.php' }),
@@ -233,7 +278,7 @@ const snoozed = dataState.settings.alerts.snoozedUntil || {};
 if (!snapshot || !settings.enabled || !hasScope(COMPANY_SCOPE)) return [];
 const rows = [];
 const add = row => { if (Number(snoozed[row.id] || 0) <= Date.now()) rows.push(row); };
-if (snapshot.self?.addictionPenalty !== null && snapshot.self.addictionPenalty >= settings.addictionThreshold) {
+if (snapshot.self && snapshot.self.addictionPenalty !== null && snapshot.self.addictionPenalty >= settings.addictionThreshold) {
 add({ id:'company:addiction:self', title:'Company addiction reminder', detail:`Your company effectiveness addiction penalty is -${snapshot.self.addictionPenalty}. Please rehab as soon as possible.`, links:[['Company','https://www.torn.com/joblist.php']] });
 }
 if (snapshot.director) {
@@ -310,13 +355,24 @@ prometheus:Object.freeze({ id:'prometheus', label:'Prometheus', url:'https://pro
 tornIntel:Object.freeze({ id:'tornIntel', label:'Torn Intel', url:'https://torn-intel.com/api/v1/foreign-stock/travel-table' }),
 droqs:Object.freeze({ id:'droqs', label:'DroqsDB forecast', url:'https://droqsdb.com/api/public/v1/restocking-soon', enrichment:true })
 });
+// Torn Wiki Travel, without book, verified 2026-10-26. Exact displayed times avoid multiplier rounding errors.
+// https://wiki.torn.com/wiki/Travel — Private is WLT; Business Class is the faster ticket option.
 const COUNTRIES = Object.freeze([
-['arg','Argentina',158], ['can','Canada',39], ['cay','Cayman Islands',33],
-['chi','China',229], ['haw','Hawaii',127], ['jap','Japan',213],
-['mex','Mexico',24], ['sou','South Africa',282], ['swi','Switzerland',175],
-['uae','UAE',271], ['uni','United Kingdom',159]
-].map(([code,name,minutes]) => Object.freeze({ code, name, minutes })));
-const TRAVEL_MULTIPLIERS = Object.freeze({ standard:1, airstrip:0.7, business:0.5, private:0.3 });
+  ["arg","Argentina",158,111,79,47],
+  ["can","Canada",39,27,19,12],
+  ["cay","Cayman Islands",33,23,17,10],
+  ["chi","China",229,160,114,69],
+  ["haw","Hawaii",127,89,63,38],
+  ["jap","Japan",213,149,107,64],
+  ["mex","Mexico",24,17,12,7],
+  ["sou","South Africa",282,197,141,85],
+  ["swi","Switzerland",166,116,83,50],
+  ["uae","UAE",257,180,128,77],
+  ["uni","United Kingdom",151,106,75,45]
+].map(([code,name,minutes,airstrip,privateMinutes,business]) => Object.freeze({
+  code,name,minutes,travelTimes:Object.freeze({standard:minutes,airstrip,private:privateMinutes,business})
+})));
+const TRAVEL_MULTIPLIERS = Object.freeze({ standard:1, airstrip:0.7, business:0.3, private:0.5 });
 const countryByCode = new Map(COUNTRIES.map(country => [country.code, country]));
 const countryByName = new Map(COUNTRIES.map(country => [key(country.name), country]));
 function key(value) {
@@ -588,8 +644,7 @@ return [...merged.values()].sort((left,right) => left.countryName.localeCompare(
 function travelMinutes(countryCode, method = 'standard', bufferMinutes = 0) {
 const country = countryByCode.get(String(countryCode || '').toLowerCase());
 if (!country) return null;
-const multiplier = TRAVEL_MULTIPLIERS[method] ?? TRAVEL_MULTIPLIERS.standard;
-return Math.ceil(country.minutes * multiplier) + Math.max(0, Number(bufferMinutes) || 0);
+return (country.travelTimes[method] ?? country.travelTimes.standard) + Math.max(0, Number(bufferMinutes) || 0);
 }
 function departureAt(row, settings = {}) {
 const next = Number(row?.nextRestockAt) || 0;
@@ -789,13 +844,69 @@ notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notif
 const PDA_BOOTSTRAP_KEY = '__SLINK_PDA_BOOTSTRAP__';
 const PDA_BOOTSTRAP = global[PDA_BOOTSTRAP_KEY] && typeof global[PDA_BOOTSTRAP_KEY] === 'object' ? global[PDA_BOOTSTRAP_KEY] : {};
 const PDA_STORAGE_WRITE_EVENT = String(PDA_BOOTSTRAP.storageWriteEvent || '');
+const pendingStorageWrites=new Map(), failedStorageWrites=new Map(), latestStorageWrites=new Map();
+let storageWriteSequence=0, storageBackendName='unknown';
+let acknowledgedDataBase=null,acknowledgedDataSequence=0;
+let pdaTargetRecords=null;
+let pdaPreferenceTimer=null;
+function queuePdaSettingsSave() {
+global.clearTimeout(pdaPreferenceTimer);
+pdaPreferenceTimer=global.setTimeout(()=>{pdaPreferenceTimer=null;writeDataState();},500);
+}
+function updateStorageNotice() {
+try {
+const node=moduleRoot('access')?.querySelector('[data-storage-status]');
+if (node) {
+node.textContent=failedStorageWrites.size?'Some SLINK changes are not saved. Keep this page open and retry.':pendingStorageWrites.size?'Saving changes…':storageBackendName==='browser'?'Saved in browser storage; this PDA version has no confirmed native storage.':'';
+node.hidden=!node.textContent;
+}
+const retry=moduleRoot('access')?.querySelector('[data-action="retry-local-storage"]');
+if (retry) retry.hidden=!failedStorageWrites.size;
+} catch {}
+}
+if (PDA_STORAGE_WRITE_EVENT) document.addEventListener(PDA_STORAGE_WRITE_EVENT+':ack',event=>{
+let value;try {value=JSON.parse(String(event?.detail || ''));} catch {return;}
+const pending=pendingStorageWrites.get(value?.id);if (!pending) return;
+if (value.ok===true) {storageBackendName=value.backend || 'unknown';pending.resolve(value.value);}
+else pending.reject(new Error('SLINK storage write failed. '+String(value.error || 'Retry from Access.')));
+});
+async function flushPdaStorage() {
+if(pdaPreferenceTimer!==null){global.clearTimeout(pdaPreferenceTimer);pdaPreferenceTimer=null;await writeDataState();}
+if (pdaTargetRecords) await pdaTargetRecords.flush();
+do { await Promise.allSettled([...pendingStorageWrites.values()].map(value=>value.promise)); } while(pendingStorageWrites.size);
+if (failedStorageWrites.size) throw new Error('Some SLINK changes could not be saved. Retry from Access before closing.');
+}
+async function retryPdaStorage() {
+const keys=[...failedStorageWrites.keys()];
+for (const key of keys) {
+if (key===DATA_STORAGE_KEY) await writeDataState();
+else if (typeof TARGET_RECORDS_KEY!=='undefined' && key===TARGET_RECORDS_KEY) await pdaTargetRecords.retry();
+else if (key===STORAGE_KEY) await writeState();
+else await storageWrite(key,storageRead(key,failedStorageWrites.get(key).value));
+}
+await flushPdaStorage();
+}
+function savePdaChanges() {
+const saved=writeDataState().then(()=>flushPdaStorage());
+saved.catch(()=>{});
+return saved;
+}
+function listenPdaAction(root,type,callback) {
+let sequence=0;
+root.addEventListener(type,event=>{
+const ticket=++sequence;
+const report=error=>{
+if(ticket!==sequence || !root.isConnected)return;
+let status=root.querySelector('[data-pda-save-error]');
+if(!status){status=document.createElement('p');status.dataset.pdaSaveError='true';status.setAttribute('role','alert');root.prepend(status);}
+status.textContent=errorMessage(error)+' Your changes remain here. Retry the action or use Access → Retry saving.';
+};
+try {Promise.resolve(callback(event)).then(()=>{if(ticket===sequence&&!failedStorageWrites.size)root.querySelector('[data-pda-save-error]')?.remove();},report);}catch(error){report(error);}
+});
+}
 try { delete global[PDA_BOOTSTRAP_KEY]; } catch { global[PDA_BOOTSTRAP_KEY] = null; }
 const existingDashboard = global.SLINK_PDA_DASHBOARD;
 const existingHost = document.getElementById(HOST_ID);
-if (existingDashboard?.build === BUILD && existingHost?.isConnected) {
-existingDashboard.open();
-return;
-}
 // A PDA userscript update can leave the old global object alive after its
 // Shadow DOM host was detached. Never reuse that dead instance.
 existingHost?.remove();
@@ -841,10 +952,13 @@ try {
 const parsed = JSON.parse(global.localStorage.getItem(STORAGE_KEY) || '{}');
 if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) local = parsed;
 } catch {}
-return normalizeUiState({ ...persistent, ...local });
+const bootstrap=PDA_BOOTSTRAP[STORAGE_KEY];
+const selected=newestStoredRecord([bootstrap,persistent,local],{...persistent,...local});
+return normalizeUiState(selected);
 }
 function writeState() {
 const snapshot = {
+_savedAt:Date.now(),
 page:state.page,
 combatTab:state.combatTab,
 efficiencyTab:state.efficiencyTab,
@@ -857,8 +971,7 @@ themeItemOpacity:state.themeItemOpacity,
 bubblePosition:state.bubblePosition,
 panels:{ ...(state.panels || {}) }
 };
-try { global.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
-try { if (typeof GM_API.set === 'function') GM_API.set(STORAGE_KEY, snapshot); } catch {}
+return storageWrite(STORAGE_KEY,snapshot);
 }
 function storedRecord(value) {
 return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -920,6 +1033,7 @@ return [PDA_BOOTSTRAP[key], gmValue, readLocalRecord(key)]
 .filter(value => storedRecord(value) && Number(value.total) > 0)
 .sort((left,right) => Number(right.checkedAt || 0) - Number(left.checkedAt || 0))[0] || fallback;
 }
+if (key === ALERT_SNOOZE_STORAGE_KEY) return [PDA_BOOTSTRAP[key],gmValue,readLocalRecord(key)].filter(storedRecord).sort((a,b)=>Number(b.savedAt || 0)-Number(a.savedAt || 0))[0] || fallback;
 if (gmValue !== null) return gmValue;
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
@@ -927,16 +1041,42 @@ return parsed === null ? fallback : parsed;
 } catch {}
 return fallback;
 }
-function storageWrite(key, value) {
-if (key === DATA_STORAGE_KEY) writeDataMirror(value);
-const bridged = Boolean(PDA_STORAGE_WRITE_EVENT && (key === DATA_STORAGE_KEY || key === OWN_BATTLE_STATS_STORAGE_KEY));
-try { if (!bridged && typeof GM_API.set === 'function') GM_API.set(key, value); } catch {}
-if ((key === DATA_STORAGE_KEY || key === OWN_BATTLE_STATS_STORAGE_KEY) && PDA_STORAGE_WRITE_EVENT) {
-try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, value }) })); } catch {}
+function storageWrite(key, value, base) {
+const snapshot=JSON.parse(JSON.stringify(value));
+if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot);
+else if (!(typeof TARGET_RECORDS_KEY!=='undefined' && key===TARGET_RECORDS_KEY)) try {global.localStorage.setItem(key,JSON.stringify(snapshot));} catch {}
+const id=++storageWriteSequence;
+latestStorageWrites.set(key,id);
+let finish,fail;
+const promise=new Promise((resolve,reject)=>{finish=resolve;fail=reject;});
+const timer=global.setTimeout(()=>fail(new Error('SLINK storage did not confirm this write. Retry from Access.')),15000);
+const complete=(ok,error)=>{
+global.clearTimeout(timer);pendingStorageWrites.delete(id);
+if (ok && key===DATA_STORAGE_KEY && id>acknowledgedDataSequence) {
+acknowledgedDataSequence=id;
+acknowledgedDataBase=JSON.parse(JSON.stringify({settings:snapshot.settings || {},targetList:snapshot.caches?.targetList || {},protected:Object.fromEntries(Object.keys(base?.protected || {}).map(name=>[name,snapshot[name]]))}));
 }
-if (key !== DATA_STORAGE_KEY) {
-try { global.localStorage.setItem(key, JSON.stringify(value)); } catch {}
+if (latestStorageWrites.get(key)===id && !snapshot.readOnly) {
+if (ok) failedStorageWrites.delete(key);else failedStorageWrites.set(key,{value:snapshot,error:String(error?.message || error)});
 }
+updateStorageNotice();
+};
+pendingStorageWrites.set(id,{promise,resolve:value=>{complete(true);finish(value);},reject:error=>{complete(false,error);fail(error);}});
+promise.catch(error=>{if (pendingStorageWrites.has(id)) complete(false,error);});
+const bridged=Boolean(PDA_STORAGE_WRITE_EVENT && [DATA_STORAGE_KEY,OWN_BATTLE_STATS_STORAGE_KEY,STORAGE_KEY,ALERT_SNOOZE_STORAGE_KEY,...(typeof TARGET_RECORDS_KEY!=='undefined'?[TARGET_RECORDS_KEY]:[])].includes(key));
+if (bridged) {
+try {document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({id,key,value:snapshot,base})}));}
+catch (error) {pendingStorageWrites.get(id)?.reject(error);}
+} else {
+Promise.resolve().then(async()=>{
+if (typeof GM_API.set !== 'function') throw new Error('SLINK browser storage unavailable.');
+await GM_API.set(key,snapshot);
+if (typeof GM_API.get==='function' && JSON.stringify(await GM_API.get(key,null))!==JSON.stringify(snapshot)) throw new Error('SLINK browser storage did not retain this write.');
+storageBackendName='browser';pendingStorageWrites.get(id)?.resolve();
+}).catch(error=>pendingStorageWrites.get(id)?.reject(error));
+}
+updateStorageNotice();
+return promise;
 }
 function storageDelete(key) {
 try { if (typeof GM_API.remove === 'function') GM_API.remove(key); } catch {}
@@ -961,7 +1101,7 @@ function readAlertSnoozes() {
 return normalizeAlertSnoozes(storageRead(ALERT_SNOOZE_STORAGE_KEY, {}));
 }
 function writeAlertSnoozes(value) {
-storageWrite(ALERT_SNOOZE_STORAGE_KEY, {
+return storageWrite(ALERT_SNOOZE_STORAGE_KEY, {
 schema:1,
 savedAt:Date.now(),
 snoozedUntil:normalizeAlertSnoozes(value)
@@ -1027,6 +1167,7 @@ settingsSource?.alerts?.snoozedUntil,
 readAlertSnoozes()
 );
 return {
+...value,
 apiKey:String(value.apiKey || ''),
 ffKey:String(value.ffKey || ''),
 usePdaApiKey:value.usePdaApiKey ?? value.usePdaKey ?? true,
@@ -1036,6 +1177,7 @@ terms:value.terms && typeof value.terms === 'object' ? value.terms : {},
 sessions:value.sessions && typeof value.sessions === 'object' ? value.sessions : {},
 caches:value.caches && typeof value.caches === 'object' ? value.caches : {},
 settings:{
+...settingsSource,
 leveling:{ minFF:1, maxFF:3, ...(settingsSource?.leveling || {}) },
 bounties:{ enabled:false, minimumReward:300000, scanFullList:false, minFF:1, maxFF:3, maxBattleStats:0, includeUnknownEstimates:false, includeAbroad:false, statusFilter:'hide-hospital', tornCallsPerMinute:20, ffBatchesPerMinute:5, ...(settingsSource?.bounties || {}) },
 mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(settingsSource?.mugging || {}) },
@@ -1056,11 +1198,13 @@ company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinu
 };
 }
 function portableBackupPayload() {
+const settings=JSON.parse(JSON.stringify(dataState.settings || {}));
+if(settings.plugins?.chat?.giphy)delete settings.plugins.chat.giphy.apiKey;
 return {
 schema:1,
 client:'pda',
 createdAt:Date.now(),
-settings:JSON.parse(JSON.stringify(dataState.settings || {})),
+settings,
 targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {})),
 uiState:{
 page:state.page,
@@ -1077,12 +1221,18 @@ panels:{ ...(state.panels || {}) }
 }
 };
 }
-function restorePortableBackup(backup) {
+async function restorePortableBackup(backup) {
 if (!backup || Number(backup.schema) !== 1 || !storedRecord(backup.settings) || !storedRecord(backup.targetList)) {
 throw new Error('The saved SLINK backup is invalid or incompatible.');
 }
+if (pdaTargetRecords) await pdaTargetRecords.replace(backup.targetList);
+else dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
+const localGiphyKey=dataState.settings?.plugins?.chat?.giphy?.apiKey;
 dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
-dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
+if(dataState.settings.plugins?.chat?.giphy){
+delete dataState.settings.plugins.chat.giphy.apiKey;
+if(localGiphyKey)dataState.settings.plugins.chat.giphy.apiKey=localGiphyKey;
+}
 if (storedRecord(backup.uiState)) {
 const restoredUi = backup.uiState;
 if (['combat','efficiency','quality-of-life','access'].includes(restoredUi.page)) state.page = restoredUi.page;
@@ -1098,7 +1248,8 @@ if (storedRecord(restoredUi.bubblePosition) || restoredUi.bubblePosition === nul
 if (storedRecord(restoredUi.panels)) state.panels = { ...state.panels, ...restoredUi.panels };
 writeState();
 }
-writeDataState();
+await writeDataState();
+await flushPdaStorage();
 }
 function dataBackupRuntime() {
 const current = storedRecord(dataState.caches.dataBackup) || {};
@@ -1111,6 +1262,7 @@ error:String(current.error || '')
 return dataState.caches.dataBackup;
 }
 async function uploadDataBackup(force = false) {
+await flushPdaStorage();
 const session = validSession('permission');
 if (!session) return null;
 const runtime = dataBackupRuntime();
@@ -1143,7 +1295,7 @@ const response = await requestJson(`${URLS.permission}/api/user-backup`, {
 headers:{ Authorization:`Bearer ${session.token}` }
 });
 const backup = response?.backup;
-restorePortableBackup(backup);
+await restorePortableBackup(backup);
 const runtime = dataBackupRuntime();
 runtime.lastRemoteAt = Number(response?.saved_at || backup?.savedAt || backup?.createdAt) || Date.now();
 runtime.lastCheckedAt = Date.now();
@@ -1156,6 +1308,11 @@ function writeDataState() {
 // Reconcile the independently saved Torn stats before any background page
 // writes its entire cache snapshot back over the primary record.
 if (dataState.caches.ownBattleStats || dataState.caches.muggingOwnBattleStats) pdaStoredOwnBattleStats();
+const base={settings:cloneSettings(lastPersistedSettings),targetList:cloneSettings(lastPersistedTargets),protected:cloneSettings(lastPersistedProtected)};
+const latestRecord=storageRead(DATA_STORAGE_KEY,{});
+for (const key of Object.keys(lastPersistedProtected)) dataState[key]=mergeSettingChanges(lastPersistedProtected[key],dataState[key],Object.hasOwn(latestRecord,key)?latestRecord[key]:dataState[key]);
+const currentTargets=cloneSettings(dataState.caches.targetList || {});
+dataState.caches.targetList=pdaTargetRecords ? pdaTargetRecords.snapshot() : mergeSettingChanges(lastPersistedTargets,currentTargets,latestRecord?.caches?.targetList || {});
 const latestSettings = readSafeSettingsEnvelope();
 const currentSettings = cloneSettings(dataState.settings);
 const settingsChangedHere = !sameSettingValue(currentSettings, lastPersistedSettings);
@@ -1163,12 +1320,17 @@ dataState.settings = settingsChangedHere
 ? mergeSettingChanges(lastPersistedSettings, currentSettings, latestSettings.data)
 : recordHasData(latestSettings.data) ? cloneSettings(latestSettings.data) : currentSettings;
 dataState._savedAt = Math.max(Date.now(), Number(dataState._savedAt || 0) + 1);
-writeAlertSnoozes(dataState.settings?.alerts?.snoozedUntil);
+const snoozeWrite=writeAlertSnoozes(dataState.settings?.alerts?.snoozedUntil);
 if (settingsChangedHere || !recordHasData(latestSettings.data)) {
 try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings })); } catch {}
 }
 lastPersistedSettings = cloneSettings(dataState.settings);
-storageWrite(DATA_STORAGE_KEY, dataState);
+lastPersistedTargets=cloneSettings(dataState.caches.targetList);
+lastPersistedProtected=Object.fromEntries(Object.keys(lastPersistedProtected).map(key=>[key,cloneSettings(dataState[key])]));
+return Promise.all([
+storageWrite(DATA_STORAGE_KEY,dataState,cloneSettings(acknowledgedDataBase || base)),
+snoozeWrite
+]);
 }
 function currentApiKey() {
 if (PDA_API_KEY_AVAILABLE && dataState.usePdaApiKey) return PDA_API_KEY;
@@ -1186,6 +1348,33 @@ return String(dataState.ffKey || '').trim();
 const state = readState();
 const dataState = readDataState();
 let lastPersistedSettings = cloneSettings(dataState.settings);
+let lastPersistedTargets=cloneSettings(dataState.caches.targetList || {});
+let lastPersistedProtected=Object.fromEntries(['apiKey','ffKey','usePdaApiKey','usePdaFfKey','accepted','terms','sessions'].map(key=>[key,cloneSettings(dataState[key])]));
+acknowledgedDataBase={settings:cloneSettings(lastPersistedSettings),targetList:cloneSettings(lastPersistedTargets),protected:cloneSettings(lastPersistedProtected)};
+if (global.SLINK_PDA_TARGET_RECORDS) {
+try {
+pdaTargetRecords=global.SLINK_PDA_TARGET_RECORDS.create({
+snapshot:PDA_BOOTSTRAP[TARGET_RECORDS_KEY] || {error:'Target storage was not initialized. Reload to retry.'},
+legacy:dataState.caches.targetList,
+write:request=>storageWrite(TARGET_RECORDS_KEY,request),
+onChange:targets=>{dataState.caches.targetList=targets;}
+});
+dataState.caches.targetList=pdaTargetRecords.snapshot();
+if(pdaTargetRecords.status().error)failedStorageWrites.set(TARGET_RECORDS_KEY,{value:{},error:pdaTargetRecords.status().error});
+} catch {
+pdaTargetRecords=global.SLINK_PDA_TARGET_RECORDS.create({snapshot:{error:'Target journal could not be read. Reload to retry; existing data was not changed.'},legacy:dataState.caches.targetList,write:()=>Promise.reject(Error('Target journal unavailable.'))});
+failedStorageWrites.set(TARGET_RECORDS_KEY,{value:{},error:pdaTargetRecords.status().error});
+}
+}
+let pdaTargetRefresh=null,pdaTargetReadAt=0;
+function refreshPdaTargetRecords() {
+if(!pdaTargetRecords || !pdaDomActive())return Promise.resolve();
+if(pdaTargetRefresh)return pdaTargetRefresh;
+if(Date.now()-pdaTargetReadAt<2000)return Promise.resolve();
+pdaTargetReadAt=Date.now();
+pdaTargetRefresh=pdaTargetRecords.refresh().then(()=>{if(pdaDomActive()&&moduleRoot('targetList'))renderTargetList();}).catch(error=>{moduleState.targetList.error=errorMessage(error);updateStorageNotice();}).finally(()=>{pdaTargetRefresh=null;});
+return pdaTargetRefresh;
+}
 try {
 if (!Number(dataState._savedAt)) dataState._savedAt = Date.now();
 global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:1, savedAt:dataState._savedAt, data:dataState.settings }));
@@ -1292,6 +1481,7 @@ networkQueue = result.catch(() => undefined);
 return result;
 }
 function errorMessage(error) {
+if(global.SLINK_ERRORS)return global.SLINK_ERRORS.message(error);
 return String(error?.message || error || 'Unknown error').replace(/^Error:\s*/i, '').trim();
 }
 function pdaHttpHandler(method) {
@@ -1308,9 +1498,9 @@ const response = typeof direct === 'function'
 const status = Number(response?.status ?? response?.statusCode) || 0;
 const responseText = typeof response === 'string' ? response : String(response?.responseText ?? response?.body ?? response?.data ?? '');
 let parsed = null;
-try { parsed = JSON.parse(responseText || 'null'); } catch {}
+try { parsed = JSON.parse(responseText || 'null'); } catch { if(!status || status>=200&&status<300)throw new Error('Expected JSON from the requested service.'); }
 if (status && (status < 200 || status >= 300)) {
-const error = new Error(parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
+const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || response?.statusText || `HTTP ${status}`);
 error.status = status;
 error.body = parsed;
 throw error;
@@ -1318,8 +1508,19 @@ throw error;
 return parsed ?? {};
 }
 const ffScouterRetryAt = new Map();
+let pdaFfBackup=null;
+function fairFightBackup(){
+if(!global.SLINK_FF_BACKUP)return null;
+return pdaFfBackup||=(global.SLINK_FF_BACKUP.create({store:global.SLINK_FF_BACKUP.openStore(),active:()=>global.SLINK_PDA_PAGE_ACTIVITY.eligible(),
+session:async()=>{const s=dataState.sessions.permission;return s?.token&&Number(s.expiresAt)>Date.now()?s:null;},
+ownScore:async()=>{const s=dataState.sessions.permission,own=dataState.caches.ownBattleStats;return Number(own?.accountId)===Number(s?.userId??s?.user_id)?Number(own?.score)||null:null;},
+transport:(action,body,token)=>requestJsonRaw('https://slinkcontributionworker.richard-johnson554.workers.dev/api/fair-fight/backup/'+action,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),timeout:4000})}));
+}
 async function requestJson(url, options = {}) {
 if (new URL(url).hostname !== 'ffscouter.com') return requestJsonRaw(url, options);
+if(/\/get-(stats|targets)$/.test(new URL(url).pathname)&&fairFightBackup())return fairFightBackup().run(url,async()=>{
+let timer;try{return await Promise.race([requestJsonRaw(url,{...options,timeout:5000}),new Promise((_,reject)=>{timer=global.setTimeout(()=>reject(Error('FFScouter timed out.')),5000);})]);}finally{global.clearTimeout(timer);}
+});
 const audience = new URL(url).searchParams.get('key') || '';
 if (Date.now() < (ffScouterRetryAt.get(audience) || 0)) throw new Error('FFScouter temporarily unavailable; using cached estimates or N/A.');
 let timer;
@@ -1336,6 +1537,15 @@ throw error;
 } finally { global.clearTimeout(timer); }
 }
 async function requestJsonRaw(url, options = {}) {
+let provider='SLINK';
+try {
+ const host=new URL(url).hostname;
+ provider=host==='api.torn.com'?'tornApi':host==='ffscouter.com'?'ffscouter':host==='weav3r.dev'?'weaver':host;
+ const result=await requestJsonTransport(url,options);
+ return global.SLINK_ERRORS?.annotateBody(result,{provider}) ?? result;
+} catch(error){if(error&&typeof error==='object')error.provider=provider;throw error;}
+}
+async function requestJsonTransport(url, options = {}) {
 const method = String(options.method || 'GET').toUpperCase();
 const headers = { Accept:'application/json', ...(options.headers || {}) };
 const body = options.body === undefined
@@ -1347,7 +1557,7 @@ if (typeof pdaDirect === 'function' || typeof global.flutter_inappwebview?.callH
 try {
 return await pdaHttpRequest(method, url, headers, body);
 } catch (error) {
-const missingOrigin = /No HTTP origin is configured for\s+\w+/i.test(errorMessage(error));
+const missingOrigin = /No HTTP origin is configured for\s+\w+/i.test(String(error?.message||error));
 if (!missingOrigin || typeof GM_API.request !== 'function') throw error;
 }
 }
@@ -1357,9 +1567,9 @@ GM_API.request({
 method, url, headers, data:body, timeout:Number(options.timeout) || 30_000,
 onload(response) {
 let parsed = null;
-try { parsed = JSON.parse(String(response.responseText || 'null')); } catch {}
+try { parsed = JSON.parse(String(response.responseText || 'null')); } catch { if(Number(response.status)>=200&&Number(response.status)<300){reject(new Error('Expected JSON from the requested service.'));return;} }
 if (Number(response.status) < 200 || Number(response.status) >= 300) {
-const error = new Error(parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
+const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
 error.status = Number(response.status) || 0;
 error.body = parsed;
 reject(error);
@@ -1374,9 +1584,9 @@ onerror(response) { reject(new Error(response?.error || response?.statusText || 
 }
 return global.fetch(url, { method, headers, body, cache:'no-store', credentials:'omit' }).then(async response => {
 let parsed = null;
-try { parsed = await response.json(); } catch {}
+try { parsed = await response.json(); } catch { if(response.ok)throw new Error('Expected JSON from the requested service.'); }
 if (!response.ok) {
-const error = new Error(parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
+const error = new Error(parsed?.user_message || parsed?.error?.message || parsed?.error || `HTTP ${response.status}`);
 error.status = response.status;
 error.body = parsed;
 throw error;
@@ -1463,7 +1673,7 @@ const ledger = readApiLedger();
 return { count:ledger.events.length, limit:API_LIMIT, remaining:Math.max(0, API_LIMIT - ledger.events.length) };
 }
 async function tornJson(path, comment = 'SLINK PDA Dashboard', options = {}) {
-const key = currentApiKey();
+const key = options.apiKey || currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
@@ -1472,6 +1682,39 @@ const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${k
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
 return result;
 }
+
+let sharedDataProvider = null;
+function pdaSharedData() {
+if (sharedDataProvider) return sharedDataProvider;
+sharedDataProvider = global.SLINK_SHARED_DATA.create({
+read:() => {
+const cached=dataState.caches.sharedProviders || {};
+const durable=storageRead(OWN_BATTLE_STATS_STORAGE_KEY,null);
+const personal={...(cached.personal||{})};
+for(const [audience,record] of Object.entries(durable?.sharedProviderPersonal||{})){
+if(!personal[audience] || record.statsAt>personal[audience].statsAt)personal[audience]=record;
+}
+return {...cached,personal};
+},
+write:async value => {
+dataState.caches.sharedProviders=value;
+const records=Object.values(value.personal||{}).sort((a,b)=>b.statsAt-a.statsAt);
+const writes=[];
+if(records.length){
+const latest=records[0];
+const durable=storageRead(OWN_BATTLE_STATS_STORAGE_KEY,null);
+writes.push(storageWrite(OWN_BATTLE_STATS_STORAGE_KEY,{...(durable||{}),...latest,sharedProviderPersonal:value.personal}));
+dataState.caches.ownBattleStats={...latest,sharedProviderPersonal:value.personal};
+}
+ writes.push(writeDataState());
+await Promise.all(writes);
+},
+normalizeItems:catalogItems,
+request:(kind,key)=>tornJson(kind==='personal'?'/v2/user?selections=battlestats,basic':'/v2/torn/items?cat=All&sort=ASC','SLINK PDA shared data',{priority:'high',apiKey:key})
+});
+return sharedDataProvider;
+}
+
 function validPlayerIntelligenceId(value) {
 const parsed = Number(value);
 return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -1499,6 +1742,43 @@ function playerIntelligenceUntilMilliseconds(record = {}) {
 const seconds = normalizePlayerIntelligenceUntil(record.until ?? record.statusUntil);
 return seconds > 0 ? seconds * 1000 : 0;
 }
+
+  function intelligenceFieldMeta(input, existing = {}) {
+    if (input.fieldMeta && typeof input.fieldMeta === 'object') return {...input.fieldMeta};
+    const at=Number(input.observedAt ?? input.checkedAt ?? input.updatedAt)||Date.now();
+    const source=String(input.source||'unknown');
+    const meta={};
+    const supplied={
+      status:input.state ?? input.status?.state,
+      name:input.name, level:input.level,
+      fairFight:input.fairFight,
+      battleStatsEstimate:input.battleStatsEstimate ?? input.bsEstimate,
+      bountyCount:input.bountyCount ?? input.bounty_count,
+      bountyTotal:input.bountyTotal ?? input.bounty_total
+    };
+    for(const [field,value] of Object.entries(supplied)){
+      if(value!==null && value!==undefined && value!=='')meta[field]={at,source};
+    }
+    return {...(existing.fieldMeta||{}),...meta};
+  }
+  function mergeIntelligenceFields(previous, next) {
+    const merged={...previous,fieldMeta:{...(previous.fieldMeta||{})}};
+    for(const field of ['status','name','level','fairFight','battleStatsEstimate','bountyCount','bountyTotal']){
+      const metadata=next.fieldMeta?.[field];
+      if(!metadata || Number(metadata.at)<Number(previous.fieldMeta?.[field]?.at||0))continue;
+      merged.fieldMeta[field]={...metadata};
+      if(field==='status'){
+        for(const key of ['state','until','description','source','observedAt'])merged[key]=next[key];
+      }else { merged[field]=next[field]; if(field==='fairFight')merged.fairFightContext=next.fairFightContext; }
+    }
+    merged.checkedAt=Math.max(previous.checkedAt,next.checkedAt);
+    merged.lastSeenMugged=Math.max(previous.lastSeenMugged,next.lastSeenMugged);
+    merged.lastDomObservedAt=Math.max(previous.lastDomObservedAt||0,next.lastDomObservedAt||0);
+    merged.lastApiCheckAt=Math.max(previous.lastApiCheckAt||0,next.lastApiCheckAt||0);
+    merged.sources=[...new Set([...previous.sources,...next.sources])].sort();
+    return merged;
+  }
+
 function normalizePlayerIntelligenceRecord(input = {}, existing = {}) {
 const playerId = validPlayerIntelligenceId(
 input.playerId ?? input.player_id ?? input.targetId ?? input.id ??
@@ -1534,6 +1814,8 @@ Number(existing.lastApiCheckAt) || 0
 const fairFightValue = input.fairFight ?? existing.fairFight;
 const battleStatsValue = input.battleStatsEstimate ?? input.bsEstimate ?? existing.battleStatsEstimate;
 return {
+fairFightContext:input.fairFightContext ?? existing.fairFightContext ?? null,
+fieldMeta:intelligenceFieldMeta(input,existing),
 playerId,
 id:playerId,
 name:String(input.name ?? existing.name ?? `Player ${playerId}`).slice(0, 80),
@@ -1542,12 +1824,12 @@ state,
 until,
 description,
 source,
-observedAt,
+observedAt:Number(intelligenceFieldMeta(input,existing).status?.at)||0,
 checkedAt:Math.max(0, Number(input.checkedAt) || observedAt),
 lastDomObservedAt,
 lastApiCheckAt,
-fairFight:Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
-battleStatsEstimate:Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
+fairFight:fairFightValue != null && Number.isFinite(Number(fairFightValue)) ? Number(fairFightValue) : null,
+battleStatsEstimate:battleStatsValue != null && Number.isFinite(Number(battleStatsValue)) ? Number(battleStatsValue) : null,
 bountyCount:Math.max(0, Math.trunc(Number(input.bountyCount ?? input.bounty_count ?? existing.bountyCount) || 0)),
 bountyTotal:Math.max(0, Number(input.bountyTotal ?? input.bounty_total ?? existing.bountyTotal) || 0),
 lastSeenMugged:Math.max(0, Number(input.lastSeenMugged ?? existing.lastSeenMugged) || 0),
@@ -1559,37 +1841,9 @@ source
 };
 }
 function mergePlayerIntelligenceRecord(existing = null, incoming = {}) {
-const previous = existing && typeof existing === 'object'
-? normalizePlayerIntelligenceRecord(existing)
-: null;
-const next = normalizePlayerIntelligenceRecord(incoming, previous || {});
-if (!previous) return next;
-const useIncomingStatus = next.observedAt >= previous.observedAt;
-const hasOwn = key => Object.prototype.hasOwnProperty.call(incoming, key);
-const merged = {
-...previous,
-playerId:next.playerId,
-id:next.playerId,
-name:next.name !== `Player ${next.playerId}` || !previous.name ? next.name : previous.name,
-level:next.level || previous.level,
-fairFight:next.fairFight ?? previous.fairFight,
-battleStatsEstimate:next.battleStatsEstimate ?? previous.battleStatsEstimate,
-bountyCount:hasOwn('bountyCount') || hasOwn('bounty_count') ? next.bountyCount : previous.bountyCount,
-bountyTotal:hasOwn('bountyTotal') || hasOwn('bounty_total') ? next.bountyTotal : previous.bountyTotal,
-lastSeenMugged:Math.max(previous.lastSeenMugged, next.lastSeenMugged),
-checkedAt:Math.max(previous.checkedAt, next.checkedAt),
-observedAt:Math.max(previous.observedAt, next.observedAt),
-lastDomObservedAt:Math.max(previous.lastDomObservedAt || 0, next.lastDomObservedAt || 0),
-lastApiCheckAt:Math.max(previous.lastApiCheckAt || 0, next.lastApiCheckAt || 0),
-sources:[...new Set([...previous.sources, ...next.sources])].sort()
-};
-if (useIncomingStatus) {
-merged.state = next.state;
-merged.until = next.until;
-merged.description = next.description;
-merged.source = next.source;
-}
-return merged;
+const previous=existing && typeof existing==='object'?normalizePlayerIntelligenceRecord(existing):null;
+const next=normalizePlayerIntelligenceRecord(incoming);
+return previous?mergeIntelligenceFields(previous,next):next;
 }
 function effectivePlayerIntelligenceStatus(record = {}, now = Date.now()) {
 const normalized = normalizePlayerIntelligenceRecord(record);
@@ -1659,8 +1913,8 @@ level:profile?.level,
 state:status?.state,
 until:status?.until,
 description:status?.description,
-bountyCount:bounties.length,
-bountyTotal:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
+bountyCount:Array.isArray(profile?.bounties)?bounties.length:undefined,
+bountyTotal:!Array.isArray(profile?.bounties)?undefined:bounties.reduce((total, bounty) => total + Math.max(0, Number(bounty?.reward) || 0), 0),
 source:'torn-api',
 observationKind:'api',
 lastApiCheckAt:now,
@@ -2095,16 +2349,18 @@ if (moduleRoot('alerts')) renderAlerts();
 targetStakeoutBusy = false;
 }
 }
-function addPdaTarget(input = {}) {
+async function addPdaTarget(input = {}) {
 const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
 if (!playerId) throw new Error('Enter a valid Torn player ID.');
 const entries = pdaTargetListMap();
-entries[String(playerId)] = mergePdaTarget(entries[String(playerId)], { ...input, playerId, source:input.source || 'manual', sourceLabel:input.sourceLabel || 'Manual' });
+const previous=entries[String(playerId)] || {}, updated=mergePdaTarget(entries[String(playerId)], { ...input, playerId, source:input.source || 'manual', sourceLabel:input.sourceLabel || 'Manual' });
+if (pdaTargetRecords) await pdaTargetRecords.change('add',playerId,previous,updated);
+else entries[String(playerId)] = updated;
 if (input.status && typeof input.status === 'object') observePlayerIntelligence({ ...input.status, playerId, name:input.name, source:input.status.source || input.source || 'target-list' }, false);
-writeDataState();
-return entries[String(playerId)];
+await writeDataState();
+return updated;
 }
-function savePdaSourceTarget(source, playerId) {
+async function savePdaSourceTarget(source, playerId) {
 const id = validPlayerIntelligenceId(playerId);
 if (!id) throw new Error('The target could not be identified.');
 let row = null;
@@ -2157,7 +2413,7 @@ const name = String(row?.name || row?.target_name || `Player ${id}`);
 const fairFight = finite(row?.fairFight ?? row?.fair_fight);
 const battleStatsEstimate = finite(row?.battleStats ?? row?.battleStatsEstimate ?? row?.battle_stats_estimate ?? row?.bs_estimate);
 const observedAt = Date.now();
-return addPdaTarget({
+return await addPdaTarget({
 playerId:id,
 name,
 tags,
@@ -2184,23 +2440,25 @@ checkedAt:observedAt
 }
 });
 }
-function updatePdaTarget(input = {}) {
+async function updatePdaTarget(input = {}) {
 const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
 const entries = pdaTargetListMap(), existing = playerId ? entries[String(playerId)] : null;
 if (!playerId || !existing) throw new Error('The saved target was not found.');
 const updated = mergePdaTarget(existing, { ...input, playerId });
 if (Object.prototype.hasOwnProperty.call(input, 'tags')) updated.tags = normalizeTargetListTags(input.tags);
 if (!updated.tags.length) updated.tags = ['Target'];
-entries[String(playerId)] = updated;
-writeDataState();
+if (pdaTargetRecords) await pdaTargetRecords.change('patch',playerId,existing,updated);
+else entries[String(playerId)] = updated;
+await writeDataState();
 return updated;
 }
-function removePdaTarget(playerId) {
+async function removePdaTarget(playerId) {
 const id = validPlayerIntelligenceId(playerId);
 if (!id) return false;
 const entries = pdaTargetListMap(), existed = Boolean(entries[String(id)]);
-delete entries[String(id)];
-writeDataState();
+if (pdaTargetRecords) await pdaTargetRecords.change('remove',id);
+else delete entries[String(id)];
+await writeDataState();
 return existed;
 }
 function scopeMatches(granted, required) {
@@ -2342,3 +2600,6 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
+
+
+

@@ -1,5 +1,6 @@
 (() => {
   'use strict';
+  const pluginApi = globalThis.SLINK_PDA_PLUGIN_API;
 
   const EXTENSION_STORAGE_PREFIX = 'slink-extension:chat-buttons:';
   const GM_getValue = (key, fallback) => {
@@ -12,7 +13,7 @@
   const STORAGE_KEY = 'considious-custom-chat-buttons-v1';
   const ARM_DURATION_MS = 10_000;
   const NEWSLETTER_FALLBACK_LIMIT = 60_000;
-  const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"]';
+  const CHAT_ROOT_SELECTOR = '[id^="faction-"], [id^="private-"], #chatRoot [id="faction"], #chatRoot [id="company"]';
   const COMPOSER_SELECTOR = 'textarea[placeholder="Type your message here..."], textarea[class*="textarea___"], textarea';
   const CHAT_HEADER_SELECTOR = 'button[class*="header___"], [class*="header___"]';
   const CHAT_HEADER_DISCOVERY_SELECTOR = 'button[data-prevent-flyout-swipe="true"][class*="header___"], button[class*="header___"]';
@@ -30,10 +31,13 @@
 
   let macros = loadMacros();
   let menu = null;
+  let menuMacros = null;
+  let windowMedia = null;
   let menuChatRoot = null;
   let menuStatus = '';
   let editor = null;
   let editorDraft = null;
+  let editorSaving = false;
   let armed = null;
   let sending = false;
   let armTimer = null;
@@ -41,19 +45,30 @@
 
   let observer = null;
   let enabled = false;
+  const activity = globalThis.SLINK_PDA_PAGE_ACTIVITY;
+  function syncActivity() {
+    observer?.disconnect();
+    if (!enabled || !activity.eligible()) { activity.cancel(scanTimer); scanTimer=null; closeMenu(); return; }
+    observer.observe(document.documentElement, { childList:true, subtree:true }); scheduleScan();
+  }
+  activity.subscribe(syncActivity);
   function enable() {
     if (enabled) return;
     enabled = true;
     addStyles();
-    scanContexts();
-    observer = new MutationObserver(scheduleScan);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer = new MutationObserver(mutations => {
+      if (!activity.eligible()) return;
+      if (menuChatRoot && !menuChatRoot.isConnected) closeMenu();
+      const selector = CHAT_ROOT_SELECTOR + ',' + CHAT_HEADER_DISCOVERY_SELECTOR + ',' + COMPOSER_SELECTOR + ',[data-testid="editor-root"]';
+      if (mutations.some(mutation => [...(mutation.addedNodes || [])].some(node => node.nodeType === 1 && (node.matches?.(selector) || node.querySelector?.(selector))))) scheduleScan();
+    });
+    syncActivity();
     window.addEventListener('hashchange', scheduleScan);
   }
   window.addEventListener('slink-chat-enable', enable);
 
   window.addEventListener('resize', () => {
-    if (menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
+    if (activity.eligible() && menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
   });
 
   document.addEventListener('pointerdown', (event) => {
@@ -109,14 +124,19 @@
 
   function loadMacros() {
     try {
-      return normalizeMacros(GM_getValue(STORAGE_KEY, []));
+      const config=pluginApi.settings('chat',{});
+      if(Array.isArray(config.macros))return normalizeMacros(config.macros);
+      const legacy=normalizeMacros(GM_getValue(STORAGE_KEY, []));
+      if(legacy.length){config.macros=legacy;pluginApi.save().catch(()=>{});}
+      return legacy;
     } catch {
       return [];
     }
   }
 
-  function saveMacros() {
-    GM_setValue(STORAGE_KEY, macros);
+  async function saveMacros(values) {
+    pluginApi.settings('chat',{}).macros=JSON.parse(JSON.stringify(values));
+    await pluginApi.save();
   }
 
   function isNewsletterPage() {
@@ -130,6 +150,9 @@
   function contextType(root) {
     if (isNewsletterRoot(root)) return 'newsletter';
     const id = String(root?.id || '');
+    if(id==='faction')return 'faction';
+    if(id==='company')return 'company';
+    if(/^\d+$/.test(id))return 'private';
     if (id.startsWith('faction-')) return 'faction';
     if (id.startsWith('private-')) return 'private';
     return chatHeader(root)?.querySelector('[class*="arrowIcon___"]') ? 'faction' : 'private';
@@ -272,8 +295,9 @@
   }
 
   function scheduleScan() {
-    if (scanTimer) window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(() => {
+    if (!enabled || !activity.eligible()) return;
+    if (scanTimer) activity.cancel(scanTimer);
+    scanTimer = activity.defer(() => {
       scanTimer = null;
       scanContexts();
     }, 80);
@@ -286,13 +310,14 @@
     let candidate = header.parentElement;
     const fallback = candidate;
     for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-      if (candidate.querySelector(COMPOSER_SELECTOR)) return candidate;
+      if (candidate.querySelector(COMPOSER_SELECTOR)&&(!header.closest('#chatRoot')||/^(?:\d+|faction(?:-.*)?|private-.+|company)$/.test(candidate.id))) return candidate;
       candidate = candidate.parentElement;
     }
-    return fallback;
+    return header.closest('#chatRoot')?null:fallback;
   }
 
   function scanContexts() {
+    if (!enabled || !activity.eligible()) return;
     const handledHeaders = new Set();
     document.querySelectorAll(CHAT_ROOT_SELECTOR).forEach((root) => {
       const header = chatHeader(root);
@@ -392,11 +417,15 @@
     menu.id = 'ccb-menu';
     menu.hidden = true;
     menu.addEventListener('pointerdown', (event) => event.stopPropagation());
+    menuMacros=document.createElement('div');menuMacros.dataset.ccbMacros='';
+    windowMedia=globalThis.SLINK_CHAT_WINDOW_MEDIA?.({menu,macros:menuMacros,isActive:()=>enabled&&activity.eligible()&&!!menuChatRoot?.isConnected,layout:()=>{if(menuChatRoot)positionMenu(menuChatRoot);}});
+    if(!windowMedia)menu.append(menuMacros);
     document.body.appendChild(menu);
     return menu;
   }
 
   function toggleMenu(root) {
+    if(!enabled||!activity.eligible())return;
     if (menu && !menu.hidden && menuChatRoot === root) {
       closeMenu();
       return;
@@ -406,10 +435,12 @@
     const element = ensureMenu();
     element.hidden = false;
     renderMenu(false);
+    windowMedia?.resume();
     positionMenu(root);
   }
 
   function closeMenu() {
+    windowMedia?.suspend();
     if (menu) menu.hidden = true;
     menuChatRoot = null;
     menuStatus = '';
@@ -429,7 +460,7 @@
     const previousScrollTop = preserveScroll
       ? (menu.querySelector('.ccb-menu-list')?.scrollTop || 0)
       : 0;
-    menu.replaceChildren();
+    menuMacros.replaceChildren();
 
     const header = document.createElement('div');
     header.className = 'ccb-menu-head';
@@ -443,7 +474,7 @@
     manage.textContent = '⚙';
     manage.addEventListener('click', openEditor);
     header.append(title, manage);
-    menu.appendChild(header);
+    menuMacros.appendChild(header);
 
     const list = document.createElement('div');
     list.className = 'ccb-menu-list';
@@ -467,13 +498,13 @@
         list.appendChild(button);
       });
     }
-    menu.appendChild(list);
+    menuMacros.appendChild(list);
     list.scrollTop = previousScrollTop;
 
     const status = document.createElement('div');
     status.className = 'ccb-status';
     status.textContent = menuStatus || 'First click loads · second click sends';
-    menu.appendChild(status);
+    menuMacros.appendChild(status);
   }
 
   function positionMenu(root) {
@@ -483,7 +514,7 @@
       : (chatHeader(root)?.querySelector('[data-ccb-trigger]') || chatHeader(root));
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
-    const width = Math.min(280, window.innerWidth - 12);
+    const width = Math.min(menu.dataset.ccbMediaOpen==='true'?420:280, window.innerWidth - 12);
     menu.style.width = `${width}px`;
     menu.style.left = `${Math.max(6, Math.min(window.innerWidth - width - 6, rect.right - width))}px`;
     menu.style.top = `${Math.max(6, Math.min(window.innerHeight - menu.offsetHeight - 6, rect.bottom + 5))}px`;
@@ -660,9 +691,10 @@
     armTimer = null;
   }
 
-  async function waitForEnabledSend(button, timeoutMs = 1500) {
+  async function waitForEnabledSend(button, timeoutMs = 1500, generation = activity.token()) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (!activity.current(generation)) return false;
       if (button?.isConnected && !button.disabled && button.getAttribute('aria-disabled') !== 'true') return true;
       await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
@@ -670,7 +702,9 @@
   }
 
   async function handleMacroClick(macro, root) {
-    if (sending) return;
+    if(!enabled||!activity.eligible())return;
+    if (sending || !activity.eligible()) return;
+    const generation = activity.token();
     if (!root?.isConnected) {
       closeMenu();
       return;
@@ -706,7 +740,12 @@
     sending = true;
     renderMenu();
     try {
-      const enabled = await waitForEnabledSend(sendButton);
+      const enabled = await waitForEnabledSend(sendButton, 1500, generation);
+      if (!activity.current(generation)) {
+        clearArmed();
+        menuStatus = 'Page activity changed. Click again to reload the message before sending.';
+        return;
+      }
       if (!enabled) {
         menuStatus = `Torn did not enable Send. The message may exceed the ${isNewsletterRoot(root) ? 'newsletter' : 'chat'} limit.`;
         renderMenu();
@@ -953,7 +992,8 @@
     renderEditor();
   }
 
-  function saveEditor() {
+  async function saveEditor() {
+    if(editorSaving||!editorDraft)return;
     const incomplete = editorDraft.find((macro) => !String(macro.label || '').trim() || !String(macro.message || '').trim());
     if (incomplete) {
       window.alert('Every custom message button needs both a label and a message.');
@@ -970,14 +1010,20 @@
       window.alert(`Newsletter button "${oversizedNewsletter.label}" exceeds the separate ${NEWSLETTER_FALLBACK_LIMIT.toLocaleString()} character limit.`);
       return;
     }
-    macros = normalizeMacros(editorDraft);
-    saveMacros();
-    clearArmed();
-    closeEditor();
-    scanContexts();
+    const submitted=JSON.stringify(editorDraft),owner=editor,values=normalizeMacros(editorDraft);
+    editorSaving=true;
+    try {
+      await saveMacros(values);
+      macros=values;
+      clearArmed();
+      if(editor===owner&&JSON.stringify(editorDraft)===submitted)closeEditor();
+      if(activity.eligible())scanContexts();
+    } catch(error) { window.alert('Custom messages were not saved. Your editor has been kept. '+(global.SLINK_ERRORS?.message(error)||String(error.message||error))); }
+    finally {editorSaving=false;}
   }
 
   function addStyles() {
+    if(document.getElementById('ccb-styles'))return;
     const style = document.createElement('style');
     style.id = 'ccb-styles';
     style.textContent = `
@@ -989,6 +1035,11 @@
       .ccb-newsletter-limit { color:#9faab3; text-align:right; }
       #ccb-menu { position:fixed; z-index:2147483600; max-height:min(360px,calc(100vh - 12px)); overflow:hidden; padding:7px; border:1px solid #59616a; border-radius:8px; color:#e9edf0; background:#1d2227; box-shadow:0 10px 32px rgba(0,0,0,.58); font:12px/1.3 system-ui,sans-serif; box-sizing:border-box; }
       #ccb-menu[hidden] { display:none !important; }
+      #ccb-menu [hidden] {display:none!important}
+      #ccb-menu[data-ccb-media-open=true] {max-height:min(620px,calc(100dvh - 12px));overflow-y:auto;overscroll-behavior:contain;}
+      .ccb-media-tabs {display:flex;flex-wrap:wrap;gap:5px;padding:4px 0 8px;position:sticky;top:-7px;z-index:1;background:#1d2227;}
+      .ccb-media-tabs button {padding:7px;border:1px solid #777;border-radius:5px;background:#303840;color:#fff;cursor:pointer;font:12px/1.3 system-ui;}
+      .ccb-media-tabs button[aria-pressed=true] {background:#645184;border-color:#cba9fa;}
       .ccb-menu-head { display:flex; align-items:center; gap:8px; padding:2px 2px 6px; border-bottom:1px solid rgba(255,255,255,.1); }
       .ccb-menu-head strong { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .ccb-manage { width:27px; height:25px; padding:0; border:1px solid #59616a; border-radius:5px; color:#e9edf0; background:#303840; cursor:pointer; }
@@ -1046,16 +1097,31 @@
 const api=global.SLINK_PDA_PLUGIN_API;if(!api)return;
 const ID='chat',COLORS=[['yellow','#ffe066','#241f00'],['orange','#ff9f43','#2b1300'],['red','#ff6b6b','#2a0000'],['pink','#ff85c2','#2a0016'],['purple','#c792ea','#170025'],['blue','#74c0fc','#001c2e'],['cyan','#66d9e8','#002126'],['green','#8ce99a','#002607'],['lime','#c0eb75','#172500'],['white','#f1f3f5','#111']],SELECTOR='[class*="messageContent___"],[class*="messageText___"],.msg';
 let observer=null,timer=null;
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(active=>{observer?.disconnect();global.SLINK_PDA_PAGE_ACTIVITY.cancel(timer);timer=null;if(active&&observer){observer.observe(document.body,{childList:true,subtree:true});schedule();}});
 function config(){const value=api.settings(ID,{});value.highlights=Array.isArray(value.highlights)?value.highlights:[];return value;}
 function rx(value){return String(value).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 function palette(id){return COLORS.find(row=>row[0]===id)||COLORS[0];}
 function clear(){document.querySelectorAll('mark[data-slink-chat-highlight]').forEach(mark=>mark.replaceWith(document.createTextNode(mark.textContent||'')));document.querySelectorAll(SELECTOR).forEach(node=>{delete node.dataset.slinkChatHighlighted;node.normalize();});}
-function scan(){const active=config().highlights.filter(row=>row.enabled!==false&&String(row.term||'').trim());document.querySelectorAll(SELECTOR).forEach(container=>{if(container.dataset.slinkChatHighlighted==='true')return;const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT,{acceptNode(node){if(!node.nodeValue?.trim()||node.parentElement?.closest('a,button,textarea,input,mark,[contenteditable="true"],style,script'))return NodeFilter.FILTER_REJECT;return active.some(row=>new RegExp(rx(row.term),'i').test(node.nodeValue))?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}}),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const pattern=new RegExp(active.map(row=>'('+rx(row.term)+')').join('|'),'gi'),fragment=document.createDocumentFragment();let last=0,found;while((found=pattern.exec(node.nodeValue))!==null){if(found.index>last)fragment.append(document.createTextNode(node.nodeValue.slice(last,found.index)));const row=active.find(candidate=>new RegExp(rx(candidate.term),'i').test(found[0])),colors=palette(row?.color),mark=document.createElement('mark');mark.dataset.slinkChatHighlight='true';mark.textContent=found[0];mark.style.cssText='background:'+colors[1]+';color:'+colors[2]+';padding:0 2px;border-radius:3px;font-weight:800';fragment.append(mark);last=found.index+found[0].length;if(!found[0].length)pattern.lastIndex++;}if(last<node.nodeValue.length)fragment.append(document.createTextNode(node.nodeValue.slice(last)));node.replaceWith(fragment);}container.dataset.slinkChatHighlighted='true';});}
-function schedule(){clearTimeout(timer);timer=setTimeout(scan,80);}
-function render(){const root=api.root(ID);if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea'))return;const rows=config().highlights;root.innerHTML='<div class="grid"><article class="card full"><div class="card-head"><div><h2>Custom chat buttons</h2><span class="muted">First click loads the HTML message; second click sends it.</span></div></div><p>Unquoted links are corrected to &lt;a href="link"&gt;. Page-link and page-URL tokens remain available in the existing custom-button editor.</p><div class="target-actions"><button type="button" data-chat-action="manage">Manage custom buttons</button></div></article><article class="card full"><div class="card-head"><div><h2>Highlight chat terms</h2><span class="muted">Case-insensitive custom words and phrases.</span></div></div><div data-chat-rows>'+(rows.length?rows.map((row,index)=>'<div class="module-toolbar" data-chat-row="'+index+'"><input type="text" data-chat-term value="'+api.escapeHtml(String(row.term||''))+'" placeholder="Term or phrase"><select data-chat-color>'+COLORS.map(color=>'<option value="'+color[0]+'" '+(row.color===color[0]?'selected':'')+'>'+color[0]+'</option>').join('')+'</select><label><input type="checkbox" data-chat-enabled '+(row.enabled!==false?'checked':'')+'>On</label><button type="button" data-chat-action="delete" data-chat-index="'+index+'">×</button></div>').join(''):'<p>No highlighted terms configured.</p>')+'</div><div class="target-actions"><button type="button" data-chat-action="add">Add term</button><button type="button" data-chat-action="save">Save highlights</button></div></article></div>';}
-function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';root.addEventListener('click',event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);api.save();clear();scan();render();}});}
-api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(schedule);observer.observe(document.body,{childList:true,subtree:true});scan();},render(){render();bind();},alerts(){return[];}});
+function scan(){if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible())return;const active=config().highlights.filter(row=>row.enabled!==false&&String(row.term||'').trim());document.querySelectorAll(SELECTOR).forEach(container=>{if(container.dataset.slinkChatHighlighted==='true')return;const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT,{acceptNode(node){if(!node.nodeValue?.trim()||node.parentElement?.closest('a,button,textarea,input,mark,[contenteditable="true"],style,script'))return NodeFilter.FILTER_REJECT;return active.some(row=>new RegExp(rx(row.term),'i').test(node.nodeValue))?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}}),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const pattern=new RegExp(active.map(row=>'('+rx(row.term)+')').join('|'),'gi'),fragment=document.createDocumentFragment();let last=0,found;while((found=pattern.exec(node.nodeValue))!==null){if(found.index>last)fragment.append(document.createTextNode(node.nodeValue.slice(last,found.index)));const row=active.find(candidate=>new RegExp(rx(candidate.term),'i').test(found[0])),colors=palette(row?.color),mark=document.createElement('mark');mark.dataset.slinkChatHighlight='true';mark.textContent=found[0];mark.style.cssText='background:'+colors[1]+';color:'+colors[2]+';padding:0 2px;border-radius:3px;font-weight:800';fragment.append(mark);last=found.index+found[0].length;if(!found[0].length)pattern.lastIndex++;}if(last<node.nodeValue.length)fragment.append(document.createTextNode(node.nodeValue.slice(last)));node.replaceWith(fragment);}container.dataset.slinkChatHighlighted='true';});}
+function schedule(){if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible())return;global.SLINK_PDA_PAGE_ACTIVITY.cancel(timer);timer=global.SLINK_PDA_PAGE_ACTIVITY.defer(scan,80);}
+function renderBase(){const root=api.root(ID)?.querySelector('[data-chat-base]');if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea'))return;const rows=config().highlights;root.innerHTML='<div class="grid"><article class="card full"><div class="card-head"><div><h2>Custom chat buttons</h2><span class="muted">First click loads the HTML message; second click sends it.</span></div></div><p>Unquoted links are corrected to &lt;a href="link"&gt;. Page-link and page-URL tokens remain available in the existing custom-button editor.</p><div class="target-actions"><button type="button" data-chat-action="manage">Manage custom buttons</button></div></article><article class="card full"><div class="card-head"><div><h2>Highlight chat terms</h2><span class="muted">Case-insensitive custom words and phrases.</span></div></div><div data-chat-rows>'+(rows.length?rows.map((row,index)=>'<div class="module-toolbar" data-chat-row="'+index+'"><input type="text" data-chat-term value="'+api.escapeHtml(String(row.term||''))+'" placeholder="Term or phrase"><select data-chat-color>'+COLORS.map(color=>'<option value="'+color[0]+'" '+(row.color===color[0]?'selected':'')+'>'+color[0]+'</option>').join('')+'</select><label><input type="checkbox" data-chat-enabled '+(row.enabled!==false?'checked':'')+'>On</label><button type="button" data-chat-action="delete" data-chat-index="'+index+'">×</button></div>').join(''):'<p>No highlighted terms configured.</p>')+'</div><div class="target-actions"><button type="button" data-chat-action="add">Add term</button><button type="button" data-chat-action="save">Save highlights</button></div></article></div>';}
+let giphyPanel=null;
+const ffBubbles=global.SLINK_CHAT_FF.mount({activity:global.SLINK_PDA_PAGE_ACTIVITY,enabled:()=>config().ffBubbles===true&&(api.hasScope('slink.qol.chat')||api.hasScope('admin.*')),lookup:ids=>api.chatFairFight(ids)});
+global.addEventListener('slink-chat-enable',()=>ffBubbles.sync());
+function render(){
+  const root=api.root(ID);if(!root)return;
+  if(!root.querySelector('[data-chat-base]')){const base=document.createElement('div');base.dataset.chatBase='';root.append(base);}
+  renderBase();
+  if(!root.querySelector('[data-chat-ff-panel]')){
+   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input type="checkbox" data-chat-ff-toggle> Show Fair Fight bubbles beside chat names and profile links</label><p>Uses your saved FFScouter key and SLINK backup. † marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
+   const toggle=panel.querySelector('input');toggle.checked=config().ffBubbles===true;
+   api.listen(toggle,'change',async()=>{config().ffBubbles=toggle.checked;ffBubbles.sync();const status=panel.querySelector('[data-chat-ff-status]');status.textContent='Saving…';try{await api.save();status.textContent='Saved.';}catch{status.textContent='Not saved. Change the option again to retry.';}});
+  }
+  if(!giphyPanel&&global.SLINK_GIPHY_PANEL)giphyPanel=global.SLINK_GIPHY_PANEL();
+  if(giphyPanel&&!root.contains(giphyPanel.host))root.append(giphyPanel.host);
+}
+function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';api.listen(root,'click',async event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});await api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);await api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);await api.save();clear();scan();render();}});}
+api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(schedule);if(global.SLINK_PDA_PAGE_ACTIVITY.eligible())observer.observe(document.body,{childList:true,subtree:true});scan();},render(){render();bind();},alerts(){return[];}});
 })(globalThis);
-
 
 

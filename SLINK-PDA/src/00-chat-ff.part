@@ -1,0 +1,89 @@
+(function installChatFairFight(global) {
+ 'use strict';
+ // Independent SLINK implementation. Visual reference only: FF Scouter V2 by
+ // xentac, MAVRI, rDacted, Weav3r and Glasnost. No source/CSS adapted or copied.
+ const positive=value=>value!=null&&Number.isFinite(Number(value))&&Number(value)>0?Number(value):null;
+ function playerId(anchor){try{const u=new URL(anchor.getAttribute('href'), 'https://www.torn.com/');const id=Number(u.searchParams.get('XID'));return u.protocol==='https:'&&u.hostname==='www.torn.com'&&u.pathname==='/profiles.php'&&Number.isSafeInteger(id)&&id>0?id:null;}catch{return null;}}
+ function fromRow(row,now=Date.now()){
+  const id=Number(row?.player_id??row?.id);if(!Number.isSafeInteger(id)||id<=0)return null;
+  return {id,ff:positive(row.fair_fight),estimate:positive(row.bs_estimate),source:row.backup?String(row.source||'SLINK Backup'):'FFScouter',at:row.backup?Number(row.last_updated)*1000:now,backup:!!row.backup};
+ }
+ function fromIntelligence(record,context){
+  const bound=record?.fairFightContext;
+  if(!bound||!context?.observerId||!context.ownStatsAt||Number(bound.observerId)!==Number(context.observerId)||Number(bound.ownStatsAt)!==Number(context.ownStatsAt))return null;
+  const ff=positive(record.fairFight);if(!ff)return null;
+  return {id:Number(record.playerId),ff,estimate:positive(record.battleStatsEstimate),source:'SLINK player intelligence',at:Number(record.fieldMeta?.fairFight?.at)||Number(record.checkedAt)||0,backup:true};
+ }
+ function createLookup({state,request,intelligence,backup,now=Date.now}){
+  const cache=new Map(),pending=new Map();let signature='';
+  return async function lookup(values){
+   const ids=[...new Set(values.map(Number).filter(id=>Number.isSafeInteger(id)&&id>0))].slice(0,200),s=await state();
+   if(!s.allowed)return [];
+   const context=s.context||{},identity=String(s.key||'')+'|'+context.observerId+'|'+context.ownStatsAt;
+   if(identity!==signature){cache.clear();signature=identity;}
+   const missing=ids.filter(id=>!cache.has(id)||cache.get(id).until<=now()),taskKey=identity+'|'+missing.join(',');
+   if(missing.length){
+    let task=pending.get(taskKey);
+    if(!task){task=(async()=>{
+     let rows=[];
+     if(s.key)try{const response=await request(missing,s.key);rows=Array.isArray(response)?response:response?.data??response?.results??[];}catch(error){if([400,401,403].includes(Number(error.status)))throw error;/* Shared provider circuit and local fallback stay authoritative. */}
+     const found=new Map((Array.isArray(rows)?rows:[]).map(row=>fromRow(row,now())).filter(row=>row&&missing.includes(row.id)).map(row=>[row.id,row]));
+     for(const id of missing)if(!found.get(id)?.ff){const record=await intelligence(id).catch(()=>null),row=fromIntelligence(record,context);if(row)found.set(id,row);}
+     const absent=missing.filter(id=>!found.get(id)?.ff);
+     if(absent.length)try{for(const raw of await backup(absent)){const row=fromRow(raw,now());if(row&&absent.includes(row.id))found.set(row.id,row);}}catch{}
+     if(signature!==identity)return;
+     for(const id of missing)cache.set(id,{row:found.get(id)||{id,ff:null,estimate:null,source:'No estimate available',at:0,backup:false},until:now()+(found.has(id)?300000:600000)});
+     while(cache.size>500)cache.delete(cache.keys().next().value);
+    })().finally(()=>pending.delete(taskKey));pending.set(taskKey,task);}
+    await task;
+   }
+   if(signature!==identity)return [];
+   return ids.map(id=>cache.get(id)?.row).filter(Boolean);
+  };
+ }
+ function mount({lookup,activity,enabled,document=global.document}){
+  let root=null,observer=null,discovery=null,visibility=null,timer=null,epoch=0,busy=false,again=false,lastLookup=0;
+  const entries=new Map();
+  const active=()=>enabled()&&activity.eligible();
+  const selector='a[href*="profiles.php"][href*="XID="]';
+  function remove(anchor,entry){visibility?.unobserve(anchor);entry.badge.remove();entries.delete(anchor);}
+  function eligible(anchor){return anchor.isConnected&&root?.contains(anchor)&&anchor.getClientRects().length>0&&!anchor.closest('textarea,[contenteditable="true"],[hidden],[aria-hidden="true"]');}
+  function consider(node){if(!active()||node.nodeType!==1)return;const anchors=[...(node.matches?.(selector)?[node]:[]),...node.querySelectorAll(selector)];for(const anchor of anchors){const id=playerId(anchor);if(!id||entries.has(anchor))continue;const badge=document.createElement('span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;const entry={id,badge,visible:!visibility,at:0};entries.set(anchor,entry);visibility?.observe(anchor);}while(entries.size>300){const [anchor,entry]=entries.entries().next().value;remove(anchor,entry);}}
+  function schedule(){if(!active()||timer!==null)return;timer=global.setTimeout(()=>{timer=null;void flush();},Math.max(100,5000-(Date.now()-lastLookup)));}
+  function paint(anchor,entry,row){
+   const value=positive(row.ff),age=row.at?Math.max(0,Math.floor((Date.now()-row.at)/3600000))+'h old':'age unknown';
+   entry.badge.textContent=(value===null?'N/A':value.toFixed(2))+(row.backup?' †':'');
+   entry.badge.style.backgroundColor=value===null?'#555b66':value<2?'#25623f':value<=3?'#775b12':'#a52b42';
+   entry.badge.title=(value===null?'Fair Fight unavailable':'Fair Fight '+value.toFixed(2))+' · '+row.source+(row.backup?' · '+age:'');
+   entry.badge.setAttribute('aria-label',entry.badge.title);entry.badge.hidden=false;
+   if(anchor.nextSibling!==entry.badge)anchor.after(entry.badge);entry.at=Date.now();
+  }
+  async function flush(){
+   if(!active())return;if(busy){again=true;return;}busy=true;const token=epoch;
+   try{
+    for(const [a,e]of entries)if(!a.isConnected||!root?.contains(a)||playerId(a)!==e.id)remove(a,e);
+    const selected=[...entries].filter(([a,e])=>e.visible&&eligible(a)&&(!e.at||Date.now()-e.at>=300000)).slice(-200);if(!selected.length)return;
+    lastLookup=Date.now();const rows=await lookup([...new Set(selected.map(([,e])=>e.id))]);if(token!==epoch||!active())return;
+    const byId=new Map(rows.map(row=>[Number(row.id),row]));for(const [a,e]of selected)if(entries.get(a)===e&&playerId(a)===e.id&&eligible(a)&&byId.has(e.id))paint(a,e,byId.get(e.id));
+   }catch{/* Optional badges never interrupt chat. */}finally{busy=false;if(again){again=false;schedule();}}
+  }
+  function attach(){
+   if(!active())return;const next=document.getElementById('chatRoot');if(next===root&&observer)return;
+   observer?.disconnect();root=next;if(!root)return;
+   observer=new global.MutationObserver(mutations=>{if(!active())return;for(const [a,e]of entries){if(!a.isConnected||playerId(a)!==e.id)remove(a,e);else if(!e.badge.isConnected)e.at=0;}for(const m of mutations){if(m.type==='attributes')consider(m.target);else for(const node of m.addedNodes)if(!node.closest?.('[data-slink-chat-ff]'))consider(node);}schedule();});
+   observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href']});consider(root);schedule();
+  }
+  function sync(){
+   epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
+   for(const [a,e]of entries)remove(a,e);
+   root=null;if(!active())return;
+   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot .slink-chat-ff-bubble{display:inline-block;vertical-align:middle;margin-inline:4px;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:100%;box-sizing:border-box}#chatRoot .slink-chat-ff-bubble[hidden]{display:none}';(document.head||document.documentElement).append(style);}
+   if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
+   attach();discovery=new global.MutationObserver(mutations=>{if(!active())return;if(!root?.isConnected){attach();}else if(mutations.some(m=>[...m.removedNodes].some(n=>n===root||n.contains?.(root)))){observer?.disconnect();root=null;attach();}});
+   discovery.observe(document.documentElement,{childList:true,subtree:true});
+  }
+  const unsubscribe=activity.subscribe(sync);sync();
+  return {sync,stop(){unsubscribe?.();observer?.disconnect();discovery?.disconnect();visibility?.disconnect();epoch++;global.clearTimeout(timer);for(const [a,e]of entries)remove(a,e);}};
+ }
+ global.SLINK_CHAT_FF=Object.freeze({playerId,fromRow,fromIntelligence,createLookup,mount});
+})(globalThis);

@@ -1,11 +1,19 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "0.4.124",
-  "sourceRef": "d889dd54d6f574293a4a96bee4d6357b8fe7ea0b",
+  "revision": "sha256-01c564d2616b5c9112101494a0d7e3b233ae60a6da0ac64d108cbbd9879fd6f6",
+  "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
+    "src/00-errors.part",
     "src/00-mugging-ff.part",
+    "src/00-ff-backup.part",
+    "src/00-chat-ff.part",
+    "src/00-torn-theme-variables.part",
+    "src/00-torn-theme-pages.part",
+    "src/00-torn-theme.part",
+    "src/00-shared-data.part",
+    "src/00-target-records.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
     "src/20-quality-of-life.part",
@@ -26,8 +34,13 @@
       "source": "src/addons/faction-officers.addon.js"
     },
     {
+      "source": "src/addons/chat-giphy.addon.js"
+    },
+    {
+      "source": "src/addons/chat-giphy-ui.addon.js"
+    },
+    {
       "source": "src/addons/chat.addon.js"
     }
-  ],
-  "loaderMaxBytes": 18000
+  ]
 }

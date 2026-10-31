@@ -24,7 +24,8 @@ await ctx.enrichBountyFairFight(ctx.runtime,[{id:1},{id:2}]);assert.equal(ctx.ru
 const manifest=JSON.parse(read('./source-manifest.json'));
 new vm.Script(manifest.fragments.map(read).join(''));
 new vm.Script(read('./src/addons/chat.addon.js'));
-// Main must not accidentally receive the audit-only activity adapter or cache.
-assert.ok(!core.includes('function pdaDomActive()'));
-assert.ok(!read('./SLINK_PDA_Dashboard.user.js').includes('runtime-cache:audit-test'));
+// The tester candidate must retain its activity adapter and isolated runtime cache.
+assert.ok(core.includes('function pdaDomActive()'));
+assert.ok(read('./SLINK_PDA_Dashboard.user.js').includes('runtime-cache:v1'));
 console.log('PDA main hotfix: exact chat lineup, cached/unknown FF fallback, Bounty continuity, syntax and stable storage isolation passed.');
+

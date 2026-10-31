@@ -5,7 +5,7 @@ if (state.page === 'quality-of-life') return state.qualityOfLifeTab;
 return 'access';
 }
 async function loadActiveModule(force = false) {
-if (!dashboardOpen || document.hidden) return;
+if (!dashboardOpen || !pdaDomActive()) return;
 const name = activeModuleName();
 const plugin = pdaPlugins.get(name);
 if (plugin) {
@@ -59,16 +59,17 @@ permissionRecoveryBusy = false;
 function startScheduler() {
 if (schedulerTimer) return;
 schedulerTimer = global.setInterval(() => {
+if (!pdaPagePresent) return;
 if (currentApiKey() && termsAccepted('permission') && !validSession('permission')) void ensureAutomaticPermissionSession(false);
 const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
-if (canRefreshAlerts) {
+if (canRefreshAlerts && pdaDomActive()) {
 const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 if (previousIds !== JSON.stringify(dataState.caches.alertNotificationIds)) { writeDataState(); renderAlerts(); }
 const clock = shadow.querySelector('[data-timer24-clock]');
 if (clock) clock.textContent = timer24Label();
 }
-syncThemeHealthAssets();
+if (pdaDomActive()) syncThemeHealthAssets();
 if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.alerts.lastAttemptAt >= 5 * 60_000) void refreshAlerts(false);
 if (canRefreshAlerts && Number(dataState.caches.crimeUniques?.nextLiveAt || 0) <= Date.now()) void refreshCrimeUniqueWindows(false);
 const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
@@ -85,12 +86,15 @@ if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
 if (hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
 if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
-if (dashboardOpen && !document.hidden) void loadActiveModule(false);
+if (dashboardOpen && pdaDomActive()) void loadActiveModule(false);
 }, 30_000);
 }
 function protectEditableState(root) {
 const selector = 'input,textarea,select,[contenteditable="true"],details';
 const dirty = new Map();
+const revisions = new Map();
+const tickets = new WeakMap();
+let revision = 0;
 const commitAction = /(?:^|[-_\\s])(save|submit|apply|update|confirm|cancel|reset|clear|remove|delete)(?:$|[-_\\s])/i;
 let focusedKey = '';
 let restoring = false;
@@ -138,7 +142,10 @@ const values = new Set(state.values || []);
 function remember(control) {
 const key = identity(control);
 if (!key) return;
-dirty.set(key, take(control));
+const next = take(control);
+const semantic = value => JSON.stringify(value && { kind:value.kind, value:value.value, checked:value.checked, values:value.values, open:value.open });
+if (semantic(next) !== semantic(dirty.get(key))) revisions.set(key, ++revision);
+dirty.set(key, next);
 if (control === (root.activeElement || document.activeElement)) focusedKey = key;
 }
 function clearScope(element) {
@@ -146,6 +153,44 @@ const prefix = scope(element?.querySelector?.(selector) || element);
 for (const key of dirty.keys()) if (key.startsWith(`${prefix}|`)) dirty.delete(key);
 if (focusedKey.startsWith(`${prefix}|`)) focusedKey = '';
 }
+    function keysIn(element) {
+      const controls = [...(element?.querySelectorAll?.(selector) || [])];
+      if (element?.matches?.(selector)) controls.unshift(element);
+      return [...new Set(controls.map(control => identity(control)).filter(Boolean))];
+    }
+
+    function begin(element = root) {
+      const ticket = Object.freeze({});
+      tickets.set(ticket, new Map(keysIn(element).map(key => [key, revisions.get(key) || 0])));
+      return ticket;
+    }
+
+    function isCurrent(ticket) {
+      const captured = tickets.get(ticket);
+      return Boolean(captured && [...captured].every(([key, version]) => (revisions.get(key) || 0) === version));
+    }
+
+    function commit(ticket) {
+      const captured = tickets.get(ticket);
+      if (!captured) return false;
+      const current = isCurrent(ticket);
+      for (const [key, version] of captured) {
+        if ((revisions.get(key) || 0) !== version) continue;
+        dirty.delete(key);
+        if (focusedKey === key) focusedKey = '';
+      }
+      tickets.delete(ticket);
+      return current;
+    }
+
+    function cancel(element = root) {
+      for (const key of keysIn(element)) {
+        revisions.set(key, ++revision);
+        dirty.delete(key);
+        if (focusedKey === key) focusedKey = '';
+      }
+    }
+
 function restore() {
 scheduled = false;
 if (restoring || (!dirty.size && !Object.keys(state.panels || {}).length)) return;
@@ -206,15 +251,16 @@ if (dirty.has(focusedKey)) remember(event.target);
 }, true);
 root.addEventListener('focusout', event => {
 if (!event.target?.matches?.(selector)) return;
-const key = identity(event.target);
+const control = event.target;
+const key = identity(control);
 queueMicrotask(() => {
-if (event.target.isConnected && focusedKey === key && (root.activeElement || document.activeElement) !== event.target) focusedKey = '';
+if (control.isConnected && focusedKey === key && (root.activeElement || document.activeElement) !== control) focusedKey = '';
 });
 }, true);
 root.addEventListener('click', event => {
 const action = event.target?.closest?.('button,input[type="submit"],input[type="reset"],[role="button"]');
 const signature = action ? [action.id,action.name,action.dataset?.action,action.value,action.textContent].filter(Boolean).join(' ') : '';
-if (signature && commitAction.test(signature)) global.setTimeout(() => clearScope(action), 0);
+if (signature && commitAction.test(signature) && !action?.closest?.('[data-ui-explicit-commit="true"]')) global.setTimeout(() => clearScope(action), 0);
 }, true);
 // Ignore ordinary text-only updates (countdowns, "updated ago" labels, and
 // similar).  They do not replace an editor and must not cause a full control
@@ -223,7 +269,7 @@ const observer = new MutationObserver(mutations => {
 if (mutationNeedsRestore(mutations)) scheduleRestore();
 });
 observer.observe(root, { childList:true, subtree:true });
-return Object.freeze({ clear:clearScope, restore, stop:() => observer.disconnect() });
+return Object.freeze({ begin, commit, cancel, isCurrent, clear:clearScope, restore, stop:() => observer.disconnect() });
 }
 const moduleRenderGuards = new WeakMap();
 const nativeInnerHtml = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
@@ -517,6 +563,7 @@ badge.querySelector('span').textContent = pdaChatButtonAlertCount > 99 ? '99+' :
 pdaChatButton.setAttribute('aria-label', pdaChatButtonAlertCount ? 'Open SLINK, ' + pdaChatButtonAlertCount + ' active alert' + (pdaChatButtonAlertCount === 1 ? '' : 's') : 'Open SLINK');
 }
 function ensurePdaChatButton() {
+if (!pdaDomActive()) return;
 if (state.minimizedMode !== 'chat') return;
 const settingsButton = document.getElementById('notes_settings_button');
 const peopleButton = document.getElementById('people_panel_button');
@@ -557,9 +604,12 @@ if (fieldRect.bottom > visibleBottom) scroller.scrollTop += fieldRect.bottom - v
 else if (fieldRect.top < visibleTop) scroller.scrollTop -= visibleTop - fieldRect.top;
 }
 function guardUnexpectedBottomJump(expectedTop, node) {
+if (!pdaDomActive()) return;
+const generation=global.SLINK_PDA_PAGE_ACTIVITY.token();
 const scroller = shadow.querySelector('.scroll');
 if (!scroller || !keyboardEditable(node)) return;
 const check = () => {
+if (!global.SLINK_PDA_PAGE_ACTIVITY.current(generation)) return;
 if (shadow.activeElement !== node) return;
 const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
 const jumpedToEnd = max > expectedTop + 140 && scroller.scrollTop >= max - 3;
@@ -567,8 +617,8 @@ if (jumpedToEnd) scroller.scrollTop = expectedTop;
 keepFocusedFieldVisible(node);
 };
 global.requestAnimationFrame(check);
-global.setTimeout(check, 90);
-global.setTimeout(check, 260);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(check, 90);
+global.SLINK_PDA_PAGE_ACTIVITY.defer(check, 260);
 }
 function clamp(value, min, max) {
 return Math.min(Math.max(Number(value) || 0, min), Math.max(min, max));
@@ -616,6 +666,7 @@ syncPdaChatButtonVisibility();
 if (persist) writeState();
 }
 function clampLauncher(persist = false) {
+if (!pdaDomActive() || !(global.innerWidth>0 && global.innerHeight>0)) return;
 launcher.dataset.mode = state.minimizedMode;
 if (state.minimizedMode === 'bar' || state.minimizedMode === 'chat') {
 delete launcher.dataset.positioned;
@@ -676,6 +727,28 @@ if (pendingPlugin) state.qualityOfLifeTab = requestedTab;
 else if (persist) writeState();
 if (dashboardOpen) void loadActiveModule(false);
 }
+let tornPageTheme=null,tornPageSettingsPanel=null,tornPageSettingsQueue=Promise.resolve();
+function syncTornPageTheme(){
+if(!global.SLINK_TORN_THEME)return;
+tornPageTheme||=global.SLINK_TORN_THEME.create({document,activity:global.SLINK_PDA_PAGE_ACTIVITY});
+const computed=global.getComputedStyle(host),tokens={};
+for(const [name,property]of Object.entries(THEME_TOKEN_MAP))tokens[name]=computed.getPropertyValue(property).trim();
+tokens['--slink-link']=computed.getPropertyValue('--s-alt').trim();
+const assetCss={};
+for(const kind of ['background','frame','panelSmoke','healthRoses','healthBlood']){
+const suffix={panelSmoke:'panel-smoke',healthRoses:'health-roses',healthBlood:'health-blood'}[kind]||kind;
+assetCss['--slink-theme-'+suffix+'-image']=host.style.getPropertyValue('--s-theme-'+suffix+'-image');
+}
+tornPageTheme.update({theme:{tokens},settings:dataState.settings.tornTheme||{},assetCss});
+if(!tornPageSettingsPanel){const container=shadow.querySelector('.theme-row')?.parentElement;
+if(container)tornPageSettingsPanel=global.SLINK_TORN_THEME.mountSettings(container,{
+read:()=>dataState.settings.tornTheme||{},
+patch:changes=>{const task=tornPageSettingsQueue.catch(()=>{}).then(async()=>{
+dataState.settings.tornTheme={...(dataState.settings.tornTheme||{}),...changes};
+await savePdaChanges();syncTornPageTheme();return dataState.settings.tornTheme;
+});tornPageSettingsQueue=task;return task;}
+});}
+}
 function setTheme(theme, persist = true) {
 const requestedTheme = String(theme || defaults.theme);
 const requestedDefinition = themeCatalog().find(item => item.id === requestedTheme) || null;
@@ -729,6 +802,7 @@ syncPdaChatButtonTheme();
 shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
 syncThemePanelOpacityControls();
 syncThemeItemOpacityControls();
+syncTornPageTheme();
 if (persist) writeState();
 }
 function themeHealthState(current, maximum) {
@@ -747,6 +821,7 @@ const current=lifeNumber(value?.current??value?.value??value?.now);const maximum
 return Number.isFinite(current)&&Number.isFinite(maximum)&&maximum>0?{current,maximum}:null;
 }
 function visibleLifeSnapshot(){
+if (!pdaDomActive()) return null;
 const candidates=document.querySelectorAll('[data-stat="life"],[aria-label*="life" i],[title*="life" i],[class*="life" i]');
 for(const element of Array.from(candidates).slice(0,80)){
 const attributed=normalizedLifeSnapshot({current:element.getAttribute?.('aria-valuenow')??element.dataset?.current??element.dataset?.value,maximum:element.getAttribute?.('aria-valuemax')??element.dataset?.maximum??element.dataset?.max});
@@ -772,6 +847,7 @@ host.dataset.themeHealthSource=life?'bars-or-page':'unknown';
 if(life){host.dataset.themeHealthCurrent=String(life.current);host.dataset.themeHealthMaximum=String(life.maximum);}else{delete host.dataset.themeHealthCurrent;delete host.dataset.themeHealthMaximum;}
 host.style.setProperty('--s-theme-health-roses-image',roses?`url("${roses}")`:'none');
 host.style.setProperty('--s-theme-health-blood-image',blood?`url("${blood}")`:'none');
+if(tornPageTheme)syncTornPageTheme();
 }
 function lockTornScroll() {
 if (!document.documentElement.dataset[ROOT_OVERFLOW_KEY]) document.documentElement.dataset[ROOT_OVERFLOW_KEY] = document.documentElement.style.overflow || ' ';
@@ -785,6 +861,7 @@ delete document.documentElement.dataset[ROOT_OVERFLOW_KEY];
 }
 }
 function openDashboard() {
+if(typeof refreshPdaTargetRecords==='function')void refreshPdaTargetRecords();
 dashboardOpen = true;
 overlay.hidden = false;
 launcher.hidden = true;
@@ -930,7 +1007,7 @@ writeState();
 }
 }, true);
 overlay.addEventListener('change', event => trackModuleInteraction(event.target), true);
-overlay.addEventListener('click', event => {
+listenPdaAction(overlay,'click', async event => {
 trackModuleInteraction(event.target);
 const bountyProfile = event.target.closest('[data-bounty-profile]');
 if (bountyProfile) rememberBountyProfileIntent(bountyProfile.dataset.bountyProfile);
@@ -944,19 +1021,19 @@ if (abroadMode) PDA_ABROAD.setMode(abroadMode);
 const racingView = event.target.closest('[data-racing-view]')?.dataset.racingView;
 if (racingView) {
 racingSettings().view = racingView;
-writeDataState();
+await savePdaChanges();
 renderRacing();
 }
 const racingCard = event.target.closest('[data-racing-build]');
 const racingBuildState = racingCard ? racingSettings().builds[racingCard.dataset.racingBuild] : null;
 if (racingBuildState && event.target.closest('[data-racing-toggle]')) {
 racingBuildState.completed = !racingBuildState.completed;
-writeDataState();
+await savePdaChanges();
 renderRacing();
 scheduleRacingScan(0);
 } else if (racingBuildState && event.target.closest('[data-racing-reset-name]')) {
 racingBuildState.customName = '';
-writeDataState();
+await savePdaChanges();
 renderRacing();
 scheduleRacingScan(0);
 }
@@ -980,8 +1057,8 @@ if (action === 'save-company-settings') {
 const root = moduleRoot('company');
 dataState.settings.company = { ...companySettings(), addictionThreshold:Number(root?.querySelector('[data-company-own-threshold]')?.value) || 10, directorThreshold:Number(root?.querySelector('[data-company-director-threshold]')?.value) || companySettings().directorThreshold };
 dataState.settings.company = companySettings();
-moduleState.company.notice = 'Company alert settings saved.';
-writeDataState(); renderCompany(); renderAlerts();
+await savePdaChanges();
+moduleState.company.notice = 'Company alert settings saved.'; renderCompany(); renderAlerts();
 }
 if (['copy-company-reminder','fill-company-chat','send-company-chat'].includes(action)) {
 const control = event.target.closest('[data-company-employee]');
@@ -1018,7 +1095,7 @@ dataState.usePdaApiKey = PDA_API_KEY_AVAILABLE;
 dataState.usePdaFfKey = false;
 dataState.accepted = {};
 clearSessions();
-writeDataState();
+await savePdaChanges();
 moduleState.access.error = '';
 setTheme('slink-dark');
 renderAllModules();
@@ -1027,7 +1104,7 @@ if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
 const enabled = action === 'alerts-enable-all';
 dataState.settings.alerts.enabledTypes = Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, enabled]));
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'toggle-stack' || action === 'timer24-start' || action === 'timer24-cancel') {
@@ -1038,7 +1115,7 @@ else settings.timer24EndsAt = action === 'timer24-start' ? Date.now() + 86_400_0
 for (const id of resetIds) delete settings.snoozedUntil[id];
 dataState.caches.alertNotificationIds = (dataState.caches.alertNotificationIds || []).filter(id => !resetIds.includes(id));
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'snooze-alert') {
@@ -1052,20 +1129,20 @@ return;
 }
 dataState.settings.alerts.snoozedUntil[id] = Date.now() + minutes * 60_000;
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 }
 if (action === 'hide-city-until-reset') {
 dataState.settings.alerts.cityDoneDay = utcDay();
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'claim-google-play-points') {
 dataState.settings.alerts.googlePlayPointsClaimedAt = Date.now();
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 if (action === 'crime-unique-checked') {
@@ -1074,7 +1151,7 @@ if (['disposalUnique', 'arsonUnique'].includes(id)) {
 dataState.settings.alerts.crimeUniqueDoneDay[id] = utcDay();
 delete dataState.settings.alerts.snoozedUntil[id];
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 }
@@ -1095,7 +1172,7 @@ const tab = String(event.target.closest('[data-war-tab]')?.dataset.warTab || 'ta
 const officerTabs = [...(warArmoryOfficer() ? ['armory'] : []), ...(warOfficer() ? ['logs', 'settings'] : [])];
 if (['targets', 'outside', 'claims', ...officerTabs].includes(tab)) {
 dataState.settings.war.activeTab = tab;
-writeDataState();
+await savePdaChanges();
 renderWar();
 }
 }
@@ -1123,13 +1200,13 @@ const members = (dataState.caches.warArmoryMembers?.members || []).filter(member
 const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
 const select = !members.every(member => whitelist.has(String(member.id)));
 members.forEach(member => select ? whitelist.add(String(member.id)) : whitelist.delete(String(member.id)));
-dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges(); renderWar();
 }
 if (action === 'select-shown-war-armory' || action === 'clear-shown-war-armory') {
 const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
 const checked = action === 'select-shown-war-armory';
 moduleRoot('war')?.querySelectorAll('[data-armory-search-row]:not([hidden]) [data-war-armory-member]').forEach(input => checked ? whitelist.add(String(input.dataset.warArmoryMember)) : whitelist.delete(String(input.dataset.warArmoryMember)));
-dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState(); renderWar();
+dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges(); renderWar();
 }
 if (action === 'dismiss-war-retal') {
 const attackId = String(event.target.closest('[data-war-retal]')?.dataset.warRetal || '');
@@ -1138,7 +1215,7 @@ if (retal) {
 const key = `user:${Number(retal.attackerId) || attackId}`;
 if (!dataState.settings.war.dismissedRetals || typeof dataState.settings.war.dismissedRetals !== 'object') dataState.settings.war.dismissedRetals = {};
 dataState.settings.war.dismissedRetals[key] = Number(retal.expiresAt) || Math.floor(Date.now() / 1000) + 300;
-writeDataState();
+await savePdaChanges();
 renderWar();
 }
 }
@@ -1172,6 +1249,8 @@ button.disabled = false;
 })();
 }
 if (action === 'toggle-target-polling') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-polling]');
+if (form) editableState.cancel(form);
 moduleState.targetList.pollingOpen = !moduleState.targetList.pollingOpen;
 moduleState.targetList.error = '';
 moduleState.targetList.notice = '';
@@ -1179,6 +1258,7 @@ renderTargetList();
 }
 if (action === 'save-target-polling') {
 const root = moduleRoot('targetList');
+const ticket = editableState.begin(root?.querySelector('[data-target-polling]'));
 const previous = targetPollingSettings();
 const next = {
 enabled:root?.querySelector('[data-field="target-poll-enabled"]')?.checked === true,
@@ -1199,11 +1279,14 @@ moduleState.targetList.error = '';
 moduleState.targetList.notice = normalized.enabled
 ? `Rolling polling enabled across ${normalized.intervalMinutes} minutes.`
 : 'Automatic Target List polling disabled.';
-writeDataState();
+await savePdaChanges();
+editableState.commit(ticket);
 renderTargetList();
 void runTargetPolling();
 }
 if (action === 'toggle-target-list-form') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
 moduleState.targetList.formOpen = !moduleState.targetList.formOpen;
 moduleState.targetList.editingId = 0;
 moduleState.targetList.error = '';
@@ -1211,6 +1294,8 @@ moduleState.targetList.notice = '';
 renderTargetList();
 }
 if (action === 'cancel-target-list') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
 moduleState.targetList.formOpen = false;
 moduleState.targetList.editingId = 0;
 moduleState.targetList.error = '';
@@ -1219,12 +1304,16 @@ renderTargetList();
 if (action === 'save-source-target') {
 const button = event.target.closest('[data-target-source][data-target-id]');
 if (button) {
+if (button.disabled) return;
+button.disabled=true;
 try {
-savePdaSourceTarget(String(button.dataset.targetSource || ''), Number(button.dataset.targetId));
+await savePdaSourceTarget(String(button.dataset.targetSource || ''), Number(button.dataset.targetId));
+await flushPdaStorage();
 button.textContent = 'Saved';
 button.disabled = true;
 global.setTimeout(() => { if (button.isConnected) { button.textContent = 'Save Target'; button.disabled = false; } }, 1500);
 } catch (error) {
+button.disabled=false;
 button.textContent = 'Save failed';
 button.title = errorMessage(error);
 global.setTimeout(() => { if (button.isConnected) button.textContent = 'Save Target'; }, 2000);
@@ -1233,6 +1322,10 @@ global.setTimeout(() => { if (button.isConnected) button.textContent = 'Save Tar
 }
 if (action === 'save-target-list') {
 const root = moduleRoot('targetList'), state = moduleState.targetList;
+if (state.saving) return;
+state.saving=true;
+state.notice='';
+const ticket = editableState.begin(root?.querySelector('[data-target-editor]'));
 try {
 const playerId = Number(root?.querySelector('[data-field="target-list-id"]')?.value || state.editingId);
 const tags = [...(root?.querySelectorAll('[data-target-list-tag]:checked') || [])].map(node => node.dataset.targetListTag);
@@ -1246,27 +1339,40 @@ tags,
 source:'manual',
 sourceLabel:'Manual'
 };
-if (state.editingId) updatePdaTarget(payload); else addPdaTarget(payload);
-state.formOpen = false; state.editingId = 0; state.error = ''; state.notice = 'Target saved.';
+if (state.editingId) await updatePdaTarget(payload); else await addPdaTarget(payload);
+await flushPdaStorage();
+if (editableState.commit(ticket)) {state.formOpen=false;state.editingId=0;}
+state.error='';state.notice='Target saved.';
 } catch (error) { state.error = errorMessage(error); }
+finally {state.saving=false;}
 renderTargetList();
 }
 if (action === 'toggle-target-stakeout') {
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 const target = pdaTargetListEntries().find(value => value.id === playerId);
 if (target) {
-updatePdaTarget({
+try {
+await updatePdaTarget({
 playerId,
 stakeout:target.stakeout !== true,
 stakeoutIntervalSeconds:target.stakeoutIntervalSeconds
 });
+await flushPdaStorage();
 moduleState.targetList.notice = target.stakeout ? 'Stakeout stopped.' : 'Stakeout started.';
 moduleState.targetList.error = '';
 renderTargetList();
 void runTargetStakeouts();
+} catch (error) {moduleState.targetList.error=errorMessage(error);moduleState.targetList.notice='';renderTargetList();}
 }
+}
+if (action === 'retry-local-storage') {
+try {await retryPdaStorage();moduleState.access.error='';}
+catch (error) {moduleState.access.error=errorMessage(error);}
+updateStorageNotice();
 }
 if (action === 'edit-target-list') {
+const form = moduleRoot('targetList')?.querySelector('[data-target-editor]');
+if (form) editableState.cancel(form);
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 moduleState.targetList.editingId = playerId;
 moduleState.targetList.formOpen = true;
@@ -1277,10 +1383,18 @@ renderTargetList();
 if (action === 'remove-target-list') {
 const playerId = Number(event.target.closest('[data-target-list-id]')?.dataset.targetListId || 0);
 if (playerId && global.confirm('Remove this player from Target List?')) {
-removePdaTarget(playerId);
+const editForm=moduleRoot('targetList')?.querySelector('[data-target-editor]');
+const deleteTicket=Number(moduleState.targetList.editingId)===playerId ? editableState.begin(editForm) : null;
+try {
+await removePdaTarget(playerId);
+await flushPdaStorage();
+if (Number(moduleState.targetList.editingId) === playerId && deleteTicket && editableState.commit(deleteTicket)) {
+moduleState.targetList.editingId = 0; moduleState.targetList.formOpen = false;
+}
 moduleState.targetList.error = '';
 moduleState.targetList.notice = 'Target removed.';
 renderTargetList();
+} catch (error) {moduleState.targetList.error=errorMessage(error);renderTargetList();}
 }
 }
 if (action === 'refresh-target-list') {
@@ -1336,13 +1450,13 @@ moduleState.market.error = ''; renderMarket(false); shadow.querySelector('.scrol
 if (action === 'remove-market-watch') {
 const uid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
 const settings = marketSettings(); settings.watches = settings.watches.filter(watch => watch.uid !== uid); if (moduleState.market.editingUid === uid) moduleState.market.editingUid = '';
-const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; writeDataState(); renderMarket(); schedulePurchaseOpportunityFormatting();
+const runtime = marketRuntime(); delete runtime.results[uid]; dataState.caches.market = runtime; await savePdaChanges(); renderMarket(); schedulePurchaseOpportunityFormatting();
 }
 const marketOption = event.target.closest('[data-market-item-option]');
 if (marketOption) selectMarketSuggestion(Number(marketOption.dataset.marketItemOption));
 if (action === 'dismiss-market-deal') {
 const key = String(event.target.closest('[data-market-dismiss]')?.dataset.marketDismiss || '');
-if (key) { marketSettings().dismissals[key] = Date.now() + 5 * 60_000; writeDataState(); renderMarket(); }
+if (key) { marketSettings().dismissals[key] = Date.now() + 5 * 60_000; await savePdaChanges(); renderMarket(); }
 }
 if (action === 'copy-market-deal' || action === 'send-market-deal') {
 const id = String(event.target.closest('[data-market-deal]')?.dataset.marketDeal || '');
@@ -1361,12 +1475,12 @@ const pinned = new Set(dataState.settings.merits.pinned || []);
 if (pinned.has(key)) pinned.delete(key);
 else if (pinned.size < 3) pinned.add(key);
 dataState.settings.merits.pinned = [...pinned];
-writeDataState();
+await savePdaChanges();
 renderMerits();
 }
 if (action === 'merit-page') {
 dataState.settings.merits.page = Math.max(1, Number(event.target.closest('[data-merit-page]')?.dataset.meritPage) || 1);
-writeDataState();
+await savePdaChanges();
 renderMerits();
 shadow.querySelector('.scroll')?.scrollTo?.({ top:0, behavior:'smooth' });
 }
@@ -1407,10 +1521,10 @@ if (counter) {
 counter.textContent = `${validation.length}/${validation.maxLength}`;
 counter.dataset.invalid = String(!validation.valid);
 }
-writeDataState();
+queuePdaSettingsSave();
 scheduleRacingScan(0);
 });
-overlay.addEventListener('change', event => {
+listenPdaAction(overlay,'change', async event => {
 if (event.target.matches('[data-alert-type]')) {
 const id = String(event.target.dataset.alertType || '');
 if (PDA_ALERT_TYPES.some(definition => definition.id === id)) {
@@ -1420,7 +1534,7 @@ if (PDA_ALERT_TYPES.find(definition => definition.id === id)?.mode === 'live') {
 dataState.caches.crimeUniques = { ...(dataState.caches.crimeUniques || {}), nextLiveAt:0 };
 }
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
+await savePdaChanges();
 renderAlerts();
 }
 return;
@@ -1434,18 +1548,19 @@ dataState.settings.mugging.maxFairFight = Math.max(1, Math.min(3, Number(root?.q
 dataState.settings.mugging.limit = Math.max(1, Math.min(100, Math.trunc(Number(root?.querySelector('[data-field="mugging-limit"]')?.value) || 50)));
 moduleState.mugging.error = '';
 moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging settings saved locally; contributor scheduling started.' : 'Mugging disabled locally; cached assignments were kept.';
-if (dataState.settings.mugging.enabled) touchMuggingActivity(); else writeDataState();
+if (dataState.settings.mugging.enabled) touchMuggingActivity();
+await savePdaChanges();
 renderMugging();
 if (dataState.settings.mugging.enabled) void runMuggingContribution(true);
 }
 if (event.target.matches('[data-field="war-armory-mode"]')) {
-dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); writeDataState();
+dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); await savePdaChanges();
 }
 if (event.target.matches('[data-war-armory-member]')) {
 const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(String));
 const id = String(event.target.dataset.warArmoryMember || '');
 if (event.target.checked) whitelist.add(id); else whitelist.delete(id);
-dataState.settings.war.armoryWhitelist = [...whitelist]; writeDataState();
+dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges();
 }
 if (event.target.matches('[data-field="war-target-min"],[data-field="war-target-max"],[data-field="war-target-status"],[data-field="war-target-abroad"],[data-field="war-target-location"],[data-field="war-target-sort"]')) {
 const root = moduleRoot('war');
@@ -1455,38 +1570,38 @@ dataState.settings.war.targetStatus = root?.querySelector('[data-field="war-targ
 dataState.settings.war.targetAbroad = root?.querySelector('[data-field="war-target-abroad"]')?.value || 'all';
 dataState.settings.war.targetLocation = root?.querySelector('[data-field="war-target-location"]')?.value || 'all';
 dataState.settings.war.targetSort = root?.querySelector('[data-field="war-target-sort"]')?.value || 'availability';
-writeDataState();
+await savePdaChanges();
 renderWar(true);
 }
 if (event.target.closest?.('.market-form')) captureMarketDraft();
 if (event.target.matches('[data-field="merit-refresh"]')) {
 dataState.settings.merits.refreshMinutes = Math.max(5, Number(event.target.value) || 15);
-writeDataState();
+await savePdaChanges();
 renderMerits();
 }
 if (event.target.matches('[data-field="merit-filter"]')) {
 dataState.settings.merits.filter = String(event.target.value || 'all');
 dataState.settings.merits.page = 1;
-writeDataState();
+await savePdaChanges();
 renderMerits();
 }
 if (event.target.matches('[data-field="market-priority"]')) {
-dataState.settings.market.lastPriority = normalizeMarketPriority(event.target.value); writeDataState();
+dataState.settings.market.lastPriority = normalizeMarketPriority(event.target.value); await savePdaChanges();
 }
 if (event.target.matches('[data-field="market-enabled"]')) {
-marketSettings().enabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
+marketSettings().enabled = event.target.checked; await savePdaChanges(); renderMarket(); scheduleMarketWake(); if (event.target.checked) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-listed-items"]')) {
-marketSettings().listedItemsEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+marketSettings().listedItemsEnabled = event.target.checked; await savePdaChanges(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-weaver-pricelist"]')) {
-marketSettings().weaverPricelistEnabled = event.target.checked; writeDataState(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
+marketSettings().weaverPricelistEnabled = event.target.checked; await savePdaChanges(); renderMarket(); scheduleMarketWake(); if (marketSettings().enabled) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-weaver-source-order"]')) {
-marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; writeDataState(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
+marketSettings().weaverSourceOrder = event.target.value === 'pricelist-first' ? 'pricelist-first' : 'listed-first'; await savePdaChanges(); renderMarket(); if (marketSettings().enabled) void refreshMarket(false);
 }
 if (event.target.matches('[data-field="market-quick-buy"]')) {
-marketSettings().quickBuyEnabled = event.target.checked; marketPurchaseState.settings.highlightedQuickBuyEnabled = event.target.checked; writeDataState(); if (!event.target.checked) clearQuickPurchaseControls(); else schedulePurchaseOpportunityFormatting(0);
+marketSettings().quickBuyEnabled = event.target.checked; marketPurchaseState.settings.highlightedQuickBuyEnabled = event.target.checked; await savePdaChanges(); if (!event.target.checked) clearQuickPurchaseControls(); else schedulePurchaseOpportunityFormatting(0);
 }
 if (event.target.matches('[data-field="market-type"]')) {
 captureMarketDraft();
@@ -1557,44 +1672,77 @@ event.preventDefault();
 toggleDashboard();
 }
 });
-global.addEventListener('resize', () => { clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
-global.visualViewport?.addEventListener('resize', () => { syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
-global.addEventListener('orientationchange', () => global.setTimeout(() => clampLauncher(true), 180));
+global.addEventListener('resize', () => { if (!pdaDomActive()) return;clampLauncher(true); syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+global.visualViewport?.addEventListener('resize', () => { if (!pdaDomActive()) return;syncKeyboardState(); keepFocusedFieldVisible(shadow.activeElement); });
+global.addEventListener('orientationchange', () => global.SLINK_PDA_PAGE_ACTIVITY.defer(() => clampLauncher(true), 180));
 global.addEventListener('hashchange', schedulePurchaseOpportunityFormatting);
 global.addEventListener('hashchange', scheduleRacingScan);
 global.addEventListener('popstate', schedulePurchaseOpportunityFormatting);
 global.addEventListener('popstate', scheduleRacingScan);
 global.addEventListener('resize', scheduleQuickPurchaseControlSync);
 global.addEventListener('scroll', scheduleQuickPurchaseControlSync, true);
-document.addEventListener('visibilitychange', () => {
-if (dashboardOpen && !document.hidden) void loadActiveModule(false);
-if (!document.hidden) void scanIntendedProfileDom();
-});
-global.addEventListener('focus', () => void scanIntendedProfileDom());
-global.addEventListener('pagehide', () => {
-unlockTornScroll();
-clearInterval(targetPollingTimer);
-clearInterval(targetStakeoutTimer);
-clearTimeout(attackMugScanTimer);
-attackMugScanTimer = null;
-marketObserver?.disconnect();
-if (racingScanTimer) global.clearTimeout(racingScanTimer);
-clearRacingHighlight();
-document.getElementById(RACING_HIGHLIGHT_STYLE_ID)?.remove();
-clearMarketPurchaseFormatting();
-}, { once:true });
-const guardian = new MutationObserver(() => {
+const guardian = new MutationObserver(() => {if (pdaDomActive()) repairPdaHost();});
+function repairPdaHost() {
+if (!pdaDomActive()) return;
 if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
 if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaChatButton.isConnected)) ensurePdaChatButton();
-});
-guardian.observe(document, { childList:true, subtree:true });
-marketObserver = new MutationObserver(() => {
+}
+marketObserver = new MutationObserver(mutations => {
+if (!pdaDomActive()) return;
 schedulePurchaseOpportunityFormatting(80);
 scanAttackMugResults();
 if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
-scheduleRacingScan();
+if (mutations.some(racingMutationRelevant)) scheduleRacingScan();
 });
-marketObserver.observe(document.body, { childList:true, subtree:true });
+let pdaForegroundActive=null;
+let targetPollingKickoff=null,targetStakeoutKickoff=null;
+function startPdaTargetTimers() {
+if (!pdaPagePresent) return;
+if (targetPollingTimer===null) {
+const timer=global.setInterval(()=>{if (pdaPagePresent && targetPollingTimer===timer) void runTargetPolling();},TARGET_POLL_TICK_MS);
+targetPollingTimer=timer;
+const kickoff=global.setTimeout(()=>{if (targetPollingKickoff!==kickoff) return;targetPollingKickoff=null;if (pdaPagePresent) void runTargetPolling();},2000);
+targetPollingKickoff=kickoff;
+}
+if (targetStakeoutTimer===null) {
+const timer=global.setInterval(()=>{if (pdaPagePresent && targetStakeoutTimer===timer) void runTargetStakeouts();},TARGET_STAKEOUT_TICK_MS);
+targetStakeoutTimer=timer;
+const kickoff=global.setTimeout(()=>{if (targetStakeoutKickoff!==kickoff) return;targetStakeoutKickoff=null;if (pdaPagePresent) void runTargetStakeouts();},2000);
+targetStakeoutKickoff=kickoff;
+}
+}
+function stopPdaTargetTimers() {
+global.clearInterval(targetPollingTimer);global.clearInterval(targetStakeoutTimer);
+global.clearTimeout(targetPollingKickoff);global.clearTimeout(targetStakeoutKickoff);
+targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targetStakeoutKickoff=null;
+}
+function syncPdaForeground(active=pdaDomActive()) {
+if (active===pdaForegroundActive) return;
+pdaForegroundActive=active;
+marketObserver.disconnect();guardian.disconnect();racingStateObserver?.disconnect();
+if (!active) {
+global.SLINK_PDA_PAGE_ACTIVITY.cancel(attackMugScanTimer);attackMugScanTimer=null;
+global.SLINK_PDA_PAGE_ACTIVITY.cancel(racingScanTimer);racingScanTimer=null;
+global.clearTimeout(keyboardFocusTimer);keyboardFocusTimer=null;
+clearRacingHighlight();
+document.getElementById(RACING_HIGHLIGHT_STYLE_ID)?.remove();
+clearMarketPurchaseFormatting();unlockTornScroll();
+return;
+}
+if (document.body) marketObserver.observe(document.body,{childList:true,subtree:true});
+if(typeof refreshPdaTargetRecords==='function')void refreshPdaTargetRecords();
+guardian.observe(document,{childList:true,subtree:true});
+repairPdaHost();
+clampLauncher(false);
+if (dashboardOpen) lockTornScroll();
+syncThemeHealthAssets();
+schedulePurchaseOpportunityFormatting(0);scheduleRacingScan(0);scanAttackMugResults();
+void scanIntendedProfileDom();
+}
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
+global.addEventListener('pagehide',stopPdaTargetTimers);
+global.addEventListener('pageshow',startPdaTargetTimers);
+global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});
 if (typeof GM_API.menu === 'function') {
 GM_API.menu('Open SLINK PDA Dashboard', openDashboard);
 GM_API.menu('Reset SLINK PDA layout', resetLayout);
@@ -1608,10 +1756,8 @@ selectSubpage('efficiency', state.efficiencyTab, false);
 selectSubpage('qualityOfLife', state.qualityOfLifeTab, false);
 clampLauncher(false);
 renderAllModules();
-targetPollingTimer = global.setInterval(() => void runTargetPolling(), TARGET_POLL_TICK_MS);
-targetStakeoutTimer = global.setInterval(() => void runTargetStakeouts(), TARGET_STAKEOUT_TICK_MS);
-global.setTimeout(() => void runTargetPolling(), 2_000);
-global.setTimeout(() => void runTargetStakeouts(), 2_000);
+startPdaTargetTimers();
+syncPdaForeground();
 if (moduleState.alerts.data && !Array.isArray(dataState.caches.alertNotificationIds)) {
 reconcileAlertNotifications(moduleState.alerts.data);
 writeDataState();
@@ -1681,12 +1827,19 @@ global.SLINK_PDA_PLUGIN_API = Object.freeze({
 register:registerPdaPlugin,
 root:moduleRoot,
 settings:pdaPluginSettings,
+chatFairFight:global.SLINK_CHAT_FF.createLookup({
+state:async()=>{const session=validSession('permission'),own=dataState.caches.ownBattleStats;return {allowed:!!session&&(hasScope('slink.qol.chat')||hasScope('admin.*'))&&pdaPluginSettings('chat',{}).ffBubbles===true,key:currentFfKey(),context:{observerId:session?.userId??session?.user_id,ownStatsAt:Number(own?.accountId)===Number(session?.userId??session?.user_id)?own?.statsAt||0:0}};},
+request:(ids,key)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(key)+'&targets='+ids.join(',')),
+intelligence:async id=>playerIntelligenceRecord(id),backup:ids=>fairFightBackup().fallback(ids)
+}),
 cache:pdaPluginCache,
-save:writeDataState,
+save:savePdaChanges,
+listen:listenPdaAction,
 hasScope,
 ensurePermission:ensurePermissionSession,
 tornJson,
 catalogItems,
+sharedCatalog:options=>pdaSharedData().catalog({key:currentApiKey(),...options}),
 escapeHtml,
 number,
 relativeTime,
@@ -1694,7 +1847,7 @@ moduleMessage,
 actionLink,
 lockedModule,
 errorMessage,
-alertsChanged:() => { writeDataState(); renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
+alertsChanged:() => { renderAlerts(); reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts); }
 ,
 primeFactionMessage,
 sendPrimedFactionMessage
@@ -1710,6 +1863,7 @@ openDashboard();
 }
 });
 global.SLINK_PDA_DASHBOARD = Object.freeze({
+storage:Object.freeze({flush:flushPdaStorage,retry:retryPdaStorage,status:()=>({pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName})}),
 build:BUILD,
 open:openDashboard,
 close:closeDashboard,

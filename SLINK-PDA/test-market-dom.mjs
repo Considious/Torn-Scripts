@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.meta.url), 'utf8');
+import { runtime as source, extractFunction } from './test-support/runtime.mjs';
 
 for (const functionName of [
   'formatBazaarOneDollarListings',
@@ -29,7 +30,13 @@ assert(source.includes("url.searchParams.set('highlight', '1')"), 'Bazaar alerts
 assert(!source.includes('slink-armory-request-cell'), 'PDA must not restructure Torn Armory rows');
 assert(source.includes('function retrieveWarArmoryItem'), 'PDA Armory recall handling must remain available');
 
-assert(source.includes("return document.visibilityState !== 'hidden';"), 'PDA Market DOM formatting must not depend on document.hasFocus().');
+const activity=vm.createContext({pdaPagePresent:true,document:{visibilityState:'visible',hasFocus:()=>false}});
+vm.runInContext(extractFunction('pdaDomActive','src/00-runtime-core.part')+extractFunction('focusedTornPage','src/50-market-dom.part'),activity);
+assert.equal(activity.focusedTornPage(),true,'A visible PDA WebView must work even when hasFocus is false');
+activity.document.visibilityState='hidden';
+assert.equal(activity.focusedTornPage(),false,'Hidden PDA pages must not scrape Market DOM');
+activity.document.visibilityState='visible';activity.pdaPagePresent=false;
+assert.equal(activity.focusedTornPage(),false,'A pagehide-suspended PDA page must not scrape');
 assert(source.includes("action === 'toggle-market-dom-test' && hasScope('admin.*')"), 'PDA Market DOM Test action must require admin.*.');
 assert(source.includes("${hasScope('admin.*') ? \`<button type=\"button\" data-action=\"toggle-market-dom-test\""), 'PDA Market DOM Test control must be hidden from non-admin users.');
 assert(source.includes("data-tdd-market-dom-test"), 'PDA Market DOM Test must mark a real production listing.');

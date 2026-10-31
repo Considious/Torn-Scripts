@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
 const core = fs.readFileSync(new URL('./src/00-runtime-core.part', import.meta.url), 'utf8');
 const dashboard = fs.readFileSync(new URL('./src/30-dashboard-combat.part', import.meta.url), 'utf8');
@@ -8,24 +9,30 @@ const loader = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.m
 
 assert(core.includes("const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1'"), 'PDA runtime must maintain an independent local data mirror.');
 assert(core.includes('function writeDataMirror(value)'), 'Every primary data write must also update the local mirror.');
-assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(value)'), 'The mirror must be written before the GM bridge.');
+assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot)'), 'The captured mirror must be written before the bridge.');
 assert(core.includes('return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy]'), 'Storage recovery must compare the loader-vetted primary with fallback copies.');
 assert(core.includes('function storedRecordSavedAt(value)'), 'Durable records must carry freshness metadata.');
-assert(loader.includes("let selected = hasData(primary) ? primary : mirror || {};"), 'The PDA primary record must win when legacy copies have no freshness metadata.');
-assert(loader.includes("savedAt(mirror) > savedAt(selected)"), 'A mirror may only replace primary data when it proves it is newer.');
+assert(loader.includes('let selected=hasData(primary)?primary:mirror||{}'), 'The PDA primary record must win when legacy copies have no freshness metadata.');
+assert(loader.includes('savedAt(mirror)>savedAt(selected)'), 'A mirror may only replace primary data when it proves it is newer.');
 assert(!core.includes('global.localStorage.removeItem(DATA_STORAGE_KEY);'), 'Startup must never erase the legacy recovery copy.');
-assert(loader.includes('function readMirror()'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
-assert(loader.includes("const MANIFEST_URL = SOURCE_ROOT + 'source-manifest.json';"), 'The startup loader must fetch the authored source manifest directly.');
-assert(loader.includes("const RUNTIME_CACHE_KEY = 'slink-pda-dashboard:runtime-cache:v1';"), 'The startup loader must retain a last-known-working runtime.');
-assert(loader.includes('Source download failed; using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
+assert(loader.includes('localStorage?.getItem(s)'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
+assert(loader.includes('source-manifest.json')&&loader.includes('readSourceManifest(2500)'), 'The startup loader must check the authored source manifest with a bounded cached-startup wait.');
+assert(loader.includes('slink-pda-dashboard:runtime-cache:v1'), 'The startup loader must retain a last-known-working runtime.');
+assert(loader.includes('using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
-assert(loader.includes('if (selected === mirror && selected !== primary)'), 'The loader must identify mirror recovery before repairing primary GM storage.');
-assert(loader.includes("await gmWrite(DATA_STORAGE_KEY, selected)"), 'The loader must repair primary GM storage with the selected recovered record.');
+assert(loader.includes('primaryFailed')&&loader.includes('await gmWrite(n,selected)'), 'Mirror repair must not overwrite primary storage after a failed primary read, and must repair the primary when safe.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
-assert(core.includes("settings:JSON.parse(JSON.stringify(dataState.settings || {}))"), 'The backup must include user settings.');
+const backupFunction=core.slice(core.indexOf('function portableBackupPayload()'),core.indexOf('async function restorePortableBackup'));
+const backupContext=vm.createContext({dataState:{apiKey:'torn-secret',sessions:{token:'secret'},settings:{ordinary:42,plugins:{chat:{giphy:{enabled:true,apiKey:'giphy-secret'}}}},caches:{targetList:{one:{note:'keep'}}}},state:{page:'qualityOfLife',qualityOfLifeTab:'chat'}});
+vm.runInContext(backupFunction+';globalThis.backup=portableBackupPayload();',backupContext);
+assert.equal(backupContext.backup.settings.ordinary,42,'The backup must retain ordinary settings.');
+assert.equal(backupContext.backup.settings.plugins.chat.giphy.enabled,true);
+assert.equal(backupContext.backup.settings.plugins.chat.giphy.apiKey,undefined,'Do not upload custom GIPHY keys.');
+assert.equal(backupContext.dataState.settings.plugins.chat.giphy.apiKey,'giphy-secret','Redaction must not erase the local key.');
+assert.equal(backupContext.backup.apiKey,undefined);
+assert.equal(backupContext.backup.sessions,undefined);
 assert(core.includes("targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))"), 'The backup must include saved targets.');
 assert(core.includes('uiState:{'), 'The backup must include dashboard layout and tab preferences.');
-assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('apiKey'), 'Portable backups must not include API keys.');
 assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('sessions'), 'Portable backups must not include login sessions.');
 assert(dashboard.includes('API keys and login sessions are never included'), 'The Access UI must clearly explain backup exclusions.');
 assert(shell.includes("data-action=\"restore-data-backup\"") || shell.includes("action === 'restore-data-backup'"), 'The Access UI restore action must be wired.');

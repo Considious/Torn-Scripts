@@ -48,3 +48,4 @@ assert.equal(rows()[0].observedAt,now+1);
 setRows([]);now+=300000;const empty=await sync();assert.equal(requests,3,'Empty queues must not issue upload requests.');
 assert.equal(empty.lastSuccessAt,now-300000,'An empty queue is not a new successful delivery.');
 console.log((pda?'PDA':'Extension')+' contributor report safety, original estimate age, acknowledgement preservation and bounded retry passed.');
+

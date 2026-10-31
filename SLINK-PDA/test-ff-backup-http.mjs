@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import vm from 'node:vm';
+const pda=vm.createContext({URL,setTimeout,clearTimeout,console,AbortController});pda.global=pda;
+vm.runInContext(readFileSync(new URL('./src/00-ff-backup.part',import.meta.url),'utf8'),pda);
+const source=readFileSync(new URL('./src/00-runtime-core.part',import.meta.url),'utf8');
+const row={player_id:1,bs_estimate:12345,bss_public:400,last_updated:Math.floor(Date.now()/1000),source:'bss',fair_fight:2};
+let pdaOffline=false,pdaCalls=[];Object.assign(pda,{dataState:{sessions:{permission:{token:'session',expiresAt:Date.now()+60000,userId:10}},caches:{ownBattleStats:{accountId:10,score:800}}},SLINK_PDA_PAGE_ACTIVITY:{eligible:()=>true},requestJsonRaw:async url=>{pdaCalls.push(url);if(pdaOffline)throw Error('network unavailable');return [row];}});
+vm.runInContext(source.slice(source.indexOf('const ffScouterRetryAt ='),source.indexOf('async function requestJsonRaw(')),pda);
+const url='https://ffscouter.com/api/v1/get-stats?key=never-persist&targets=1';
+await pda.requestJson(url);pdaOffline=true;const result=await pda.requestJson(url);assert.equal(result[0].fair_fight,2.33);assert.match(result[0].source,/SLINK Backup/);assert.equal(pdaCalls.length,2);assert.ok(pdaCalls.every(url=>new URL(url).hostname==='ffscouter.com'));
+console.log('Actual PDA HTTP wrapper: passive capture, local outage fallback, source labels and zero extra Torn requests passed.');

@@ -14,7 +14,7 @@ const XANAX_SAFETY_SELECTOR = [
 ].join(',');
 const XANAX_ENERGY_SELECTOR = '#barEnergy,[id*="barEnergy"],[data-stat="energy"],[data-testid*="energy" i],[aria-label*="energy" i],[class*="barEnergy"],a[href*="gym.php"]';
 let xanaxSafetyPagePresent = true;
-function xanaxSafetyActive() { return xanaxSafetyPagePresent && document.visibilityState !== 'hidden'; }
+function xanaxSafetyActive() { return xanaxSafetyPagePresent && pdaDomActive(); }
 function xanaxSafetyInteger(value) {
 const parsed = Number(String(value ?? '').replace(/,/g, ''));
 return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
@@ -128,6 +128,7 @@ xanaxSafetyPagePresent = false;
 xanaxSafetyObserver.disconnect();
 global.clearTimeout(xanaxSafetyDecorationTimer); xanaxSafetyDecorationTimer = null;
 });
+global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncXanaxSafetyActivity);
 syncXanaxSafetyActivity();
 }
 

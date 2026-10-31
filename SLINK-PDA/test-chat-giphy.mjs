@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const source=readFileSync(new URL('./src/addons/chat-giphy.addon.js',import.meta.url),'utf8');
+const context=vm.createContext({URL,setTimeout,clearTimeout,AbortController});
+vm.runInContext(source,context);
+const api=context.SLINK_GIPHY;
+let stored={enabled:true,keyMode:'integrated',extra:'preserve'},clock=10000,calls=[],deny=false,failSave=false,reply;
+const client=api.createClient({read:async()=>structuredClone(stored),write:async value=>{if(failSave)throw Error('write failed');stored=structuredClone(value);},authorize:async()=>{if(deny)throw Error('permission denied');},now:()=>clock,
+ request:async url=>{calls.push(new URL(url));return typeof reply==='function'?reply():reply;}});
+const gif={id:'one',title:'Test',url:'https://giphy.com/gifs/one',images:{fixed_width_still:{url:'https://media.giphy.com/one.webp?keep=1'},fixed_width:{mp4:'https://media.giphy.com/one.mp4?keep=2',webp:'https://media.giphy.com/one.webp'}}};
+const success={status:200,body:{data:[gif],pagination:{total_count:2}}};reply=success;
+assert.equal((await client.get()).apiKey,undefined);
+const first=await client.search({query:'cats & dogs'});
+assert.equal(calls[0].pathname,'/v1/gifs/search');assert.equal(calls[0].searchParams.get('q'),'cats & dogs');assert.equal(calls[0].searchParams.get('limit'),'12');
+assert.equal(first.rows[0].mp4,gif.images.fixed_width.mp4,'Do not strip GIPHY query strings');assert.equal(first.hasMore,true);
+await assert.rejects(client.search(),/wait a moment/);
+clock+=2000;await client.search();assert.equal(calls.at(-1).pathname,'/v1/gifs/trending');
+await client.patch({keyMode:'custom',apiKey:'user-key-12345678'});clock+=2000;await client.search();assert.equal(calls.at(-1).searchParams.get('api_key'),'user-key-12345678');
+assert.equal(stored.extra,'preserve');assert.equal((await client.get()).hasCustomKey,true);assert.equal((await client.get()).apiKey,undefined);
+await Promise.all([client.patch({enabled:false}),client.patch({keyMode:'integrated'})]);assert.equal(stored.enabled,false);assert.equal(stored.keyMode,'integrated');assert.equal(stored.apiKey,'user-key-12345678');
+await assert.rejects(client.search(),/Enable/);await client.patch({enabled:true});
+failSave=true;await assert.rejects(client.patch({enabled:false}),/write failed/);assert.equal(stored.enabled,true);failSave=false;await client.patch({enabled:false});await client.patch({enabled:true});
+await assert.rejects(client.patch({apiKey:'https://bad.example/key'}),/valid GIPHY/);
+deny=true;await assert.rejects(client.get(),/permission/);await assert.rejects(client.patch({enabled:false}),/permission/);await assert.rejects(client.search(),/permission/);deny=false;
+clock+=2000;reply={status:429,body:{},retryAfter:60};await assert.rejects(client.search(),/limit reached/);const before=calls.length;await assert.rejects(client.search(),/limit reached/);assert.equal(calls.length,before,'No retries or key rotation on 429');
+clock+=61000;reply={status:403};await assert.rejects(client.search(),/rejected this key/);
+clock+=2000;reply={status:502};await assert.rejects(client.search(),/HTTP 502/);
+clock+=2000;reply={status:200,body:{}};await assert.rejects(client.search(),/unexpected response/);
+clock+=2000;reply=()=>{throw Error('URL https://api.giphy.com/?api_key=do-not-leak');};await assert.rejects(client.search(),e=>!e.message.includes('do-not-leak')&&/Could not reach/.test(e.message));
+clock+=2000;let resolve;reply=()=>new Promise(r=>resolve=r);const pending=client.search();while(!resolve)await new Promise(r=>setTimeout(r,0));
+await assert.rejects(client.search(),/still running/);await client.patch({enabled:false});resolve(success);await assert.rejects(pending,/settings changed/);
+assert.equal(api.mediaUrl('javascript:alert(1)'), '');assert.equal(api.mediaUrl('https://giphy.com.evil.test/a'), '');assert.equal(api.mediaUrl('https://user:password@media.giphy.com/a'),'');
+// Native PDA transport: no fetch/CORS fallback needed when the native bridge is available.
+context.PDA_httpGet=async()=>({statusCode:200,body:JSON.stringify(success.body)});
+assert.equal((await api.request('https://api.giphy.com/fixture')).body.data.length,1);
+console.log('GIPHY: key modes, permission gates, acknowledged patch saves, errors, rate limit, privacy, response ordering and native transport passed.');
