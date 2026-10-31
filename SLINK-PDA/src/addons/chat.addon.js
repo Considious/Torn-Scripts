@@ -433,7 +433,7 @@
     menu.hidden = true;
     menu.addEventListener('pointerdown', (event) => event.stopPropagation());
     menuMacros=document.createElement('div');menuMacros.dataset.ccbMacros='';
-    windowMedia=globalThis.SLINK_CHAT_WINDOW_MEDIA?.({menu,macros:menuMacros,isActive:()=>enabled&&activity.eligible()&&!!menuChatRoot?.isConnected,layout:()=>{if(menuChatRoot)positionMenu(menuChatRoot);}});
+    windowMedia=globalThis.SLINK_CHAT_WINDOW_MEDIA?.({menu,macros:menuMacros,send:sendMediaToChat,isActive:()=>enabled&&activity.eligible()&&!!menuChatRoot?.isConnected,layout:()=>{if(menuChatRoot)positionMenu(menuChatRoot);}});
     if(!windowMedia)menu.append(menuMacros);
     document.body.appendChild(menu);
     return menu;
@@ -704,6 +704,27 @@
     armed = null;
     if (armTimer) window.clearTimeout(armTimer);
     armTimer = null;
+  }
+
+  // Explicit user-clicked media send. No scheduled sends or clipboard step.
+  async function sendMediaToChat(url) {
+    const target=menuChatRoot,composer=contextComposer(target);
+    if(sending||!enabled||!activity.eligible()||!target?.isConnected||!composer)throw Error('Open the chat and try again.');
+    if(!/^https?:\/\//i.test(url))throw Error('This media link is unavailable.');
+    const draft=contextContent(target,composer).trim();
+    if(draft&&!window.confirm('Send your existing draft together with this image?'))throw Error('Not sent. Your draft is unchanged.');
+    const button=contextSendButton(target,composer);
+    if(!button)throw Error('Torn’s Send button could not be found.');
+    const message=draft?draft+' '+url:url;
+    sending=true;
+    try {
+      // Same native setter/input/change path used by the original GIF script.
+      setContextContent(target,composer,message);
+      const ready=await waitForEnabledSend(button);
+      if(!ready||!enabled||!activity.eligible()||menuChatRoot!==target||menu?.hidden||!composer.isConnected||contextContent(target,composer)!==message)
+        throw Error('Not sent. The chat changed or Send is unavailable.');
+      button.click();
+    }finally{sending=false;}
   }
 
   async function waitForEnabledSend(button, timeoutMs = 1500, generation = activity.token()) {

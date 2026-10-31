@@ -1,65 +1,193 @@
-(function installInlineChatMedia(global){
+/*
+ * Chat rendering adapted from Torn Chat GIF & Image Embedder v2.3.
+ * Copyright (c) Carol [4021053]. Licensed under the MIT License.
+ * https://greasyfork.org/scripts/598147
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+(function installInlineChatMedia(global) {
  'use strict';
- // Independent renderer; feature inspiration: Torn Chat GIF & Image Embedder
- // by Carol [4021053] (MIT). No FF Scouter/GPL source is used.
- function resolve(value){
-  try{
-   const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.port&&u.port!=='443')return null;
-   const host=u.hostname.toLowerCase(),path=u.pathname;
-   if(host==='giphy.com'||host==='www.giphy.com'||/^media[0-4]?\.giphy\.com$/.test(host)){
-    let id='';
-    if(host==='giphy.com'||host==='www.giphy.com'){const parts=path.split('/').filter(Boolean);if(!['gifs','stickers'].includes(parts[0]))return null;id=(parts[1]||'').split('-').at(-1)||'';}
-    else {const parts=path.split('/').filter(Boolean),at=parts.indexOf('media');id=parts[at+1]||'';if(id.startsWith('v1.'))id=parts[at+2]||'';}
-    if(!/^[a-zA-Z0-9]{4,100}$/.test(id))return null;
-    return {kind:'GIF / sticker',still:'https://media.giphy.com/media/'+id+'/giphy_s.gif',animated:'https://media.giphy.com/media/'+id+'/giphy.gif',key:'giphy:'+id};
-   }
-   if(host==='stickershop.line-scdn.net'&&/^\/stickershop\//.test(path)&&/\.(?:png|webp|gif)$/i.test(path))return {kind:'Sticker',still:'',animated:u.origin+path,key:u.origin+path};
-   if(['chatsticker.com','www.chatsticker.com','media.tenor.com'].includes(host)&&/\.(?:gif|png|webp|jpe?g)$/i.test(path))return {kind:'Image / sticker',still:'',animated:u.origin+path,key:u.origin+path};
-   return null;
-  }catch{return null;}
- }
- function mount({activity,enabled,settings,document=global.document}){
+ // The original URL detection and anchor/text embedding functions are retained
+ // below. SLINK supplies only settings, active-page lifecycle and cleanup.
+    // Detect direct images, GIFs, and Giphy page links
+    function getMediaUrl(rawText) {
+        if (!rawText) return null;
+        const text = rawText.trim().replace(/[.,!?:;\)\]]+$/, '');
+
+        // 1. Direct link with image/gif extension (including avif)
+        const directMatch = text.match(/https?:\/\/[^\s<"']+\.(?:gif|png|jpe?g|webp|avif)(?:\?[^\s<"']*)?/i);
+        if (directMatch) return directMatch[0];
+
+        // 2. Giphy page link (converted to direct gif)
+        const giphyMatch = text.match(/https?:\/\/(?:www\.)?giphy\.com\/(?:gifs|stickers)\/(?:[a-zA-Z0-9_-]+-)?([a-zA-Z0-9]+)/i);
+        if (giphyMatch && giphyMatch[1]) {
+            return `https://media.giphy.com/media/${giphyMatch[1]}/giphy.gif`;
+        }
+
+        return null;
+    }
+
+
+ function mount({activity,enabled,settings,document=global.document}) {
   document.__slinkInlineChatMedia?.stop();
-  const views=new Map();let root=null,observer=null,intersection=null,timer=null,model={enabled:false,inlineMedia:true},generation=0,stopped=false;
+  const textSnapshots=new Map(), anchors=new Map(), images=new Set(), failed=new WeakMap();
+  let root=null, observer=null, model={enabled:false}, stopped=false, generation=0;
+  const getSetting=()=> 'show';
   const active=()=>!stopped&&enabled()&&activity.eligible()&&model.enabled&&model.inlineMedia!==false;
-  const eligible=a=>a.isConnected&&root?.contains(a)&&!!a.closest('p[class*="message___"],[class*="chat-box-message"]')&&a.getClientRects().length>0&&!a.closest('[hidden],[aria-hidden="true"],textarea,[contenteditable="true"],[data-slink-inline-media]');
-  function remove(a,v){intersection?.unobserve(a);v.image.removeAttribute('src');v.card.remove();views.delete(a);}
-  function pause(){for(const v of views.values())if(v.playing){v.playing=false;if(v.media.still)v.image.src=v.media.still;else v.image.removeAttribute('src');v.button.textContent=v.media.still?'Play':'Show preview';}}
-  function show(v){if(!active()||!eligible(v.anchor))return;if(!v.image.hasAttribute('src')&&v.media.still)v.image.src=v.media.still;}
-  function add(a){
-   if(!eligible(a)||views.has(a)||a.parentElement?.querySelector('.torn-chat-custom-gif'))return;
-   const media=resolve(a.href);if(!media)return;
-   const card=document.createElement('span');card.dataset.slinkInlineMedia='';card.style.cssText='display:block;max-width:min(260px,100%);margin:5px 0;contain:layout style';
-   const image=document.createElement('img');image.alt=media.kind+' preview';image.loading='lazy';image.decoding='async';image.referrerPolicy='no-referrer';image.style.cssText='display:block;max-width:100%;max-height:160px;width:auto;height:auto;object-fit:contain;border-radius:5px';
-   const button=document.createElement('button');button.type='button';button.textContent=media.still?'Play':'Show preview';button.style.cssText='display:inline-block;min-height:28px;padding:3px 8px;margin-top:3px;color:inherit;background:rgba(80,80,80,.35);border:1px solid currentColor;border-radius:4px;cursor:pointer;font:inherit';
-   const v={anchor:a,media,card,image,button,playing:false};card.append(image,button);a.after(card);views.set(a,v);
-   image.addEventListener('error',()=>{image.removeAttribute('src');button.textContent='Preview unavailable — use link';v.failed=true;});
-   button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();if(!active()||!eligible(a)||v.failed)return;v.playing=!v.playing;if(v.playing){image.src=media.animated;button.textContent='Hide / pause';}else{if(media.still)image.src=media.still;else image.removeAttribute('src');button.textContent=media.still?'Play':'Show preview';}});
-   intersection?.observe(a);if(!intersection)show(v);
-   while(views.size>20){const [old,entry]=views.entries().next().value;remove(old,entry);}
+    // Process <a> tags created automatically by Torn
+    function processAnchorTag(a) {
+        if (a.dataset.tornEmoteDone === 'true') return;
+        if (a.closest('[class*="header___"], [class*="chat-box-head"], [class*="title___"]')) return;
+
+        const mediaUrl = getMediaUrl(a.href) || getMediaUrl(a.textContent);
+        if (!mediaUrl) return;
+
+        a.dataset.tornEmoteDone = 'true';
+        a.style.display = 'none';
+
+        const mode = getSetting(); // 'show' | 'filter'
+
+        // OPTION 2: Filter (Anti-Spam) -> Non-clickable cute badge (no image loaded, zero clicks)
+        if (mode === 'filter') {
+            const tag = document.createElement('span');
+            tag.className = 'torn-chat-short-tag';
+            const isGif = /\.gif(?:\?|$)/i.test(mediaUrl) || /giphy\.com/i.test(mediaUrl);
+            tag.textContent = isGif ? '🎞️ GIF' : '🖼️ Image';
+            a.insertAdjacentElement('afterend', tag);
+            return;
+        }
+
+        // OPTION 1: Static image (non-clickable)
+        const img = document.createElement('img');
+        img.src = mediaUrl;
+        img.className = 'torn-chat-custom-gif';
+        img.dataset.slinkInlineMedia = '';
+        img.alt = 'Emote';
+        img.loading = 'lazy';
+
+        a.insertAdjacentElement('afterend', img);
+    }
+
+    // Process plain text messages
+    function processTextMessage(container) {
+        if (container.dataset.tornEmoteDone === 'true') return;
+        if (container.closest('[class*="header___"], [class*="chat-box-head"], [class*="title___"]')) return;
+
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+        let node;
+        let foundMedia = false;
+
+        while ((node = walker.nextNode())) {
+            // Anchors are handled above; do not embed their hidden text a second time.
+            if (node.parentElement?.closest('a, textarea, [contenteditable="true"], [data-slink-inline-media]')) continue;
+            if (!textSnapshots.has(node)) textSnapshots.set(node, node.nodeValue);
+            const mediaUrl = getMediaUrl(node.nodeValue);
+            if (!mediaUrl) continue;
+
+            foundMedia = true;
+            node.nodeValue = node.nodeValue.replace(mediaUrl, '').trim();
+
+            const mode = getSetting();
+            const isGif = /\.gif(?:\?|$)/i.test(mediaUrl) || /giphy\.com/i.test(mediaUrl);
+
+            if (mode === 'filter') {
+                const tag = document.createElement('span');
+                tag.className = 'torn-chat-short-tag';
+                tag.textContent = isGif ? '🎞️ GIF' : '🖼️ Image';
+                if (node.parentNode) {
+                    node.parentNode.insertBefore(tag, node.nextSibling);
+                }
+            } else {
+                const img = document.createElement('img');
+                img.src = mediaUrl;
+                img.className = 'torn-chat-custom-gif';
+        img.dataset.slinkInlineMedia = '';
+                img.alt = 'Emote';
+                img.loading = 'lazy';
+                if (node.parentNode) {
+                    node.parentNode.insertBefore(img, node.nextSibling);
+                }
+            }
+        }
+
+        if (foundMedia) {
+            container.dataset.tornEmoteDone = 'true';
+        }
+    }
+
+
+  function cleanup() {
+   observer?.disconnect();observer=null;
+   for(const image of images){image.removeAttribute('src');image.remove();}
+   images.clear();
+   for(const [a,state] of anchors){a.style.display=state.display;delete a.dataset.tornEmoteDone;}
+   anchors.clear();
+   for(const [node,text] of textSnapshots)if(node.isConnected)node.nodeValue=text;
+   textSnapshots.clear();
+   root?.querySelectorAll('[data-slink-media-processed]').forEach(el=>{delete el.dataset.tornEmoteDone;delete el.dataset.slinkMediaProcessed;});
+   root=null;
   }
-  function scan(node){
-   if(!active()||node.nodeType!==1||node.closest?.('[data-slink-inline-media]'))return;
-   const links=[...(node.matches?.('a[href]')?[node]:[]),...node.querySelectorAll('a[href]')].slice(-20);for(const a of links)add(a);
+  function scan() {
+   if(!active()||!root)return;
+   // Same anchor-first, then plain-text scan as the supplied working script.
+   for(const [a,state] of anchors){
+    if(a.href!==state.href||(!a.nextElementSibling?.matches('img[data-slink-inline-media]')&&failed.get(a)!==a.href)){
+     a.style.display=state.display;delete a.dataset.tornEmoteDone;anchors.delete(a);
+    }
+   }
+   root.querySelectorAll('a:not([data-torn-emote-done="true"])').forEach(a=>{
+    if(failed.get(a)===a.href)return;
+    if(!getMediaUrl(a.href)&&!getMediaUrl(a.textContent))return;
+    const display=a.style.display;processAnchorTag(a);
+    if(a.dataset.tornEmoteDone==='true')anchors.set(a,{display,href:a.href});
+   });
+   root.querySelectorAll('[class*="message___"]:not([data-torn-emote-done="true"]), [class*="text___"]:not([data-torn-emote-done="true"]), p[class*="message"]:not([data-torn-emote-done="true"]), div[class*="message"]:not([data-torn-emote-done="true"])').forEach(el=>{
+    processTextMessage(el);if(el.dataset.tornEmoteDone==='true')el.dataset.slinkMediaProcessed='';
+   });
+   root.querySelectorAll('img[data-slink-inline-media]').forEach(image=>{
+    if(images.has(image))return;images.add(image);
+    image.style.cssText='display:block;max-width:100%;max-height:180px;width:auto;height:auto;object-fit:contain;border-radius:5px';
+    // If the network fails, retain the usable native link rather than a blank.
+    image.addEventListener('error',()=>{
+     const a=image.previousElementSibling;
+     if(a?.tagName==='A'){failed.set(a,a.href);a.style.display=anchors.get(a)?.display||'';}
+     image.remove();
+    },{once:true});
+   });
+   // Virtualized chat removes messages. Do not retain their detached nodes.
+   for(const image of images)if(!image.isConnected)images.delete(image);
+   for(const [a]of anchors)if(!a.isConnected)anchors.delete(a);
+   for(const [node]of textSnapshots)if(!node.isConnected)textSnapshots.delete(node);
   }
-  function observe(){
-   if(!active())return;const next=document.getElementById('chatRoot');if(root===next&&observer)return;
-   observer?.disconnect();root=next;if(!root)return;
+  function sync() {
+   if(!active()){cleanup();return;}
+   const next=document.getElementById('chatRoot');if(next===root&&observer)return;
+   cleanup();root=next;if(!root)return;
    observer=new global.MutationObserver(records=>{
     if(!active())return;
-    for(const [a,v]of views){if(!eligible(a)||resolve(a.href)?.key!==v.media.key||a.parentElement?.querySelector('.torn-chat-custom-gif'))remove(a,v);else if(!v.card.isConnected)a.after(v.card);}
-    for(const r of records){if(r.target?.closest?.('[data-slink-inline-media]'))continue;if([...r.removedNodes||[]].some(node=>node.nodeType===1&&(node.matches?.('.torn-chat-custom-gif')||node.querySelector?.('.torn-chat-custom-gif'))))scan(r.target);if(r.type==='attributes')add(r.target);else for(const node of r.addedNodes)if(node.nodeType===1&&!node.matches?.('[data-slink-inline-media]'))scan(node);}
+    // Our inserts and src changes do not trigger a whole-chat feedback loop.
+    if(records.some(r=>r.type==='characterData'||r.type==='attributes'||[...r.addedNodes].some(n=>n.nodeType!==1||!n.matches?.('[data-slink-inline-media]'))||[...r.removedNodes].some(n=>n.nodeType===1&&n.matches?.('[data-slink-inline-media]'))))scan();
    });
-   observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['href']});scan(root);
+   scan();observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['href']});
   }
-  function sync(){
-   if(!active()){observer?.disconnect();observer=null;intersection?.disconnect();intersection=null;pause();for(const [a,v]of views)remove(a,v);root=null;return;}
-   if(!intersection&&global.IntersectionObserver)intersection=new global.IntersectionObserver(records=>{for(const r of records){const v=views.get(r.target);if(!v)continue;if(r.isIntersecting)show(v);else if(v.playing){v.playing=false;if(v.media.still)v.image.src=v.media.still;else v.image.removeAttribute('src');v.button.textContent=v.media.still?'Play':'Show preview';}}});
-   observe();
-  }
-  async function refresh(){const token=++generation;try{const value=await settings();if(token!==generation||stopped)return;model=value;sync();}catch{if(token===generation){model={enabled:false};sync();}}}
-  const unsubscribe=activity.subscribe(sync);sync();
-  const api={sync,refresh,stop(){stopped=true;generation++;unsubscribe?.();sync();global.clearTimeout(timer);}};document.__slinkInlineChatMedia=api;return api;
+  async function refresh(){const ticket=++generation;try{const saved=await settings();if(ticket!==generation||stopped)return;model=saved;sync();}catch{if(ticket===generation){model={enabled:false};sync();}}}
+  const unsubscribe=activity.subscribe(sync);
+  const api={sync,refresh,stop(){stopped=true;generation++;unsubscribe?.();cleanup();}};
+  document.__slinkInlineChatMedia=api;return api;
  }
- global.SLINK_CHAT_MEDIA=Object.freeze({resolve,mount});
+ global.SLINK_CHAT_MEDIA=Object.freeze({mount,getMediaUrl});
 })(globalThis);
