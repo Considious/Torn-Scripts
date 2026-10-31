@@ -867,6 +867,7 @@ if (retry) retry.hidden=!failedStorageWrites.size;
 if (PDA_STORAGE_WRITE_EVENT) document.addEventListener(PDA_STORAGE_WRITE_EVENT+':ack',event=>{
 let value;try {value=JSON.parse(String(event?.detail || ''));} catch {return;}
 const pending=pendingStorageWrites.get(value?.id);if (!pending) return;
+if(['queued','working'].includes(value.phase)){pending.progress?.(value.phase);return;}
 if (value.ok===true) {storageBackendName=value.backend || 'unknown';pending.resolve(value.value);}
 else pending.reject(new Error('SLINK storage write failed. '+String(value.error || 'Retry from Access.')));
 });
@@ -1049,7 +1050,12 @@ const id=++storageWriteSequence;
 latestStorageWrites.set(key,id);
 let finish,fail;
 const promise=new Promise((resolve,reject)=>{finish=resolve;fail=reject;});
-const timer=global.setTimeout(()=>fail(new Error('SLINK storage did not confirm this write. Retry from Access.')),15000);
+let timer;
+function armStorageTimeout(delay,message){
+global.clearTimeout(timer);
+timer=global.setTimeout(()=>fail(new Error(message)),delay);
+}
+armStorageTimeout(15000,'SLINK’s storage bridge did not acknowledge this write within 15 seconds. Keep the page open and retry from Access. [SLINK_STORAGE_BRIDGE_TIMEOUT]');
 const complete=(ok,error)=>{
 global.clearTimeout(timer);pendingStorageWrites.delete(id);
 if (ok && key===DATA_STORAGE_KEY && id>acknowledgedDataSequence) {
@@ -1061,11 +1067,11 @@ if (ok) failedStorageWrites.delete(key);else failedStorageWrites.set(key,{value:
 }
 updateStorageNotice();
 };
-pendingStorageWrites.set(id,{promise,resolve:value=>{complete(true);finish(value);},reject:error=>{complete(false,error);fail(error);}});
+pendingStorageWrites.set(id,{promise,progress:phase=>armStorageTimeout(phase==='queued'?120000:30000,phase==='queued'?'This save is still waiting in SLINK’s storage queue. Keep the page open and retry from Access. [SLINK_STORAGE_QUEUE_TIMEOUT]':'PDA started this save but has not confirmed completion. Keep the page open and retry from Access. [SLINK_STORAGE_NATIVE_TIMEOUT]'),resolve:value=>{complete(true);finish(value);},reject:error=>{complete(false,error);fail(error);}});
 promise.catch(error=>{if (pendingStorageWrites.has(id)) complete(false,error);});
 const bridged=Boolean(PDA_STORAGE_WRITE_EVENT && [DATA_STORAGE_KEY,OWN_BATTLE_STATS_STORAGE_KEY,STORAGE_KEY,ALERT_SNOOZE_STORAGE_KEY,...(typeof TARGET_RECORDS_KEY!=='undefined'?[TARGET_RECORDS_KEY]:[])].includes(key));
 if (bridged) {
-try {document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({id,key,value:snapshot,base})}));}
+try {document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({id,key,value:snapshot,base,protocol:2})}));}
 catch (error) {pendingStorageWrites.get(id)?.reject(error);}
 } else {
 Promise.resolve().then(async()=>{
@@ -1492,9 +1498,38 @@ return null;
 async function pdaHttpRequest(method, url, headers, body) {
 const handlerName = `PDA_http${method[0]}${method.slice(1).toLowerCase()}`;
 const direct = pdaHttpHandler(method);
-const response = typeof direct === 'function'
-? await direct(url, headers, ...(body === undefined ? [] : [body]))
-: await global.flutter_inappwebview.callHandler(handlerName, url, headers, ...(body === undefined ? [] : [body]));
+const path=new URL(url).pathname;
+const readTerms=method==='GET'&&['/api/terms','/api/permissions/terms'].includes(path);
+const signIn=method==='POST'&&['/api/auth','/api/permissions/auth'].includes(path);
+const bridge=global.flutter_inappwebview?.callHandler;
+const invoke=async()=>{
+ let response=typeof direct==='function'
+ ? await direct(url,headers,...(body===undefined?[]:[body]))
+ : await global.flutter_inappwebview.callHandler(handlerName,url,headers,...(body===undefined?[]:[body]));
+ // PDA's convenience helpers suppress duplicate calls for two seconds and may
+ // return undefined. For read-only terms/sign-in only, use the documented bridge
+ // once if the helper supplied no response. Never replay product mutations.
+ if(response==null&&typeof direct==='function'&&typeof bridge==='function'&&(readTerms||signIn)){
+  await global.__PDA_platformReadyPromise;
+  response=await global.flutter_inappwebview.callHandler(handlerName,url,headers,...(body===undefined?[]:[body]));
+ }
+ if(response==null)throw Object.assign(new Error('PDA’s native HTTP bridge returned no response'+(readTerms?' while loading SLINK terms':signIn?' while signing in':'')+'. No HTTP status was received. Keep your saved key and settings; retry once. [SLINK_PDA_HTTP_BRIDGE]'),{code:'SLINK_PDA_HTTP_BRIDGE'});
+ return response;
+};
+let response;
+if(readTerms||signIn){
+ const requests=pdaHttpRequest.requests||=(new Map());
+ const identity=JSON.stringify([method,url,headers,body]);
+ let record=requests.get(identity);
+ if(!record||record.transport!==(direct||bridge)||(!record.pending&&record.until<=Date.now())){
+  record={transport:direct||bridge,pending:true,until:Date.now()+2100};
+  record.promise=invoke().then(value=>{record.pending=false;return value;},error=>{requests.delete(identity);throw error;});
+  requests.set(identity,record);
+  for(const [key,value]of requests)if(!value.pending&&value.until<=Date.now())requests.delete(key);
+  while(requests.size>64)requests.delete(requests.keys().next().value);
+ }
+ response=await record.promise;
+}else response=await invoke();
 const status = Number(response?.status ?? response?.statusCode) || 0;
 const responseBody=typeof response==='string'?response:response?.responseText??response?.body??response?.data??response;
 let parsed=null;

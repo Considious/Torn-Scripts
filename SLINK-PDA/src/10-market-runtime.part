@@ -480,6 +480,8 @@ return session?.token && Number(session.expiresAt) > Date.now() + 60_000 ? sessi
 async function fetchAllTerms(force = false) {
 const cached = dataState.terms;
 if (!force && cached?.fetchedAt && Date.now() - Number(cached.fetchedAt) < 60 * 60_000 && cached.permission?.version && cached.permission?.sha256 && cached.leveling?.version && cached.leveling?.sha256 && cached.leveling?.disclosureVersion && cached.leveling?.disclosureSha256 && cached.war?.version && cached.war?.sha256) return cached;
+if(fetchAllTerms.pending)return fetchAllTerms.pending;
+const task=(async()=>{
 const [permissionResponse, levelingResponse, warResponse] = await Promise.all([
 requestJson(`${URLS.permission}/api/permissions/terms`),
 requestJson(`${URLS.leveling}/api/terms`),
@@ -516,6 +518,9 @@ throw Object.assign(new Error('SLINK could not verify current terms from '+failu
 dataState.terms = terms;
 writeDataState();
 return terms;
+})();
+fetchAllTerms.pending=task;
+try{return await task;}finally{if(fetchAllTerms.pending===task)fetchAllTerms.pending=null;}
 }
 function termsAccepted(name) {
 const terms = dataState.terms?.[name];
