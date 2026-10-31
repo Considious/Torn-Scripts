@@ -45,7 +45,28 @@
  function mount({activity,enabled,settings,document=global.document}) {
   document.__slinkInlineChatMedia?.stop();
   const textSnapshots=new Map(), anchors=new Map(), images=new Set(), failed=new WeakMap();
-  let root=null, observer=null, model={enabled:false}, stopped=false, generation=0;
+  let root=null, observer=null, model={enabled:false}, stopped=false, generation=0, scanTimer=null;
+  const pendingScopes=new Set();
+  const observation={childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['href']};
+  const ignored='[class*="header___"],[class*="chat-box-head"],[class*="title___"],textarea,input,[contenteditable="true"],[data-slink-inline-media],span[class*="senderContainer___"]';
+  function cancelScan(){global.clearTimeout(scanTimer);scanTimer=null;pendingScopes.clear();}
+  function queueScan(node){
+   let scope=node?.nodeType===3?node.parentElement:node;
+   if(!scope||scope.nodeType!==1||scope.closest?.(ignored))return;
+   scope=scope.closest?.('[class*="message___"],[class*="text___"],p[class*="message"],div[class*="message"]')||(scope.tagName==='A'?scope.parentElement:scope);
+   for(const pending of pendingScopes)if(pending===scope||pending.contains?.(scope))return;
+   for(const pending of pendingScopes)if(scope.contains?.(pending))pendingScopes.delete(pending);
+   pendingScopes.add(scope);
+   if(scanTimer!==null)return;
+   scanTimer=global.setTimeout(()=>{
+    scanTimer=null;const scopes=[...pendingScopes];pendingScopes.clear();
+    if(!active())return;
+    // Synchronous renderer writes must not enqueue a second pass over themselves.
+    observer?.disconnect();
+    try{for(const scope of scopes)if(scope.isConnected&&root?.contains(scope))scan(scope);}
+    finally{if(active()&&root)observer?.observe(root,observation);}
+   },50);
+  }
   const getSetting=()=> 'show';
   const active=()=>!stopped&&enabled()&&activity.eligible()&&model.enabled&&model.inlineMedia!==false;
     // Process <a> tags created automatically by Torn
@@ -131,6 +152,7 @@
 
 
   function cleanup() {
+   cancelScan();
    observer?.disconnect();observer=null;
    for(const image of images){image.removeAttribute('src');image.remove();}
    images.clear();
@@ -141,24 +163,25 @@
    root?.querySelectorAll('[data-slink-media-processed]').forEach(el=>{delete el.dataset.tornEmoteDone;delete el.dataset.slinkMediaProcessed;});
    root=null;
   }
-  function scan() {
+  function scan(scope=root) {
    if(!active()||!root)return;
+   const select=selector=>[...(scope.matches?.(selector)?[scope]:[]),...scope.querySelectorAll(selector)];
    // Same anchor-first, then plain-text scan as the supplied working script.
    for(const [a,state] of anchors){
     if(a.href!==state.href||(!a.nextElementSibling?.matches('img[data-slink-inline-media]')&&failed.get(a)!==a.href)){
      a.style.display=state.display;delete a.dataset.tornEmoteDone;anchors.delete(a);
     }
    }
-   root.querySelectorAll('a:not([data-torn-emote-done="true"])').forEach(a=>{
+   select('a:not([data-torn-emote-done="true"])').forEach(a=>{
     if(failed.get(a)===a.href)return;
     if(!getMediaUrl(a.href)&&!getMediaUrl(a.textContent))return;
     const display=a.style.display;processAnchorTag(a);
     if(a.dataset.tornEmoteDone==='true')anchors.set(a,{display,href:a.href});
    });
-   root.querySelectorAll('[class*="message___"]:not([data-torn-emote-done="true"]), [class*="text___"]:not([data-torn-emote-done="true"]), p[class*="message"]:not([data-torn-emote-done="true"]), div[class*="message"]:not([data-torn-emote-done="true"])').forEach(el=>{
+   select('[class*="message___"]:not([data-torn-emote-done="true"]), [class*="text___"]:not([data-torn-emote-done="true"]), p[class*="message"]:not([data-torn-emote-done="true"]), div[class*="message"]:not([data-torn-emote-done="true"])').forEach(el=>{
     processTextMessage(el);if(el.dataset.tornEmoteDone==='true')el.dataset.slinkMediaProcessed='';
    });
-   root.querySelectorAll('img[data-slink-inline-media]').forEach(image=>{
+   select('img[data-slink-inline-media]').forEach(image=>{
     if(images.has(image))return;images.add(image);
     image.style.cssText='display:block;max-width:100%;max-height:180px;width:auto;height:auto;object-fit:contain;border-radius:5px';
     // If the network fails, retain the usable native link rather than a blank.
@@ -175,6 +198,7 @@
   }
   function sync() {
    if(!active()){
+    cancelScan();
     observer?.disconnect();observer=null;
     // Retain the original renderer's images through a temporary focus loss.
     // Explicit opt-out/permission loss still restores Torn's original links.
@@ -185,10 +209,15 @@
    if(next!==root)cleanup();root=next;if(!root)return;
    observer=new global.MutationObserver(records=>{
     if(!active())return;
-    // Our inserts and src changes do not trigger a whole-chat feedback loop.
-    if(records.some(r=>r.type==='characterData'||r.type==='attributes'||[...r.addedNodes].some(n=>n.nodeType!==1||!n.matches?.('[data-slink-inline-media]'))||[...r.removedNodes].some(n=>n.nodeType===1&&n.matches?.('[data-slink-inline-media]'))))scan();
+    for(const record of records){
+     if(record.type==='characterData'||record.type==='attributes')queueScan(record.target);
+     else{
+      for(const node of record.addedNodes)queueScan(node.nodeType===3?record.target:node);
+      if([...record.removedNodes].some(node=>node.nodeType===1&&node.matches?.('[data-slink-inline-media]')))queueScan(record.target);
+     }
+    }
    });
-   scan();observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['href']});
+   scan();observer.observe(root,observation);
   }
   async function refresh(){const ticket=++generation;try{const saved=await settings();if(ticket!==generation||stopped)return;model=saved;sync();}catch{if(ticket===generation)sync();/* Keep the last acknowledged preference on a transient read failure. */}}
   const unsubscribe=activity.subscribe(sync);

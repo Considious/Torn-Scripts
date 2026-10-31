@@ -1,0 +1,52 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url),{chromium}=require(process.env.SLINK_PLAYWRIGHT_MODULE||'playwright');
+const browser=await chromium.launch({channel:'msedge',headless:true});
+try{
+ const page=await browser.newPage();
+ await page.route('**/*',route=>route.fulfill({contentType:'image/gif',body:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')}));
+ await page.setContent('<div id="chatRoot"><header id="ticker">Online</header><div id="messages"></div></div>');
+ await page.evaluate(()=>{
+  window.IntersectionObserver=undefined;
+  document.querySelector('#messages').innerHTML=Array.from({length:200},(_,i)=>'<div class="virtualItem___fixture"><span class="senderContainer___fixture"><a class="sender___fixture" href="/profiles.php?XID='+(100+i)+'">Member</a></span><p class="message___fixture">Hello '+i+'</p></div>').join('');
+  window.perf={queries:0,walkers:0,layouts:0};
+  const query=Element.prototype.querySelectorAll,walk=Document.prototype.createTreeWalker,rect=Element.prototype.getClientRects;
+  Element.prototype.querySelectorAll=function(...args){window.perf.queries++;return query.apply(this,args);};
+  Document.prototype.createTreeWalker=function(...args){window.perf.walkers++;return walk.apply(this,args);};
+  Element.prototype.getClientRects=function(...args){window.perf.layouts++;return rect.apply(this,args);};
+  window.active=true;window.enabled=true;window.activity={eligible:()=>window.active,subscribe(fn){window.activityChanged=fn;return()=>{};}};
+ });
+ for(const file of ['00-chat-ff.part','00-chat-inline-media.part'])await page.addScriptTag({content:fs.readFileSync(new URL('../src/'+file,import.meta.url),'utf8')});
+ await page.evaluate(async()=>{
+  window.ff=SLINK_CHAT_FF.mount({activity,enabled:()=>window.enabled,lookup:async ids=>ids.map(id=>({id,ff:2.4,source:'fixture',at:Date.now()}))});
+  window.media=SLINK_CHAT_MEDIA.mount({activity,enabled:()=>window.enabled,settings:async()=>({enabled:true,inlineMedia:true})});await media.refresh();
+ });
+ await page.waitForTimeout(500);
+ assert.equal(await page.locator('[data-slink-chat-ff]').count(),200);
+ await page.evaluate(()=>window.perf={queries:0,walkers:0,layouts:0});
+ for(let i=0;i<40;i++)await page.evaluate(i=>{document.getElementById('ticker').textContent='Online '+i;},i);
+ await page.waitForTimeout(200);
+ const unrelated=await page.evaluate(()=>window.perf);console.log('CHAT HEADER CHURN (40 updates, 200 messages)',unrelated);
+ assert.equal(unrelated.walkers,0,'Header updates must not repeatedly walk all message text');
+ assert.equal(unrelated.layouts,0,'Header updates must not measure all 200 sender links');
+ await page.evaluate(()=>{window.perf={queries:0,walkers:0,layouts:0};document.querySelector('p.message___fixture').append(document.createElement('a'));const a=document.querySelector('p.message___fixture a');a.href='https://media.giphy.com/media/fixture/giphy.gif';a.textContent=a.href;});
+ await page.waitForTimeout(200);
+ const changed=await page.evaluate(()=>window.perf);console.log('ONE NEW GIF',changed);
+ assert.equal(await page.locator('img[data-slink-inline-media]').count(),1);
+ assert(changed.walkers<10,'One changed message must not walk 200 unchanged messages');
+ await page.evaluate(()=>{document.querySelectorAll('p.message___fixture')[1].innerHTML='<span>https://media.giphy.com/media/plainfixture/giphy.gif</span>';});
+ await page.waitForTimeout(200);
+ assert.equal(await page.locator('img[data-slink-inline-media]').count(),2,'Plain-text media nested in a changed message still embeds');
+ await page.evaluate(()=>{window.active=false;window.activityChanged(false);media.sync();ff.sync();});
+ assert.equal(await page.locator('[data-slink-chat-ff]').count(),200);
+ assert.equal(await page.locator('img[data-slink-inline-media]').count(),2);
+ await page.evaluate(()=>{window.active=true;window.activityChanged(true);media.sync();ff.sync();});
+ await page.waitForTimeout(200);
+ assert.equal(await page.locator('[data-slink-chat-ff]').count(),200);
+ assert.equal(await page.locator('img[data-slink-inline-media]').count(),2);
+ await page.evaluate(()=>{window.enabled=false;media.sync();ff.sync();});
+ assert.equal(await page.locator('img[data-slink-inline-media]').count(),0,'Explicit opt-out restores links and removes media');
+ assert.equal(await page.locator('[data-slink-chat-ff]').count(),0);
+ console.log('Chat performance, real GIF rendering, and pause/resume retention passed.');
+}finally{await browser.close();}

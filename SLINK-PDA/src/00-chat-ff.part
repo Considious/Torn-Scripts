@@ -77,8 +77,26 @@
   function attach(){
    if(!active())return;const next=document.getElementById('chatRoot');if(next===root&&observer)return;
    observer?.disconnect();root=next;if(!root)return;
-   observer=new global.MutationObserver(mutations=>{if(!active())return;let changed=false;for(const [a,e]of entries){if(!a.isConnected||!root?.contains(a)||playerId(a)!==e.id){remove(a,e);changed=true;}else if(e.row&&eligible(a)){if(e.badge.parentElement!==a.parentElement||e.badge.nextElementSibling!==a)paint(a,e,e.row);}}
-   for(const m of mutations){if(m.target?.closest?.('[data-slink-chat-ff]'))continue;if(m.type==='attributes'){consider(m.target);changed=true;}else for(const node of m.addedNodes){if(node.nodeType!==1||node.matches?.('[data-slink-chat-ff]')||node.closest?.('[data-slink-chat-ff]'))continue;consider(node);changed=true;}}if(changed)schedule();});
+   observer=new global.MutationObserver(mutations=>{
+    if(!active())return;let changed=false,removed=false;
+    for(const m of mutations){
+     if(m.target?.closest?.('[data-slink-chat-ff]'))continue;
+     if(m.type==='attributes'){
+      const entry=entries.get(m.target);if(entry&&playerId(m.target)!==entry.id)remove(m.target,entry);
+      consider(m.target);changed=true;
+     }else{
+      // Only structural changes can detach a sender or its badge. Text ticks
+      // elsewhere in chat must not measure every sender and force layout.
+      if([...m.removedNodes].some(n=>n.nodeType===1)){
+       removed=true;
+       for(const anchor of m.target?.querySelectorAll?.(selector)||[]){const entry=entries.get(anchor);if(entry?.row&&(entry.badge.parentElement!==anchor.parentElement||entry.badge.nextElementSibling!==anchor)&&eligible(anchor))paint(anchor,entry,entry.row);}
+      }
+      for(const node of m.addedNodes){if(node.nodeType!==1||node.matches?.('[data-slink-chat-ff]')||node.closest?.('[data-slink-chat-ff]'))continue;consider(node);changed=true;}
+     }
+    }
+    if(removed)for(const [anchor,entry]of entries)if(!anchor.isConnected||!root?.contains(anchor))remove(anchor,entry);
+    if(changed)schedule();
+   });
    observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href']});consider(root);schedule();
   }
   function sync(){

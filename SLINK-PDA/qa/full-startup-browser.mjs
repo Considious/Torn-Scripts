@@ -25,6 +25,12 @@ await page.route('**/*',route=>{
  return route.fulfill({json:{}});
 });
 await page.goto('https://www.torn.com/');
+if(process.env.SLINK_PERF_PROFILE)await page.evaluate(()=>{
+ const counts=window.fixturePerf={observers:{},queries:{}};
+ const Native=window.MutationObserver;
+ window.MutationObserver=class extends Native{constructor(callback){const site=new Error().stack.split('\n').slice(2,5).join(' ');super((records,observer)=>{counts.observers[site]=(counts.observers[site]||0)+1;callback(records,observer);});}};
+ for(const proto of [Document.prototype,Element.prototype,DocumentFragment.prototype])for(const name of ['querySelector','querySelectorAll']){const original=proto[name];if(!original)continue;proto[name]=function(selector){counts.queries[selector]=(counts.queries[selector]||0)+1;return original.call(this,selector);};}
+});
 const session=await page.context().newCDPSession(page);
 const {frameTree}=await session.send('Page.getFrameTree');
 const {executionContextId}=await session.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'mock-userscript-manager'});
@@ -56,5 +62,14 @@ await page.waitForTimeout(1000);
 const result=await session.send('Runtime.evaluate',{contextId:executionContextId,expression:JSON.stringify('placeholder').replace('"placeholder"','JSON.stringify({authCount:window.authBodies.length,keyWasSubmitted:window.authBodies[0]?.api_key===\'member-public-key\',saved:window.fixtureStore.get(\'slink-pda-dashboard:data:v1\')?.apiKey===\'member-public-key\'})')});
 const saved=JSON.parse(result.result.value);console.log('AFTER SAVE',saved);assert.equal(saved.keyWasSubmitted,true);assert.equal(saved.saved,true);
 assert.deepEqual(errors,[]);
+if(process.env.SLINK_PERF_PROFILE){
+ await page.waitForTimeout(2000);
+ await page.evaluate(()=>{window.fixturePerf.observers={};window.fixturePerf.queries={};});
+ await page.waitForTimeout(3000);
+ console.log('PERF IDLE',await page.evaluate(()=>window.fixturePerf));
+ await page.evaluate(()=>{window.fixturePerf.observers={};window.fixturePerf.queries={};const root=document.createElement('div');root.id='unrelated-page-ticker';document.body.append(root);window.fixtureTick=setInterval(()=>{root.textContent=String(Date.now());root.style.color=root.style.color==='red'?'blue':'red';},16);});
+ await page.waitForTimeout(3000);
+ console.log('PERF CHURN',await page.evaluate(()=>{clearInterval(window.fixtureTick);return window.fixturePerf;}));
+}
 if(process.env.SLINK_BROWSER_SCREENSHOT)await page.screenshot({path:process.env.SLINK_BROWSER_SCREENSHOT});
 }finally{await browser.close();}
