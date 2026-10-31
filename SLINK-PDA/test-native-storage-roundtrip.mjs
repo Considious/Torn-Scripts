@@ -10,7 +10,7 @@ const callbacks=new Map();
 let inFlight=0,maxInFlight=0;
 let finishDataWrite;
 const dataWritten=new Promise(resolve=>{finishDataWrite=resolve;});
-const ctx={DATA_STORAGE_KEY:dataKey,TARGET_RECORDS_KEY,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:statsKey,UI_STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes',
+const ctx={setTimeout,clearTimeout,DATA_STORAGE_KEY:dataKey,TARGET_RECORDS_KEY,DATA_MIRROR_KEY:'mirror',OWN_BATTLE_STATS_STORAGE_KEY:statsKey,UI_STORAGE_KEY:'ui',ALERT_SNOOZE_STORAGE_KEY:'snoozes',
   n:dataKey,s:'mirror',i:statsKey,l:'ui',c:'snoozes',u:TARGET_RECORDS_KEY,m:'write',d:new Set([dataKey,statsKey,'ui','snoozes',TARGET_RECORDS_KEY]),
   BRIDGED_STORAGE_KEYS:new Set([dataKey,statsKey]),STORAGE_WRITE_EVENT:'write',
   document:{addEventListener(type,callback){callbacks.set(type,callback);}},

@@ -3,15 +3,15 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 const loader=fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js',import.meta.url),'utf8');
 const core=fs.readFileSync(new URL('./src/00-runtime-core.part',import.meta.url),'utf8');
-const saved=new Map(),local=new Map(),listeners=new Map();let hang=false;
+const saved=new Map(),local=new Map(),listeners=new Map();let hang=false,releaseHang,cast=false,nativeWrites=0;
 class CustomEvent{constructor(type,options){this.type=type;this.detail=options.detail;}}
 const document={addEventListener(type,fn){(listeners.get(type)||listeners.set(type,[]).get(type)).push(fn);},dispatchEvent(event){for(const fn of listeners.get(event.type)||[])fn(event);}};
 const storage={getItem:k=>local.get(k)??null,setItem:(k,v)=>local.set(k,v),removeItem:k=>local.delete(k)};
 const native={
  get:async(k,fallback)=>saved.get(k)??fallback,
- getMany:async keys=>Object.fromEntries(keys.map(k=>[k,saved.get(k)??null])),
+ getMany:async keys=>{if(cast)throw Error("type 'Null' is not a subtype of type 'String' in type cast");return Object.fromEntries(keys.map(k=>[k,saved.get(k)??null]));},
  set:async(k,value)=>{await new Promise(r=>setTimeout(r,70));saved.set(k,value);},
- setMany:async values=>{if(hang)await new Promise(()=>{});await new Promise(r=>setTimeout(r,70));for(const [k,v]of Object.entries(values))saved.set(k,v);}
+ setMany:async values=>{nativeWrites++;if(hang)await new Promise(resolve=>{releaseHang=resolve;});await new Promise(r=>setTimeout(r,70));for(const [k,v]of Object.entries(values))saved.set(k,v);}
 };
 const ctx=vm.createContext({
  n:'data',s:'mirror',i:'stats',l:'ui',c:'snoozes',u:'targets',m:'write',d:new Set(['data','stats','ui','snoozes','targets']),
@@ -34,6 +34,26 @@ console.log('Slow ordered native saves do not time out merely while queued; fina
 hang=true;
 await assert.rejects(ctx.storageWrite('ui',{_savedAt:10,value:99}),/SLINK_STORAGE_NATIVE_TIMEOUT/);
 assert.equal(saved.get('ui').value,3,'A working acknowledgement must never claim the hanging write succeeded');
+const blockedStart=Date.now();
+const writesBeforeBlocked=nativeWrites;
+const blocked=await Promise.allSettled(Array.from({length:4},(_,index)=>ctx.storageWrite('ui',{_savedAt:20+index,value:200+index})));
+assert(blocked.every(result=>result.status==='rejected'&&/SLINK_STORAGE_NATIVE_STALLED/.test(result.reason.message)),'A stalled native operation must pause later saves explicitly, not strand each one until its queue deadline');
+assert(Date.now()-blockedStart<600,'Further saves must not accumulate another full queue timeout');
+assert.equal(nativeWrites,writesBeforeBlocked,'No write may overlap a timed-out native operation');
+document.dispatchEvent(new CustomEvent('write',{detail:JSON.stringify({action:'retry'})}));
+await assert.rejects(ctx.storageWrite('ui',{_savedAt:25,value:999}),/SLINK_STORAGE_NATIVE_STALLED/,'Manual retry cannot race an outstanding native write');
+hang=false;releaseHang();await new Promise(resolve=>setTimeout(resolve,100));
+assert.equal(saved.get('ui').value,99,'The late operation may finish, but queued snapshots must not be replayed automatically');
+await ctx.storageWrite('ui',{_savedAt:30,value:300});
+assert.equal(saved.get('ui').value,300,'A later explicit save can recover after the outstanding operation settles');
+cast=true;
+await assert.rejects(ctx.storageWrite('ui',{_savedAt:31,value:301}),/type 'Null'/);
+await assert.rejects(ctx.storageWrite('ui',{_savedAt:32,value:302}),/SLINK_STORAGE_PAUSED/);
+assert.equal(saved.get('ui').value,300,'Native read failure must not overwrite the saved record');
+cast=false;
+document.dispatchEvent(new CustomEvent('write',{detail:JSON.stringify({action:'retry'})}));
+await ctx.storageWrite('ui',{_savedAt:33,value:303});
+assert.equal(saved.get('ui').value,303,'Explicit retry reopens a settled failed operation without losing current changes');
 listeners.delete('write');
 await assert.rejects(ctx.storageWrite('ui',{_savedAt:11,value:100}),/SLINK_STORAGE_BRIDGE_TIMEOUT/);
 console.log('Missing bridge and stalled native writes still fail with distinct operation-specific errors, never a false saved acknowledgement.');

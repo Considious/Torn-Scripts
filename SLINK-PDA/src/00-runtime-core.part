@@ -878,6 +878,9 @@ do { await Promise.allSettled([...pendingStorageWrites.values()].map(value=>valu
 if (failedStorageWrites.size) throw new Error('Some SLINK changes could not be saved. Retry from Access before closing.');
 }
 async function retryPdaStorage() {
+// An explicit retry may reopen a failed native-storage circuit. The launcher
+// refuses this while an earlier timed-out operation is still outstanding.
+if(PDA_STORAGE_WRITE_EVENT)document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({action:'retry'})}));
 const keys=[...failedStorageWrites.keys()];
 for (const key of keys) {
 if (key===DATA_STORAGE_KEY) await writeDataState();
@@ -1333,10 +1336,15 @@ try { global.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ schema:
 lastPersistedSettings = cloneSettings(dataState.settings);
 lastPersistedTargets=cloneSettings(dataState.caches.targetList);
 lastPersistedProtected=Object.fromEntries(Object.keys(lastPersistedProtected).map(key=>[key,cloneSettings(dataState[key])]));
-return Promise.all([
+const saved=Promise.all([
 storageWrite(DATA_STORAGE_KEY,dataState,cloneSettings(acknowledgedDataBase || base)),
 snoozeWrite
 ]);
+// Background callers may intentionally not await this aggregate. Observe its
+// failure without converting it to success: explicit callers still reject,
+// and the retained failed-write state keeps the Access retry notice visible.
+saved.catch(()=>{});
+return saved;
 }
 function currentApiKey() {
 if (PDA_API_KEY_AVAILABLE && dataState.usePdaApiKey) return PDA_API_KEY;
