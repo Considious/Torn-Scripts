@@ -843,7 +843,13 @@ notify:typeof GM_notification === 'function' ? GM_notification : global.GM_notif
 });
 const PDA_BOOTSTRAP_KEY = '__SLINK_PDA_BOOTSTRAP__';
 const PDA_BOOTSTRAP = global[PDA_BOOTSTRAP_KEY] && typeof global[PDA_BOOTSTRAP_KEY] === 'object' ? global[PDA_BOOTSTRAP_KEY] : {};
-const PDA_STORAGE_WRITE_EVENT = String(PDA_BOOTSTRAP.storageWriteEvent || '');
+const PDA_STORAGE_WRITE_EVENT = String(
+global.__SLINK_PDA_STORAGE_BRIDGE__?.protocol===1 &&
+global.__SLINK_PDA_STORAGE_BRIDGE__.document===document &&
+typeof global.__SLINK_PDA_STORAGE_BRIDGE__.channel==='string'
+? global.__SLINK_PDA_STORAGE_BRIDGE__.channel
+: PDA_BOOTSTRAP.storageWriteEvent || ''
+);
 const pendingStorageWrites=new Map(), failedStorageWrites=new Map(), latestStorageWrites=new Map();
 let storageWriteSequence=0, storageBackendName='unknown';
 let acknowledgedDataBase=null,acknowledgedDataSequence=0;
@@ -1017,6 +1023,10 @@ global.localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(record));
 } catch {}
 }
 function storageRead(key, fallback) {
+// A full browser store can reject the recovery mirrors even when native PDA
+// storage works. Keep this page's latest intended record available for merges;
+// this is NOT a saved acknowledgement or a replacement persistence backend.
+const memory = typeof storageWrite === 'function' ? storageWrite.records?.get(key) : null;
 let gmValue = null;
 try {
 if (typeof GM_API.get === 'function') {
@@ -1030,14 +1040,15 @@ const mirror = readDataMirror();
 const legacy = readLocalRecord(DATA_STORAGE_KEY);
 // The loader-vetted primary record is authoritative for legacy data. Once
 // records carry _savedAt, a genuinely newer fallback may recover interrupted writes.
-return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy], storedRecord(gmValue) || bootstrapped || mirror || legacy || fallback);
+return newestStoredRecord([memory, bootstrapped, storedRecord(gmValue), mirror, legacy], storedRecord(gmValue) || memory || bootstrapped || mirror || legacy || fallback);
 }
 if (key === OWN_BATTLE_STATS_STORAGE_KEY) {
-return [PDA_BOOTSTRAP[key], gmValue, readLocalRecord(key)]
+return [PDA_BOOTSTRAP[key], gmValue, readLocalRecord(key), memory]
 .filter(value => storedRecord(value) && Number(value.total) > 0)
 .sort((left,right) => Number(right.checkedAt || 0) - Number(left.checkedAt || 0))[0] || fallback;
 }
-if (key === ALERT_SNOOZE_STORAGE_KEY) return [PDA_BOOTSTRAP[key],gmValue,readLocalRecord(key)].filter(storedRecord).sort((a,b)=>Number(b.savedAt || 0)-Number(a.savedAt || 0))[0] || fallback;
+if (key === ALERT_SNOOZE_STORAGE_KEY) return [PDA_BOOTSTRAP[key],gmValue,readLocalRecord(key),memory].filter(storedRecord).sort((a,b)=>Number(b.savedAt || 0)-Number(a.savedAt || 0))[0] || fallback;
+if (key === STORAGE_KEY && memory) return newestStoredRecord([gmValue,readLocalRecord(key),memory],memory);
 if (gmValue !== null) return gmValue;
 try {
 const parsed = JSON.parse(global.localStorage.getItem(key) || 'null');
@@ -1047,6 +1058,10 @@ return fallback;
 }
 function storageWrite(key, value, base) {
 const snapshot=JSON.parse(JSON.stringify(value));
+if([DATA_STORAGE_KEY,OWN_BATTLE_STATS_STORAGE_KEY,STORAGE_KEY,ALERT_SNOOZE_STORAGE_KEY].includes(key)){
+storageWrite.records ||= new Map();
+storageWrite.records.set(key,snapshot);
+}
 if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot);
 else if (!(typeof TARGET_RECORDS_KEY!=='undefined' && key===TARGET_RECORDS_KEY)) try {global.localStorage.setItem(key,JSON.stringify(snapshot));} catch {}
 const id=++storageWriteSequence;
@@ -1088,6 +1103,7 @@ updateStorageNotice();
 return promise;
 }
 function storageDelete(key) {
+storageWrite.records?.delete(key);
 try { if (typeof GM_API.remove === 'function') GM_API.remove(key); } catch {}
 if (key === DATA_STORAGE_KEY && PDA_STORAGE_WRITE_EVENT) {
 try { document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT, { detail:JSON.stringify({ key, remove:true }) })); } catch {}
@@ -1151,10 +1167,14 @@ merged[key] = mergeSettingChanges(baseRecord[key], currentRecord[key], latestRec
 return merged;
 }
 function readSafeSettingsEnvelope() {
+let result={ data:{}, savedAt:0 };
 try {
 const envelope = JSON.parse(global.localStorage.getItem(SETTINGS_STORAGE_KEY) || 'null');
-return { data:storedRecord(envelope?.data) || storedRecord(envelope) || {}, savedAt:Math.max(0, Number(envelope?.savedAt) || storedRecordSavedAt(envelope?.data || envelope)) };
-} catch { return { data:{}, savedAt:0 }; }
+result={ data:storedRecord(envelope?.data) || storedRecord(envelope) || {}, savedAt:Math.max(0, Number(envelope?.savedAt) || storedRecordSavedAt(envelope?.data || envelope)) };
+} catch {}
+const primary=storageRead(DATA_STORAGE_KEY,{});
+if(recordHasData(primary?.settings)&&storedRecordSavedAt(primary)>=result.savedAt)return {data:primary.settings,savedAt:storedRecordSavedAt(primary)};
+return result;
 }
 function readDataState() {
 const saved = storageRead(DATA_STORAGE_KEY, {});
@@ -1325,7 +1345,7 @@ dataState.caches.targetList=pdaTargetRecords ? pdaTargetRecords.snapshot() : mer
 const latestSettings = readSafeSettingsEnvelope();
 const currentSettings = cloneSettings(dataState.settings);
 const settingsChangedHere = !sameSettingValue(currentSettings, lastPersistedSettings);
-dataState.settings = settingsChangedHere
+dataState.settings = settingsChangedHere && recordHasData(latestSettings.data)
 ? mergeSettingChanges(lastPersistedSettings, currentSettings, latestSettings.data)
 : recordHasData(latestSettings.data) ? cloneSettings(latestSettings.data) : currentSettings;
 dataState._savedAt = Math.max(Date.now(), Number(dataState._savedAt || 0) + 1);
@@ -1361,6 +1381,11 @@ return String(dataState.ffKey || '').trim();
 }
 const state = readState();
 const dataState = readDataState();
+// Seed the page-local view with normalized startup settings, not the older raw
+// bootstrap shape. Browser recovery mirrors may be absent or unwritable.
+const initialSettingsSource=readSafeSettingsEnvelope();
+storageWrite.records ||= new Map();
+storageWrite.records.set(DATA_STORAGE_KEY,{...cloneSettings(dataState),_savedAt:Math.max(storedRecordSavedAt(dataState),initialSettingsSource.savedAt)});
 let lastPersistedSettings = cloneSettings(dataState.settings);
 let lastPersistedTargets=cloneSettings(dataState.caches.targetList || {});
 let lastPersistedProtected=Object.fromEntries(['apiKey','ffKey','usePdaApiKey','usePdaFfKey','accepted','terms','sessions'].map(key=>[key,cloneSettings(dataState[key])]));

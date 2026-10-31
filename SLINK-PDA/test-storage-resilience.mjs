@@ -10,7 +10,7 @@ const loader = fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js', import.m
 assert(core.includes("const DATA_MIRROR_KEY = 'slink-pda-dashboard:data:mirror:v1'"), 'PDA runtime must maintain an independent local data mirror.');
 assert(core.includes('function writeDataMirror(value)'), 'Every primary data write must also update the local mirror.');
 assert(core.includes('if (key === DATA_STORAGE_KEY) writeDataMirror(snapshot)'), 'The captured mirror must be written before the bridge.');
-assert(core.includes('return newestStoredRecord([bootstrapped, storedRecord(gmValue), mirror, legacy]'), 'Storage recovery must compare the loader-vetted primary with fallback copies.');
+assert(core.includes('return newestStoredRecord([memory, bootstrapped, storedRecord(gmValue), mirror, legacy]'), 'Storage recovery must compare the loader-vetted primary, persistent fallbacks and latest page-local intent when browser mirrors cannot be written.');
 assert(core.includes('function storedRecordSavedAt(value)'), 'Durable records must carry freshness metadata.');
 assert(loader.includes('let selected=hasData(primary)?primary:mirror||{}'), 'The PDA primary record must win when legacy copies have no freshness metadata.');
 assert(loader.includes('savedAt(mirror)>savedAt(selected)'), 'A mirror may only replace primary data when it proves it is newer.');

@@ -8,7 +8,7 @@ class CustomEvent{constructor(type,options){this.type=type;this.detail=options.d
 const document={addEventListener(type,fn){(listeners.get(type)||listeners.set(type,[]).get(type)).push(fn);},dispatchEvent(event){for(const fn of listeners.get(event.type)||[])fn(event);}};
 const storage={getItem:k=>local.get(k)??null,setItem:(k,v)=>local.set(k,v),removeItem:k=>local.delete(k)};
 const native={
- get:async(k,fallback)=>saved.get(k)??fallback,
+ get:async(k,fallback)=>{if(cast)throw Error("type 'Null' is not a subtype of type 'String' in type cast");return saved.get(k)??fallback;},
  getMany:async keys=>{if(cast)throw Error("type 'Null' is not a subtype of type 'String' in type cast");return Object.fromEntries(keys.map(k=>[k,saved.get(k)??null]));},
  set:async(k,value)=>{await new Promise(r=>setTimeout(r,70));saved.set(k,value);},
  setMany:async values=>{nativeWrites++;if(hang)await new Promise(resolve=>{releaseHang=resolve;});await new Promise(r=>setTimeout(r,70));for(const [k,v]of Object.entries(values))saved.set(k,v);}
@@ -48,7 +48,7 @@ await ctx.storageWrite('ui',{_savedAt:30,value:300});
 assert.equal(saved.get('ui').value,300,'A later explicit save can recover after the outstanding operation settles');
 cast=true;
 await assert.rejects(ctx.storageWrite('ui',{_savedAt:31,value:301}),/type 'Null'/);
-await assert.rejects(ctx.storageWrite('ui',{_savedAt:32,value:302}),/SLINK_STORAGE_PAUSED/);
+await assert.rejects(ctx.storageWrite('ui',{_savedAt:32,value:302}),error=>/SLINK_STORAGE_PAUSED/.test(error.message)&&/SLINK_NATIVE_READ: record=window preferences/.test(error.message),'Subsequent paused saves must retain the original native read context');
 assert.equal(saved.get('ui').value,300,'Native read failure must not overwrite the saved record');
 cast=false;
 document.dispatchEvent(new CustomEvent('write',{detail:JSON.stringify({action:'retry'})}));

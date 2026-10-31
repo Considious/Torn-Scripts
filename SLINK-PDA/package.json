@@ -1,9 +1,10 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.139",
+  "version": "0.4.140",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:storage-startup": "node test-full-browser-storage.mjs && node test-storage-bridge-lifecycle.mjs && node test-native-storage-compat.mjs && node test-storage-queue-timeout.mjs",
     "test:giphy": "node test-chat-giphy.mjs",
     "test:startup-hotfix": "node test-loader-recovery.mjs && node test-dom-performance.mjs",
     "test:baseline-repairs": "node test-armory.mjs && node test-reminders.mjs && node test-module-activity.mjs && node test-travel-safety.mjs && node test-market-dom.mjs && node test-weaver-due.mjs && node test-runtime-discovery.mjs && node test-racing.mjs && node test-timestamps.mjs && node test-mugging.mjs && node test-mugging-report-safety.mjs && node test-mugging-shared-stats.mjs",

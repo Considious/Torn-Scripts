@@ -1,0 +1,24 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const loader=fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js',import.meta.url),'utf8'),core=fs.readFileSync(new URL('./src/00-runtime-core.part',import.meta.url),'utf8');
+const listeners=new Map(),native=new Map();let writes=0;
+class CustomEvent{constructor(type,{detail}){this.type=type;this.detail=detail;}}
+const document={addEventListener(name,callback){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(callback);},dispatchEvent(event){for(const callback of listeners.get(event.type)||[])callback(event);}};
+const ctx=vm.createContext({console,document,CustomEvent,setTimeout:(fn,ms)=>setTimeout(fn,ms/100),clearTimeout,n:'data',s:'mirror',i:'stats',l:'ui',c:'snoozes',u:'targets',m:'slink-pda-storage-write:current-document',d:new Set(['data','stats','ui','snoozes','targets']),PDA_storage:{get:async(k,f)=>native.get(k)??f,getMany:async keys=>Object.fromEntries(keys.map(k=>[k,native.get(k)??null])),set:async(k,v)=>{writes++;native.set(k,v);},setMany:async values=>{writes++;for(const [k,v]of Object.entries(values))native.set(k,v);}},localStorage:{getItem:()=>null,setItem(){},removeItem(){}},PDA_BOOTSTRAP:{storageWriteEvent:'slink-pda-storage-write:previous-document'},DATA_STORAGE_KEY:'data',STORAGE_KEY:'ui',OWN_BATTLE_STATS_STORAGE_KEY:'stats',ALERT_SNOOZE_STORAGE_KEY:'snoozes',TARGET_RECORDS_KEY:'targets',GM_API:{},moduleRoot:()=>null,writeDataMirror(){}});
+ctx.global=ctx;
+vm.runInContext(loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)')),ctx);
+const start=loader.indexOf('!function(){let e=Promise.resolve();'),end=loader.indexOf(',await loadRuntime()',start),bridge=loader.slice(start,end);
+vm.runInContext(bridge,ctx);
+const channelStart=core.indexOf('const PDA_STORAGE_WRITE_EVENT ='),channelEnd=core.indexOf('const pendingStorageWrites=',channelStart);
+const stateStart=core.indexOf('const pendingStorageWrites='),stateEnd=core.indexOf('try { delete global[PDA_BOOTSTRAP_KEY]',stateStart);
+const writeStart=core.indexOf('function storageWrite('),writeEnd=core.indexOf('function storageDelete(',writeStart);
+vm.runInContext(core.slice(channelStart,channelEnd)+core.slice(stateStart,stateEnd)+core.slice(writeStart,writeEnd),ctx);
+await ctx.storageWrite('ui',{_savedAt:1,page:'access'});
+assert.equal(native.get('ui').page,'access','A late runtime must use the receiver actually registered on THIS document, not its old serialized channel');
+const before=writes;
+vm.runInContext(bridge,ctx);
+await ctx.storageWrite('ui',{_savedAt:2,page:'combat'});
+assert.equal(writes-before,1,'Repeated launcher execution must reuse one storage queue rather than register duplicate writers');
+assert.equal(listeners.get('slink-pda-storage-write:current-document').length,1);
+console.log('Late native runtime selects this document’s receiver; repeated launcher injection preserves one ordered writer and valid save acknowledgements.');
