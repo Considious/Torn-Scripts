@@ -47,25 +47,23 @@
   const remembered=new Map();
   const entries=new Map();
   const active=()=>!stopped&&enabled()&&activity.eligible();
-  const selector='a[data-label="avatar"][href*="profiles.php"][href*="XID="]';
+  // The supplied Torn markup has exactly one sender-name link in this span.
+  // Its fixed slot is after the avatar and immediately before the sender name.
+  const selector='span[class*="senderContainer___"] > a[class*="sender___"][href*="profiles.php"][href*="XID="]';
   function remove(anchor,entry){visibility?.unobserve(anchor);entry.badge.remove();entries.delete(anchor);}
   function eligible(anchor){return anchor.isConnected&&root?.contains(anchor)&&anchor.getClientRects().length>0&&!anchor.closest('textarea,[contenteditable="true"],[hidden],[aria-hidden="true"]');}
   function rowScope(anchor){return anchor.closest('[class*="virtualItem___"],[class*="chat-box-message"],[data-slink-chat-row]')||anchor.parentElement;}
   function samePlace(a,b){return rowScope(a)===rowScope(b)&&playerId(a)===playerId(b);}
   function consider(node){if(!active()||node.nodeType!==1)return;const anchors=[...(node.matches?.(selector)?[node]:[]),...node.querySelectorAll(selector)];for(const anchor of anchors){const id=playerId(anchor);if(!id||entries.has(anchor)||[...entries.keys()].some(a=>a.isConnected&&samePlace(a,anchor)))continue;const badge=document.createElement('span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;const entry={id,badge,visible:!visibility,at:0};entries.set(anchor,entry);visibility?.observe(anchor);const row=remembered.get(id);if(row&&eligible(anchor))paint(anchor,entry,row);}while(entries.size>300){const [anchor,entry]=entries.entries().next().value;remove(anchor,entry);}}
   function schedule(){if(!active()||timer!==null)return;timer=global.setTimeout(()=>{timer=null;void flush();},Math.max(100,5000-(Date.now()-lastLookup)));}
-  function externalBadge(anchor){
-   // Only this exact avatar container owns placement; never search neighbours.
-   return !!anchor.querySelector('.ffscouter-marker-wrapper,.ffscouter-bubble');
-  }
   function paint(anchor,entry,row){
-   entry.row=row;remembered.set(entry.id,row);while(remembered.size>300)remembered.delete(remembered.keys().next().value);if(externalBadge(anchor)){entry.badge.remove();entry.at=Date.now();return;}
+   entry.row=row;remembered.set(entry.id,row);while(remembered.size>300)remembered.delete(remembered.keys().next().value);
    const value=positive(row.ff),age=row.at?Math.max(0,Math.floor((Date.now()-row.at)/3600000))+'h old':'age unknown';
    entry.badge.textContent=(value===null?'N/A':value.toFixed(2))+(row.backup?' †':'');
    entry.badge.style.backgroundColor=value===null?'#555b66':value<2?'#25623f':value<=3?'#775b12':'#a52b42';
    entry.badge.title=(value===null?'Fair Fight unavailable':'Fair Fight '+value.toFixed(2))+' · '+row.source+(row.backup?' · '+age:'');
    entry.badge.setAttribute('aria-label',entry.badge.title);entry.badge.hidden=false;
-   if(entry.badge.parentElement!==anchor)anchor.append(entry.badge);entry.at=Date.now();
+   if(entry.badge.parentElement!==anchor.parentElement||entry.badge.nextElementSibling!==anchor)anchor.before(entry.badge);entry.at=Date.now();
   }
   async function flush(){
    if(!active())return;if(busy){again=true;return;}busy=true;const token=epoch;
@@ -79,7 +77,7 @@
   function attach(){
    if(!active())return;const next=document.getElementById('chatRoot');if(next===root&&observer)return;
    observer?.disconnect();root=next;if(!root)return;
-   observer=new global.MutationObserver(mutations=>{if(!active())return;let changed=false;for(const [a,e]of entries){if(!a.isConnected||!root?.contains(a)||playerId(a)!==e.id){remove(a,e);changed=true;}else if(e.row&&eligible(a)){if(externalBadge(a)){if(e.badge.isConnected)e.badge.remove();}else if(!e.badge.isConnected)paint(a,e,e.row);}}
+   observer=new global.MutationObserver(mutations=>{if(!active())return;let changed=false;for(const [a,e]of entries){if(!a.isConnected||!root?.contains(a)||playerId(a)!==e.id){remove(a,e);changed=true;}else if(e.row&&eligible(a)){if(e.badge.parentElement!==a.parentElement||e.badge.nextElementSibling!==a)paint(a,e,e.row);}}
    for(const m of mutations){if(m.target?.closest?.('[data-slink-chat-ff]'))continue;if(m.type==='attributes'){consider(m.target);changed=true;}else for(const node of m.addedNodes){if(node.nodeType!==1||node.matches?.('[data-slink-chat-ff]')||node.closest?.('[data-slink-chat-ff]'))continue;consider(node);changed=true;}}if(changed)schedule();});
    observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href']});consider(root);schedule();
   }
@@ -95,7 +93,7 @@
    epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
    for(const [a,e]of entries)if(!a.isConnected||!root?.contains(a))remove(a,e);
    root=null;
-   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot a[data-label="avatar"]:has(> .slink-chat-ff-bubble){position:relative!important;overflow:visible!important}#chatRoot a[data-label="avatar"]>.slink-chat-ff-bubble{position:absolute!important;left:50%!important;top:100%!important;transform:translateX(-50%);z-index:1;pointer-events:none;display:inline-block!important;flex:0 0 auto!important;align-self:center;justify-self:start;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin:0!important;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:100%;box-sizing:border-box}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}#chatRoot .ffscouter-marker-wrapper,#chatRoot .ffscouter-bubble{align-self:center!important;flex:0 0 auto!important;height:auto!important;min-height:0!important;max-height:24px;line-height:1.3}';(document.head||document.documentElement).append(style);}
+   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot span[class*="senderContainer___"]>.slink-chat-ff-bubble{display:inline-block!important;position:static!important;transform:none!important;flex:0 0 auto!important;align-self:center;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin:0 3px!important;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:none;box-sizing:border-box;pointer-events:none}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}';(document.head||document.documentElement).append(style);}
    if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
    attach();
    for(const [a,e]of entries){visibility?.observe(a);if(e.row&&eligible(a))paint(a,e,e.row);}
