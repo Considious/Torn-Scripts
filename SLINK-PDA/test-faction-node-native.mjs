@@ -21,6 +21,7 @@ test('failed PDA preference save restores the current settings object, without s
  const source=await readFile(new URL('./src/addons/faction-rooms.addon.js',import.meta.url),'utf8');
  vm.runInNewContext(source,{SLINK_PDA_PLUGIN_API:api,SLINK_PDA_PAGE_ACTIVITY:{},SLINK_FACTION_NODE_SETTINGS:async(_root,options)=>{editor=options;},SLINK_FACTION_NODE:{create(){started++;}},SLINK_FACTION_NODE_UI:{mount(){started++;}}});
  assert.equal(started,0);await assert.rejects(editor.patch({enabled:true}),/not acknowledged/);assert.equal(settings.enabled,false);assert.equal(settings.unrelated,'keep');assert.equal(started,0);
+ await assert.rejects(editor.patch({soundEnabled:false}),/not acknowledged/);assert.equal(Object.hasOwn(settings,'soundEnabled'),false,'A failed sound save must also restore an absent/default preference');assert.equal(settings.enabled,false);assert.equal(settings.unrelated,'keep');
 });
 test('room view uses the small UI preference record and never persists draft text or overwrites detail-panel flags',async()=>{
  const f=fixture();await f.api.view.save({visible:true,view:'chat',roomId:'general',userId:1,factionId:10,draft:'do not upload'});const saved=await f.api.view.get();assert.equal(saved.roomId,'general');assert.equal('draft' in saved,false);assert.deepEqual(f.state.panels,{existing:true});assert.equal(f.calls.length,0);

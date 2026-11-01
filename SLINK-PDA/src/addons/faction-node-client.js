@@ -20,10 +20,10 @@
     const makeSocket = options.socket || ((url, protocols) => new WebSocket(url, protocols));
     const http = options.request || request, listeners = new Set(), rooms = new Map();
     let active=false, destroyed=false, generation=0, ticket=null, authenticating=null, renewal=null, identity=null;
-    const model = {status:'idle',error:'',rooms:[],leader:false,userId:null,factionId:null};
+    const model = {status:'idle',error:'',rooms:[],leader:false,userId:null,userName:'',factionId:null};
     function emit(type, detail={}) { for (const callback of listeners) callback({type,...detail}); }
     function room(id) { if(!validId(id))throw Error('Invalid chat room.'); if(!rooms.has(id))rooms.set(id,{id,messages:new Map(),pending:new Map(),actions:new Map(),access:{read:false,speak:false},status:'closed',error:'',socket:null,open:false,attempts:0,retry:null,nextBefore:null,unread:0}); return rooms.get(id); }
-    function closeConnection(state) { cancel(state.retry);cancel(state.connectionTimer);state.connectionTimer=null;state.retry=null;for(const action of state.actions.values()){cancel(action.timer);action.reject(Error('Chat disconnected before this action was confirmed.'));}state.actions.clear();const socket=state.socket;state.socket=null;if(socket){socket.onopen=socket.onmessage=socket.onerror=socket.onclose=null;try{socket.close(1000,'Page inactive');}catch{}} }
+    function closeConnection(state) { state.connectVersion=(state.connectVersion||0)+1;cancel(state.retry);cancel(state.connectionTimer);state.connectionTimer=null;state.retry=null;for(const action of state.actions.values()){cancel(action.timer);action.reject(Error('Chat disconnected before this action was confirmed.'));}state.actions.clear();const socket=state.socket;state.socket=null;if(socket){socket.onopen=socket.onmessage=socket.onerror=socket.onclose=null;try{socket.close(1000,'Page inactive');}catch{}} }
     function disconnectAll() { cancel(renewal);renewal=null;for(const state of rooms.values()){closeConnection(state);state.status='paused';} }
     async function access(force=false) {
       if(!active||destroyed)throw Error('Open faction chat on the active Torn page.');
@@ -36,7 +36,7 @@
         if(!value?.token||!validId(value.node_id)||value.expires_at<=now()+1000||!Number.isSafeInteger(value.user_id)||value.user_id<=0||!Number.isSafeInteger(value.faction_id)||value.faction_id<=0)throw Error('Faction chat returned incomplete access information.');
         const endpoint=origin(value.endpoint),nextIdentity=value.user_id+':'+value.faction_id+':'+value.node_id;
         if(identity&&identity!==nextIdentity){disconnectAll();rooms.clear();model.rooms=[];emit('identity');}
-        identity=nextIdentity;ticket={...value,endpoint};model.userId=value.user_id;model.factionId=value.faction_id;
+        identity=nextIdentity;ticket={...value,endpoint};model.userId=value.user_id;model.userName=String(value.user_name||'');model.factionId=value.faction_id;
         cancel(renewal);renewal=later(()=>void renew(),Math.max(1000,value.expires_at-now()-20000));return ticket;
       })();
       try{return await authenticating;}finally{authenticating=null;}
@@ -67,9 +67,10 @@
       if(state.socket!==socket||!active)return;
       let data;try{data=JSON.parse(event.data);}catch{return;}
       if(data.protocol!==1){closeConnection(state);state.error='This chat node uses an unsupported protocol. Update SLINK.';state.status='error';emit('room',{id:state.id});return;}
+      let incoming=false;
       switch(data.type){
         case 'welcome': cancel(state.connectionTimer);state.connectionTimer=null;state.status='connected';state.connectedAt=now();state.error='';state.access=data.access;state.nextBefore=data.next_before;state.unread=Number(data.unread)||0;for(const message of data.messages||[])merge(state,message);state.presence=data.presence||[];transmitPending(state);break;
-        case 'message':case 'message_update':{const known=state.messages.has(data.message?.message_id);merge(state,data.message);if(!known&&data.type==='message'&&data.message?.user_id!==model.userId)state.unread++;break;}
+        case 'message':case 'message_update':{const known=state.messages.has(data.message?.message_id);merge(state,data.message);if(!known&&data.type==='message'&&data.message?.user_id!==model.userId){state.unread++;incoming=true;}break;}
         case 'ack': merge(state,data.message);state.pending.delete(data.client_id);break;
         case 'access':state.access=data.access;break;
         case 'access_revoked':state.access={read:false,speak:false};state.error=data.reason||'Room access ended.';state.open=false;closeConnection(state);state.status='denied';break;
@@ -79,15 +80,15 @@
         case 'error':state.error=String(data.error||'This chat action failed.');if(state.pending.has(data.command_id))state.pending.get(data.command_id).error=state.error;{const action=state.actions.get(data.command_id);if(action){cancel(action.timer);state.actions.delete(data.command_id);action.reject(Error(state.error));}}break;
         case 'delivery_pending':case 'delivery_failed':case 'delivery_confirmed':state.delivery={messageId:data.message_id,status:data.type,reason:data.reason||''};break;
       }
-      emit('room',{id:state.id,event:data.type});
+      emit('room',{id:state.id,event:data.type,incoming});
     }
     async function connect(id,manual=false) {
-      const state=room(id);state.open=true;if(manual){state.attempts=0;cancel(state.retry);state.retry=null;}
+      const state=room(id);state.open=true;if(manual){state.attempts=0;closeConnection(state);state.status='closed';}
       if(state.retryAfter>now()){state.error='Too many chat updates. Wait a minute before reconnecting.';emit('room',{id});return;}
-      if(!active||destroyed||state.socket)return;
-      const current=generation;state.status='connecting';state.error='';emit('room',{id});
+      if(!active||destroyed||state.socket||state.status==='connecting')return;
+      const current=generation,connection=state.connectVersion=(state.connectVersion||0)+1;state.status='connecting';state.error='';emit('room',{id});
       try{
-        const auth=await access();if(current!==generation||!active||!state.open||rooms.get(id)!==state)return;
+        const auth=await access(manual);if(current!==generation||connection!==state.connectVersion||!active||!state.open||rooms.get(id)!==state)return;
         const socket=makeSocket(auth.endpoint.replace(/^https:/,'wss:')+'/api/rooms/'+id+'/socket',['slink.chat.v1','slink.token.'+auth.token]);state.socket=socket;
         state.connectionTimer=later(()=>{if(state.socket===socket&&state.status!=='connected'){state.error='The faction room did not finish connecting.';try{socket.close();}catch{}emit('room',{id});}},12000);
         socket.onmessage=event=>receive(state,socket,event);
@@ -101,9 +102,9 @@
           else if(state.open)state.error='Chat is disconnected. Press Reconnect when ready.';
           emit('room',{id});
         };
-      }catch(error){state.status='error';state.error=error.message;emit('room',{id});}
+      }catch(error){if(connection!==state.connectVersion)return;state.status='error';state.error=error.message;emit('room',{id});}
     }
-    async function refresh() {try{model.status='loading';model.error='';emit('status');const result=await api('/api/rooms');model.rooms=result.rooms||[];model.leader=result.leader===true;model.status='ready';emit('list');}catch(error){model.status='error';model.error=error.message;emit('status');throw error;} }
+    async function refresh() {try{model.status='loading';model.error='';emit('status');const result=await api('/api/rooms');model.rooms=result.rooms||[];model.leader=result.leader===true;model.status='ready';emit('list');if(options.watchRooms){const allowed=new Set(model.rooms.map(item=>item.room_id));for(const state of rooms.values())if(!allowed.has(state.id)){state.open=false;state.access={read:false,speak:false};closeConnection(state);}for(const item of model.rooms)void connect(item.room_id);}}catch(error){model.status='error';model.error=error.message;emit('status');throw error;} }
     function send(id,content) {
       const state=room(id);if(!active||state.status!=='connected'||!state.access.speak)throw Error('This room is not ready to send messages.');
       if(state.pending.size>=20)throw Error('Too many messages are waiting to send. Review them before sending more.');
