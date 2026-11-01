@@ -1688,8 +1688,15 @@ if (!pdaDomActive()) return;
 if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host);
 if (state.minimizedMode === 'chat' && !dashboardOpen && (!pdaChatButton || !pdaChatButton.isConnected)) ensurePdaChatButton();
 }
+function pdaGameplayMutation(mutation) {
+const ignored = '#chatRoot,#' + HOST_ID + ',#ccb-menu,#ccb-editor-overlay';
+const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+if (target?.closest?.(ignored)) return false;
+const changed = [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])];
+return !changed.length || changed.some(node => node.nodeType !== 1 || !node.matches?.(ignored));
+}
 marketObserver = new MutationObserver(mutations => {
-if (!pdaDomActive()) return;
+if (!pdaDomActive() || !mutations.some(pdaGameplayMutation)) return;
 schedulePurchaseOpportunityFormatting(80);
 scanAttackMugResults();
 if (/^\/profiles\.php$/i.test(global.location.pathname)) void scanIntendedProfileDom();
@@ -1895,6 +1902,7 @@ refresh:refreshPlayerIntelligence
 });
 host.dataset.slinkReady = 'true';
 })(globalThis);
+
 
 
 
