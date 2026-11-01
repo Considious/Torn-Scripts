@@ -1246,7 +1246,7 @@ mugging:{ enabled:false, minFairFight:1, maxFairFight:3, limit:50, ...(settingsS
 war:{
 mode:'war', idleMinutes:5, insideHitCap:0, insideBlockMode:'warn', activeTab:'targets',
 targetMinFF:1, targetMaxFF:3, targetStatus:'all', targetAbroad:'all', targetLocation:'all', targetSort:'availability',
-outsideMinFF:1, outsideMaxFF:3, dismissedRetals:{}, lastStatusAt:0, lastAttackAt:0, lastAttackEnded:0,
+outsideMinFF:1, outsideMaxFF:3, retalAlerts:true, retalSound:false, retalSnoozedUntil:0, dismissedRetals:{}, lastStatusAt:0, lastAttackAt:0, lastAttackEnded:0,
 armoryMode:'ranked-all', armoryWhitelist:[],
 ...(settingsSource?.war || {})
 },

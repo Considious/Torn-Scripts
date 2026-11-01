@@ -13,7 +13,7 @@ if (current.busy && !current.data) { root.innerHTML = moduleMessage('Finding you
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
 if (!current.data?.activeWar) {
 if (warArmoryOfficer() && dataState.settings.war.activeTab === 'armory') { root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Armory Recaller</h2><span class="muted">Available outside ranked wars for faction officers.</span></div><span class="badge ready">Officer</span></div><nav class="war-tabs"><button type="button" data-action="select-war-tab" data-war-tab="armory" aria-selected="true">Armory</button></nav><div class="war-tab-body">${warArmoryView({})}</div></article></div>`; return; }
-root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK War</h2><span class="muted">Assigned and active ranked-war detection</span></div><span class="badge">No war</span></div>${current.error ? moduleMessage(current.error, 'error') : moduleMessage('No assigned or active ranked war was found.')}</article></div>`; return;
+root.innerHTML = `${warRetalControls()}${warRetalCards(current.data?.snapshot || {}, null)}<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK War</h2><span class="muted">Assigned and active ranked-war detection</span></div><span class="badge">No war</span></div>${current.error ? moduleMessage(current.error, 'error') : moduleMessage('No assigned or active ranked war was found.')}</article></div>`; return;
 }
 const active = current.data.activeWar;
 const snapshot = current.data.snapshot || {};
@@ -29,7 +29,7 @@ const mugStats = mugStatsForWar(active.warId);
 const panelStats = current.data.panelStats || {};
 const chain = panelStats?.chain?.current ? `${number(panelStats.chain.current)}${panelStats.chain.target ? `/${number(panelStats.chain.target)}` : ''}` : 'None';
 const itemRequestCount = armoryOfficer && Array.isArray(snapshot.itemRequests) ? snapshot.itemRequests.length : 0;
-root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>${escapeHtml(active.opponentName)}</h2><span class="muted">${active.phase === 'active' ? 'Ranked war active' : `Assigned · starts ${new Date(active.start * 1000).toLocaleString()}`}</span></div><span class="badge ${officer ? 'ready' : ''}">${officer ? 'Officer' : 'Member'}</span></div><nav class="war-tabs">${allowedTabs.map(name => `<button type="button" data-action="select-war-tab" data-war-tab="${name}" aria-selected="${tab === name}">${name[0].toUpperCase()}${name.slice(1)}${name === 'armory' && itemRequestCount ? `<span class="nav-count">${itemRequestCount > 99 ? '99+' : itemRequestCount}</span>` : ''}</button>`).join('')}</nav>${tab === 'armory' ? '' : `<div class="stats"><div class="stat"><strong>${number(panelStats.attacks || 0)}</strong><span>Attacks</span></div><div class="stat"><strong>${number(panelStats.warAttacks || 0)}${Number(snapshot?.config?.insideHitCap) ? `/${number(snapshot.config.insideHitCap)}` : ''}</strong><span>War / cap</span></div><div class="stat"><strong>${number(mugStats.count)}</strong><span>Mugs</span></div><div class="stat"><strong>${chain}</strong><span>Chain</span></div></div><article class="mug-report"><div><strong>Mug report</strong><span>${mugStats.count ? `${number(mugStats.count)} mugs · ${money(mugStats.total)} total · ${money(mugStats.average)} average · ${money(mugStats.min)} min · ${money(mugStats.max)} max` : 'No completed war mugs captured on this device yet.'}</span></div><button type="button" data-action="copy-war-mug-report" ${mugStats.count ? '' : 'disabled'}>Copy report</button></article>${warItemRequests(snapshot)}${warRetalCards(snapshot, active)}`}<div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · ${members.length} ranked-war opponents${current.busy ? ' · refreshing…' : ''}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}<div class="war-tab-body">${tabBody}</div></article></div>`;
+root.innerHTML = `${warRetalControls()}<div class="grid"><article class="card full"><div class="card-head"><div><h2>${escapeHtml(active.opponentName)}</h2><span class="muted">${active.phase === 'active' ? 'Ranked war active' : `Assigned · starts ${new Date(active.start * 1000).toLocaleString()}`}</span></div><span class="badge ${officer ? 'ready' : ''}">${officer ? 'Officer' : 'Member'}</span></div><nav class="war-tabs">${allowedTabs.map(name => `<button type="button" data-action="select-war-tab" data-war-tab="${name}" aria-selected="${tab === name}">${name[0].toUpperCase()}${name.slice(1)}${name === 'armory' && itemRequestCount ? `<span class="nav-count">${itemRequestCount > 99 ? '99+' : itemRequestCount}</span>` : ''}</button>`).join('')}</nav>${tab === 'armory' ? '' : `<div class="stats"><div class="stat"><strong>${number(panelStats.attacks || 0)}</strong><span>Attacks</span></div><div class="stat"><strong>${number(panelStats.warAttacks || 0)}${Number(snapshot?.config?.insideHitCap) ? `/${number(snapshot.config.insideHitCap)}` : ''}</strong><span>War / cap</span></div><div class="stat"><strong>${number(mugStats.count)}</strong><span>Mugs</span></div><div class="stat"><strong>${chain}</strong><span>Chain</span></div></div><article class="mug-report"><div><strong>Mug report</strong><span>${mugStats.count ? `${number(mugStats.count)} mugs · ${money(mugStats.total)} total · ${money(mugStats.average)} average · ${money(mugStats.min)} min · ${money(mugStats.max)} max` : 'No completed war mugs captured on this device yet.'}</span></div><button type="button" data-action="copy-war-mug-report" ${mugStats.count ? '' : 'disabled'}>Copy report</button></article>${warItemRequests(snapshot)}${warRetalCards(snapshot, active)}`}<div class="module-toolbar"><span>Updated ${relativeTime(current.data.at)} · ${members.length} ranked-war opponents${current.busy ? ' · refreshing…' : ''}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}<div class="war-tab-body">${tabBody}</div></article></div>`;
 }
 function warAttackRows(payload) {
 const source = payload?.attacks ?? payload?.data ?? [];
@@ -131,7 +131,7 @@ current.data = dataState.caches.war = { at:Date.now(), detectedAt:cached?.active
 }
 writeDataState();
 } catch (error) { current.error = errorMessage(error); }
-finally { current.busy = false; renderWar(); }
+finally { current.busy = false; renderWar(); renderAlerts(); }
 }
 async function refreshWarAlerts() {
 const current = moduleState.war;
@@ -166,6 +166,8 @@ members:Array.isArray(previousSnapshot.members) ? previousSnapshot.members : (fr
 retals
 }
 };
+renderAlerts();
+renderAlerts();
 writeDataState();
 renderWar();
 } catch (error) {
@@ -681,7 +683,7 @@ const shopliftingExtra = shopliftingOpportunities.length > 6 ? `; +${shoplifting
 add('clusterRing', crimeById.clusterRing?.canSpawnMissing && shopliftingOpportunities.length > 0, `${shopliftingOpportunities.length} missing Shoplifting unique${shopliftingOpportunities.length === 1 ? '' : 's'} match current security`, `${shopliftingSummary}${shopliftingExtra}. ${crimeById.clusterRing?.completed || 0}/${crimeById.clusterRing?.total || 0} completed.`, [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']]);
 add('disposalUnique', dailyCrimeUniqueDuePda(crimeById.disposalUnique), 'Check today’s Disposal jobs for missing uniques', `${crimeById.disposalUnique?.completed || 0}/${crimeById.disposalUnique?.total || 0} completed. Jobs refresh daily; check starred options before using today’s jobs.`, [['Check Disposal','https://www.torn.com/page.php?sid=crimes#/disposal']]);
 add('arsonUnique', dailyCrimeUniqueDuePda(crimeById.arsonUnique), 'Check today’s Arson targets for missing uniques', `${crimeById.arsonUnique?.completed || 0}/${crimeById.arsonUnique?.total || 0} completed at skill ${Math.floor(crimeById.arsonUnique?.skill || 0)}. Only skill-eligible missing targets trigger this reminder.`, [['Check Arson','https://www.torn.com/page.php?sid=crimes#/arson']]);
-return [...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows];
+return [...warRetalAlertRows(), ...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows].filter(alert => Number(snoozed[alert.id] || 0) <= Date.now());
 }
 function updateAlertIndicator(count, rows = []) {
 const alertTotal = Math.max(0, Number(count) || 0);
@@ -743,6 +745,7 @@ if (href) notification.onclick = () => { notification.close(); openAlertDestinat
 } catch {}
 }
 function showSystemAlert(alert) {
+if (alert.id.startsWith('war-retal:')) return; // War uses its separately controlled local sound, not phone notifications.
 const title = `SLINK Efficiency: ${alert.title}`;
 const href = String(alert.href || alert.links?.[0]?.[1] || '');
 const text = `${String(alert.detail || 'Open Torn PDA to review this alert.')}${href ? ' Tap to open.' : ''}`;
@@ -811,7 +814,8 @@ const permitted = hasScope('slink.adhd.alerts');
 const stakeoutAlerts = stakeoutAlertRows();
 const abroadAlerts = PDA_ABROAD.alerts();
 const companyAlerts = companyAlertRows();
-const pluginAlerts = pdaPluginAlerts();
+const pluginAlerts = [...warRetalAlertRows(), ...pdaPluginAlerts()];
+syncPdaRetalSound();
 if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); if (shouldRenderPdaModule('alerts')) root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
 const current = moduleState.alerts;
 const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
@@ -829,7 +833,7 @@ root.innerHTML = `<div class="grid"><article class="card full"><div class="card-
 <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
 <div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
 ${alertSettingsHtml()}
-<div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}${['disposalUnique', 'arsonUnique'].includes(alert.id) ? `<button type="button" data-action="crime-unique-checked" data-alert-id="${escapeHtml(alert.id)}">Checked today</button>` : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
+<div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}${['disposalUnique', 'arsonUnique'].includes(alert.id) ? `<button type="button" data-action="crime-unique-checked" data-alert-id="${escapeHtml(alert.id)}">Checked today</button>` : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="720">Snooze 12h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
 </article></div>`;
 }
 async function refreshAlerts(force = false) {
