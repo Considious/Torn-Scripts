@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url),{chromium}=require(process.env.SLINK_PLAYWRIGHT_MODULE||'playwright');
 const base=fileURLToPath(new URL('../',import.meta.url));
-const browser=await chromium.launch({channel:'msedge',headless:true});
+const browser=await chromium.launch({...(process.env.SLINK_BROWSER_EXECUTABLE?{executablePath:process.env.SLINK_BROWSER_EXECUTABLE}:{channel:'msedge'}),headless:true});
 try{
 const page=await browser.newPage({viewport:{width:1100,height:900}}),errors=[];
 page.on('console',msg=>{if(msg.type()==='error')console.log('CONSOLE',msg.text());});
@@ -73,3 +73,4 @@ if(process.env.SLINK_PERF_PROFILE){
 }
 if(process.env.SLINK_BROWSER_SCREENSHOT)await page.screenshot({path:process.env.SLINK_BROWSER_SCREENSHOT});
 }finally{await browser.close();}
+

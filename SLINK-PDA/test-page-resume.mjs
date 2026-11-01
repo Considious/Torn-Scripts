@@ -12,6 +12,7 @@ const market=new Observer(),guardian=new Observer(),racing=new Observer();
 const ctx=vm.createContext({console,document:{visibilityState:'visible',body:{},documentElement:{appendChild(){}},addEventListener:on,getElementById:()=>null,querySelectorAll:()=>{domReads++;return[];}},
  addEventListener:on,setTimeout:(fn,delay)=>{timeouts.set(++nextId,{fn,delay});return nextId;},clearTimeout:id=>timeouts.delete(id),setInterval:(fn,delay)=>{intervals.set(++nextId,{fn,delay});return nextId;},clearInterval:id=>intervals.delete(id),
  targetPollingTimer:null,targetStakeoutTimer:null,targetPollingKickoff:null,targetStakeoutKickoff:null,pdaForegroundActive:null,
+ renderAlerts(){},activeModuleName:()=> 'alerts',renderActivePdaPanel(){},
  marketObserver:market,guardian,racingStateObserver:racing,attackMugScanTimer:null,racingScanTimer:null,keyboardFocusTimer:null,RACING_HIGHLIGHT_STYLE_ID:'owned-style',
  host:{isConnected:true},state:{page:'efficiency',efficiencyTab:'alerts',theme:'keep',minimizedMode:'chat'},dashboardOpen:true,pdaChatButton:{isConnected:true},
  dataState:{settings:{alerts:{enabledTypes:{medicalCooldown:false}}},caches:{targetList:{'42':{description:'keep'}}}},
@@ -73,3 +74,4 @@ assert(macroTimer);macroGeneration++;macroButton.disabled=false;macroTimer();awa
 assert.equal(macroClicks,0,'A pre-hide custom-message action must not send after resume');assert.equal(macro.armed,null);assert.equal(macro.sending,false);
 macro.armed={macroId:'one',contextId:'faction',message:'draft',expiresAt:Date.now()+10000};
 await macro.handleMacroClick({id:'one'},{isConnected:true});assert.equal(macroClicks,1,'A new explicit confirmation may send while active');
+

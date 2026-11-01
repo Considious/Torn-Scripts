@@ -282,6 +282,7 @@ const current=cache();
 return '<article class="card full"><div class="card-head"><div><h2>Bank investment comparison</h2><span class="muted">Rates checked '+api.relativeTime(current.bankPlanner?.fetchedAt)+' · cached for up to 1 hour</span></div>'+api.actionLink('Open Bank',URLS.bank)+'</div><p>Uses Torn’s individual APR for each term, your bank interest merits, and your active bank stock benefit. Estimated daily income is paid at maturity, not daily.</p>'+(current.bankPlanner?.error?api.moduleMessage(current.bankPlanner.error,'error'):'')+'<label>Amount to invest (maximum $2 billion)<input type="number" inputmode="numeric" min="0" max="2000000000" step="1" data-mp-bank-amount value="'+integer(settings().bankAmount ?? 2000000000)+'" style="width:100%;min-height:44px;margin:6px 0 10px"></label><div data-mp-bank-results>'+bankResultsHtml(settings().bankAmount ?? 2000000000)+'</div></article>';
 }
 function render() {
+if (api.shouldRender && !api.shouldRender(ID)) return;
 const root = api.root(ID);
 if (!root) return;
 if (!api.hasScope(SCOPE)) { root.innerHTML = api.lockedModule(SCOPE,'Money & Property'); return; }
@@ -397,3 +398,4 @@ if (api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) vo
 }
 api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
 })(globalThis);
+

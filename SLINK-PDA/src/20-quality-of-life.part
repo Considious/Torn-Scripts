@@ -5,6 +5,7 @@ let racingAssistantRoot = null;
 let racingAssistantSignature = '';
 let racingStateObserver = null;
 function renderRacingAssistant() {
+if (!shouldRenderPdaModule('racing')) return;
 const root = moduleRoot('racing')?.querySelector('[data-racing-assistant]');
 if (!root) return;
 const value = racingAssistant;
@@ -103,6 +104,7 @@ const changed = [...(mutation.addedNodes || []), ...(mutation.removedNodes || []
 return !changed.length || !changed.every(node => node.nodeType === 1 && node.matches?.(`[${RACING_LABEL_ATTRIBUTE}]`));
 }
 function renderRacing() {
+if (!shouldRenderPdaModule('racing')) return;
 const root = moduleRoot('racing');
 if (!root) return;
 const settings = racingSettings();
@@ -144,6 +146,7 @@ if (!time) return 0;
 return travelSafetyParseDurationMs(time.getAttribute('datetime') || time.querySelector('[class*="srOnly"]')?.textContent || time.textContent);
 }
 function renderCompany() {
+if (!shouldRenderPdaModule('company')) return;
 const root = moduleRoot('company');
 if (!root) return;
 if (!hasScope(COMPANY_SCOPE)) {
@@ -241,6 +244,7 @@ if (!button) throw new Error('The private chat Send button is not ready.');
 button.click();
 }
 function renderMuseums(){
+if (!shouldRenderPdaModule('museums')) return;
 const root=moduleRoot('museums');if(!root)return;
 if(!hasScope(MUSEUM_SCOPE)){root.innerHTML=lockedModule(MUSEUM_SCOPE,'Museums');return}
 const current=moduleState.museums,status=current.data;
@@ -676,6 +680,7 @@ const cost = source.cost === null ? '' : ` · ${Number(source.cost).toLocaleStri
 return `<span class="abroad-source"><strong>${stock}${cost}</strong><small>${escapeHtml(relativeTime(source.updatedAt))}</small></span>`;
 }
 function render() {
+if (!shouldRenderPdaModule('abroadStocks')) return;
 const root = moduleRoot('abroadStocks');
 if (!root) return;
 const current = status();
@@ -775,3 +780,4 @@ renderAlerts();
 }
 return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
 })();
+

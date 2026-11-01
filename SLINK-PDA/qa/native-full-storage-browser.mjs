@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url),{chromium}=require(process.env.SLINK_PLAYWRIGHT_MODULE||'playwright');
-const browser=await chromium.launch({channel:'msedge',headless:true});
+const browser=await chromium.launch({...(process.env.SLINK_BROWSER_EXECUTABLE?{executablePath:process.env.SLINK_BROWSER_EXECUTABLE}:{channel:'msedge'}),headless:true});
 const base=new URL('../',import.meta.url);
 try{
  const page=await browser.newPage(),errors=[],native=new Map();let authCount=0,nativeCalls=0;
@@ -98,3 +98,4 @@ try{
  assert.deepEqual(errors,[]);
  console.log('Actual launcher/runtime, lexical native binding, FULL browser localStorage: startup, authentication and acknowledged native save passed.');
 }finally{await browser.close();}
+

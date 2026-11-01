@@ -22,7 +22,7 @@ const ctx={
  highlightedNode:null,recommendationLabel:null,recommendationKey:'',assistantRoot:null,assistantSignature:'',
  HIGHLIGHT_CLASS:'fixture-highlight',LABEL_ATTRIBUTE:'data-slink-racing-label',
  RACING_HIGHLIGHT_CLASS:'fixture-highlight',RACING_LABEL_ATTRIBUTE:'data-slink-pda-racing-label',HOST_ID:'slink-pda-dashboard-host',RACING_SCOPE:'slink.qol.racing',
- racingScanTimer:null,racingAssistant:{},moduleRoot:()=>null,escapeHtml:value=>String(value),
+ racingScanTimer:null,racingAssistant:{},moduleRoot:()=>null,shouldRenderPdaModule:()=>true,escapeHtml:value=>String(value),
  ui:{getContentElement:()=>({querySelector:()=>null})},
  document:{hidden:false,hasFocus:()=>platform==='extension',querySelectorAll(selector){reads++;return selector==='track'?[{textContent:'Wrong - Official race',getClientRects:()=>[]},{textContent:'Fixture - Official race',getClientRects:()=>[{}]}]:cars;},
  createElement(){labels++;return {nodeType:1,isConnected:false,setAttribute(){},matches:()=>true,remove(){if(!this.isConnected)return;this.isConnected=false;mutations.push({target:parent,addedNodes:[],removedNodes:[this]});}};}},
@@ -68,3 +68,4 @@ if(platform==='extension'){
  assert.equal(reads,before,'An unfocused extension page must not scrape.');
 }
 console.log(platform+' Racing DOM idempotence, self-mutation filtering, list replacement and visibility tests passed.');
+
