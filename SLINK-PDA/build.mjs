@@ -46,6 +46,7 @@ if (!loaderSource.includes('JSON.stringify({...await collectBootstrap(),sourceRe
 new Script(loaderSource, { filename:loaderPath });
 if(process.argv.includes('--faction-node-test')){
   const testSource=loaderSource.replace(/^\/\/ @name\s+.+$/m,'// @name         SLINK Faction Node Test')
+    .replace('// @connect      api.torn.com','// @connect      slink-chat-central-test.richard-johnson554.workers.dev\n// @connect      slink-faction-node-46978-test.richard-johnson554.workers.dev\n// @connect      api.torn.com')
     .replaceAll('Torn-Scripts/main/SLINK-PDA/','Torn-Scripts/feature/faction-node-v1/SLINK-PDA/')
     .replaceAll('slink-pda-dashboard:runtime-cache:v1','slink-pda-faction-node-test:runtime-cache:v1');
   new Script(testSource,{filename:'SLINK_PDA_Faction_Node_Test.user.js'});

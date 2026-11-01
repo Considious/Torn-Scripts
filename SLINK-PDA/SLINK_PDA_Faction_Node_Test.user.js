@@ -14,6 +14,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @connect      slink-chat-central-test.richard-johnson554.workers.dev
+// @connect      slink-faction-node-46978-test.richard-johnson554.workers.dev
 // @connect      api.torn.com
 // @connect      api.giphy.com
 // @connect      chatsticker.com

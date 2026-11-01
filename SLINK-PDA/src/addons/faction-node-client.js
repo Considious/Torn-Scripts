@@ -122,5 +122,42 @@
       dispose(){destroyed=true;active=false;generation++;disconnectAll();ticket=null;rooms.clear();listeners.clear();}
     });
   }
-  global.SLINK_FACTION_NODE=Object.freeze({create,origin});
+  // Feature-branch test authentication is intentionally separate from production Access.
+  const TEST_CENTRAL='https://slink-chat-central-test.richard-johnson554.workers.dev';
+  function createTestAccess(options){
+    const now=options.now||Date.now;let session=null,inflight=null,keyId=null,generation=0;
+    const fingerprint=async key=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(key||'').trim())))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+    function clear(){generation++;session=null;inflight=null;keyId=null;}
+    async function authenticate(force=false){
+      const context=await options.context(),key=String(context.key||'').trim();
+      if(!context.enabled){clear();throw Error('Enable Faction Rooms before connecting to test chat.');}
+      if(!key){clear();throw Error('Save your Torn API key in SLINK Access first.');}
+      const current=await fingerprint(key);if(current!==keyId){clear();keyId=current;}
+      if(!force&&session&&session.until>now()+30000)return session;
+      if(inflight)return inflight;
+      const epoch=generation;
+      const task=(async()=>{
+        const result=await options.request(TEST_CENTRAL+'/api/permissions/terms'),terms=result?.terms;
+        if(!terms?.version||!terms?.sha256)throw Error('Test chat returned incomplete terms. Your normal SLINK login has not changed.');
+        if(!(context.accepted||[]).some(record=>record?.version===terms.version&&String(record?.sha256||record?.documentSha256||'')===terms.sha256))throw Error('Review and accept the current SLINK terms in Access before connecting to test chat.');
+        await options.reserve?.();
+        const response=await options.request(TEST_CENTRAL+'/api/permissions/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:{api_key:key,terms_accepted:true,terms_version:terms.version,terms_sha256:terms.sha256,client_name:'SLINK Faction Rooms test'}});
+        if(!response?.session_token||!Array.isArray(response.scopes)||!response.scopes.includes('slink.chat')||Number(response.faction_id)!==46978)throw Error('Your current faction does not have access to this Chat test.');
+        const until=Math.min(Date.parse(response.expires_at)||0,(Number(response.iat)+300)*1000);
+        if(!Number.isFinite(until)||until<=now()+30000)throw Error('Test chat returned an expired sign-in. Retry once.');
+        const latest=await options.context();if(epoch!==generation||!latest.enabled||await fingerprint(latest.key)!==current)throw Error('The saved key or chat setting changed during sign-in. Reopen faction rooms.');
+        session={token:String(response.session_token),until};return session;
+      })();inflight=task;
+      try{return await task;}finally{if(inflight===task)inflight=null;}
+    }
+    async function central(path,force=false,retry=true){
+      if(!['token','members'].includes(path))throw Error('Unsupported faction chat access request.');
+      const auth=await authenticate(force),epoch=generation;
+      try{const response=await options.request(TEST_CENTRAL+'/api/chat/'+path,{method:path==='token'?'POST':'GET',headers:{Authorization:'Bearer '+auth.token,'Content-Type':'application/json'},...(path==='token'?{body:{}}:{})});
+        const latest=await options.context();if(epoch!==generation||!latest.enabled||await fingerprint(latest.key)!==keyId)throw Error('The saved key or chat setting changed. Reopen faction rooms.');return response;
+      }catch(error){if(retry&&[401,428].includes(Number(error.status))){session=null;return central(path,true,false);}throw error;}
+    }
+    return Object.freeze({central,clear});
+  }
+  global.SLINK_FACTION_NODE=Object.freeze({create,origin,createTestAccess,TEST_CENTRAL});
 })(globalThis);
