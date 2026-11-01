@@ -140,7 +140,15 @@
       const task=(async()=>{
         const result=await options.request(TEST_CENTRAL+'/api/permissions/terms'),terms=result?.terms;
         if(!terms?.version||!terms?.sha256)throw Error('Test chat returned incomplete terms. Your normal SLINK login has not changed.');
-        if(!(context.accepted||[]).some(record=>record?.version===terms.version&&String(record?.sha256||record?.documentSha256||'')===terms.sha256))throw Error('Review and accept the current SLINK terms in Access before connecting to test chat.');
+        // Re-read after metadata arrives: accepting in Access while this request
+        // is in flight must not leave Rooms checking an older local snapshot.
+        const currentContext=await options.context(),records=currentContext.accepted||[];
+        if(!currentContext.enabled||await fingerprint(currentContext.key)!==current)throw Error('The saved key or chat setting changed. Reopen faction rooms.');
+        const matching=records.some(record=>record?.version===terms.version&&String(record?.sha256||record?.documentSha256||'')===terms.sha256);
+        const newer=records.find(record=>/^\d{4}-\d{2}-\d{2}$/.test(record?.version||'')&&/^\d{4}-\d{2}-\d{2}$/.test(terms.version)&&record.version>terms.version);
+        const conflicting=records.find(record=>record?.version===terms.version&&String(record?.sha256||record?.documentSha256||'')!==terms.sha256);
+        if(newer||!matching&&conflicting){const saved=newer||conflicting,error=Error('Chat Central publishes policy '+terms.version+', but this device accepted '+saved.version+(newer?'':' with a different document fingerprint')+'. The SLINK services disagree; Chat Central needs the current deployment. Your acceptance is saved—reaccepting or clearing storage will not fix this. [SLINK_TERMS_SERVICE_MISMATCH]');error.code='SLINK_TERMS_SERVICE_MISMATCH';throw error;}
+        if(!matching)throw Error('Review and accept the current SLINK terms in Access before connecting to faction rooms.');
         await options.reserve?.();
         const response=await options.request(TEST_CENTRAL+'/api/permissions/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:{api_key:key,terms_accepted:true,terms_version:terms.version,terms_sha256:terms.sha256,client_name:'SLINK Faction Rooms test'}});
         if(!response?.session_token||!Array.isArray(response.scopes)||!response.scopes.includes('slink.chat')||Number(response.faction_id)!==46978)throw Error('Your current faction does not have access to this Chat test.');
