@@ -948,6 +948,7 @@ launcherOpacity:Math.min(100, Math.max(35, Math.round(Number(source.launcherOpac
 themePanelOpacity:Number.isFinite(Number(source.themePanelOpacity)) ? Math.min(100, Math.max(0, Math.round(Number(source.themePanelOpacity)))) : defaults.themePanelOpacity,
 themeItemOpacity:Number.isFinite(Number(source.themeItemOpacity)) ? Math.min(100, Math.max(0, Math.round(Number(source.themeItemOpacity)))) : defaults.themeItemOpacity,
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null,
+factionNodeView:source.factionNodeView && typeof source.factionNodeView === 'object' && !Array.isArray(source.factionNodeView) ? { ...source.factionNodeView } : null,
 panels:source.panels && typeof source.panels === 'object' && !Array.isArray(source.panels) ? { ...source.panels } : {}
 };
 }
@@ -979,6 +980,7 @@ launcherOpacity:state.launcherOpacity,
 themePanelOpacity:state.themePanelOpacity,
 themeItemOpacity:state.themeItemOpacity,
 bubblePosition:state.bubblePosition,
+factionNodeView:state.factionNodeView,
 panels:{ ...(state.panels || {}) }
 };
 return storageWrite(STORAGE_KEY,snapshot);

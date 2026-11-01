@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-d3aaa43159668c1cbefb2dc2197dd303bcbf92c826e4d48f2772f568ed17f271",
+  "revision": "sha256-f7310d2f801d811d0e34878e3097dff710a845d406f0627fae7f13c1c3d93c27",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -26,6 +26,15 @@
   ],
   "startupAddons": [
     {
+      "source": "src/addons/faction-node-client.js"
+    },
+    {
+      "source": "src/addons/faction-node-ui.js"
+    },
+    {
+      "source": "src/addons/faction-node-settings.js"
+    },
+    {
       "source": "src/addons/money-property.addon.js"
     },
     {
@@ -42,6 +51,9 @@
     },
     {
       "source": "src/addons/chat.addon.js"
+    },
+    {
+      "source": "src/addons/faction-rooms.addon.js"
     }
   ]
 }

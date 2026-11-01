@@ -44,6 +44,13 @@ if (!loaderSource.includes('JSON.stringify({...await collectBootstrap(),sourceRe
   throw new Error('PDA loader must pass the manifest content revision into the runtime bootstrap.');
 }
 new Script(loaderSource, { filename:loaderPath });
+if(process.argv.includes('--faction-node-test')){
+  const testSource=loaderSource.replace(/^\/\/ @name\s+.+$/m,'// @name         SLINK Faction Node Test')
+    .replaceAll('Torn-Scripts/main/SLINK-PDA/','Torn-Scripts/feature/faction-node-v1/SLINK-PDA/')
+    .replaceAll('slink-pda-dashboard:runtime-cache:v1','slink-pda-faction-node-test:runtime-cache:v1');
+  new Script(testSource,{filename:'SLINK_PDA_Faction_Node_Test.user.js'});
+  await writeFile(resolve(root,'SLINK_PDA_Faction_Node_Test.user.js'),testSource,'utf8');
+}
 if (!loaderSource.includes('source-manifest.json')) {
   throw new Error('PDA loader is not configured for direct source loading.');
 }

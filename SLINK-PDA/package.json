@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:faction-node": "node --test test-faction-node-native.mjs",
     "test:storage-startup": "node test-full-browser-storage.mjs && node test-storage-bridge-lifecycle.mjs && node test-native-storage-compat.mjs && node test-storage-queue-timeout.mjs",
     "test:giphy": "node test-chat-giphy.mjs",
     "test:startup-hotfix": "node test-loader-recovery.mjs && node test-dom-performance.mjs",
@@ -11,6 +12,6 @@
     "test:audit": "node test-overlay.mjs && node test-travel-estimates.mjs && node test-company-alert-safety.mjs && node test-weaver-due.mjs && node test-mugging-report-safety.mjs && node test-shared-data.mjs && node build.mjs --check && node test-form-commit.mjs && node test-hyperlinks-ff-fallback.mjs && node test-page-activity.mjs && node test-page-resume.mjs && node test-audit-channel.mjs && node test-racing-dom-idempotence.mjs && node test-permissions.mjs && node test-form-state.mjs && node test-settings-write-isolation.mjs && node test-storage-ack.mjs && node test-native-storage-roundtrip.mjs && node test-events.mjs",
     "build": "node build.mjs",
     "check": "node build.mjs --check",
-    "test": "node build.mjs --check && node test-page-activity.mjs && node test-page-resume.mjs && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-abroad-stocks.mjs && node test-money-property.mjs && node test-events.mjs && node test-mugging-shared-stats.mjs && node test-storage-ack.mjs && node test-native-storage-roundtrip.mjs && node test-settings-write-isolation.mjs && node test-storage-resilience.mjs && node test-alert-snooze-persistence.mjs && node test-shoplifting-unique-parity.mjs && node test-runtime-readiness.mjs && node test-theme-assets.mjs"
+    "test": "node build.mjs --check && node test-page-activity.mjs && node test-page-resume.mjs && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-abroad-stocks.mjs && node test-money-property.mjs && node test-events.mjs && node test-mugging-shared-stats.mjs && node test-storage-ack.mjs && node test-native-storage-roundtrip.mjs && node test-settings-write-isolation.mjs && node test-storage-resilience.mjs && node test-alert-snooze-persistence.mjs && node test-shoplifting-unique-parity.mjs && node test-runtime-readiness.mjs && node test-theme-assets.mjs && node --test test-faction-node-native.mjs"
   }
 }

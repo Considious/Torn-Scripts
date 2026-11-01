@@ -1824,6 +1824,16 @@ if (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);
 renderAlerts();
 return plugin;
 }
+const factionNodeAccess=(()=>{
+let endpoint=null;
+async function central(path,force=false,retry=true){
+if(!['token','members'].includes(path))throw new Error('Unsupported faction chat access request.');
+const session=await ensurePermissionSession(force);
+try{const result=await requestJson(URLS.permission+'/api/chat/'+path,{method:path==='token'?'POST':'GET',headers:{Authorization:'Bearer '+session.token},...(path==='token'?{body:{}}:{})});if(path==='token')endpoint=global.SLINK_FACTION_NODE.origin(result.endpoint);return result;}
+catch(error){if(retry&&[401,428].includes(Number(error.status)))return central(path,true,false);throw error;}
+}
+return Object.freeze({central,view:Object.freeze({async get(){return state.factionNodeView||{};},async save(record){state.factionNodeView={visible:record.visible===true,view:['home','chat','admin'].includes(record.view)?record.view:'home',userId:Number(record.userId)||0,factionId:Number(record.factionId)||0,roomId:typeof record.roomId==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(record.roomId)?record.roomId:null};await writeState();return state.factionNodeView;}}),request(url,options){const parsed=new URL(url);if(!endpoint||parsed.origin!==endpoint||!parsed.pathname.startsWith('/api/'))throw new Error('Faction chat request does not match the verified node.');return requestJson(url,options);},theme(){const style=global.getComputedStyle(host),out={};for(let i=0;i<style.length;i++){const key=style[i];if(key.startsWith('--slink-'))out[key]=style.getPropertyValue(key).trim();}out['--slink-panel']=out['--slink-panel-bg']||out['--slink-bg']||style.getPropertyValue('--s-panel').trim();return out;}});
+})();
 global.SLINK_PDA_PLUGIN_API = Object.freeze({
 register:registerPdaPlugin,
 root:moduleRoot,
@@ -1838,6 +1848,7 @@ save:savePdaChanges,
 listen:listenPdaAction,
 hasScope,
 ensurePermission:ensurePermissionSession,
+factionChat:factionNodeAccess,
 tornJson,
 catalogItems,
 sharedCatalog:options=>pdaSharedData().catalog({key:currentApiKey(),...options}),
