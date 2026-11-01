@@ -73,3 +73,4 @@ if(process.env.SLINK_PERF_PROFILE){
 }
 if(process.env.SLINK_BROWSER_SCREENSHOT)await page.screenshot({path:process.env.SLINK_BROWSER_SCREENSHOT});
 }finally{await browser.close();}
+

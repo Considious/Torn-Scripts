@@ -74,3 +74,4 @@ assert(macroTimer);macroGeneration++;macroButton.disabled=false;macroTimer();awa
 assert.equal(macroClicks,0,'A pre-hide custom-message action must not send after resume');assert.equal(macro.armed,null);assert.equal(macro.sending,false);
 macro.armed={macroId:'one',contextId:'faction',message:'draft',expiresAt:Date.now()+10000};
 await macro.handleMacroClick({id:'one'},{isConnected:true});assert.equal(macroClicks,1,'A new explicit confirmation may send while active');
+

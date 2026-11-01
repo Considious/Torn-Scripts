@@ -42,3 +42,4 @@ const saved=await page.evaluate(()=>{const data=fixtureStore.get('slink-pda-dash
 assert.equal(saved.intelligence,40);assert.equal(saved.duplicate,false);assert.equal(saved.targets,500);assert.equal(saved.status.pending,0);assert.equal(saved.status.failed,0);assert.deepEqual(errors,[]);
 console.log('Actual runtime: minimized/current badges without panel paints, reopen freshness, Access-only rendering, 50-row pagination, draft retention and acknowledged cache flush passed.');
 }finally{await browser.close();}
+

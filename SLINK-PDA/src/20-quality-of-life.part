@@ -780,3 +780,4 @@ renderAlerts();
 }
 return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
 })();
+

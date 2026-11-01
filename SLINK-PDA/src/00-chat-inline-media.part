@@ -230,3 +230,4 @@
  }
  global.SLINK_CHAT_MEDIA=Object.freeze({mount,getMediaUrl});
 })(globalThis);
+

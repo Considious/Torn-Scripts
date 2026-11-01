@@ -32,3 +32,4 @@
 ## User checks
 
 Attack and use Crimes with faction chat open; send/receive messages and GIFs; minimize/reopen chat; switch away and return. Check one FF badge per sender and immediate GIF-picker interaction. Change chat/theme/alert preferences, reload and confirm they remain saved. Do not clear storage or reinstall PDA as a test step.
+

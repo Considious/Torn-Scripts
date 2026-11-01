@@ -107,3 +107,4 @@ try{
  assert.deepEqual(errors,[]);
  console.log('Actual launcher/runtime, lexical native binding, FULL browser localStorage: startup, authentication and acknowledged native save passed.');
 }finally{await browser.close();}
+

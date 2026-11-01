@@ -44,3 +44,4 @@ try {
  assert.equal(await page.locator('[data-slink-chat-ff]').count(),200,'Replaced chat gets one badge per fixed sender slot, never a cloned duplicate');
  console.log('Full PDA chat: tools, media, FF, highlights, inactive gating and replacement checked.');
 } finally {await browser.close();}
+

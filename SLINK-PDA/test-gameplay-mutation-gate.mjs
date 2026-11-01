@@ -14,3 +14,4 @@ assert.equal(ctx.pdaGameplayMutation({target:gameplay,removedNodes:[gameplay]}),
 assert.equal(ctx.pdaGameplayMutation({target:gameplay,addedNodes:[{nodeType:3}]}),true);
 assert.match(shell,/!mutations\.some\(pdaGameplayMutation\)/);
 console.log('10,000 chat/UI mutations cannot trigger gameplay scraping; real additions/removals/text still pass.');
+

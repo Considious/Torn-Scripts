@@ -68,3 +68,4 @@ if(platform==='extension'){
  assert.equal(reads,before,'An unfocused extension page must not scrape.');
 }
 console.log(platform+' Racing DOM idempotence, self-mutation filtering, list replacement and visibility tests passed.');
+

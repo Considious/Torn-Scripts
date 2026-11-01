@@ -25,3 +25,4 @@ The installed launcher's native storage implementation, record names, bridge pro
 ## Acceptance checks
 
 Receive/snooze/expire alerts while minimized; verify counts and notifications without opening SLINK, then open Alerts and confirm current details. Open Access with a large saved-target list; only opening Targets should construct its cards. Navigate pages and edit notes. Exercise active/disabled/re-enabled polling and stakeouts. Change preferences, reload and verify acknowledged persistence. Test existing chat tools and actual phone/tablet responsiveness.
+

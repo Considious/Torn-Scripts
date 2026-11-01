@@ -46,3 +46,4 @@ assert.equal(intel.dataState.caches.playerIntelligence['10'].battleStatsEstimate
 const stored=JSON.parse(JSON.stringify(intel.dataState));assert.equal(stored.caches.bounties.statuses,undefined);assert.equal(stored.caches.playerIntelligence['20'].battleStatsEstimate,300);
 intel.dataState=stored;intel.adoptPdaLegacyIntelligence();assert.equal(intel.dataState.caches.bounties.statuses,intel.dataState.caches.playerIntelligence,'Restart restores the live alias without a second saved copy');
 console.log('Lazy alert panels/current badge, idle/due/expired target checks, batched single-flight cache saves, failure pause and lossless legacy intelligence adoption passed.');
+
