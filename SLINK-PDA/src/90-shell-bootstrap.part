@@ -1872,7 +1872,7 @@ return plugin;
 const factionNodeAccess=(()=>{
 let endpoint=null;
 let testAccess=null;
-function access(){return testAccess||(testAccess=global.SLINK_FACTION_NODE.createTestAccess({context:async()=>({enabled:pdaPluginSettings('faction-rooms',{enabled:false}).enabled===true,key:currentApiKey(),accepted:Object.values(dataState.accepted||{})}),reserve:()=>reserveTornApi('/v2/key/info'),request:requestJson}));}
+function access(){return testAccess||(testAccess=global.SLINK_FACTION_NODE.createTestAccess({context:async()=>({enabled:pdaPluginSettings('faction-rooms',{}).noticeAccepted===global.SLINK_FACTION_NODE.ROOM_NOTICE,key:currentApiKey(),accepted:Object.values(dataState.accepted||{})}),reserve:()=>reserveTornApi('/v2/key/info'),request:requestJson}));}
 async function central(path,force=false,retry=true){
 if(!['token','members'].includes(path))throw new Error('Unsupported faction chat access request.');
 const result=await access().central(path,force);if(path==='token')endpoint=global.SLINK_FACTION_NODE.origin(result.endpoint);return result;

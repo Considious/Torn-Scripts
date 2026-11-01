@@ -178,5 +178,12 @@
     const stop=activity.subscribe(()=>{if(!owner&&focused())claim();});if(focused())claim();
     return Object.freeze({eligible,subscribe(callback){listeners.add(callback);return()=>listeners.delete(callback);},dispose(){if(disposed)return;hide();disposed=true;stop?.();listeners.clear();channel?.close();global.removeEventListener('focus',focus);global.removeEventListener('pagehide',hide);global.removeEventListener('pageshow',show);doc.removeEventListener('visibilitychange',visibility);}});
   }
-  global.SLINK_FACTION_NODE=Object.freeze({create,origin,createTestAccess,createRoomActivity,TEST_CENTRAL});
+  const ROOM_NOTICE='third-party-rooms-v1';
+  const ROOM_NOTICE_TEXT='SLINK Rooms are independent, third-party chat rooms, not managed or endorsed by Torn. Messages are hosted outside Torn by the faction node operator and may be read or moderated by authorized room members and administrators. They are not end-to-end encrypted. Use at your own risk; do not share API keys or sensitive information.';
+  function roomSettings(value={}){return {...value,enabled:value.enabled!==false,soundEnabled:value.soundEnabled!==false,roomSounds:value.roomSounds&&typeof value.roomSounds==='object'?value.roomSounds:{}};}
+  function patchRoomSettings(current,input){
+    if(!input||!Object.keys(input).length||Object.entries(input).some(([key,value])=>key==='noticeAccepted'?value!==ROOM_NOTICE:key==='roomSounds'?(!value||Array.isArray(value)||typeof value!=='object'||Object.keys(value).length>500||Object.entries(value).some(([id,on])=>!/^[A-Za-z0-9_-]{1,100}$/.test(id)||typeof on!=='boolean')):!['enabled','soundEnabled'].includes(key)||typeof value!=='boolean'))throw Error('Invalid faction room preference.');
+    const saved=roomSettings(current);return {...saved,...input,roomSounds:{...saved.roomSounds,...input.roomSounds}};
+  }
+  global.SLINK_FACTION_NODE=Object.freeze({create,origin,createTestAccess,createRoomActivity,TEST_CENTRAL,ROOM_NOTICE,ROOM_NOTICE_TEXT,roomSettings,patchRoomSettings});
 })(globalThis);
