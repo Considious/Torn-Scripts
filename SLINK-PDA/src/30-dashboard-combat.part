@@ -851,7 +851,7 @@ ${target.description ? `<div class="target-list-description">${escapeHtml(target
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><div class="target-actions"><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button><button type="button" data-action="toggle-target-polling">${state.pollingOpen ? 'Close polling' : 'Polling'}</button></div></div>
 <div class="module-message">Other SLINK target feeds are not copied here automatically.${pollingSettings.enabled ? ` Rolling checks are spread across ${pollingSettings.intervalMinutes} minutes.` : ''}</div>
 ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}${pollingForm}
-${stakeout.activeAlerts.length ? `<div class="alert-list">${stakeout.activeAlerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('')}</div>` : ''}
+${stakeout.activeAlerts.length ? `<div class="alert-list">${stakeout.activeAlerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="720">Snooze 12h</button></div></article>`).join('')}</div>` : ''}
 ${targets.length>pageSize?`<div class="module-toolbar" data-target-pages><button type="button" data-action="target-list-page" data-target-page="${state.pageIndex-1}" ${state.pageIndex===0?'disabled':''}>Previous</button><span>${pageStart+1}–${Math.min(targets.length,pageStart+pageSize)} of ${targets.length}</span><button type="button" data-action="target-list-page" data-target-page="${state.pageIndex+1}" ${state.pageIndex+1>=pageCount?'disabled':''}>Next</button></div>`:''}
 <div class="target-stack">${rows || moduleMessage('No saved targets yet. Use Add target to save one manually.')}</div>
 </article></div>`;
@@ -1330,6 +1330,7 @@ return `<article class="war-card"><div class="war-card-head"><a href="https://ww
 }
 function warVisibleRetals(snapshot, active) {
 const settings = dataState.settings.war;
+if (settings.retalAlerts === false || Number(settings.retalSnoozedUntil || 0) > Date.now()) return [];
 const now = Math.floor(Date.now() / 1000);
 const dismissed = settings.dismissedRetals && typeof settings.dismissedRetals === 'object' ? settings.dismissedRetals : {};
 const opponentIds = new Set((snapshot?.members || []).map(warMemberId));
@@ -1337,8 +1338,34 @@ return (Array.isArray(snapshot?.retals) ? snapshot.retals : []).filter(retal => 
 const expiresAt = Number(retal?.expiresAt ?? retal?.expires_at) || now + 300;
 const key = `user:${Number(retal?.attackerId) || String(retal?.attackId || '')}`;
 const opponentRetal = settings.mode === 'termed' && (Number(retal?.attackerFactionId) === Number(active?.opponentId) || opponentIds.has(Number(retal?.attackerId)));
-return expiresAt > now && !opponentRetal && Number(dismissed[key] || dismissed[String(retal?.attackId)]) <= now;
+return expiresAt > now && Number(dataState.settings.alerts.snoozedUntil?.[`war-retal:${String(retal.attackId || retal.attackerId)}`] || 0) <= Date.now() && !opponentRetal && Number(dismissed[key] || dismissed[String(retal?.attackId)] || 0) <= now;
 });
+}
+function warRetalControls() {
+const settings = dataState.settings.war;
+const until = Number(settings.retalSnoozedUntil) || 0;
+return `<details class="alert-settings" data-ui-key="war.retal-controls"><summary>Retal alert controls</summary><label><input type="checkbox" data-war-retal-pref="retalAlerts" ${settings.retalAlerts !== false ? 'checked' : ''}> Enable retal alerts</label><label><input type="checkbox" data-war-retal-pref="retalSound" ${settings.retalSound === true ? 'checked' : ''}> Play retal sound</label><div class="target-actions"><label>Snooze hours <input type="number" data-field="war-retal-hours" min="0.1" max="168" step="0.1" value="12" style="width:5em"></label><button type="button" data-action="pause-war-retals" data-hours="custom">Snooze</button><button type="button" data-action="pause-war-retals" data-hours="12">Snooze 12h</button><button type="button" data-action="pause-war-retals" data-hours="0">Resume retal alerts</button></div>${until > Date.now() ? `<div>Snoozed until ${escapeHtml(new Date(until).toLocaleString())}</div>` : ''}</details>`;
+}
+function warRetalAlertRows() {
+if (!hasScope('slink.war')) return [];
+const current = moduleState.war.data || dataState.caches.war || {};
+return warVisibleRetals(current.snapshot || {}, current.activeWar).map(retal => ({ id:`war-retal:${String(retal.attackId || retal.attackerId)}`, title:`Retaliation: ${retal.attackerName || 'Player ' + retal.attackerId}`, detail:`Attacked ${retal.defenderName || 'your faction'}`, links:[['【ATTACK】',`https://www.torn.com/page.php?sid=attack&user2ID=${Number(retal.attackerId)}`],['Profile',`https://www.torn.com/profiles.php?XID=${Number(retal.attackerId)}`]] }));
+}
+function syncPdaRetalSound() {
+const rows = warRetalAlertRows();
+const previous = dataState.caches.warRetalSoundIds;
+dataState.caches.warRetalSoundIds = rows.map(row => row.id);
+if (!Array.isArray(previous) || dataState.settings.war.retalSound !== true || !rows.some(row => !previous.includes(row.id)) || !pdaDomActive()) return;
+// Local sound only; never invent unsupported native-notification mute arguments.
+try {
+const Audio = global.AudioContext || global.webkitAudioContext;
+if (!Audio) return;
+const audio = new Audio(), tone = audio.createOscillator(), gain = audio.createGain();
+tone.connect(gain); gain.connect(audio.destination); tone.frequency.value = 660;
+gain.gain.setValueAtTime(0.08, audio.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.25);
+tone.onended = () => { void audio.close().catch(() => {}); };
+void audio.resume().catch(() => {}); tone.start(); tone.stop(audio.currentTime + 0.25);
+} catch {}
 }
 function warRetalCards(snapshot, active) {
 const now = Math.floor(Date.now() / 1000);
@@ -1350,7 +1377,7 @@ const attackId = String(retal?.attackId || id);
 const status = String(retal?.attackerStatus || retal?.attackerActivity || 'Unknown');
 const expires = Number(retal?.expiresAt) || now + 300;
 const faction = retal?.attackerFactionName || (retal?.attackerFactionId ? `Faction ${retal.attackerFactionId}` : 'No faction');
-return `<article class="war-card war-retal"><button class="war-dismiss" type="button" data-action="dismiss-war-retal" data-war-retal="${escapeHtml(attackId)}" aria-label="Dismiss retaliation alert">×</button><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(retal?.attackerName || `Player ${id}`)} [${id}]</a><span>${duration(expires - now)}</span></div><div class="war-retal-report"><span>Faction</span><strong>${escapeHtml(faction)}</strong><span>Attacked</span><strong>${escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`)}</strong><span>Status</span><strong>${escapeHtml(status)}</strong><span>Fair Fight</span><strong>${number(retal?.fairFight, 2)}</strong></div><div class="target-actions"><button type="button" data-action="copy-war-retal" data-war-retal="${escapeHtml(attackId)}">Copy</button><button type="button" data-action="send-war-retal" data-war-retal="${escapeHtml(attackId)}">Send to Faction</button>${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}</div></article>`;
+return `<article class="war-card war-retal"><button class="war-dismiss" type="button" data-action="dismiss-war-retal" data-war-retal="${escapeHtml(attackId)}" aria-label="Dismiss retaliation alert">×</button><div class="war-card-head"><a href="https://www.torn.com/profiles.php?XID=${id}">${escapeHtml(retal?.attackerName || `Player ${id}`)} [${id}]</a><span>${duration(expires - now)}</span></div><div class="war-retal-report"><span>Faction</span><strong>${escapeHtml(faction)}</strong><span>Attacked</span><strong>${escapeHtml(retal?.defenderName || `Player ${retal?.defenderId || '?'}`)}</strong><span>Status</span><strong>${escapeHtml(status)}</strong><span>Fair Fight</span><strong>${number(retal?.fairFight, 2)}</strong></div><div class="target-actions">${[5,60,720].map(minutes => `<button type="button" data-action="snooze-alert" data-alert-id="war-retal:${escapeHtml(attackId)}" data-minutes="${minutes}">Snooze ${minutes < 60 ? minutes + 'm' : minutes/60 + 'h'}</button>`).join('')}<button type="button" data-action="copy-war-retal" data-war-retal="${escapeHtml(attackId)}">Copy</button><button type="button" data-action="send-war-retal" data-war-retal="${escapeHtml(attackId)}">Send to Faction</button>${actionLink('【ATTACK】', `https://www.torn.com/page.php?sid=attack&user2ID=${id}`)}${actionLink('Profile', `https://www.torn.com/profiles.php?XID=${id}`)}</div></article>`;
 }).join('')}</div></section>`;
 }
 function warItemRequests(snapshot) {

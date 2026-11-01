@@ -1139,7 +1139,7 @@ renderAlerts();
 if (action === 'snooze-alert') {
 const button = event.target.closest('[data-alert-id]');
 const id = String(button?.dataset.alertId || '');
-const minutes = Math.max(1, Number(button?.dataset.minutes) || 5);
+const minutes = Math.min(1440, Math.max(1, Number(button?.dataset.minutes) || 5));
 if (id) {
 if (id.startsWith('abroad:')) {
 PDA_ABROAD.snooze(id, minutes);
@@ -1147,8 +1147,9 @@ return;
 }
 dataState.settings.alerts.snoozedUntil[id] = Date.now() + minutes * 60_000;
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
-await savePdaChanges();
 renderAlerts();
+if (id.startsWith('war-retal:')) renderWar(true);
+await savePdaChanges();
 }
 }
 if (action === 'hide-city-until-reset') {
@@ -1225,6 +1226,13 @@ const whitelist = new Set((dataState.settings.war.armoryWhitelist || []).map(Str
 const checked = action === 'select-shown-war-armory';
 moduleRoot('war')?.querySelectorAll('[data-armory-search-row]:not([hidden]) [data-war-armory-member]').forEach(input => checked ? whitelist.add(String(input.dataset.warArmoryMember)) : whitelist.delete(String(input.dataset.warArmoryMember)));
 dataState.settings.war.armoryWhitelist = [...whitelist]; await savePdaChanges(); renderWar();
+}
+if (action === 'pause-war-retals') {
+const button = event.target.closest('[data-hours]');
+const raw = button?.dataset.hours === 'custom' ? moduleRoot('war')?.querySelector('[data-field="war-retal-hours"]')?.value : button?.dataset.hours;
+const hours = Math.min(168, Math.max(0, Number(raw) || 0));
+dataState.settings.war.retalSnoozedUntil = hours ? Date.now() + hours * 3600000 : 0;
+renderWar(true); renderAlerts(); await savePdaChanges();
 }
 if (action === 'dismiss-war-retal') {
 const attackId = String(event.target.closest('[data-war-retal]')?.dataset.warRetal || '');
@@ -1574,6 +1582,13 @@ if (dataState.settings.mugging.enabled) touchMuggingActivity();
 await savePdaChanges();
 renderMugging();
 if (dataState.settings.mugging.enabled) void runMuggingContribution(true);
+}
+if (event.target.matches('[data-war-retal-pref]')) {
+const key = event.target.dataset.warRetalPref;
+if (['retalAlerts','retalSound'].includes(key)) {
+dataState.settings.war[key] = event.target.checked;
+renderAlerts(); renderWar(true); await savePdaChanges();
+}
 }
 if (event.target.matches('[data-field="war-armory-mode"]')) {
 dataState.settings.war.armoryMode = String(event.target.value || 'ranked-all'); await savePdaChanges();

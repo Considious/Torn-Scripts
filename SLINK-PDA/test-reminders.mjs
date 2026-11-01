@@ -16,7 +16,7 @@ const context = vm.createContext({
   acceptedMissions:() => [], raceActive:() => false,
   crimeUniqueProgressRowsPda:()=>[], searchForCashOpportunitiesPda:()=>[],
   shopliftingUniqueOpportunitiesPda:()=>[], dailyCrimeUniqueDuePda:()=>false,
-  cityShopTargetStockPda:()=>[], stakeoutAlertRows:()=>[], companyAlertRows:()=>[], pdaPluginAlerts:()=>[],
+  cityShopTargetStockPda:()=>[], warRetalAlertRows:()=>[], stakeoutAlertRows:()=>[], companyAlertRows:()=>[], pdaPluginAlerts:()=>[],
   PDA_ABROAD:{alerts:()=>[]},
   googlePlayPointsAccess:() => ({ detail:'', links:[] }),
   showSystemAlert:alert => notifications.push(alert.id), updateAlertIndicator:() => {}

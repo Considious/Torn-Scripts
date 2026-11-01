@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {extractFunction,read} from './test-support/runtime.mjs';
+let now=1800000000000;
+const ctx=vm.createContext({Date:{now:()=>now},Number,String,Array,Set,Math,hasScope:()=>true,COMPANY_SCOPE:'company',companySettings:()=>({enabled:true,addictionThreshold:5,directorThreshold:5}),dataState:{settings:{alerts:{snoozedUntil:{}},war:{retalAlerts:true,retalSound:false}},caches:{company:{snapshot:{self:{addictionPenalty:10},director:true,userId:1,employees:[{id:2,name:'Employee',addictionPenalty:12}]}}}},moduleState:{war:{data:{snapshot:{retals:[{attackId:'one',attackerId:42,expiresAt:now/1000+500}]} }}},warMemberId:r=>r.id,pdaDomActive:()=>true,global:{}});
+for(const [name,file] of [['companyAlertRows','00-runtime-core'],['normalizeAlertSnoozes','00-runtime-core'],['warVisibleRetals','30-dashboard-combat'],['warRetalAlertRows','30-dashboard-combat'],['syncPdaRetalSound','30-dashboard-combat']])vm.runInContext(extractFunction(name,'src/'+file+'.part'),ctx);
+assert.equal(ctx.companyAlertRows().length,2);
+ctx.dataState.settings.alerts.snoozedUntil['company:addiction:self']=now+43200000;
+assert.equal(ctx.companyAlertRows().length,1);
+ctx.storedRecord=value=>value&&typeof value==='object'?value:null;
+ctx.dataState.settings.alerts.snoozedUntil=ctx.normalizeAlertSnoozes(JSON.parse(JSON.stringify(ctx.dataState.settings.alerts.snoozedUntil)));
+assert.equal(ctx.companyAlertRows().length,1,'Colon-containing company snooze ID survives storage round trip');
+now+=43200001;assert.equal(ctx.companyAlertRows().length,2);
+// Refresh the retal, which naturally expired while the company snooze elapsed.
+ctx.moduleState.war.data.snapshot.retals[0].expiresAt=now/1000+500;
+assert.equal(ctx.warRetalAlertRows().length,1);
+ctx.dataState.settings.alerts.snoozedUntil['war-retal:one']=now+43200000;assert.equal(ctx.warRetalAlertRows().length,0);
+delete ctx.dataState.settings.alerts.snoozedUntil['war-retal:one'];
+ctx.dataState.settings.war.retalSnoozedUntil=now+43200000;assert.equal(ctx.warRetalAlertRows().length,0);
+ctx.dataState.settings.war.retalSnoozedUntil=now-1;assert.equal(ctx.warRetalAlertRows().length,1);
+ctx.dataState.settings.war.retalAlerts=false;assert.equal(ctx.warRetalAlertRows().length,0);
+ctx.dataState.settings.war.retalAlerts=true;ctx.syncPdaRetalSound();assert.equal(ctx.warRetalAlertRows().length,1,'Muted retals stay visible');
+for(const file of ['src/40-war.part','src/30-dashboard-combat.part'])assert.match(read(file),/Snooze 12h/);
+assert.match(read('src/90-shell-bootstrap.part'),/action === 'pause-war-retals'/);
+console.log('PDA alert controls: company snooze persistence, retal disable/mute/snooze expiry and 12h surfaces passed.');
