@@ -7,7 +7,7 @@ const require=createRequire(import.meta.url),{chromium}=require(process.env.SLIN
 const browser=await chromium.launch({...(process.env.SLINK_BROWSER_EXECUTABLE?{executablePath:process.env.SLINK_BROWSER_EXECUTABLE}:{channel:'msedge'}),headless:true});
 const base=new URL('../',import.meta.url);
 try{
- const page=await browser.newPage(),errors=[],native=new Map();let authCount=0,nativeCalls=0;
+ const page=await browser.newPage(),errors=[],native=new Map();let authCount=0,nativeCalls=0,readFaultsRemaining=0,injectedReadFaults=0;
  native.set('fixture-padding','x'.repeat(4900000));
  native.set('slink-pda-dashboard:data:v1',{_savedAt:1,apiKey:'',settings:{plugins:{chat:{ffBubbles:false}},alerts:{enabledTypes:{cityItems:false}}},caches:{}});
  page.on('pageerror',error=>{errors.push(error.message);console.log('PAGE ERROR',error.stack);});
@@ -26,6 +26,9 @@ try{
  });
  await page.exposeFunction('__fixtureStorage',async(sid,method,payload)=>{
   assert.equal(sid,'fixture-script-namespace');nativeCalls++;
+  if(readFaultsRemaining>0 && (method==='loadAll'||method==='get'&&payload.key==='slink-pda-dashboard:data:v1'||method==='getMany'&&payload.keys.includes('slink-pda-dashboard:data:v1'))){
+   readFaultsRemaining--;injectedReadFaults++;return {ok:false,error:"type 'Null' is not a subtype of type 'String' in type cast"};
+  }
   if(method==='get')return {ok:true,value:structuredClone(native.get(payload.key)??payload.def)};
   if(method==='getMany')return {ok:true,value:Object.fromEntries(payload.keys.map(key=>[key,structuredClone(native.get(key)??null)]))};
   if(method==='list')return {ok:true,value:[...native.keys()]};
@@ -80,9 +83,15 @@ try{
  await page.locator('#slink-pda-dashboard-host [data-action="load-terms"]').click();
  await page.waitForTimeout(300);
  await page.locator('#slink-pda-dashboard-host [data-field="accept-terms"]').check();
+ if(process.env.SLINK_TEST_TRANSIENT_READ==='1')readFaultsRemaining=3;
  await page.locator('#slink-pda-dashboard-host [data-action="save-access"]').click();
  await page.waitForTimeout(1500);
+ await page.waitForFunction(()=>SLINK_PDA_DASHBOARD.storage.status().pending===0,{}, {timeout:10000});
  const status=await page.evaluate(()=>SLINK_PDA_DASHBOARD.storage.status());
+ if(process.env.SLINK_TEST_TRANSIENT_READ==='1'){
+  assert.equal(injectedReadFaults,3,'Simulate the reported batch/single/loadAll native failure, not merely one fallback error');
+  assert.doesNotMatch(await page.locator('#slink-pda-dashboard-host').textContent(),/SLINK_STORAGE_PAUSED|SLINK_NATIVE_READ/);
+ }
  console.log('NATIVE RESULT',{authCount,nativeCalls,status,keySaved:native.get('slink-pda-dashboard:data:v1')?.apiKey==='member-public-key'});
  assert(authCount>0);assert.equal(native.get('slink-pda-dashboard:data:v1').apiKey,'member-public-key');
  assert.equal(status.failed,0);assert.equal(status.pending,0);assert.equal(status.backend,'pda');assert.deepEqual(errors,[]);

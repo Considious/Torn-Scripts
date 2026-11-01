@@ -486,7 +486,7 @@ async function pdaOwnBattleStats(force = false) {
 const record=await pdaSharedData().personal({key:currentApiKey(),force,maxAgeMs:MUGGING_OWN_STATS_TTL_MS,requireLevel:true});
 return record.total;
 }
-const muggingFairFightChecks=global.SLINK_MUGGING_FF.create({key:async()=>currentFfKey(),request:(ids,key,signal)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(key)+'&targets='+ids.join(','),{signal,timeout:6000}),queue:async rows=>{for(const row of rows)queueMuggingContributionObservation(row.playerId,row.record,'fair-fight',true);await writeDataState();}});
+const muggingFairFightChecks=global.SLINK_MUGGING_FF.create({key:async()=>currentFfKey(),request:(ids,key,signal)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(key)+'&targets='+ids.join(','),{signal,timeout:6000}),queue:async rows=>{for(const row of rows)queueMuggingContributionObservation(row.playerId,row.record,'fair-fight',true);schedulePdaCacheSave();}});
 function queueMuggingContributionObservation(playerId, record, mode, estimateOnly=false) {
 const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object' ? dataState.caches.muggingPendingSync : {};
 pending[String(playerId)+(estimateOnly?':ff':'')] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, estimateOnly, pendingSync:true };
@@ -536,7 +536,7 @@ if (!rows.length) break;
 const reports = rows.map(row => muggingContributorReport(row, client)).filter(report => report.player_id > 0);
 if (!reports.length) {
 dataState.caches.muggingPendingSync = {};
-writeDataState();
+schedulePdaCacheSave();
 break;
 }
 const response = await muggingRequest('/api/contributor/reports', {
@@ -554,7 +554,7 @@ if (acknowledged.has(muggingContributorReport(row, client).report_id)) delete la
 }
 dataState.caches.muggingPendingSync = latest;
 accepted += acknowledged.size;
-writeDataState();
+schedulePdaCacheSave();
 if (rows.length < MUGGING_SYNC_BATCH_SIZE) break;
 }
 const status = {
@@ -568,7 +568,7 @@ pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
 error:''
 };
 dataState.caches.muggingSync = status;
-writeDataState();
+schedulePdaCacheSave();
 return status;
 } catch (error) {
 const status = {
@@ -582,7 +582,7 @@ pendingSync:Object.keys(dataState.caches.muggingPendingSync || {}).length,
 error:errorMessage(error)
 };
 dataState.caches.muggingSync = status;
-writeDataState();
+schedulePdaCacheSave();
 return status;
 } finally {
 muggingSyncBusy = false;
@@ -740,7 +740,7 @@ userLevel:Math.max(0, Math.trunc(Number(pdaStoredOwnBattleStats()?.level) || 0))
 ownBattleStatsCheckedAt:Math.max(0,Number(pdaStoredOwnBattleStats()?.checkedAt)||0),
 updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
 };
-writeDataState();
+schedulePdaCacheSave();
 const cache = muggingCache();
 current.notice = checked.keyMissing?'Save your FFScouter key in Access to check unknown targets.':checked.error||`Loaded ${cache.targets.length} assignments; unchecked targets are labeled separately.`;
 } catch (error) {

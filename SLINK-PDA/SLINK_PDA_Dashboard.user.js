@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.143
+// @version      0.4.144
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -37,7 +37,7 @@
  const key=value=>{if(typeof value!=='string'||!value)throw Error('SLINK storage requires a non-empty key.');return value};
  const castError=error=>/type ['"]Null['"] is not a subtype of type ['"]String['"]/i.test(String(error?.code||error?.message||error));
  const failed=(operation,error)=>new Error('PDA native storage '+operation+' failed: '+String(error?.message||error?.code||error||'No acknowledgement'));
- async function getMany(keys){
+ async function readManyOnce(keys){
   keys.forEach(key);
   try {
    const values=typeof store.getMany==='function'?await store.getMany(keys):Object.fromEntries(await Promise.all(keys.map(async k=>[k,await store.get(k,null)])));
@@ -65,6 +65,32 @@
     throw failure;
    }
    throw failed('read',error);
+  }
+ }
+ async function getMany(keys){
+  try{return await readManyOnce(keys);}
+  catch(first){
+   if(!castError(first))throw first;
+   // A native bridge cast can be temporary. Retry only reads, with a finite
+   // budget, before the write circuit decides the store is unavailable.
+   // The broad loadAll compatibility read above is never repeated here.
+   for(const delay of [200,800]){
+    if(typeof globalThis.setTimeout==='function')await new Promise(resolve=>globalThis.setTimeout(resolve,delay));
+    try{
+     const values=typeof store.getMany==='function'?await store.getMany(keys):Object.fromEntries(await Promise.all(keys.map(async k=>[k,await store.get(k,null)])));
+     if(!isRecord(values))throw Error('PDA returned an unreadable storage result.');
+     return values;
+    }catch(retry){if(!castError(retry))throw failed('read retry',retry);}
+   }
+   // Read-only, once per exhausted read. Do not clear, rewrite, migrate or
+   // switch stores when the existing primary record cannot be inspected.
+   let listing='unavailable';
+   if(typeof store.list==='function')try{
+    const names=await store.list();
+    listing=Array.isArray(names)&&names.every(name=>typeof name==='string')?(keys.every(k=>names.includes(k))?'requested records listed':'requested records not all listed'):'invalid result';
+   }catch(error){listing=castError(error)?'Null/String':'other failure';}
+   first.message+=' [SLINK_NATIVE_RECOVERY: targeted retries=2; list='+listing+']';
+   throw first;
   }
  }
  async function setMany(values){

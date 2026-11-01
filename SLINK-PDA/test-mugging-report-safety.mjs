@@ -21,7 +21,7 @@ async function transport(body){
  return {acknowledged_report_ids:body.reports.map(row=>row.report_id)};
 }
 const context=vm.createContext({console,Date:class extends Date{static now(){return now;}},
- dataState:state,writeDataState(){},muggingSyncBusy:false,
+ dataState:state,writeDataState(){},schedulePdaCacheSave(){},muggingSyncBusy:false,
  MUGGING_SYNC_INTERVAL_MS:300000,MUGGING_SYNC_RETRY_MS:60000,MUGGING_SYNC_BATCH_SIZE:100,MUGGING_SYNC_MAX_BATCHES:5,
  hasScope:()=>true,muggingClientId:()=> 'synthetic',muggingRequest:async(_,options)=>transport(options.body),errorMessage:error=>error.message,
  validPlayerIntelligenceId:value=>Number(value)>0?Number(value):null,
