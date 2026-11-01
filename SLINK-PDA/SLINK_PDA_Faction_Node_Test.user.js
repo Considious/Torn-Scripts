@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Faction Node Test
 // @namespace    Considious [3853023]
-// @version      0.4.140
+// @version      0.4.141
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/feature/faction-node-v1/SLINK-PDA/SLINK_PDA_Dashboard.user.js

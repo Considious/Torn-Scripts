@@ -115,9 +115,12 @@
         while ((node = walker.nextNode())) {
             // Anchors are handled above; do not embed their hidden text a second time.
             if (node.parentElement?.closest('a, textarea, [contenteditable="true"], [data-slink-inline-media]')) continue;
-            if (!textSnapshots.has(node)) textSnapshots.set(node, node.nodeValue);
             const mediaUrl = getMediaUrl(node.nodeValue);
             if (!mediaUrl) continue;
+
+            // Keep originals only for text we actually modify, never every
+            // ordinary message in Torn's virtualized history.
+            if (!textSnapshots.has(node)) textSnapshots.set(node, node.nodeValue);
 
             foundMedia = true;
             node.nodeValue = node.nodeValue.replace(mediaUrl, '').trim();
@@ -179,6 +182,7 @@
     if(a.dataset.tornEmoteDone==='true')anchors.set(a,{display,href:a.href});
    });
    select('[class*="message___"]:not([data-torn-emote-done="true"]), [class*="text___"]:not([data-torn-emote-done="true"]), p[class*="message"]:not([data-torn-emote-done="true"]), div[class*="message"]:not([data-torn-emote-done="true"])').forEach(el=>{
+    if(!/https?:\/\//i.test(el.textContent||''))return;
     processTextMessage(el);if(el.dataset.tornEmoteDone==='true')el.dataset.slinkMediaProcessed='';
    });
    select('img[data-slink-inline-media]').forEach(image=>{
@@ -226,3 +230,4 @@
  }
  global.SLINK_CHAT_MEDIA=Object.freeze({mount,getMediaUrl});
 })(globalThis);
+
