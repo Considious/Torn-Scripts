@@ -1,9 +1,10 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.141",
+  "version": "0.4.142",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:lazy-ui": "node test-lazy-panels-cache.mjs",
     "test:storage-startup": "node test-full-browser-storage.mjs && node test-storage-bridge-lifecycle.mjs && node test-native-storage-compat.mjs && node test-storage-queue-timeout.mjs",
     "test:giphy": "node test-chat-giphy.mjs",
     "test:startup-hotfix": "node test-loader-recovery.mjs && node test-dom-performance.mjs",

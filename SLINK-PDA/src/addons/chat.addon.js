@@ -1174,6 +1174,7 @@ let giphyPanel=null;
 const ffBubbles=global.SLINK_CHAT_FF.mount({activity:global.SLINK_PDA_PAGE_ACTIVITY,enabled:()=>config().ffBubbles===true&&(api.hasScope('slink.qol.chat')||api.hasScope('admin.*')),lookup:ids=>api.chatFairFight(ids)});
 global.addEventListener('slink-chat-enable',()=>ffBubbles.sync());
 function render(){
+  if (api.shouldRender && !api.shouldRender(ID)) return;
   const root=api.root(ID);if(!root)return;
   if(!root.querySelector('[data-chat-base]')){const base=document.createElement('div');base.dataset.chatBase='';root.append(base);}
   renderBase();

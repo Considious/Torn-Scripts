@@ -1,3 +1,18 @@
+adoptPdaLegacyIntelligence();
+function shouldRenderPdaModule(name) {
+const dirty=shouldRenderPdaModule.dirty ||= new Set();
+if (!dashboardOpen || !pdaDomActive() || activeModuleName() !== name) { dirty.add(name); return false; }
+dirty.delete(name);
+return true;
+}
+function renderActivePdaPanel() {
+if (!dashboardOpen || !pdaDomActive()) return;
+const name=activeModuleName(), plugin=pdaPlugins.get(name);
+if (plugin) { plugin.render?.(); return; }
+const renders={access:renderAccess,leveling:renderLeveling,bounties:renderBounties,mugging:renderMugging,targetList:renderTargetList,war:renderWar,stats:renderStats,alerts:renderAlerts,market:renderMarket,merits:renderMerits,dollarBazaars:renderDollarBazaars,racing:renderRacing,company:renderCompany,museums:renderMuseums,abroadStocks:PDA_ABROAD.render};
+renders[name]?.();
+if(name==='access')renderThemeChoices();
+}
 function activeModuleName() {
 if (state.page === 'combat') return state.combatTab;
 if (state.page === 'efficiency') return state.efficiencyTab;
@@ -29,7 +44,9 @@ const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refres
 if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 }
 function renderAllModules() {
-renderAccess(); renderLeveling(); renderBounties(); renderMugging(); renderTargetList(); renderWar(); renderStats(); renderAlerts(); renderMarket(); renderMerits(); renderDollarBazaars(); renderRacing(); renderCompany(); renderMuseums(); PDA_ABROAD.render(); for (const plugin of pdaPlugins.values()) { try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', plugin.id, error); } } renderThemeChoices(); applyPermissionGates();
+applyPermissionGates();
+renderAlerts();
+if (activeModuleName() !== 'alerts') renderActivePdaPanel();
 syncThemeHealthAssets();
 }
 let permissionRecoveryBusy = false;
@@ -705,7 +722,7 @@ shadow.querySelectorAll('[data-page-panel]').forEach(panel => { panel.hidden = p
 shadow.querySelectorAll('[data-page]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.page === page)));
 if (persist) writeState();
 shadow.querySelector('.scroll').scrollTop = 0;
-if (dashboardOpen) void loadActiveModule(false);
+if (dashboardOpen && persist) { renderActivePdaPanel(); void loadActiveModule(false); }
 }
 function selectSubpage(group, tab, persist = true) {
 const requestedTab = tab;
@@ -726,7 +743,7 @@ shadow.querySelectorAll(`[data-${attributeGroup}-panel]`).forEach(panel => { pan
 shadow.querySelectorAll(`[data-${attributeGroup}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[`${group}Tab`] === tab)));
 if (pendingPlugin) state.qualityOfLifeTab = requestedTab;
 else if (persist) writeState();
-if (dashboardOpen) void loadActiveModule(false);
+if (dashboardOpen && persist && activeModuleName() === tab) { renderActivePdaPanel(); void loadActiveModule(false); }
 }
 let tornPageTheme=null,tornPageSettingsPanel=null,tornPageSettingsQueue=Promise.resolve();
 function syncTornPageTheme(){
@@ -1257,6 +1274,10 @@ moduleState.targetList.error = '';
 moduleState.targetList.notice = '';
 renderTargetList();
 }
+if (action === 'target-list-page') {
+moduleState.targetList.pageIndex=Math.max(0,Math.trunc(Number(event.target.closest('[data-target-page]')?.dataset.targetPage)||0));
+renderTargetList();
+}
 if (action === 'save-target-polling') {
 const root = moduleRoot('targetList');
 const ticket = editableState.begin(root?.querySelector('[data-target-polling]'));
@@ -1743,12 +1764,14 @@ guardian.observe(document,{childList:true,subtree:true});
 repairPdaHost();
 clampLauncher(false);
 if (dashboardOpen) lockTornScroll();
+if (dashboardOpen) { renderAlerts(); if(activeModuleName()!=='alerts')renderActivePdaPanel(); }
 syncThemeHealthAssets();
 schedulePurchaseOpportunityFormatting(0);scheduleRacingScan(0);scanAttackMugResults();
 void scanIntendedProfileDom();
 }
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
 global.addEventListener('pagehide',stopPdaTargetTimers);
+global.addEventListener('pagehide',()=>{void flushPdaCacheSave().catch(()=>{});});
 global.addEventListener('pageshow',startPdaTargetTimers);
 global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});
 if (typeof GM_API.menu === 'function') {
@@ -1833,6 +1856,7 @@ return plugin;
 }
 global.SLINK_PDA_PLUGIN_API = Object.freeze({
 register:registerPdaPlugin,
+shouldRender:shouldRenderPdaModule,
 root:moduleRoot,
 settings:pdaPluginSettings,
 chatFairFight:global.SLINK_CHAT_FF.createLookup({

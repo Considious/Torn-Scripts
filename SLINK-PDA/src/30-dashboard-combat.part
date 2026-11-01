@@ -1,4 +1,5 @@
 function renderAccess() {
+if (!shouldRenderPdaModule('access')) return;
 const root = moduleRoot('access');
 if (!root) return;
 const permission = validSession('permission');
@@ -188,6 +189,7 @@ fairFightStale:!refined.checkedAt || now - Number(refined.checkedAt) >= 5 * 60_0
 });
 }
 function renderLeveling() {
+if (!shouldRenderPdaModule('leveling')) return;
 const root = moduleRoot('leveling');
 if (!root) return;
 if (!hasScope('slink.level')) { root.innerHTML = lockedModule('slink.level', 'SLINK Leveling'); return; }
@@ -268,7 +270,7 @@ sharedStatuses[String(playerId)],
 );
 }
 }
-runtime.statuses = sharedStatuses;
+Object.defineProperty(runtime,'statuses',{configurable:true,enumerable:false,writable:true,value:sharedStatuses});
 dataState.caches.bounties = runtime;
 moduleState.bounties.data = runtime;
 return runtime;
@@ -400,6 +402,7 @@ return true;
 }).sort((a, b) => b.highestReward - a.highestReward || (b.fairFight || 0) - (a.fairFight || 0));
 }
 function renderBounties() {
+if (!shouldRenderPdaModule('bounties')) return;
 const root = moduleRoot('bounties');
 if (!root) return;
 const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
@@ -593,6 +596,7 @@ if (!settings.enabled || !hasScope('slink.mugging') || !currentApiKey()) return 
 if (!force && now - Number(previous.at || 0) < MUGGING_CONTRIBUTION_INTERVAL_MS) return previous;
 if (muggingContributionBusy) return previous;
 muggingContributionBusy = true;
+beginPdaCacheBatch();
 try {
 const mode = muggingContributionMode(now);
 const capacity = contributionCapacity(readApiLedger(now));
@@ -645,16 +649,17 @@ synced:Math.max(0, Number(sync?.accepted) || 0),
 syncError:String(sync?.error || '')
 };
 dataState.caches.muggingContribution = status;
-writeDataState();
+schedulePdaCacheSave();
 renderMugging();
 return status;
 } catch (error) {
 const status = { ...previous, at:Date.now(), enabled:true, mode:muggingContributionMode(), error:errorMessage(error) };
 dataState.caches.muggingContribution = status;
-writeDataState();
+schedulePdaCacheSave();
 return status;
 } finally {
 muggingContributionBusy = false;
+endPdaCacheBatch();
 }
 }
 function muggingLevelBadge(targetLevel, userLevel) {
@@ -746,6 +751,7 @@ renderMugging();
 }
 }
 function renderMugging() {
+if (!shouldRenderPdaModule('mugging')) return;
 const root = moduleRoot('mugging');
 if (!root) return;
 if (!hasScope('slink.mugging')) {
@@ -801,10 +807,14 @@ if (PLAYER_INTELLIGENCE_TIMED_STATES.has(status.state) && Number(status.until) >
 return status.state || 'Unknown';
 }
 function renderTargetList() {
+if (!shouldRenderPdaModule('targetList')) return;
 const root = moduleRoot('targetList');
 if (!root) return;
 root.dataset.uiExplicitCommit = 'true';
 const state = moduleState.targetList, targets = pdaTargetListEntries();
+const pageSize=50,pageCount=Math.max(1,Math.ceil(targets.length/pageSize));
+state.pageIndex=Math.max(0,Math.min(pageCount-1,Math.trunc(Number(state.pageIndex)||0)));
+const pageStart=state.pageIndex*pageSize,visibleTargets=targets.slice(pageStart,pageStart+pageSize);
 const pollingSettings = targetPollingSettings(), pollingRuntime = targetPollingRuntime();
 const stakeout = targetStakeoutStatus();
 const pollingEligible = targetPollingEligible(pollingSettings);
@@ -828,7 +838,7 @@ const pollingForm = state.pollingOpen ? `<div class="target-list-form" data-targ
 <div class="module-message wide"><strong>Stakeout:</strong> ${stakeout.targetCount} targets · up to ${stakeout.estimatedChecksPerMinute} evaluations/min before DOM, cache, and known-timer skips. Use sparingly; Stakeout can consume substantially more Torn API capacity.</div>
 <div class="target-list-form-actions wide"><button type="button" data-action="save-target-polling">Save polling</button></div>
 </div>` : '';
-const rows = targets.map(target => {
+const rows = visibleTargets.map(target => {
 const profile = `https://www.torn.com/profiles.php?XID=${target.id}`, attack = `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`;
 return `<article class="target-card target-list-card${target.stakeout ? ' is-stakeout' : ''}" data-target-list-id="${target.id}"><div>
 <strong>${escapeHtml(target.name)} [${target.id}]</strong>${target.stakeout ? ` <span class="target-list-stakeout">Stakeout · ${target.stakeoutIntervalSeconds}s</span>` : ''}
@@ -842,6 +852,7 @@ root.innerHTML = `<div class="grid"><article class="card full"><div class="card-
 <div class="module-message">Other SLINK target feeds are not copied here automatically.${pollingSettings.enabled ? ` Rolling checks are spread across ${pollingSettings.intervalMinutes} minutes.` : ''}</div>
 ${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}${form}${pollingForm}
 ${stakeout.activeAlerts.length ? `<div class="alert-list">${stakeout.activeAlerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button></div></article>`).join('')}</div>` : ''}
+${targets.length>pageSize?`<div class="module-toolbar" data-target-pages><button type="button" data-action="target-list-page" data-target-page="${state.pageIndex-1}" ${state.pageIndex===0?'disabled':''}>Previous</button><span>${pageStart+1}–${Math.min(targets.length,pageStart+pageSize)} of ${targets.length}</span><button type="button" data-action="target-list-page" data-target-page="${state.pageIndex+1}" ${state.pageIndex+1>=pageCount?'disabled':''}>Next</button></div>`:''}
 <div class="target-stack">${rows || moduleMessage('No saved targets yet. Use Add target to save one manually.')}</div>
 </article></div>`;
 }

@@ -859,6 +859,36 @@ function queuePdaSettingsSave() {
 global.clearTimeout(pdaPreferenceTimer);
 pdaPreferenceTimer=global.setTimeout(()=>{pdaPreferenceTimer=null;writeDataState();},500);
 }
+// Cache observations are not preference edits. Coalesce them without changing
+// the acknowledged native writer used by explicit settings/access saves.
+function schedulePdaCacheSave() {
+const queue=schedulePdaCacheSave.state ||= {dirty:false,timer:null,task:null,holds:0,paused:false};
+queue.dirty=true;
+if (queue.timer!==null || queue.task || queue.holds || queue.paused) return;
+queue.timer=global.setTimeout(()=>{queue.timer=null;void flushPdaCacheSave().catch(()=>{});},500);
+}
+function beginPdaCacheBatch() {
+const queue=schedulePdaCacheSave.state ||= {dirty:false,timer:null,task:null,holds:0,paused:false};
+queue.holds++;
+global.clearTimeout(queue.timer);queue.timer=null;
+}
+function endPdaCacheBatch() {
+const queue=schedulePdaCacheSave.state;
+if (!queue) return;
+queue.holds=Math.max(0,queue.holds-1);
+if (!queue.holds && queue.dirty) schedulePdaCacheSave();
+}
+async function flushPdaCacheSave() {
+const queue=schedulePdaCacheSave.state;
+if (!queue) return;
+global.clearTimeout(queue.timer);queue.timer=null;
+if (queue.task) {await queue.task;if(queue.dirty)return flushPdaCacheSave();return;}
+if (!queue.dirty) return;
+if (queue.paused) throw Error('Cached updates are not saved. Retry saving from Access.');
+queue.dirty=false;
+queue.task=writeDataState().catch(error=>{queue.paused=true;throw error;}).finally(()=>{queue.task=null;if(queue.dirty&&!queue.holds&&!queue.paused)schedulePdaCacheSave();});
+await queue.task;
+}
 function updateStorageNotice() {
 try {
 const node=moduleRoot('access')?.querySelector('[data-storage-status]');
@@ -878,9 +908,10 @@ if (value.ok===true) {storageBackendName=value.backend || 'unknown';pending.reso
 else pending.reject(new Error('SLINK storage write failed. '+String(value.error || 'Retry from Access.')));
 });
 async function flushPdaStorage() {
+await flushPdaCacheSave();
 if(pdaPreferenceTimer!==null){global.clearTimeout(pdaPreferenceTimer);pdaPreferenceTimer=null;await writeDataState();}
 if (pdaTargetRecords) await pdaTargetRecords.flush();
-do { await Promise.allSettled([...pendingStorageWrites.values()].map(value=>value.promise)); } while(pendingStorageWrites.size);
+do { await Promise.allSettled([...pendingStorageWrites.values()].map(value=>value.promise)); await flushPdaCacheSave(); } while(pendingStorageWrites.size);
 if (failedStorageWrites.size) throw new Error('Some SLINK changes could not be saved. Retry from Access before closing.');
 }
 async function retryPdaStorage() {
@@ -1333,7 +1364,19 @@ writeDataState();
 return runtime;
 }
 
+function adoptPdaLegacyIntelligence() {
+const bounty=dataState.caches.bounties;
+if (!bounty || typeof bounty!=='object') return;
+const shared=playerIntelligenceCache(),legacy=bounty.statuses;
+if (legacy && typeof legacy==='object' && legacy!==shared) for(const [key,row]of Object.entries(legacy)){
+const playerId=validPlayerIntelligenceId(key);
+if(playerId&&row&&typeof row==='object')shared[String(playerId)]=mergePlayerIntelligenceRecord(shared[String(playerId)],{...row,playerId,source:row.source||'bounty-legacy'});
+}
+Object.defineProperty(bounty,'statuses',{configurable:true,enumerable:false,writable:true,value:shared});
+}
 function writeDataState() {
+const cacheQueue=schedulePdaCacheSave.state;
+if (cacheQueue) { global.clearTimeout(cacheQueue.timer);cacheQueue.timer=null;cacheQueue.dirty=false;cacheQueue.paused=false; }
 // Reconcile the independently saved Torn stats before any background page
 // writes its entire cache snapshot back over the primary record.
 if (dataState.caches.ownBattleStats || dataState.caches.muggingOwnBattleStats) pdaStoredOwnBattleStats();
@@ -1989,7 +2032,7 @@ if (!playerId) throw new Error('A valid Torn player ID is required.');
 const cache = playerIntelligenceCache();
 const record = mergePlayerIntelligenceRecord(cache[String(playerId)], { ...input, playerId });
 cache[String(playerId)] = record;
-if (persist) writeDataState();
+if (persist) schedulePdaCacheSave();
 return record;
 }
 function playerIntelligenceFromTornResponse(playerId, response = {}, now = Date.now()) {
@@ -2209,75 +2252,36 @@ return pdaTargetListEntries()
 .filter(target => !settings.mugOnly || target.tags.some(tag => String(tag).toLowerCase() === 'mug'))
 .sort((left, right) => left.playerId - right.playerId);
 }
-function seedTargetPolling(runtime, targets, settings, now = Date.now()) {
+function seedTargetPolling(runtime, targets, settings, now = Date.now(), changes = {}) {
 const ids = new Set(targets.map(target => String(target.playerId)));
-for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) delete runtime.schedule[id];
-if (runtime.revision !== settings.revision) {
-runtime.schedule = {};
-runtime.revision = settings.revision;
-}
-const intervalMs = settings.intervalMinutes * 60_000;
-const spacingMs = targets.length ? intervalMs / targets.length : intervalMs;
-targets.forEach((target, index) => {
-const id = String(target.playerId);
-if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id]) <= 0) runtime.schedule[id] = Math.floor(now + index * spacingMs);
-});
+for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) { delete runtime.schedule[id]; changes.value=true; }
+if (runtime.revision !== settings.revision) {runtime.schedule={};runtime.revision=settings.revision;changes.value=true;}
+const intervalMs=settings.intervalMinutes*60_000,spacingMs=targets.length?intervalMs/targets.length:intervalMs;
+targets.forEach((target,index)=>{const id=String(target.playerId);if(!Number.isFinite(Number(runtime.schedule[id]))||Number(runtime.schedule[id])<=0){runtime.schedule[id]=Math.floor(now+index*spacingMs);changes.value=true;}});
 return runtime;
 }
 async function runTargetPolling(now = Date.now()) {
 if (!hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
-targetPollingBusy = true;
-const settings = targetPollingSettings();
-const runtime = targetPollingRuntime();
-const targets = targetPollingEligible(settings);
-seedTargetPolling(runtime, targets, settings, now);
+const settings=targetPollingSettings();
+if (!settings.enabled) return;
+targetPollingBusy=true;
+beginPdaCacheBatch();
 try {
-if (!settings.enabled || !targets.length) {
-runtime.lastRunAt = now;
-runtime.lastPlanned = 0;
-runtime.lastProcessed = 0;
-runtime.lastApiFetched = 0;
-runtime.lastSkipped = 0;
-runtime.lastError = '';
-writeDataState();
-return;
-}
-const intervalMs = settings.intervalMinutes * 60_000;
-const perMinute = Math.max(1, Math.ceil(targets.length / settings.intervalMinutes));
-const due = targets
-.filter(target => Number(runtime.schedule[String(target.playerId)]) <= now)
-.sort((left, right) => Number(runtime.schedule[String(left.playerId)]) - Number(runtime.schedule[String(right.playerId)]))
-.slice(0, perMinute);
-let processed = 0, apiFetched = 0, skipped = 0, lastError = '';
-for (const target of due) {
-const id = String(target.playerId);
-try {
-const result = await refreshPlayerIntelligence({
-playerId:target.playerId,
-maxAgeMs:intervalMs
-});
-processed += 1;
-if (result.fetched) apiFetched += 1; else skipped += 1;
-runtime.schedule[id] = result.reason === 'known-timer' || result.reason === 'fresh-cache'
-? Math.max(now + 30_000, Number(result.nextCheckAt) || now + intervalMs)
-: now + intervalMs;
-} catch (error) {
-processed += 1;
-lastError = errorMessage(error);
-runtime.schedule[id] = now + 60_000;
-}
-}
-runtime.lastRunAt = now;
-runtime.lastPlanned = due.length;
-runtime.lastProcessed = processed;
-runtime.lastApiFetched = apiFetched;
-runtime.lastSkipped = skipped;
-runtime.lastError = lastError;
-writeDataState();
-if (moduleRoot('targetList')) renderTargetList();
-} finally {
-targetPollingBusy = false;
-}
+const runtime=targetPollingRuntime(),targets=targetPollingEligible(settings),changes={};
+seedTargetPolling(runtime,targets,settings,now,changes);
+const intervalMs=settings.intervalMinutes*60_000,perMinute=Math.max(1,Math.ceil(targets.length/settings.intervalMinutes));
+const due=targets.filter(target=>Number(runtime.schedule[String(target.playerId)])<=now).sort((a,b)=>Number(runtime.schedule[String(a.playerId)])-Number(runtime.schedule[String(b.playerId)])).slice(0,perMinute);
+if(!due.length){if(changes.value)schedulePdaCacheSave();return;}
+let processed=0,apiFetched=0,skipped=0,lastError='';
+for(const target of due){const id=String(target.playerId);try{
+const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs});
+processed++;if(result.fetched)apiFetched++;else skipped++;
+runtime.schedule[id]=result.reason==='known-timer'||result.reason==='fresh-cache'?Math.max(now+30_000,Number(result.nextCheckAt)||now+intervalMs):now+intervalMs;
+}catch(error){processed++;lastError=errorMessage(error);runtime.schedule[id]=now+60_000;}}
+Object.assign(runtime,{lastRunAt:now,lastPlanned:due.length,lastProcessed:processed,lastApiFetched:apiFetched,lastSkipped:skipped,lastError});
+schedulePdaCacheSave();
+renderTargetList();
+} finally {targetPollingBusy=false;endPdaCacheBatch();}
 }
 function targetStakeoutRuntime() {
 const value = dataState.caches.targetStakeout && typeof dataState.caches.targetStakeout === 'object'
@@ -2383,61 +2387,41 @@ runtime
 }
 async function runTargetStakeouts(now = Date.now()) {
 if (!hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
-targetStakeoutBusy = true;
-const runtime = targetStakeoutRuntime();
-const targets = targetStakeoutTargets();
-const ids = new Set(targets.map(target => String(target.playerId)));
-for (const id of Object.keys(runtime.schedule)) if (!ids.has(id)) delete runtime.schedule[id];
-for (const id of Object.keys(runtime.observed)) if (!ids.has(id)) delete runtime.observed[id];
-targets.forEach((target, index) => {
-const id = String(target.playerId);
-if (!Number.isFinite(Number(runtime.schedule[id])) || Number(runtime.schedule[id]) <= 0) {
-runtime.schedule[id] = now + Math.min(index * 1_000, target.stakeoutIntervalSeconds * 1_000);
-}
-});
-const due = targets
-.filter(target => Number(runtime.schedule[String(target.playerId)]) <= now)
-.sort((left, right) => Number(runtime.schedule[String(left.playerId)]) - Number(runtime.schedule[String(right.playerId)]))
-.slice(0, TARGET_STAKEOUT_MAX_DUE_PER_TICK);
-let processed = 0, apiFetched = 0, skipped = 0, lastError = '';
-const generated = [];
+targetStakeoutBusy=true;
+beginPdaCacheBatch();
 try {
-for (const target of due) {
-const id = String(target.playerId);
-const intervalMs = target.stakeoutIntervalSeconds * 1_000;
-generated.push(...collectTargetStakeoutChanges(target, runtime, playerIntelligenceRecord(target.playerId), now));
-try {
-const result = await refreshPlayerIntelligence({
-playerId:target.playerId,
-maxAgeMs:intervalMs,
-timerBufferMs:1_000
-});
-processed += 1;
-if (result.fetched) apiFetched += 1; else skipped += 1;
-generated.push(...collectTargetStakeoutChanges(target, runtime, result.record, now));
-runtime.schedule[id] = result.reason === 'known-timer' || result.reason === 'fresh-cache'
-? Math.max(now + 1_000, Number(result.nextCheckAt) || now + intervalMs)
-: now + intervalMs;
-} catch (error) {
-processed += 1;
-lastError = errorMessage(error);
-runtime.schedule[id] = now + Math.max(10_000, intervalMs);
-}
-}
-const cache = targetStakeoutAlertCache();
-generated.forEach(alert => { cache[alert.id] = alert; });
-runtime.lastRunAt = now;
-runtime.lastProcessed = processed;
-runtime.lastApiFetched = apiFetched;
-runtime.lastSkipped = skipped;
-runtime.lastError = lastError;
+const runtime=targetStakeoutRuntime(),targets=targetStakeoutTargets(),ids=new Set(targets.map(target=>String(target.playerId)));
+let changed=false;
+for(const id of Object.keys(runtime.schedule))if(!ids.has(id)){delete runtime.schedule[id];changed=true;}
+for(const id of Object.keys(runtime.observed))if(!ids.has(id)){delete runtime.observed[id];changed=true;}
+targets.forEach((target,index)=>{const id=String(target.playerId);if(!Number.isFinite(Number(runtime.schedule[id]))||Number(runtime.schedule[id])<=0){runtime.schedule[id]=now+Math.min(index*1000,target.stakeoutIntervalSeconds*1000);changed=true;}});
+const cache=targetStakeoutAlertCache();let alertsChanged=false;
+for(const [id,alert]of Object.entries(cache))if(Number(alert?.expiresAt)<=now){delete cache[id];changed=alertsChanged=true;}
+const due=targets.filter(target=>Number(runtime.schedule[String(target.playerId)])<=now).sort((a,b)=>Number(runtime.schedule[String(a.playerId)])-Number(runtime.schedule[String(b.playerId)])).slice(0,TARGET_STAKEOUT_MAX_DUE_PER_TICK);
+if(!due.length){
+if(alertsChanged||Object.keys(cache).length){
+const before=JSON.stringify(dataState.caches.alertNotificationIds);
 reconcileAlertNotifications(moduleState.alerts.data);
-writeDataState();
-if (moduleRoot('targetList')) renderTargetList();
-if (moduleRoot('alerts')) renderAlerts();
-} finally {
-targetStakeoutBusy = false;
+if(before!==JSON.stringify(dataState.caches.alertNotificationIds)){changed=alertsChanged=true;}
 }
+if(changed)schedulePdaCacheSave();
+if(alertsChanged)renderAlerts();
+return;
+}
+let processed=0,apiFetched=0,skipped=0,lastError='';const generated=[];
+for(const target of due){const id=String(target.playerId),intervalMs=target.stakeoutIntervalSeconds*1000;
+generated.push(...collectTargetStakeoutChanges(target,runtime,playerIntelligenceRecord(target.playerId),now));
+try{const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,timerBufferMs:1000});
+processed++;if(result.fetched)apiFetched++;else skipped++;
+generated.push(...collectTargetStakeoutChanges(target,runtime,result.record,now));
+runtime.schedule[id]=result.reason==='known-timer'||result.reason==='fresh-cache'?Math.max(now+1000,Number(result.nextCheckAt)||now+intervalMs):now+intervalMs;
+}catch(error){processed++;lastError=errorMessage(error);runtime.schedule[id]=now+Math.max(10000,intervalMs);}}
+generated.forEach(alert=>{cache[alert.id]=alert;});
+Object.assign(runtime,{lastRunAt:now,lastProcessed:processed,lastApiFetched:apiFetched,lastSkipped:skipped,lastError});
+reconcileAlertNotifications(moduleState.alerts.data);
+schedulePdaCacheSave();
+renderTargetList();renderAlerts();
+}finally{targetStakeoutBusy=false;endPdaCacheBatch();}
 }
 async function addPdaTarget(input = {}) {
 const playerId = validPlayerIntelligenceId(input.playerId ?? input.player_id ?? input.targetId ?? input.id);
@@ -2666,6 +2650,7 @@ renderThemeChoices(); return cached?.catalog || null;
 }
 }
 function renderThemeChoices() {
+if (!shouldRenderPdaModule('access')) return;
 const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
 row.innerHTML = themeCatalog().map(theme => {
 const unlocked = !theme.scope || hasThemeScope(theme.scope);
@@ -2690,3 +2675,4 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
+

@@ -1,0 +1,17 @@
+{
+  "synthetic": true,
+  "notes": "Complete launcher, CPU-throttled Chrome, synthetic native store and 1.5 MB cache. Not physical PDA timings.",
+  "idle": {
+    "queries": 0,
+    "panelWrites": 0,
+    "localMirrorWriteAttempts": 0,
+    "native": {
+      "calls": 0,
+      "reads": 0,
+      "writes": 0,
+      "writeBytes": 0
+    },
+    "longTasks": []
+  },
+  "errors": []
+}

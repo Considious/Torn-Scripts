@@ -1,4 +1,5 @@
 function renderWar(force = false) {
+if (!shouldRenderPdaModule('war')) return;
 const root = moduleRoot('war');
 if (!root) return;
 if (!force && moduleState.war.data && root.contains(shadow?.activeElement) && shadow.activeElement.matches('input,select,textarea')) {
@@ -252,6 +253,7 @@ function perDay(value, days, digits = 2) {
 return finite(value) === null ? '—' : `${number(value, digits)} (${number(Number(value) / days, digits)}/d)`;
 }
 function renderStats() {
+if (!shouldRenderPdaModule('stats')) return;
 const root = moduleRoot('stats');
 if (!root) return;
 const current = moduleState.stats;
@@ -810,9 +812,11 @@ const stakeoutAlerts = stakeoutAlertRows();
 const abroadAlerts = PDA_ABROAD.alerts();
 const companyAlerts = companyAlertRows();
 const pluginAlerts = pdaPluginAlerts();
-if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); if (shouldRenderPdaModule('alerts')) root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
 const current = moduleState.alerts;
 const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
+updateAlertIndicator(alerts.length, alerts);
+if (!shouldRenderPdaModule('alerts')) return;
 const cityBought = finite(current.data?.cityBought);
 const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
 const cityStatus = cityHidden
@@ -820,7 +824,6 @@ const cityStatus = cityHidden
 : cityBought === null ? 'City purchase total unavailable'
 : cityBought >= 100 ? 'City cap complete · 100 / 100 bought today'
 : `${number(cityBought)} / 100 city items bought today`;
-updateAlertIndicator(alerts.length, alerts);
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
 <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
 <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>

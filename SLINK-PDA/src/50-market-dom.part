@@ -32,6 +32,7 @@ moduleState.market.renderPending = false;
 renderMarket();
 }
 function renderMarket(preserveForm = true) {
+if (!shouldRenderPdaModule('market')) return;
 const root = moduleRoot('market');
 if (!root) return;
 if (preserveForm) captureMarketDraft();
@@ -1110,6 +1111,7 @@ for (const attribute of attributes) document.querySelectorAll(`[${attribute}]`).
 document.getElementById('tdd-purchase-highlight-styles')?.remove();
 }
 function renderDollarBazaars() {
+if (!shouldRenderPdaModule('dollarBazaars')) return;
 const root = moduleRoot('dollarBazaars');
 if (!root) return;
 if (!hasScope(DOLLAR_BAZAARS_SCOPE)) { root.innerHTML = lockedModule(DOLLAR_BAZAARS_SCOPE, 'Weaver $1 Bazaars'); return; }
@@ -1224,6 +1226,7 @@ return goals.sort((a, b) => Number(b.pinned) - Number(a.pinned)
 || String(a.name).localeCompare(String(b.name)));
 }
 function renderMerits() {
+if (!shouldRenderPdaModule('merits')) return;
 const root = moduleRoot('merits');
 if (!root) return;
 if (!hasScope(MERITS_SCOPE)) { root.innerHTML = lockedModule(MERITS_SCOPE, 'Merit tracking'); return; }
