@@ -4,7 +4,7 @@
   function mount({client,activity,theme,media,view,document:doc=global.document}) {
     let launcher=null,host=null,root=null,observer=null,discovery=null,observedChat=null,selected=null,adminState=null,members=[],memberId=null,adminRoom=null,review=null,mediaPanel=null,disposed=false,readTimer=null,typingTimer=null;
     const rows=new Map(),drafts=new Map();
-    let currentView='home',mediaType='gif',savedView=null,viewReady=!view,restoreStarted=false,restoring=false,lastWritten='',navigationRevision=0;
+    let currentView='home',mediaType='gif',savedView=null,viewReady=!view,restoreStarted=false,restoring=false,lastWritten='',navigationRevision=0,createAttempt=null;
     const eligible=()=>!disposed&&activity.eligible();
     const $=selector=>root.querySelector(selector);
     const node=(tag,text)=>{const el=doc.createElement(tag);if(text!==undefined)el.textContent=text;return el;};
@@ -88,8 +88,8 @@
     function expiry(selector){const minutes=Number($(selector).value);return minutes?Date.now()+minutes*60000:null;}
     function bindAdmin(){
       $('[data-admin-room]').onchange=()=>{adminRoom=$('[data-admin-room]').value;paintAdminRoom();remember();};$('[data-member]').oninput=paintMember;
-      $('[data-new-room]').onclick=()=>{adminRoom=null;$('[data-admin-room]').value='';paintAdminRoom();$('[data-name]').focus();};
-      $('[data-save-room]').onclick=()=>void attempt(async()=>{const result=await client.api('/api/admin',{action:adminRoom?'room.update':'room.create',...(adminRoom?{room_id:adminRoom}:{}),name:$('[data-name]').value,description:$('[data-description]').value,visibility:$('[data-visibility]').value});adminRoom=result.room_id||adminRoom;await reloadAdmin();notice('Room saved.');});
+      $('[data-new-room]').onclick=()=>{adminRoom=null;createAttempt=null;$('[data-admin-room]').value='';paintAdminRoom();$('[data-name]').focus();};
+      $('[data-save-room]').onclick=()=>void attempt(async()=>{const details={name:$('[data-name]').value.trim(),description:$('[data-description]').value,visibility:$('[data-visibility]').value},fingerprint=JSON.stringify(details);if(!adminRoom&&createAttempt?.fingerprint!==fingerprint)createAttempt={fingerprint,id:crypto.randomUUID()};const result=await client.api('/api/admin',{action:adminRoom?'room.update':'room.create',...(adminRoom?{room_id:adminRoom}:{request_id:createAttempt.id}),...details});adminRoom=result.room_id||adminRoom;createAttempt=null;await reloadAdmin();notice('Room saved.');});
       $('[data-archive]').onclick=()=>void attempt(async()=>{if(adminRoom&&global.confirm('Archive this room and disconnect its faction links?')){await client.api('/api/admin',{action:'room.archive',room_id:adminRoom});await reloadAdmin();}});
       for(const [selector,key]of [['[data-can-read]','can_read'],['[data-can-speak]','can_speak'],['[data-moderator]','role']])$(selector).onchange=()=>void attempt(()=>memberChange({[key]:key==='role'?($(selector).checked?'moderator':'member'):$(selector).checked,...(key==='can_read'&&$(selector).checked?{access_until:expiry('[data-access-duration]')}:{})}));
       $('[data-access-duration]').onchange=()=>{if(selectedAdminRoom()?.visibility==='selected'&&$('[data-can-read]').checked)void attempt(()=>memberChange({access_until:expiry('[data-access-duration]')}));};

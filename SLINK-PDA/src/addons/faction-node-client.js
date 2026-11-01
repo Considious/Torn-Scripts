@@ -68,7 +68,7 @@
       let data;try{data=JSON.parse(event.data);}catch{return;}
       if(data.protocol!==1){closeConnection(state);state.error='This chat node uses an unsupported protocol. Update SLINK.';state.status='error';emit('room',{id:state.id});return;}
       switch(data.type){
-        case 'welcome': cancel(state.connectionTimer);state.connectionTimer=null;state.status='connected';state.error='';state.attempts=0;state.access=data.access;state.nextBefore=data.next_before;state.unread=Number(data.unread)||0;for(const message of data.messages||[])merge(state,message);state.presence=data.presence||[];transmitPending(state);break;
+        case 'welcome': cancel(state.connectionTimer);state.connectionTimer=null;state.status='connected';state.connectedAt=now();state.error='';state.access=data.access;state.nextBefore=data.next_before;state.unread=Number(data.unread)||0;for(const message of data.messages||[])merge(state,message);state.presence=data.presence||[];transmitPending(state);break;
         case 'message':case 'message_update':{const known=state.messages.has(data.message?.message_id);merge(state,data.message);if(!known&&data.type==='message'&&data.message?.user_id!==model.userId)state.unread++;break;}
         case 'ack': merge(state,data.message);state.pending.delete(data.client_id);break;
         case 'access':state.access=data.access;break;
@@ -82,7 +82,8 @@
       emit('room',{id:state.id,event:data.type});
     }
     async function connect(id,manual=false) {
-      const state=room(id);state.open=true;if(manual)state.attempts=0;
+      const state=room(id);state.open=true;if(manual){state.attempts=0;cancel(state.retry);state.retry=null;}
+      if(state.retryAfter>now()){state.error='Too many chat updates. Wait a minute before reconnecting.';emit('room',{id});return;}
       if(!active||destroyed||state.socket)return;
       const current=generation;state.status='connecting';state.error='';emit('room',{id});
       try{
@@ -92,8 +93,10 @@
         socket.onmessage=event=>receive(state,socket,event);
         socket.onerror=()=>{if(state.socket===socket){state.error='Cannot connect to faction chat. Check the node connection or browser restrictions.';emit('room',{id});}};
         socket.onclose=event=>{
-          if(state.socket!==socket)return;cancel(state.connectionTimer);state.connectionTimer=null;state.socket=null;state.status='disconnected';
+          if(state.socket!==socket)return;cancel(state.connectionTimer);state.connectionTimer=null;state.socket=null;if(state.status==='connected'&&now()-state.connectedAt>=30000)state.attempts=0;state.status='disconnected';
           if(event.code===4003){state.open=false;state.access={read:false,speak:false};state.error='Your access to this room has ended.';}
+          else if(event.code===4008){state.retryAfter=now()+60000;state.error='Too many chat updates. Wait a minute, then press Reconnect.';}
+          else if(event.code===4002){state.error='The chat request was rejected. Review it before reconnecting.';}
           else if(active&&state.open&&state.attempts<3){const delay=[1500,5000,15000][state.attempts++];state.retry=later(()=>{state.retry=null;void connect(id);},delay);}
           else if(state.open)state.error='Chat is disconnected. Press Reconnect when ready.';
           emit('room',{id});

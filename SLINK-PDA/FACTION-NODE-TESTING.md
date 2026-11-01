@@ -11,3 +11,5 @@ Native HTTP and authentication reuse the existing PDA runtime helpers. The room/
 The last room/management view and open/minimized state are remembered through the small existing UI-state record. Draft text stays within its current page, never in that preference or Central. Local browser/real-backend tests cover the shared client, but physical PDA loading, CSP/WebSocket behavior and actual Torn page navigation still require testing. No claimed byte limit or local source-size measurement is being used as proof of physical PDA compatibility.
 
 Use the single user-facing `FACTION-NODE-TESTER-CHANGELOG.md` in the Cloudflare Services repository. The checkpoint/security/testing docs in its Faction Node package record the remaining release gates and the deferred Discord bridge request.
+
+The current shared client includes retry-safe room creation and bounded reconnects across brief connection failures. Manual reconnect cancels the old scheduled attempt; a rate-limit rejection requires a one-minute cooldown. Local shared-client, browser, real-backend and PDA adapter/storage regression tests pass. This still does not substitute for physical PDA acceptance.
