@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.154
+// @version      0.4.155
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -100,6 +100,9 @@
    let failure;try{await read();}catch(error){failure=error;}
    if(!failure||!castError(failure)||failure.code!==failure.message)throw Error('Recovery is only available for the confirmed native Null/String settings-read failure. No selection was changed.');
   }
+  return installRecoveredSettings(value);
+ }
+ async function installRecoveredSettings(value,originalPreserved=true){
   const record=prefix+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random().toString(36).slice(2));
   const snapshot=JSON.parse(JSON.stringify(value));
   await writeParts(record,snapshot);
@@ -107,7 +110,30 @@
   await store.set(selector,selection);
   if(JSON.stringify(await store.get(selector,null))!==JSON.stringify(selection))throw Error('PDA did not confirm the recovery selection. Keep this page open and copy a storage report; do not clear saved data.');
   nativeStorage.selection=Promise.resolve(record);
-  return {recovered:true,originalPreserved:true};
+  return {recovered:true,originalPreserved};
+ }
+ async function resetSettings(value,confirmed){
+  if(confirmed!==true||!isRecord(value)||!isRecord(value.settings))throw Error('Deleting unreadable settings requires explicit confirmation from Access.');
+  const snapshot=JSON.parse(JSON.stringify(value));
+  if(typeof store.delete!=='function'||typeof store.list!=='function')throw Error('PDA native deletion is unavailable. No data was removed.');
+  return lock(async()=>{
+   nativeStorage.selection=null;const selected=await selectedRecord();nativeStorage.partsCache?.delete(selected);
+   const read=async(record,batch)=>{const value=batch?(await store.getMany([record]))?.[record]:await store.get(record,null);return segmented(value)?readParts(record,value):value;};
+   const unreadable=async record=>{for(const batch of [true,false]){try{await read(record,batch);return false;}catch(error){if(!castError(error)||error.code!==error.message)return false;}}return true;};
+   if(!await unreadable(selected))throw Error('The selected settings record does not have the confirmed native Null/String read failure. Nothing was deleted.');
+   const names=await store.list(),roots=names.filter(name=>name===n||[prefix,legacyPrefix].some(start=>name.startsWith(start)&&!/:[p]art:/.test(name.slice(start.length))&&/^[a-zA-Z0-9:_-]+$/.test(name.slice(start.length))));
+   const broken=[];for(const record of roots){nativeStorage.partsCache?.delete(record);if(await unreadable(record))broken.push(record);}
+   if(!broken.includes(selected))throw Error('The selected settings failure changed during the check. Nothing was deleted.');
+   const removing=new Set(broken);
+   for(const name of names)for(const record of broken)if(name.startsWith(record+':part:')&&/^[ab]:[0-9]+$/.test(name.slice((record+':part:').length)))removing.add(name);
+   for(const name of [selector,legacySelector])if(names.includes(name)){const pointer=await store.get(name,null);if(broken.includes(pointer?.record))removing.add(name);}
+   let deleted=0;
+   try{for(const name of removing){await store.delete(name);deleted++;}const remaining=await store.list();if([...removing].some(name=>remaining.includes(name)))throw Error('PDA did not confirm every requested deletion.');}
+   catch{throw Error('PDA could not confirm deletion of the unreadable settings records. Rebuilding was stopped before writing a replacement. Keep this page open and copy a storage report. [SLINK_STORAGE_RESET_DELETE_FAILED]');}
+   nativeStorage.selection=null;nativeStorage.segmentFailure=null;for(const record of broken)nativeStorage.partsCache?.delete(record);
+   try{return {...await installRecoveredSettings(snapshot,false),deleted};}
+   catch(error){throw Error('Unreadable records were deleted, but the clean replacement was NOT confirmed. Your current settings remain on this page; do not close it. '+String(error?.message||error)+' [SLINK_STORAGE_RESET_REBUILD_FAILED]');}
+  });
  }
  const failed=(operation,error)=>new Error('PDA native storage '+operation+' failed: '+String(error?.message||error?.code||error||'No acknowledgement'));
  async function readManyOnce(keys){
@@ -209,10 +235,10 @@
  return {
   get:async(k,fallback)=>{key(k);return (await getMany([k]))[k]??fallback},
   set:(k,value)=>{key(k);return setMany({[k]:value})},
-  getMany,setMany,recoverSettings,
+  getMany,setMany,recoverSettings,resetSettings,
   async diagnose(){
    const active=await selectedRecord().catch(()=>n);
-   const report={nativeAvailable:true,manualRecoveryVersion:2,coordinationAvailable:!!globalThis.navigator?.locks?.request,selectedRecord:active===n?'original':'recovered',reads:{}};
+   const report={nativeAvailable:true,manualRecoveryVersion:2,manualResetVersion:1,coordinationAvailable:!!globalThis.navigator?.locks?.request,selectedRecord:active===n?'original':'recovered',reads:{}};
    const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
    for(const [name,run,summarize]of [
     ['settingsBatch',async()=>({[n]:(await store.getMany([active]))?.[active]}),value=>({resultType:type(value),recordPresent:value?.[n]!=null,segmented:segmented(value?.[n]),...(segmented(value?.[n])?{segmentCount:value[n].count,serializedCharacters:value[n].length}:{})})],
@@ -228,6 +254,7 @@
    report.recoveryActive=await selectedRecord().then(record=>record!==n,()=>false);
    report.segmentReadFailure=nativeStorage.segmentFailure?.record===active?{kind:nativeStorage.segmentFailure.kind,stage:nativeStorage.segmentFailure.stage}:null;
    report.canRecoverSettings=report.coordinationAvailable&&report.reads.list?.settingsListed===true&&((report.reads.settingsBatch?.stage==='native-response'&&report.reads.settingsBatch?.kind==='Null/String'&&report.reads.settingsSingle?.stage==='native-response'&&report.reads.settingsSingle?.kind==='Null/String')||report.segmentReadFailure?.stage==='native-response');
+   report.canResetSettings=report.canRecoverSettings&&typeof store.delete==='function';
    return report;
   },
   ...(typeof store.list==='function'?{list:()=>store.list()}:{}),
@@ -326,11 +353,11 @@ const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new 
  if(nativeOutstanding){reply({nativeAvailable:!!nativeStorage(),status:'operation-still-pending'});return;}
  const store=nativeStorage();if(!store){reply({nativeAvailable:false});return;}
  void store.diagnose().then(reply,()=>reply({nativeAvailable:true,status:'diagnostic-failed'}));return;
-}if(isRecord(payload)&&payload.action==='recover-settings'&&typeof payload.id==='string'){
- const reply=(ok,error='')=>document.dispatchEvent(new CustomEvent(m+':recovered',{detail:JSON.stringify({id:payload.id,ok,error})}));
+}if(isRecord(payload)&&['recover-settings','reset-settings'].includes(payload.action)&&typeof payload.id==='string'){
+ const reply=(ok,error='',result=null)=>document.dispatchEvent(new CustomEvent(m+':recovered',{detail:JSON.stringify({id:payload.id,ok,error,result})}));
  if(nativeOutstanding){reply(false,'A native save is still pending. Recovery cannot run concurrently.');return;}
  const store=nativeStorage();if(!store){reply(false,'Native storage is unavailable.');return;}
  nativeOutstanding=true;
  // Join the existing queue, including jobs already waiting when recovery began.
- e=e.catch(()=>{}).then(()=>store.recoverSettings(payload.value,payload.confirmed)).then(()=>{storagePaused=false;storageReadFailure='';reply(true);},error=>{reply(false,String(error?.message||error));}).finally(()=>{nativeOutstanding=false;});return;
+ e=e.catch(()=>{}).then(()=>payload.action==='reset-settings'?store.resetSettings(payload.value,payload.confirmed):store.recoverSettings(payload.value,payload.confirmed)).then(result=>{storagePaused=false;storageReadFailure='';reply(true,'',result);},error=>{reply(false,String(error?.message||error));}).finally(()=>{nativeOutstanding=false;});return;
 }if(isRecord(payload)&&payload.action==='retry'){if(!nativeOutstanding)storagePaused=false;return;}if(isRecord(payload)&&d.has(payload.key)&&(!payload.remove||payload.key===n)&&(payload.remove||isRecord(payload.value))){if(storagePaused){acknowledge(payload,false,pausedStorageError().message);return;}if(!payload.remove&&payload.key!==u)if(payload.key===n)writeMirror(payload.value);else try{globalThis.localStorage?.setItem(payload.key,JSON.stringify(payload.value))}catch{}if(payload.protocol===2)acknowledge(payload,false,'',undefined,'queued');e=e.catch(()=>{}).then(()=>runStorageJob(async()=>{if(payload.protocol===2)acknowledge(payload,false,'',undefined,'working');if(payload.key===u)return targetJournal(payload.value);if(payload.remove){const e=nativeStorage();if(e){if('function'!=typeof e.delete)throw Error('Storage delete unavailable.');await e.delete(payload.key)}else{if('function'!=typeof globalThis.GM_deleteValue)throw Error('Storage delete unavailable.');await Promise.resolve(globalThis.GM_deleteValue(payload.key))}try{globalThis.localStorage?.removeItem(s),globalThis.localStorage?.removeItem(n)}catch{}}else{const e=await gmRead(payload.key,null);if(payload.key===i&&Number(e?.checkedAt||0)>Number(payload.value?.checkedAt||0))return;let value=payload.value;if(payload.key===n&&isRecord(e)&&isRecord(payload.base)){const t=mergeChanges(payload.base.settings,value.settings,e.settings||{}),r=mergeChanges(payload.base.targetList,value.caches?.targetList||{},e.caches?.targetList||{});value={...savedAt(e)>savedAt(value)?e:value,settings:t,caches:{...savedAt(e)>savedAt(value)?e.caches:value.caches,targetList:r},_savedAt:Math.max(savedAt(e),savedAt(value))+1}}else if(savedAt(e)>savedAt(value))return;if(payload.base?.protected&&e)for(const key of Object.keys(payload.base.protected))value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(e,key)?e[key]:payload.value[key]);await gmWrite(payload.key,value)}})).then(value=>acknowledge(payload,!0,'',value),e=>acknowledge(payload,!1,String(e?.message||e?.code||'Storage write failed')))}});Object.defineProperty(globalThis,'__SLINK_PDA_STORAGE_BRIDGE__',{value:Object.freeze({protocol:1,document,channel:m}),configurable:true});}(),await loadRuntime()})();
