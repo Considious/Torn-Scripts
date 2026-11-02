@@ -123,7 +123,8 @@
       dispose(){destroyed=true;active=false;generation++;disconnectAll();ticket=null;rooms.clear();listeners.clear();}
     });
   }
-  // Feature-branch test authentication is intentionally separate from production Access.
+  // Chat retains its signing issuer, but its grants/acceptance now use the shared
+  // permissions database. The short-lived transport session does not replace Access.
   const TEST_CENTRAL='https://slink-chat-central-test.richard-johnson554.workers.dev';
   function createTestAccess(options){
     const now=options.now||Date.now;let session=null,inflight=null,keyId=null,generation=0;
@@ -131,7 +132,7 @@
     function clear(){generation++;session=null;inflight=null;keyId=null;}
     async function authenticate(force=false){
       const context=await options.context(),key=String(context.key||'').trim();
-      if(!context.enabled){clear();throw Error('Enable Faction Rooms before connecting to test chat.');}
+      if(!context.enabled){clear();throw Error('Enable Faction Rooms before connecting.');}
       if(!key){clear();throw Error('Save your Torn API key in SLINK Access first.');}
       const current=await fingerprint(key);if(current!==keyId){clear();keyId=current;}
       if(!force&&session&&session.until>now()+30000)return session;
@@ -139,7 +140,7 @@
       const epoch=generation;
       const task=(async()=>{
         const result=await options.request(TEST_CENTRAL+'/api/permissions/terms'),terms=result?.terms;
-        if(!terms?.version||!terms?.sha256)throw Error('Test chat returned incomplete terms. Your normal SLINK login has not changed.');
+        if(!terms?.version||!terms?.sha256)throw Error('Chat Central returned incomplete terms. Your normal SLINK login has not changed.');
         // Re-read after metadata arrives: accepting in Access while this request
         // is in flight must not leave Rooms checking an older local snapshot.
         const currentContext=await options.context(),records=currentContext.accepted||[];
@@ -150,10 +151,10 @@
         if(newer||!matching&&conflicting){const saved=newer||conflicting,error=Error('Chat Central publishes policy '+terms.version+', but this device accepted '+saved.version+(newer?'':' with a different document fingerprint')+'. The SLINK services disagree; Chat Central needs the current deployment. Your acceptance is saved—reaccepting or clearing storage will not fix this. [SLINK_TERMS_SERVICE_MISMATCH]');error.code='SLINK_TERMS_SERVICE_MISMATCH';throw error;}
         if(!matching)throw Error('Review and accept the current SLINK terms in Access before connecting to faction rooms.');
         await options.reserve?.();
-        const response=await options.request(TEST_CENTRAL+'/api/permissions/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:{api_key:key,terms_accepted:true,terms_version:terms.version,terms_sha256:terms.sha256,client_name:'SLINK Faction Rooms test'}});
-        if(!response?.session_token||!Array.isArray(response.scopes)||!response.scopes.includes('slink.chat')||Number(response.faction_id)!==46978)throw Error('Your current faction does not have access to this Chat test.');
+        const response=await options.request(TEST_CENTRAL+'/api/permissions/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:{api_key:key,terms_accepted:true,terms_version:terms.version,terms_sha256:terms.sha256,client_name:'SLINK Faction Rooms'}});
+        if(!response?.session_token||!Array.isArray(response.scopes)||!response.scopes.includes('slink.chat')||!Number.isSafeInteger(Number(response.faction_id))||Number(response.faction_id)<=0)throw Error('Your faction needs an active Faction Chat license in SLINK permissions. Administrator status does not replace that license.');
         const until=Math.min(Date.parse(response.expires_at)||0,(Number(response.iat)+300)*1000);
-        if(!Number.isFinite(until)||until<=now()+30000)throw Error('Test chat returned an expired sign-in. Retry once.');
+        if(!Number.isFinite(until)||until<=now()+30000)throw Error('Chat Central returned an expired sign-in. Retry once.');
         const latest=await options.context();if(epoch!==generation||!latest.enabled||await fingerprint(latest.key)!==current)throw Error('The saved key or chat setting changed during sign-in. Reopen faction rooms.');
         session={token:String(response.session_token),until};return session;
       })();inflight=task;
