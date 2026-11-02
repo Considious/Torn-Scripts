@@ -1395,6 +1395,11 @@ void runTargetStakeouts();
 } catch (error) {moduleState.targetList.error=errorMessage(error);moduleState.targetList.notice='';renderTargetList();}
 }
 }
+if (action === 'copy-storage-report') {
+ const root=moduleRoot('access'),button=root?.querySelector('[data-action="copy-storage-report"]'),status=root?.querySelector('[data-storage-report-status]');
+ if(button&&!button.disabled){button.disabled=true;try{if(status)status.textContent='Checking storage without changing it…';const report=JSON.stringify(await diagnosePdaStorage(),null,2),copied=await copyText(report);if(status)status.textContent=copied?'Read-only report copied. It contains no saved settings, keys or tokens.':'Select and copy the report below.';const output=root.querySelector('[data-storage-report]');if(output){output.value=report;output.hidden=copied;}}
+ catch(error){if(status)status.textContent=errorMessage(error);}finally{button.disabled=false;}}
+}
 if (action === 'retry-local-storage') {
 try {await retryPdaStorage();moduleState.access.error='';}
 catch (error) {moduleState.access.error=errorMessage(error);}
@@ -1922,7 +1927,7 @@ openDashboard();
 }
 });
 global.SLINK_PDA_DASHBOARD = Object.freeze({
-storage:Object.freeze({flush:flushPdaStorage,retry:retryPdaStorage,status:()=>({pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName})}),
+storage:Object.freeze({flush:flushPdaStorage,retry:retryPdaStorage,diagnose:diagnosePdaStorage,status:()=>({pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName})}),
 build:BUILD,
 open:openDashboard,
 close:closeDashboard,

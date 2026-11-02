@@ -97,6 +97,13 @@ try{
  assert.equal(status.failed,0);assert.equal(status.pending,0);assert.equal(status.backend,'pda');assert.deepEqual(errors,[]);
  assert.equal(native.get('slink-pda-dashboard:data:v1').settings.alerts.enabledTypes.cityItems,false,'An unchanged saved alert choice must not be erased by failed browser mirrors');
  assert.equal(native.get('slink-pda-dashboard:data:v1').sessions.permission.token,'fixture-session','The authenticated session must also be saved natively');
+ const report=await page.evaluate(()=>SLINK_PDA_DASHBOARD.storage.diagnose());
+ assert.equal(report.nativeAvailable,true);assert.equal(report.reads.settingsBatch.status,'ok');assert.equal(report.reads.list.settingsListed,true);
+ assert(!JSON.stringify(report).includes('member-public-key'));assert(!JSON.stringify(report).includes('fixture-session'));
+ await page.locator('#slink-pda-dashboard-host summary').filter({hasText:'Storage troubleshooting'}).click();
+ await page.locator('#slink-pda-dashboard-host [data-action="copy-storage-report"]').click();
+ await page.waitForFunction(()=>document.getElementById('slink-pda-dashboard-host').shadowRoot.querySelector('[data-storage-report]')?.value.includes('nativeAvailable'));
+ assert(!String(await page.locator('#slink-pda-dashboard-host [data-storage-report]').inputValue()).includes('member-public-key'));
  await page.reload();
  await page.evaluate('(function(){const PDA_storage=window.__pdaStorageFactory("fixture-script-namespace");'+source+'\n})()');
  await page.waitForFunction(()=>document.getElementById('slink-pda-dashboard-host')?.dataset.slinkAddonsReady==='true',{},{timeout:25000});

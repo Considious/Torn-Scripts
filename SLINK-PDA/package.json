@@ -1,9 +1,10 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.150",
+  "version": "0.4.151",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:native-diagnostic": "node test-native-storage-diagnostic.mjs",
     "test:lazy-ui": "node test-lazy-panels-cache.mjs",
     "test:faction-node": "node --test test-faction-node-native.mjs",
     "test:storage-startup": "node test-full-browser-storage.mjs && node test-storage-bridge-lifecycle.mjs && node test-native-storage-compat.mjs && node test-storage-queue-timeout.mjs",

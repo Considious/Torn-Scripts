@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.150
+// @version      0.4.151
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -119,6 +119,22 @@
   get:async(k,fallback)=>{key(k);return (await getMany([k]))[k]??fallback},
   set:(k,value)=>{key(k);return setMany({[k]:value})},
   getMany,setMany,
+  async diagnose(){
+   const report={nativeAvailable:true,reads:{}};
+   const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
+   for(const [name,run,summarize]of [
+    ['settingsBatch',()=>store.getMany([n]),value=>({resultType:type(value),recordPresent:value?.[n]!=null})],
+    ['settingsSingle',()=>store.get(n,null),value=>({resultType:type(value),recordPresent:value!=null})],
+    ['list',()=>store.list(),value=>({resultType:type(value),keyCount:Array.isArray(value)?value.length:null,settingsListed:Array.isArray(value)?value.includes(n):null})],
+    ['usage',()=>store.usage(),value=>({usedBytes:Number.isFinite(value?.used)?value.used:null,quotaBytes:Number.isFinite(value?.quota)?value.quota:null})]
+   ]){
+    const method={settingsBatch:'getMany',settingsSingle:'get'}[name]||name;if(typeof store[method]!=='function'){report.reads[name]={status:'unavailable'};continue;}
+    let timer;try{const value=await Promise.race([Promise.resolve().then(run),new Promise((_,reject)=>{timer=globalThis.setTimeout(()=>reject(Object.assign(Error('diagnostic timeout'),{diagnosticTimeout:true})),2000);})]);report.reads[name]={status:'ok',...summarize(value)};}
+    catch(error){report.reads[name]={status:error.diagnosticTimeout?'timeout':'failed',kind:castError(error)?'Null/String':/QuotaExceeded/i.test(String(error.code||''))?'quota':'other',stage:typeof error.code==='string'&&error.code===error.message?'native-response':'bridge-or-helper-rejection'};if(error.diagnosticTimeout)break;}
+    finally{globalThis.clearTimeout(timer);}
+   }
+   return report;
+  },
   ...(typeof store.list==='function'?{list:()=>store.list()}:{}),
   ...(typeof store.loadAll==='function'?{loadAll:()=>store.loadAll()}:{}),
   ...(typeof store.delete==='function'?{delete:k=>store.delete(key(k))}:{})
@@ -203,11 +219,16 @@ function runStorageJob(run){
    resolve(value);
   },error=>{
    clearTimeout(timer);nativeOutstanding=false;
-   const readContext=String(error?.message||error).match(/\[SLINK_NATIVE_READ:[^\]]*\]/);
-   if(readContext)storageReadFailure=readContext[0];
+   const readContext=String(error?.message||error).match(/\[SLINK_NATIVE_(?:READ|RECOVERY):[^\]]*\]/g);
+   if(readContext)storageReadFailure=readContext.join(' ');
    if(expired||/type ['"]Null['"] is not a subtype of type ['"]String['"]|QuotaExceeded|quota exceeded/i.test(String(error?.message||error)))storagePaused=true;
    reject(error);
   });
  });
 }
-const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new CustomEvent(m+':ack',{detail:JSON.stringify({id:payload.id,ok:e,backend:nativeStorage()?'pda':'browser',error:t,value:value,phase:phase})}))}catch{}};document.addEventListener(m,event=>{let payload;try{payload=JSON.parse(String(event?.detail||''))}catch{return}if(isRecord(payload)&&payload.action==='retry'){if(!nativeOutstanding)storagePaused=false;return;}if(isRecord(payload)&&d.has(payload.key)&&(!payload.remove||payload.key===n)&&(payload.remove||isRecord(payload.value))){if(storagePaused){acknowledge(payload,false,pausedStorageError().message);return;}if(!payload.remove&&payload.key!==u)if(payload.key===n)writeMirror(payload.value);else try{globalThis.localStorage?.setItem(payload.key,JSON.stringify(payload.value))}catch{}if(payload.protocol===2)acknowledge(payload,false,'',undefined,'queued');e=e.catch(()=>{}).then(()=>runStorageJob(async()=>{if(payload.protocol===2)acknowledge(payload,false,'',undefined,'working');if(payload.key===u)return targetJournal(payload.value);if(payload.remove){const e=nativeStorage();if(e){if('function'!=typeof e.delete)throw Error('Storage delete unavailable.');await e.delete(payload.key)}else{if('function'!=typeof globalThis.GM_deleteValue)throw Error('Storage delete unavailable.');await Promise.resolve(globalThis.GM_deleteValue(payload.key))}try{globalThis.localStorage?.removeItem(s),globalThis.localStorage?.removeItem(n)}catch{}}else{const e=await gmRead(payload.key,null);if(payload.key===i&&Number(e?.checkedAt||0)>Number(payload.value?.checkedAt||0))return;let value=payload.value;if(payload.key===n&&isRecord(e)&&isRecord(payload.base)){const t=mergeChanges(payload.base.settings,value.settings,e.settings||{}),r=mergeChanges(payload.base.targetList,value.caches?.targetList||{},e.caches?.targetList||{});value={...savedAt(e)>savedAt(value)?e:value,settings:t,caches:{...savedAt(e)>savedAt(value)?e.caches:value.caches,targetList:r},_savedAt:Math.max(savedAt(e),savedAt(value))+1}}else if(savedAt(e)>savedAt(value))return;if(payload.base?.protected&&e)for(const key of Object.keys(payload.base.protected))value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(e,key)?e[key]:payload.value[key]);await gmWrite(payload.key,value)}})).then(value=>acknowledge(payload,!0,'',value),e=>acknowledge(payload,!1,String(e?.message||e?.code||'Storage write failed')))}});Object.defineProperty(globalThis,'__SLINK_PDA_STORAGE_BRIDGE__',{value:Object.freeze({protocol:1,document,channel:m}),configurable:true});}(),await loadRuntime()})();
+const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new CustomEvent(m+':ack',{detail:JSON.stringify({id:payload.id,ok:e,backend:nativeStorage()?'pda':'browser',error:t,value:value,phase:phase})}))}catch{}};document.addEventListener(m,event=>{let payload;try{payload=JSON.parse(String(event?.detail||''))}catch{return}if(isRecord(payload)&&payload.action==='diagnose'&&typeof payload.id==='string'){
+ const reply=report=>document.dispatchEvent(new CustomEvent(m+':diagnostic',{detail:JSON.stringify({id:payload.id,report})}));
+ if(nativeOutstanding){reply({nativeAvailable:!!nativeStorage(),status:'operation-still-pending'});return;}
+ const store=nativeStorage();if(!store){reply({nativeAvailable:false});return;}
+ void store.diagnose().then(reply,()=>reply({nativeAvailable:true,status:'diagnostic-failed'}));return;
+}if(isRecord(payload)&&payload.action==='retry'){if(!nativeOutstanding)storagePaused=false;return;}if(isRecord(payload)&&d.has(payload.key)&&(!payload.remove||payload.key===n)&&(payload.remove||isRecord(payload.value))){if(storagePaused){acknowledge(payload,false,pausedStorageError().message);return;}if(!payload.remove&&payload.key!==u)if(payload.key===n)writeMirror(payload.value);else try{globalThis.localStorage?.setItem(payload.key,JSON.stringify(payload.value))}catch{}if(payload.protocol===2)acknowledge(payload,false,'',undefined,'queued');e=e.catch(()=>{}).then(()=>runStorageJob(async()=>{if(payload.protocol===2)acknowledge(payload,false,'',undefined,'working');if(payload.key===u)return targetJournal(payload.value);if(payload.remove){const e=nativeStorage();if(e){if('function'!=typeof e.delete)throw Error('Storage delete unavailable.');await e.delete(payload.key)}else{if('function'!=typeof globalThis.GM_deleteValue)throw Error('Storage delete unavailable.');await Promise.resolve(globalThis.GM_deleteValue(payload.key))}try{globalThis.localStorage?.removeItem(s),globalThis.localStorage?.removeItem(n)}catch{}}else{const e=await gmRead(payload.key,null);if(payload.key===i&&Number(e?.checkedAt||0)>Number(payload.value?.checkedAt||0))return;let value=payload.value;if(payload.key===n&&isRecord(e)&&isRecord(payload.base)){const t=mergeChanges(payload.base.settings,value.settings,e.settings||{}),r=mergeChanges(payload.base.targetList,value.caches?.targetList||{},e.caches?.targetList||{});value={...savedAt(e)>savedAt(value)?e:value,settings:t,caches:{...savedAt(e)>savedAt(value)?e.caches:value.caches,targetList:r},_savedAt:Math.max(savedAt(e),savedAt(value))+1}}else if(savedAt(e)>savedAt(value))return;if(payload.base?.protected&&e)for(const key of Object.keys(payload.base.protected))value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(e,key)?e[key]:payload.value[key]);await gmWrite(payload.key,value)}})).then(value=>acknowledge(payload,!0,'',value),e=>acknowledge(payload,!1,String(e?.message||e?.code||'Storage write failed')))}});Object.defineProperty(globalThis,'__SLINK_PDA_STORAGE_BRIDGE__',{value:Object.freeze({protocol:1,document,channel:m}),configurable:true});}(),await loadRuntime()})();

@@ -914,6 +914,15 @@ if (pdaTargetRecords) await pdaTargetRecords.flush();
 do { await Promise.allSettled([...pendingStorageWrites.values()].map(value=>value.promise)); await flushPdaCacheSave(); } while(pendingStorageWrites.size);
 if (failedStorageWrites.size) throw new Error('Some SLINK changes could not be saved. Retry from Access before closing.');
 }
+async function diagnosePdaStorage() {
+ if(!PDA_STORAGE_WRITE_EVENT)throw Error('The native storage bridge is not available on this page.');
+ return new Promise((resolve,reject)=>{
+  const id='diagnostic:'+Date.now()+':'+Math.random(),eventName=PDA_STORAGE_WRITE_EVENT+':diagnostic';
+  const done=event=>{let result;try{result=JSON.parse(String(event.detail||''));}catch{return;}if(result.id!==id)return;clearTimeout(timer);document.removeEventListener(eventName,done);resolve({build:BUILD,saveStatus:{pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName},...result.report});};
+  const timer=setTimeout(()=>{document.removeEventListener(eventName,done);reject(Error('The storage diagnostic did not respond. No data was changed.'));},10000);
+  document.addEventListener(eventName,done);document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({action:'diagnose',id})}));
+ });
+}
 async function retryPdaStorage() {
 // An explicit retry may reopen a failed native-storage circuit. The launcher
 // refuses this while an earlier timed-out operation is still outstanding.

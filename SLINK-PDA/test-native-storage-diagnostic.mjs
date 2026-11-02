@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const launcher=fs.readFileSync(new URL('./SLINK_PDA_Dashboard.user.js',import.meta.url),'utf8');
+const source=launcher.slice(launcher.indexOf('function nativeStorage(){'),launcher.indexOf('async function targetJournal('));
+const cast="type 'Null' is not a subtype of type 'String' in type cast";
+let mode='structured',writes=0;
+const fail=()=>{const error=Error(cast);if(mode==='structured')error.code=cast;throw error;};
+const store={getMany:async()=>mode==='empty'?{data:null}:fail(),get:async()=>mode==='empty'?null:fail(),list:async()=>mode==='structured'?['data']:[],usage:async()=>({used:mode==='structured'?42:0,quota:10485760}),set:async()=>{writes++;},setMany:async()=>{writes++;}};
+const context=vm.createContext({PDA_storage:store,n:'data',i:'stats',l:'ui',c:'snoozes',isRecord:value=>!!value&&typeof value==='object'&&!Array.isArray(value),globalThis:{setTimeout,clearTimeout}});
+vm.runInContext(source,context);const adapter=context.nativeStorage();
+const native=await adapter.diagnose();assert.equal(native.reads.settingsBatch.stage,'native-response');assert.equal(native.reads.settingsSingle.kind,'Null/String');assert.equal(native.reads.list.settingsListed,true);assert.equal(native.reads.usage.usedBytes,42);
+mode='bridge';const bridge=await adapter.diagnose();assert.equal(bridge.reads.settingsSingle.stage,'bridge-or-helper-rejection');
+mode='empty';const empty=await adapter.diagnose();assert.equal(empty.reads.settingsSingle.status,'ok');assert.equal(empty.reads.settingsSingle.recordPresent,false);assert.equal(empty.reads.list.keyCount,0);assert.equal(empty.reads.usage.usedBytes,0);
+assert.equal(writes,0);assert(!JSON.stringify(native).includes('apiKey'));assert(!JSON.stringify(native).includes(cast),'Report carries categories, not raw data/error payloads');
+assert(launcher.includes("match(/\\[SLINK_NATIVE_(?:READ|RECOVERY):[^\\]]*\\]/g)"),'Paused messages must retain the read-only recovery outcome');
+console.log('Read-only report distinguishes structured native errors, rejected helper calls and genuine empty storage, without writes or saved values.');
