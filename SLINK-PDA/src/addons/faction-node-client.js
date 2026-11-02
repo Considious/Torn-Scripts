@@ -19,11 +19,11 @@
     const now = options.now || Date.now, later = options.later || setTimeout, cancel = options.cancel || clearTimeout;
     const makeSocket = options.socket || ((url, protocols) => new WebSocket(url, protocols));
     const http = options.request || request, listeners = new Set(), rooms = new Map();
-    let active=false, destroyed=false, generation=0, ticket=null, authenticating=null, renewal=null, identity=null;
+    let background=false,active=false, destroyed=false, generation=0, ticket=null, authenticating=null, renewal=null, identity=null,authRetries=0;
     const model = {status:'idle',error:'',rooms:[],leader:false,userId:null,userName:'',factionId:null};
     function emit(type, detail={}) { for (const callback of listeners) callback({type,...detail}); }
     function room(id) { if(!validId(id))throw Error('Invalid chat room.'); if(!rooms.has(id))rooms.set(id,{id,messages:new Map(),pending:new Map(),actions:new Map(),access:{read:false,speak:false},status:'closed',error:'',socket:null,open:false,attempts:0,retry:null,nextBefore:null,unread:0}); return rooms.get(id); }
-    function closeConnection(state) { cancel(state.pollTimer);state.pollTimer=null;state.httpVersion=(state.httpVersion||0)+1;state.http=false;state.connectVersion=(state.connectVersion||0)+1;cancel(state.retry);cancel(state.connectionTimer);state.connectionTimer=null;state.retry=null;for(const action of state.actions.values()){cancel(action.timer);action.reject(Error('Chat disconnected before this action was confirmed.'));}state.actions.clear();const socket=state.socket;state.socket=null;if(socket){socket.onopen=socket.onmessage=socket.onerror=socket.onclose=null;try{socket.close(1000,'Page inactive');}catch{}} }
+    function closeConnection(state) { cancel(state.pollTimer);state.pollTimer=null;state.pollNow=null;state.httpVersion=(state.httpVersion||0)+1;state.http=false;state.connectVersion=(state.connectVersion||0)+1;cancel(state.retry);cancel(state.connectionTimer);state.connectionTimer=null;state.retry=null;for(const action of state.actions.values()){cancel(action.timer);action.reject(Error('Chat disconnected before this action was confirmed.'));}state.actions.clear();const socket=state.socket;state.socket=null;if(socket){socket.onopen=socket.onmessage=socket.onerror=socket.onclose=null;try{socket.close(1000,'Page inactive');}catch{}} }
     function disconnectAll() { cancel(renewal);renewal=null;for(const state of rooms.values()){closeConnection(state);state.status='paused';} }
     async function access(force=false) {
       if(!active||destroyed)throw Error('Open faction chat on the active Torn page.');
@@ -43,11 +43,11 @@
     }
     async function renew() {
       if(!active||destroyed)return;
-      try{const next=await access(true);for(const state of rooms.values())if(state.socket?.readyState===1)state.socket.send(JSON.stringify({type:'auth',token:next.token}));}
-      catch(error){model.error=error.message;model.status='error';disconnectAll();emit('status');}
+      try{const next=await access(true);authRetries=0;model.error='';if(model.status==='error'){model.status='ready';emit('status');}for(const state of rooms.values())if(state.socket?.readyState===1)state.socket.send(JSON.stringify({type:'auth',token:next.token}));else if(state.open&&!state.socket&&!state.http)void connect(state.id);}
+      catch(error){model.error=error.message;model.status='error';disconnectAll();emit('status');if(active&&!destroyed&&![401,403,428].includes(Number(error.status))&&!/license|terms|saved key|enable faction|access.*ended/i.test(error.message||''))renewal=later(()=>void renew(),[5000,15000,60000][Math.min(authRetries++,2)]);}
     }
     async function api(path,payload) {
-      if(!/^\/api\/(rooms(?:\/[A-Za-z0-9_-]+\/history)?|admin(?:\/diagnostics)?|links\/(invite|review|approve|revoke))$/.test(path))throw Error('Unsupported faction chat request.');
+      if(!/^\/api\/(rooms(?:\/[A-Za-z0-9_-]+\/(?:history|moderate))?|admin(?:\/diagnostics)?|links\/(invite|review|approve|revoke))$/.test(path))throw Error('Unsupported faction chat request.');
       const auth=await access();return http(auth.endpoint+path,{method:payload?'POST':'GET',headers:{Authorization:'Bearer '+auth.token,'Content-Type':'application/json'},...(payload?{body:JSON.stringify(payload)}:{})});
     }
     function merge(state, message) {
@@ -94,16 +94,17 @@
       closeConnection(state);state.http=true;state.status='connecting';state.error='';const version=state.httpVersion,current=generation;
       async function poll(){
         if(!active||destroyed||!state.open||version!==state.httpVersion||current!==generation)return;
+        if(state.httpPollingVersion===version)return;state.httpPollingVersion=version;
         try{const auth=await access(),result=await http(auth.endpoint+'/api/rooms/'+state.id+'/sync?after='+Number(state.httpAfter||0)+'&changed='+Number(state.httpChanged||0),{headers:{Authorization:'Bearer '+auth.token}});
           if(!active||version!==state.httpVersion||current!==generation)return;
           if(result.protocol!==1||result.type!=='welcome'||typeof result.access?.read!=='boolean'||typeof result.access?.speak!=='boolean')throw Error('The faction node needs the HTTPS chat update. Your draft has been kept.');
           state.httpAfter=Number(result.after)||0;state.httpChanged=Number(result.changed)||0;
           const incoming=state.httpLoaded&&(result.messages||[]).some(message=>!state.messages.has(message.message_id)&&message.user_id!==model.userId);state.httpLoaded=true;
           receive(state,null,{data:JSON.stringify(result)});if(incoming)emit('room',{id:state.id,incoming:true});
-          state.pollTimer=later(()=>void poll(),result.more?0:5000);
-        }catch(error){if(!active||version!==state.httpVersion||current!==generation)return;state.status='disconnected';state.access={read:false,speak:false};state.error=error.message;emit('room',{id:state.id});if(![401,403,404,426].includes(Number(error.status)))state.pollTimer=later(()=>void poll(),15000);}
+          state.pollTimer=later(()=>void poll(),result.more?0:background?30000:5000);
+        }catch(error){if(!active||version!==state.httpVersion||current!==generation)return;state.status='disconnected';state.access={read:false,speak:false};state.error=error.message;emit('room',{id:state.id});if(![401,403,404,426].includes(Number(error.status)))state.pollTimer=later(()=>void poll(),15000);}finally{if(state.httpPollingVersion===version)delete state.httpPollingVersion;}
       }
-      await poll();
+      state.pollNow=poll;await poll();
     }
     async function connect(id,manual=false) {
       const state=room(id);state.open=true;if(manual){state.attempts=0;state.httpAfter=0;state.httpChanged=0;state.httpLoaded=false;closeConnection(state);state.status='closed';}
@@ -137,6 +138,7 @@
     function setActive(value) {if(active===Boolean(value)||destroyed)return;active=Boolean(value);generation++;if(!active){disconnectAll();emit('status');}else for(const state of rooms.values())if(state.open)void connect(state.id);}
     async function older(id){const state=room(id);if(state.loadingOlder||!state.nextBefore)return;state.loadingOlder=true;emit('room',{id});try{const auth=await access(),result=await http(auth.endpoint+'/api/rooms/'+id+'/history?before='+encodeURIComponent(state.nextBefore),{headers:{Authorization:'Bearer '+auth.token}});for(const message of result.messages||[])merge(state,message);state.nextBefore=result.messages?.length?result.next_before:null;}finally{state.loadingOlder=false;emit('room',{id});}}
     return Object.freeze({model,room,refresh,api,send,command,connect,setActive,older,
+      setBackground(value){const previous=background;background=Boolean(value);if(previous&&!background)for(const state of rooms.values())if(state.http&&state.pollTimer){cancel(state.pollTimer);state.pollTimer=null;void state.pollNow?.();}},
       action(id,value){const state=room(id),commandId=options.uuid?.()||crypto.randomUUID();if(state.actions.size>=8)return Promise.reject(Error('Wait for the current chat changes to finish.'));return new Promise((resolve,reject)=>{const timer=later(()=>{state.actions.delete(commandId);reject(Error('This chat change was not confirmed. Your draft has been kept.'));},15000);state.actions.set(commandId,{resolve,reject,timer});try{command(id,{...value,command_id:commandId});}catch(error){cancel(timer);state.actions.delete(commandId);reject(error);}});},
       retryPending(id,clientId){const state=room(id),pending=state.pending.get(clientId);if(!pending)return;if(!active||state.status!=='connected'||!state.access.speak)throw Error('Reconnect to a room where you can speak first.');pending.at=now();pending.error='';dispatch(state,{type:'send',client_id:clientId,command_id:clientId,content:pending.content});emit('room',{id});},
       discardPending(id,clientId){room(id).pending.delete(clientId);emit('room',{id});},
@@ -195,26 +197,28 @@
   // Third-party room connections are not Torn collectors. Keep the most
   // recently focused room owner alive on blur, without multiplying sockets in
   // every Torn tab. This channel carries ownership metadata only, never keys.
-  function createRoomActivity({activity,focusRequired=true,document:doc=global.document}={}){
-    const listeners=new Set(),id=crypto.randomUUID();let present=true,disposed=false,owner=false,known=null,clock=0,channel=null;
+  function createRoomActivity({activity,focusRequired=true,document:doc=global.document,now=Date.now,later=global.setTimeout,cancel=global.clearTimeout}={}){
+    const listeners=new Set(),id=crypto.randomUUID();let present=true,disposed=false,owner=false,known=null,clock=0,channel=null,idleMinutes=0,idleAt=null,idleTimer=null;
     const eligible=()=>present&&!disposed&&owner;
     const focused=()=>doc.visibilityState!=='hidden'&&(focusRequired?doc.hasFocus?.()===true:activity.eligible());
     const emit=()=>{for(const callback of listeners)callback(eligible());};
-    function claim(){if(!present||disposed||!focused())return;clock=Math.max(clock+1,Date.now());known={id,stamp:clock};owner=true;channel?.postMessage({type:'claim',...known});emit();}
-    function receive(event){const value=event.data;if(!value||value.id===id||typeof value.id!=='string'||!Number.isSafeInteger(value.stamp))return;if(value.type==='hello'){if(owner)channel?.postMessage({type:'claim',...known});return;}clock=Math.max(clock,value.stamp);if(value.type==='claim'&&!(owner&&focused())&&(!known||value.stamp>known.stamp||value.stamp===known.stamp&&(owner||value.id>known.id))){known={id:value.id,stamp:value.stamp};if(owner){owner=false;emit();}}else if(value.type==='release'&&known?.id===value.id){known=null;if(focused())claim();}}
-    function hide(){present=false;if(owner)channel?.postMessage({type:'release',id,stamp:clock});owner=false;emit();}
+    function release(){if(owner)channel?.postMessage({type:'release',id,stamp:clock});owner=false;cancel?.(idleTimer);idleTimer=null;idleAt=null;emit();}
+    function idle(){cancel?.(idleTimer);idleTimer=null;if(!owner)return;if(focused()){idleAt=null;return;}idleAt??=now();if(!idleMinutes)return;const remaining=idleAt+idleMinutes*60000-now();if(remaining<=0){release();return;}idleTimer=later(()=>{idleTimer=null;idle();},remaining);}
+    function claim(){if(!present||disposed||!focused())return;clock=Math.max(clock+1,now());known={id,stamp:clock};owner=true;idleAt=null;idle();channel?.postMessage({type:'claim',...known});emit();}
+    function receive(event){const value=event.data;if(!value||value.id===id||typeof value.id!=='string'||!Number.isSafeInteger(value.stamp))return;if(value.type==='hello'){if(owner)channel?.postMessage({type:'claim',...known});return;}clock=Math.max(clock,value.stamp);if(value.type==='claim'&&!(owner&&focused())&&(!known||value.stamp>known.stamp||value.stamp===known.stamp&&(owner||value.id>known.id))){known={id:value.id,stamp:value.stamp};if(owner){owner=false;cancel?.(idleTimer);idleTimer=null;idleAt=null;emit();}}else if(value.type==='release'&&known?.id===value.id){known=null;if(focused())claim();}}
+    function hide(){present=false;release();}
     function show(){present=true;if(focused())claim();}
-    const focus=()=>claim(),visibility=()=>{if(focused())claim();};
+    const focus=()=>claim(),blur=()=>{idle();emit();},visibility=()=>{if(focused())claim();else blur();};
     try{if(global.BroadcastChannel){channel=new global.BroadcastChannel('slink-faction-rooms-owner-v1');channel.onmessage=receive;channel.postMessage({type:'hello',id,stamp:0});}}catch{}
-    global.addEventListener('focus',focus);global.addEventListener('pagehide',hide);global.addEventListener('pageshow',show);doc.addEventListener('visibilitychange',visibility);
-    const stop=activity.subscribe(()=>{if(!owner&&focused())claim();});if(focused())claim();
-    return Object.freeze({eligible,subscribe(callback){listeners.add(callback);return()=>listeners.delete(callback);},dispose(){if(disposed)return;hide();disposed=true;stop?.();listeners.clear();channel?.close();global.removeEventListener('focus',focus);global.removeEventListener('pagehide',hide);global.removeEventListener('pageshow',show);doc.removeEventListener('visibilitychange',visibility);}});
+    global.addEventListener('focus',focus);global.addEventListener('blur',blur);global.addEventListener('pagehide',hide);global.addEventListener('pageshow',show);doc.addEventListener('visibilitychange',visibility);
+    const stop=activity.subscribe(()=>{if(!owner&&focused())claim();else{idle();emit();}});if(focused())claim();
+    return Object.freeze({eligible,isFocused:focused,setIdleMinutes(value){if(![0,1,5,15,60].includes(value))throw Error('Invalid room idle duration.');if(value!==idleMinutes){idleMinutes=value;idle();}},subscribe(callback){listeners.add(callback);return()=>listeners.delete(callback);},dispose(){if(disposed)return;hide();disposed=true;stop?.();listeners.clear();channel?.close();global.removeEventListener('focus',focus);global.removeEventListener('blur',blur);global.removeEventListener('pagehide',hide);global.removeEventListener('pageshow',show);doc.removeEventListener('visibilitychange',visibility);}});
   }
   const ROOM_NOTICE='third-party-rooms-v1';
   const ROOM_NOTICE_TEXT='SLINK Rooms are independent, third-party chat rooms, not managed or endorsed by Torn. Messages are hosted outside Torn by the faction node operator and may be read or moderated by authorized room members and administrators. They are not end-to-end encrypted. Use at your own risk; do not share API keys or sensitive information.';
-  function roomSettings(value={}){return {...value,enabled:value.enabled!==false,soundEnabled:value.soundEnabled!==false,autoMedia:value.autoMedia!==false,roomSounds:value.roomSounds&&typeof value.roomSounds==='object'?value.roomSounds:{}};}
+  function roomSettings(value={}){return {...value,enabled:value.enabled!==false,soundEnabled:value.soundEnabled!==false,autoMedia:value.autoMedia!==false,idleMinutes:[0,1,5,15,60].includes(value.idleMinutes)?value.idleMinutes:0,roomSounds:value.roomSounds&&typeof value.roomSounds==='object'?value.roomSounds:{}};}
   function patchRoomSettings(current,input){
-    if(!input||!Object.keys(input).length||Object.entries(input).some(([key,value])=>key==='noticeAccepted'?value!==ROOM_NOTICE:key==='roomSounds'?(!value||Array.isArray(value)||typeof value!=='object'||Object.keys(value).length>500||Object.entries(value).some(([id,on])=>!/^[A-Za-z0-9_-]{1,100}$/.test(id)||typeof on!=='boolean')):!['enabled','soundEnabled','autoMedia'].includes(key)||typeof value!=='boolean'))throw Error('Invalid faction room preference.');
+    if(!input||!Object.keys(input).length||Object.entries(input).some(([key,value])=>key==='idleMinutes'?![0,1,5,15,60].includes(value):key==='noticeAccepted'?value!==ROOM_NOTICE:key==='roomSounds'?(!value||Array.isArray(value)||typeof value!=='object'||Object.keys(value).length>500||Object.entries(value).some(([id,on])=>!/^[A-Za-z0-9_-]{1,100}$/.test(id)||typeof on!=='boolean')):!['enabled','soundEnabled','autoMedia'].includes(key)||typeof value!=='boolean'))throw Error('Invalid faction room preference.');
     const saved=roomSettings(current);return {...saved,...input,roomSounds:{...saved.roomSounds,...input.roomSounds}};
   }
   global.SLINK_FACTION_NODE=Object.freeze({create,origin,createTestAccess,createRoomActivity,TEST_CENTRAL,ROOM_NOTICE,ROOM_NOTICE_TEXT,roomSettings,patchRoomSettings});
