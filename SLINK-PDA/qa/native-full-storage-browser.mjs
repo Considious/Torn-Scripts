@@ -108,15 +108,16 @@ try{
   assert.equal(native.size,countBefore,'Cancelling confirmation must not create records');
   page.once('dialog',dialog=>dialog.accept());await recovery.click();
   await page.waitForFunction(()=>document.getElementById('slink-pda-dashboard-host').shadowRoot.querySelector('[data-storage-report-status]')?.textContent.includes('read back successfully'),{}, {timeout:15000});
-  const selection=native.get('slink-pda-dashboard:data:v1:manual-recovery:v1');
+  const selection=native.get('slink-pda-dashboard:data:v1:manual-recovery:v2');
   assert(selection?.record,'Only explicit confirmation may create a selection');
-  assert.equal(native.get(selection.record).apiKey,'member-public-key');
-  assert.equal(native.get(selection.record).sessions.permission.token,'fixture-session');
+  const header=native.get(selection.record),recovered=header?.$slinkNativeParts===1?JSON.parse(Array.from({length:header.count},(_,index)=>native.get(selection.record+':part:'+header.bank+':'+index)).join('')):header;
+  assert.equal(recovered.apiKey,'member-public-key');
+  assert.equal(recovered.sessions.permission.token,'fixture-session');
   assert.deepEqual(native.get('slink-pda-dashboard:data:v1'),original,'Original unreadable record stays byte-for-byte unchanged');
   assert.equal((await page.evaluate(()=>SLINK_PDA_DASHBOARD.storage.status())).failed,0);
  }
  const report=await page.evaluate(()=>SLINK_PDA_DASHBOARD.storage.diagnose());
- assert.equal(report.nativeAvailable,true);assert.equal(report.reads.settingsBatch.status,process.env.SLINK_TEST_MANUAL_RECOVERY==='1'?'failed':'ok');assert.equal(report.reads.list.settingsListed,true);
+ assert.equal(report.nativeAvailable,true);assert.equal(report.reads.settingsBatch.status,'ok');assert.equal(report.reads.list.settingsListed,true);
  assert.equal(report.recoveryActive,process.env.SLINK_TEST_MANUAL_RECOVERY==='1');
  assert(!JSON.stringify(report).includes('member-public-key'));assert(!JSON.stringify(report).includes('fixture-session'));
  const troubleshooting=page.locator('#slink-pda-dashboard-host details').filter({has:page.locator('summary').filter({hasText:'Storage troubleshooting'})});

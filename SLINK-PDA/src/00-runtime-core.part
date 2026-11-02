@@ -897,7 +897,7 @@ node.textContent=failedStorageWrites.size?'Some SLINK changes are not saved. Kee
 node.hidden=!node.textContent;
 }
 const recover=moduleRoot('access')?.querySelector('[data-action="recover-native-settings"]');
-if(recover)recover.hidden=![...failedStorageWrites.values()].some(entry=>/SLINK_NATIVE_READ: record=settings/.test(entry.error)&&/Null\/String/.test(entry.error));
+if(recover)recover.hidden=![...failedStorageWrites.values()].some(entry=>/SLINK_NATIVE_READ: record=(?:settings|recovered settings)/.test(entry.error)&&/Null\/String/.test(entry.error));
 const retry=moduleRoot('access')?.querySelector('[data-action="retry-local-storage"]');
 if (retry) retry.hidden=!failedStorageWrites.size;
 } catch {}
@@ -930,7 +930,8 @@ async function recoverPdaSettings(confirmed) {
  if(!PDA_STORAGE_WRITE_EVENT)throw Error('Update the installed PDA script before using native recovery.');
  if(pendingStorageWrites.size)throw Error('A save is still pending. Wait for it to finish before recovering.');
  const report=await diagnosePdaStorage();
- if(typeof report.canRecoverSettings!=='boolean')throw Error('Update the installed PDA script to 0.4.152 or later before using native recovery. Refreshing the live runtime alone does not update its storage bridge.');
+ if(Number(report.manualRecoveryVersion)<2||!report.manualRecoveryVersion)throw Error('Update the installed PDA script to 0.4.154 or later before using native recovery. Refreshing the live runtime alone does not update its storage bridge.');
+ if(!report.coordinationAvailable)throw Error('This PDA WebView cannot safely coordinate the recovered native records. Copy the storage report; no original data has been replaced. [SLINK_STORAGE_COORDINATION_UNAVAILABLE]');
  if(!report.canRecoverSettings)throw Error('This is not the native settings-read failure supported by recovery. Copy a storage report instead.');
  const queue=schedulePdaCacheSave.state;if(queue){global.clearTimeout(queue.timer);queue.timer=null;queue.paused=true;}
  global.clearTimeout(pdaPreferenceTimer);pdaPreferenceTimer=null;

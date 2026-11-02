@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.153
+// @version      0.4.154
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -40,32 +40,69 @@
  const castError=error=>/type ['"]Null['"] is not a subtype of type ['"]String['"]/i.test(String(error?.code||error?.message||error));
  // Recovery is opt-in and stays in the same native namespace. The original
  // settings record is never overwritten, deleted or automatically replaced.
- const selector=n+':manual-recovery:v1',prefix=n+':manual-recovery:v1:record:';
+ const selector=n+':manual-recovery:v2',legacySelector=n+':manual-recovery:v1',prefix=n+':manual-recovery:v2:record:',legacyPrefix=n+':manual-recovery:v1:record:';
  async function selectedRecord(){
   if(!nativeStorage.selection)nativeStorage.selection=(async()=>{
    if(typeof store.list!=='function')return n;
    const names=await store.list();if(!Array.isArray(names))throw Error('PDA native record listing could not be read.');
-   if(!names.includes(selector))return n;
-   const value=await store.get(selector,null);
-   if(!isRecord(value)||value.schema!==1||typeof value.record!=='string'||!value.record.startsWith(prefix)||!/^[a-zA-Z0-9:_-]+$/.test(value.record.slice(prefix.length)))throw Error('The native recovery selection is unreadable. Saved records have not been changed.');
+   const selected=names.includes(selector)?selector:names.includes(legacySelector)?legacySelector:null;if(!selected)return n;
+   const value=await store.get(selected,null);
+   if(!isRecord(value)||value.schema!==1||typeof value.record!=='string'||!value.record.startsWith(prefix)&&!value.record.startsWith(legacyPrefix)||!/^[a-zA-Z0-9:_-]+$/.test(value.record.slice(value.record.startsWith(prefix)?prefix.length:legacyPrefix.length)))throw Error('The native recovery selection is unreadable. Saved records have not been changed.');
    return value.record;
   })().catch(error=>{nativeStorage.selection=null;throw error;});
   return nativeStorage.selection;
  }
- async function recoverSettings(value,confirmed){
+ const segmented=value=>isRecord(value)&&value.$slinkNativeParts===1;
+ const lock=run=>{const locks=globalThis.navigator?.locks;if(!locks?.request)throw Error('This WebView cannot coordinate segmented native saving safely. Original records were not replaced. [SLINK_STORAGE_COORDINATION_UNAVAILABLE]');return locks.request('slink-pda-recovered-settings-v2',run);};
+ const digest=async text=>[...new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+ function validateParts(header){if(!segmented(header)||!['a','b'].includes(header.bank)||!Number.isSafeInteger(header.count)||header.count<1||header.count>65536||!Number.isSafeInteger(header.length)||header.length<1||!/^[a-f0-9]{64}$/.test(header.sha256||''))throw Error('Recovered settings have an invalid native segment header. Saved records were not cleared.');}
+ async function readParts(record,header){
+  validateParts(header);const cached=nativeStorage.partsCache?.get(record);if(cached?.header===JSON.stringify(header))return JSON.parse(cached.source);let source='';
+  for(let offset=0;offset<header.count;offset+=4){
+   const keys=Array.from({length:Math.min(4,header.count-offset)},(_,index)=>record+':part:'+header.bank+':'+(offset+index));
+   const values=await store.getMany(keys);
+   for(const name of keys){if(typeof values?.[name]!=='string')throw Error('A recovered settings segment is missing. Keep this page open; no settings were cleared.');source+=values[name];}
+  }
+  if(source.length!==header.length||await digest(source)!==header.sha256)throw Error('Recovered settings segments did not pass verification. Keep this page open; no settings were cleared.');
+  (nativeStorage.partsCache ||= new Map()).set(record,{header:JSON.stringify(header),source});return JSON.parse(source);
+ }
+ async function writeParts(record,value){
+  try{return await writePartsInner(record,value);}catch(error){
+   if(/QuotaExceeded/i.test(String(error?.code||error?.message||error)))throw Error("PDA's native SLINK storage quota exceeded while preserving earlier records. Increase SLINK's per-script limit in PDA Dev Tools → Storage, or send a storage report before removing anything. This is not the phone's free-space or notifications permission. [SLINK_STORAGE_FULL]");
+   throw error;
+  }
+ }
+ async function writePartsInner(record,value){
+  const old=await store.get(record,null),bank=segmented(old)&&old.bank==='a'?'b':'a',source=JSON.stringify(value),count=Math.ceil(source.length/48000);
+  // Fixed A/B slots bound storage growth. Only the inactive bank is changed;
+  // its small header is committed after every segment has been read back.
+  // 48000 is a transport batch choice, NOT a claimed PDA storage-size limit.
+  for(let offset=0;offset<count;offset+=4){
+   const parts=Object.fromEntries(Array.from({length:Math.min(4,count-offset)},(_,index)=>[record+':part:'+bank+':'+(offset+index),source.slice((offset+index)*48000,(offset+index+1)*48000)]));
+   const before=await store.getMany(Object.keys(parts)),changed=Object.fromEntries(Object.entries(parts).filter(([key,value])=>before?.[key]!==value));
+   if(Object.keys(changed).length){await store.setMany(changed);const saved=await store.getMany(Object.keys(changed));for(const [name,text]of Object.entries(changed))if(saved?.[name]!==text)throw Error('PDA did not retain a new settings segment. The previous saved bank remains selected.');}
+  }
+  const header={$slinkNativeParts:1,bank,count,length:source.length,sha256:await digest(source)};
+  await store.set(record,header);
+  const saved=await store.get(record,null);if(JSON.stringify(saved)!==JSON.stringify(header))throw Error('PDA did not confirm the segmented settings save. Keep this page open; original records were not cleared.');
+  (nativeStorage.partsCache ||= new Map()).set(record,{header:JSON.stringify(saved),source});
+ }
+ async function recoverSettings(value,confirmed){return lock(async()=>{
+  return recoverSettingsLocked(value,confirmed);
+ });}
+ async function recoverSettingsLocked(value,confirmed){
   if(confirmed!==true||!isRecord(value)||!isRecord(value.settings))throw Error('Settings recovery must be confirmed manually from Access.');
   if(typeof store.list!=='function')throw Error('This PDA storage version does not support safe settings recovery.');
   nativeStorage.selection=null;
-  if(await selectedRecord()!==n)throw Error('A recovery record is already selected. Retry saving or copy a storage report instead.');
-  const names=await store.list();if(!names.includes(n))throw Error('The original settings record is not listed. Recovery was not started.');
-  for(const read of [()=>store.getMany([n]),()=>store.get(n,null)]){
+  const previous=await selectedRecord();
+  const names=await store.list();if(!names.includes(previous))throw Error('The original settings record is not listed. Recovery was not started.');
+  for(const read of [async()=>{const result=(await store.getMany([previous]))?.[previous];return segmented(result)?readParts(previous,result):result;},async()=>{const result=await store.get(previous,null);return segmented(result)?readParts(previous,result):result;}]){
    let failure;try{await read();}catch(error){failure=error;}
    if(!failure||!castError(failure)||failure.code!==failure.message)throw Error('Recovery is only available for the confirmed native Null/String settings-read failure. No selection was changed.');
   }
   const record=prefix+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random().toString(36).slice(2));
   const snapshot=JSON.parse(JSON.stringify(value));
-  await store.set(record,snapshot);
-  if(JSON.stringify(await store.get(record,null))!==JSON.stringify(snapshot))throw Error('PDA did not read back the fresh settings record correctly. The original remains selected and untouched.');
+  await writeParts(record,snapshot);
   const selection={schema:1,record};
   await store.set(selector,selection);
   if(JSON.stringify(await store.get(selector,null))!==JSON.stringify(selection))throw Error('PDA did not confirm the recovery selection. Keep this page open and copy a storage report; do not clear saved data.');
@@ -90,12 +127,12 @@
      catch(retry){singleError=retry;}
     }
     let allError;
-    if(typeof store.loadAll==='function'){
+    if(typeof store.loadAll==='function'&&!keys.some(k=>k.startsWith(prefix)||k.startsWith(legacyPrefix))&&(typeof f!=='string'||!keys.includes(f))){
      try{const all=await store.loadAll();if(!isRecord(all))throw Error('PDA returned an unreadable storage result.');return Object.fromEntries(keys.map(k=>[k,all[k]??null]));}
      catch(retry){allError=retry;}
     }
     const describe=value=>!value?'unavailable':castError(value)?'Null/String':'other failure';
-    const kind=keys.every(k=>k===n)?'settings':keys.every(k=>k===i)?'battle stats':keys.every(k=>k===l)?'window preferences':keys.every(k=>k===c)?'alert snoozes':'requested records';
+    const kind=keys.every(k=>k===n)?'settings':keys.every(k=>k.startsWith(prefix)||k.startsWith(legacyPrefix))?'recovered settings':keys.every(k=>k===i)?'battle stats':keys.every(k=>k===l)?'window preferences':keys.every(k=>k===c)?'alert snoozes':'requested records';
     const failure=failed(allError?'loadAll read':'read',allError||singleError||error);
     failure.message+=' [SLINK_NATIVE_READ: record='+kind+'; batch='+describe(error)+'; single='+(keys.length===1?describe(singleError):'not attempted for bulk read')+'; all='+describe(allError)+']';
     throw failure;
@@ -132,11 +169,24 @@
  async function getMany(keys){
   const selected=keys.includes(n)?await selectedRecord():n;
   const physical=keys.map(k=>k===n?selected:k),values=await getManyLegacy(physical);
-  return Object.fromEntries(keys.map((k,index)=>[k,values[physical[index]]]));
+  const out={};for(let index=0;index<keys.length;index++){
+   const value=values[physical[index]];
+   if(keys[index]===n&&selected!==n&&segmented(value)){
+    try{out[keys[index]]=await lock(async()=>readParts(selected,await store.get(selected,null)));nativeStorage.segmentFailure=null;}
+    catch(error){nativeStorage.segmentFailure=castError(error)&&error.code===error.message?{record:selected,kind:'Null/String',stage:'native-response'}:null;const wrapped=failed('recovered settings segment read',error);wrapped.message+=' [SLINK_NATIVE_READ: record=recovered settings; batch='+(castError(error)?'Null/String':'other failure')+'; single=segment read; all=not attempted]';throw wrapped;}
+   }else out[keys[index]]=value;
+  }return out;
  }
  async function setMany(values){
   const logicalKeys=Object.keys(values),selected=logicalKeys.includes(n)?await selectedRecord():n;
-  if(selected!==n)values=Object.fromEntries(logicalKeys.map(k=>[k===n?selected:k,values[k]]));
+  if(selected!==n&&selected.startsWith(prefix)){
+   await lock(async()=>{
+    const pointer=await store.get(selector,null);if(pointer?.record!==selected){nativeStorage.selection=null;throw Error('Recovered storage changed on another page. Reload before saving; no old record was overwritten.');}
+    await writeParts(selected,values[n]);
+   });
+   values=Object.fromEntries(logicalKeys.filter(k=>k!==n).map(k=>[k,values[k]]));
+   if(!Object.keys(values).length)return;
+  }else if(selected!==n)values=Object.fromEntries(logicalKeys.map(k=>[k===n?selected:k,values[k]]));
   if(!isRecord(values))throw Error('SLINK storage requires a record.');
   const keys=Object.keys(values);keys.forEach(key);
   try{
@@ -161,12 +211,13 @@
   set:(k,value)=>{key(k);return setMany({[k]:value})},
   getMany,setMany,recoverSettings,
   async diagnose(){
-   const report={nativeAvailable:true,reads:{}};
+   const active=await selectedRecord().catch(()=>n);
+   const report={nativeAvailable:true,manualRecoveryVersion:2,coordinationAvailable:!!globalThis.navigator?.locks?.request,selectedRecord:active===n?'original':'recovered',reads:{}};
    const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
    for(const [name,run,summarize]of [
-    ['settingsBatch',()=>store.getMany([n]),value=>({resultType:type(value),recordPresent:value?.[n]!=null})],
-    ['settingsSingle',()=>store.get(n,null),value=>({resultType:type(value),recordPresent:value!=null})],
-    ['list',()=>store.list(),value=>({resultType:type(value),keyCount:Array.isArray(value)?value.length:null,settingsListed:Array.isArray(value)?value.includes(n):null})],
+    ['settingsBatch',async()=>({[n]:(await store.getMany([active]))?.[active]}),value=>({resultType:type(value),recordPresent:value?.[n]!=null,segmented:segmented(value?.[n]),...(segmented(value?.[n])?{segmentCount:value[n].count,serializedCharacters:value[n].length}:{})})],
+    ['settingsSingle',()=>store.get(active,null),value=>({resultType:type(value),recordPresent:value!=null,segmented:segmented(value)})],
+    ['list',()=>store.list(),value=>({resultType:type(value),keyCount:Array.isArray(value)?value.length:null,settingsListed:Array.isArray(value)?value.includes(active):null})],
     ['usage',()=>store.usage(),value=>({usedBytes:Number.isFinite(value?.used)?value.used:null,quotaBytes:Number.isFinite(value?.quota)?value.quota:null})]
    ]){
     const method={settingsBatch:'getMany',settingsSingle:'get'}[name]||name;if(typeof store[method]!=='function'){report.reads[name]={status:'unavailable'};continue;}
@@ -175,7 +226,8 @@
     finally{globalThis.clearTimeout(timer);}
    }
    report.recoveryActive=await selectedRecord().then(record=>record!==n,()=>false);
-   report.canRecoverSettings=!report.recoveryActive&&report.reads.settingsBatch?.stage==='native-response'&&report.reads.settingsBatch?.kind==='Null/String'&&report.reads.settingsSingle?.stage==='native-response'&&report.reads.settingsSingle?.kind==='Null/String'&&report.reads.list?.settingsListed===true;
+   report.segmentReadFailure=nativeStorage.segmentFailure?.record===active?{kind:nativeStorage.segmentFailure.kind,stage:nativeStorage.segmentFailure.stage}:null;
+   report.canRecoverSettings=report.coordinationAvailable&&report.reads.list?.settingsListed===true&&((report.reads.settingsBatch?.stage==='native-response'&&report.reads.settingsBatch?.kind==='Null/String'&&report.reads.settingsSingle?.stage==='native-response'&&report.reads.settingsSingle?.kind==='Null/String')||report.segmentReadFailure?.stage==='native-response');
    return report;
   },
   ...(typeof store.list==='function'?{list:()=>store.list()}:{}),
