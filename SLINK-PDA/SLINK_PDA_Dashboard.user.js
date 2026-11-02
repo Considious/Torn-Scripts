@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.151
+// @version      0.4.152
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -38,6 +38,40 @@
  if(!store||typeof store.get!=='function'||typeof store.set!=='function')return null;
  const key=value=>{if(typeof value!=='string'||!value)throw Error('SLINK storage requires a non-empty key.');return value};
  const castError=error=>/type ['"]Null['"] is not a subtype of type ['"]String['"]/i.test(String(error?.code||error?.message||error));
+ // Recovery is opt-in and stays in the same native namespace. The original
+ // settings record is never overwritten, deleted or automatically replaced.
+ const selector=n+':manual-recovery:v1',prefix=n+':manual-recovery:v1:record:';
+ async function selectedRecord(){
+  if(!nativeStorage.selection)nativeStorage.selection=(async()=>{
+   if(typeof store.list!=='function')return n;
+   const names=await store.list();if(!Array.isArray(names))throw Error('PDA native record listing could not be read.');
+   if(!names.includes(selector))return n;
+   const value=await store.get(selector,null);
+   if(!isRecord(value)||value.schema!==1||typeof value.record!=='string'||!value.record.startsWith(prefix)||!/^[a-zA-Z0-9:_-]+$/.test(value.record.slice(prefix.length)))throw Error('The native recovery selection is unreadable. Saved records have not been changed.');
+   return value.record;
+  })().catch(error=>{nativeStorage.selection=null;throw error;});
+  return nativeStorage.selection;
+ }
+ async function recoverSettings(value,confirmed){
+  if(confirmed!==true||!isRecord(value)||!isRecord(value.settings))throw Error('Settings recovery must be confirmed manually from Access.');
+  if(typeof store.list!=='function')throw Error('This PDA storage version does not support safe settings recovery.');
+  nativeStorage.selection=null;
+  if(await selectedRecord()!==n)throw Error('A recovery record is already selected. Retry saving or copy a storage report instead.');
+  const names=await store.list();if(!names.includes(n))throw Error('The original settings record is not listed. Recovery was not started.');
+  for(const read of [()=>store.getMany([n]),()=>store.get(n,null)]){
+   let failure;try{await read();}catch(error){failure=error;}
+   if(!failure||!castError(failure)||failure.code!==failure.message)throw Error('Recovery is only available for the confirmed native Null/String settings-read failure. No selection was changed.');
+  }
+  const record=prefix+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random().toString(36).slice(2));
+  const snapshot=JSON.parse(JSON.stringify(value));
+  await store.set(record,snapshot);
+  if(JSON.stringify(await store.get(record,null))!==JSON.stringify(snapshot))throw Error('PDA did not read back the fresh settings record correctly. The original remains selected and untouched.');
+  const selection={schema:1,record};
+  await store.set(selector,selection);
+  if(JSON.stringify(await store.get(selector,null))!==JSON.stringify(selection))throw Error('PDA did not confirm the recovery selection. Keep this page open and copy a storage report; do not clear saved data.');
+  nativeStorage.selection=Promise.resolve(record);
+  return {recovered:true,originalPreserved:true};
+ }
  const failed=(operation,error)=>new Error('PDA native storage '+operation+' failed: '+String(error?.message||error?.code||error||'No acknowledgement'));
  async function readManyOnce(keys){
   keys.forEach(key);
@@ -69,7 +103,7 @@
    throw failed('read',error);
   }
  }
- async function getMany(keys){
+ async function getManyLegacy(keys){
   try{return await readManyOnce(keys);}
   catch(first){
    if(!castError(first))throw first;
@@ -95,7 +129,14 @@
    throw first;
   }
  }
+ async function getMany(keys){
+  const selected=keys.includes(n)?await selectedRecord():n;
+  const physical=keys.map(k=>k===n?selected:k),values=await getManyLegacy(physical);
+  return Object.fromEntries(keys.map((k,index)=>[k,values[physical[index]]]));
+ }
  async function setMany(values){
+  const logicalKeys=Object.keys(values),selected=logicalKeys.includes(n)?await selectedRecord():n;
+  if(selected!==n)values=Object.fromEntries(logicalKeys.map(k=>[k===n?selected:k,values[k]]));
   if(!isRecord(values))throw Error('SLINK storage requires a record.');
   const keys=Object.keys(values);keys.forEach(key);
   try{
@@ -112,13 +153,13 @@
   // The optional downloaded-code cache is disposable and can be large. Verify
   // user records, not an extra full cache read on every page startup.
   if(typeof f==='string'&&keys.every(k=>k===f))return;
-  const saved=await getMany(keys);
+  const saved=await getManyLegacy(keys);
   for(const k of keys)if(JSON.stringify(saved[k])!==JSON.stringify(values[k]))throw Error('PDA native storage did not retain the '+(k===n?'settings':k===i?'battle stats':k===l?'window preferences':k===c?'alert snoozes':'target record')+' write. Keep this page open and retry; existing stored data was not cleared.');
  }
  return {
   get:async(k,fallback)=>{key(k);return (await getMany([k]))[k]??fallback},
   set:(k,value)=>{key(k);return setMany({[k]:value})},
-  getMany,setMany,
+  getMany,setMany,recoverSettings,
   async diagnose(){
    const report={nativeAvailable:true,reads:{}};
    const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
@@ -133,11 +174,13 @@
     catch(error){report.reads[name]={status:error.diagnosticTimeout?'timeout':'failed',kind:castError(error)?'Null/String':/QuotaExceeded/i.test(String(error.code||''))?'quota':'other',stage:typeof error.code==='string'&&error.code===error.message?'native-response':'bridge-or-helper-rejection'};if(error.diagnosticTimeout)break;}
     finally{globalThis.clearTimeout(timer);}
    }
+   report.recoveryActive=await selectedRecord().then(record=>record!==n,()=>false);
+   report.canRecoverSettings=!report.recoveryActive&&report.reads.settingsBatch?.stage==='native-response'&&report.reads.settingsBatch?.kind==='Null/String'&&report.reads.settingsSingle?.stage==='native-response'&&report.reads.settingsSingle?.kind==='Null/String'&&report.reads.list?.settingsListed===true;
    return report;
   },
   ...(typeof store.list==='function'?{list:()=>store.list()}:{}),
   ...(typeof store.loadAll==='function'?{loadAll:()=>store.loadAll()}:{}),
-  ...(typeof store.delete==='function'?{delete:k=>store.delete(key(k))}:{})
+  ...(typeof store.delete==='function'?{delete:async k=>store.delete(key(k)===n?await selectedRecord():k)}:{})
  };
 }async function targetJournal(request={}){const e=nativeStorage(),t=u+':op:';async function read(){let r;if(e)if('function'==typeof e.list&&'function'==typeof e.getMany){const o=(await e.list()).filter(key=>key.startsWith(t));if(r=o.length?await e.getMany(o):{},o.some(key=>null==r?.[key]))throw Error('Target journal read incomplete.')}else{if('function'!=typeof e.loadAll)throw Error('Native target storage enumeration unavailable.');r=await e.loadAll()}else{r={};const e=globalThis.localStorage;if(!e||'function'!=typeof e.key)throw Error('Target storage unavailable.');for(let o=0;o<e.length;o++){const key=e.key(o);key?.startsWith(t)&&(r[key]=JSON.parse(e.getItem(key)))}}if(!isRecord(r))throw Error('Target journal read failed.');const o=Object.entries(r).filter(([key])=>key.startsWith(t));if(o.some(([key,e])=>!isRecord(e)||1!==e.schema||key!==t+e.id))throw Error('Target journal is damaged or unsupported.');return Object.fromEntries(o)}const r=await read(),o={};if(!request.readOnly)for(const e of request.ops||[]){if(!isRecord(e)||1!==e.schema||!/^[a-zA-Z0-9:_-]{1,160}$/.test(e.id||'')||!['seed','add','patch','remove','migration'].includes(e.kind))throw Error('Invalid target operation.');const key=t+e.id;if(r[key]&&JSON.stringify(r[key])!==JSON.stringify(e))throw Error('Target operation identity collision.');r[key]||(o[key]=e)}if(Object.keys(o).length)if(e&&'function'==typeof e.setMany)await e.setMany(o);else for(const[key,t]of Object.entries(o))e?await e.set(key,t):globalThis.localStorage.setItem(key,JSON.stringify(t));const a=Object.keys(o).length?await read():r;for(const e of request.readOnly?[]:request.ops||[])if(JSON.stringify(a[t+e.id])!==JSON.stringify(e))throw Error('Target journal write was not retained.');return{ops:Object.values(a)}}function mergeChanges(e,current,t){if(JSON.stringify(e)===JSON.stringify(current))return t;if(!isRecord(e)||!isRecord(current)||!isRecord(t))return current;const r={...t};for(const key of new Set([...Object.keys(e),...Object.keys(current)]))['__proto__','constructor','prototype'].includes(key)||(Object.hasOwn(current,key)?r[key]=mergeChanges(e[key],current[key],t[key]):Object.hasOwn(e,key)&&delete r[key]);return r}async function gmRead(key,e=null){const t=nativeStorage();if(t){const value=await t.get(key,null);if(null!=value)return value}let r;try{r='function'==typeof globalThis.GM_getValue?await Promise.resolve(globalThis.GM_getValue(key,e)):e}catch(t){if(d.has(key))throw t;return e}return t&&isRecord(r)&&Object.keys(r).length&&d.has(key)&&null==await t.get(key,null)&&await t.set(key,r),r}async function gmWrite(key,value){const e=nativeStorage();if(e)await e.set(key,value);else{if('function'!=typeof globalThis.GM_setValue)throw Error('Browser storage unavailable.');if(await Promise.resolve(globalThis.GM_setValue(key,value)),'function'==typeof globalThis.GM_getValue&&JSON.stringify(await globalThis.GM_getValue(key,null))!==JSON.stringify(value))throw Error('Browser storage write was not retained.')}}function validBundle(value){return Boolean(isRecord(value)&&1===value.schema&&[2,3].includes(value.storageProtocol)&&'string'==typeof value.runtimeSource&&value.runtimeSource.length>1e3&&Array.isArray(value.addonSources)&&value.addonSources.every(source=>'string'==typeof source&&source.length>100))}async function requestSource(e){if('function'==typeof globalThis.PDA_httpGet){const t=await globalThis.PDA_httpGet(e),r=Number(t?.status||t?.statusCode||200);if(r<200||r>=300)throw new Error('SLINK source download returned HTTP '+r+'.');const o=String(t?.data??t?.responseText??'');if(t?.error||!o.trim()||/^error[, :]|^Exception:/i.test(o))throw new Error('SLINK source connection failed.');return o}if('function'==typeof globalThis.GM_xmlhttpRequest)return await new Promise((t,r)=>{globalThis.GM_xmlhttpRequest({method:'GET',url:e,timeout:2e4,onload:e=>e.status>=200&&e.status<300?t(String(e.responseText||'')):r(new Error('SLINK source download returned HTTP '+e.status+'.')),onerror:()=>r(new Error('SLINK source download failed.')),ontimeout:()=>r(new Error('SLINK source download timed out.'))})});if('function'==typeof globalThis.fetch){const t='function'==typeof AbortController?new AbortController:null,r=globalThis.setTimeout(()=>t?.abort(),8e3);try{const r=await globalThis.fetch(e,{signal:t?.signal,credentials:'omit'});if(!r.ok)throw new Error('SLINK source download returned HTTP '+r.status+'.');return await r.text()}finally{globalThis.clearTimeout(r)}}throw new Error('No SLINK source download transport is available.')}async function fetchSource(e){const mirror=e.replace('https://raw.githubusercontent.com/Considious/Torn-Scripts/','https://cdn.jsdelivr.net/gh/Considious/Torn-Scripts@'),t=h?[mirror,e]:[e,mirror];
 // Only the script's public source URL is mirrored; never API keys or user data.
@@ -231,4 +274,11 @@ const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new 
  if(nativeOutstanding){reply({nativeAvailable:!!nativeStorage(),status:'operation-still-pending'});return;}
  const store=nativeStorage();if(!store){reply({nativeAvailable:false});return;}
  void store.diagnose().then(reply,()=>reply({nativeAvailable:true,status:'diagnostic-failed'}));return;
+}if(isRecord(payload)&&payload.action==='recover-settings'&&typeof payload.id==='string'){
+ const reply=(ok,error='')=>document.dispatchEvent(new CustomEvent(m+':recovered',{detail:JSON.stringify({id:payload.id,ok,error})}));
+ if(nativeOutstanding){reply(false,'A native save is still pending. Recovery cannot run concurrently.');return;}
+ const store=nativeStorage();if(!store){reply(false,'Native storage is unavailable.');return;}
+ nativeOutstanding=true;
+ // Join the existing queue, including jobs already waiting when recovery began.
+ e=e.catch(()=>{}).then(()=>store.recoverSettings(payload.value,payload.confirmed)).then(()=>{storagePaused=false;storageReadFailure='';reply(true);},error=>{reply(false,String(error?.message||error));}).finally(()=>{nativeOutstanding=false;});return;
 }if(isRecord(payload)&&payload.action==='retry'){if(!nativeOutstanding)storagePaused=false;return;}if(isRecord(payload)&&d.has(payload.key)&&(!payload.remove||payload.key===n)&&(payload.remove||isRecord(payload.value))){if(storagePaused){acknowledge(payload,false,pausedStorageError().message);return;}if(!payload.remove&&payload.key!==u)if(payload.key===n)writeMirror(payload.value);else try{globalThis.localStorage?.setItem(payload.key,JSON.stringify(payload.value))}catch{}if(payload.protocol===2)acknowledge(payload,false,'',undefined,'queued');e=e.catch(()=>{}).then(()=>runStorageJob(async()=>{if(payload.protocol===2)acknowledge(payload,false,'',undefined,'working');if(payload.key===u)return targetJournal(payload.value);if(payload.remove){const e=nativeStorage();if(e){if('function'!=typeof e.delete)throw Error('Storage delete unavailable.');await e.delete(payload.key)}else{if('function'!=typeof globalThis.GM_deleteValue)throw Error('Storage delete unavailable.');await Promise.resolve(globalThis.GM_deleteValue(payload.key))}try{globalThis.localStorage?.removeItem(s),globalThis.localStorage?.removeItem(n)}catch{}}else{const e=await gmRead(payload.key,null);if(payload.key===i&&Number(e?.checkedAt||0)>Number(payload.value?.checkedAt||0))return;let value=payload.value;if(payload.key===n&&isRecord(e)&&isRecord(payload.base)){const t=mergeChanges(payload.base.settings,value.settings,e.settings||{}),r=mergeChanges(payload.base.targetList,value.caches?.targetList||{},e.caches?.targetList||{});value={...savedAt(e)>savedAt(value)?e:value,settings:t,caches:{...savedAt(e)>savedAt(value)?e.caches:value.caches,targetList:r},_savedAt:Math.max(savedAt(e),savedAt(value))+1}}else if(savedAt(e)>savedAt(value))return;if(payload.base?.protected&&e)for(const key of Object.keys(payload.base.protected))value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(e,key)?e[key]:payload.value[key]);await gmWrite(payload.key,value)}})).then(value=>acknowledge(payload,!0,'',value),e=>acknowledge(payload,!1,String(e?.message||e?.code||'Storage write failed')))}});Object.defineProperty(globalThis,'__SLINK_PDA_STORAGE_BRIDGE__',{value:Object.freeze({protocol:1,document,channel:m}),configurable:true});}(),await loadRuntime()})();

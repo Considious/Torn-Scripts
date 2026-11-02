@@ -68,7 +68,7 @@ try{
   window.PDA_httpPost=(url,headers,body)=>flutter_inappwebview.callHandler('PDA_httpPost',url,headers||{},body);
   window.PDA_evaluateJavascript=source=>flutter_inappwebview.callHandler('PDA_evaluateJavascript',source);
   window.__pdaStorageFactory=sid=>{
-   const call=async(method,payload,fallback)=>{await window.__PDA_platformReadyPromise;const result=await window.flutter_inappwebview.callHandler('PDA_storage',sid,method,payload||{});if(result&&result.ok===false)throw Error(result.error);return result?result.value:fallback;};
+   const call=async(method,payload,fallback)=>{await window.__PDA_platformReadyPromise;const result=await window.flutter_inappwebview.callHandler('PDA_storage',sid,method,payload||{});if(result&&result.ok===false)throw Object.assign(Error(result.error),{code:result.error});return result?result.value:fallback;};
    return {get:(key,def)=>call('get',{key,def},def),set:(key,value)=>call('set',{key,value}),getMany:keys=>call('getMany',{keys},{}),setMany:obj=>call('setMany',{obj}),list:()=>call('list',{},[]),loadAll:()=>call('loadAll',{}, {})};
   };
  };
@@ -97,10 +97,30 @@ try{
  assert.equal(status.failed,0);assert.equal(status.pending,0);assert.equal(status.backend,'pda');assert.deepEqual(errors,[]);
  assert.equal(native.get('slink-pda-dashboard:data:v1').settings.alerts.enabledTypes.cityItems,false,'An unchanged saved alert choice must not be erased by failed browser mirrors');
  assert.equal(native.get('slink-pda-dashboard:data:v1').sessions.permission.token,'fixture-session','The authenticated session must also be saved natively');
+ if(process.env.SLINK_TEST_MANUAL_RECOVERY==='1'){
+  const original=structuredClone(native.get('slink-pda-dashboard:data:v1'));
+  readFaultsRemaining=Infinity;
+  await page.locator('#slink-pda-dashboard-host [data-action="save-access"]').click();
+  await page.waitForFunction(()=>SLINK_PDA_DASHBOARD.storage.status().failed>0,{}, {timeout:15000});
+  await page.locator('#slink-pda-dashboard-host summary').filter({hasText:'Storage troubleshooting'}).click();
+  const recovery=page.locator('#slink-pda-dashboard-host [data-action="recover-native-settings"]');await recovery.waitFor({state:'visible'});
+  const countBefore=native.size;page.once('dialog',dialog=>dialog.dismiss());await recovery.click();
+  assert.equal(native.size,countBefore,'Cancelling confirmation must not create records');
+  page.once('dialog',dialog=>dialog.accept());await recovery.click();
+  await page.waitForFunction(()=>document.getElementById('slink-pda-dashboard-host').shadowRoot.querySelector('[data-storage-report-status]')?.textContent.includes('read back successfully'),{}, {timeout:15000});
+  const selection=native.get('slink-pda-dashboard:data:v1:manual-recovery:v1');
+  assert(selection?.record,'Only explicit confirmation may create a selection');
+  assert.equal(native.get(selection.record).apiKey,'member-public-key');
+  assert.equal(native.get(selection.record).sessions.permission.token,'fixture-session');
+  assert.deepEqual(native.get('slink-pda-dashboard:data:v1'),original,'Original unreadable record stays byte-for-byte unchanged');
+  assert.equal((await page.evaluate(()=>SLINK_PDA_DASHBOARD.storage.status())).failed,0);
+ }
  const report=await page.evaluate(()=>SLINK_PDA_DASHBOARD.storage.diagnose());
- assert.equal(report.nativeAvailable,true);assert.equal(report.reads.settingsBatch.status,'ok');assert.equal(report.reads.list.settingsListed,true);
+ assert.equal(report.nativeAvailable,true);assert.equal(report.reads.settingsBatch.status,process.env.SLINK_TEST_MANUAL_RECOVERY==='1'?'failed':'ok');assert.equal(report.reads.list.settingsListed,true);
+ assert.equal(report.recoveryActive,process.env.SLINK_TEST_MANUAL_RECOVERY==='1');
  assert(!JSON.stringify(report).includes('member-public-key'));assert(!JSON.stringify(report).includes('fixture-session'));
- await page.locator('#slink-pda-dashboard-host summary').filter({hasText:'Storage troubleshooting'}).click();
+ const troubleshooting=page.locator('#slink-pda-dashboard-host details').filter({has:page.locator('summary').filter({hasText:'Storage troubleshooting'})});
+ if(!(await troubleshooting.getAttribute('open')!==null))await troubleshooting.locator('summary').click();
  await page.locator('#slink-pda-dashboard-host [data-action="copy-storage-report"]').click();
  await page.waitForFunction(()=>document.getElementById('slink-pda-dashboard-host').shadowRoot.querySelector('[data-storage-report]')?.value.includes('nativeAvailable'));
  assert(!String(await page.locator('#slink-pda-dashboard-host [data-storage-report]').inputValue()).includes('member-public-key'));

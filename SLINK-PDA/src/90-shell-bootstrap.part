@@ -1395,9 +1395,16 @@ void runTargetStakeouts();
 } catch (error) {moduleState.targetList.error=errorMessage(error);moduleState.targetList.notice='';renderTargetList();}
 }
 }
+if (action === 'recover-native-settings') {
+ const root=moduleRoot('access'),button=root?.querySelector('[data-action="recover-native-settings"]'),status=root?.querySelector('[data-storage-report-status]');
+ if(button&&!button.disabled&&global.confirm('Recover saving using the settings currently on this page? SLINK will verify a fresh native record before selecting it. Your original records will remain untouched. Older settings not available on this page will not automatically be restored.')){
+  button.disabled=true;try{if(status)status.textContent='Verifying a fresh native settings record…';await recoverPdaSettings(true);if(status)status.textContent='Recovered settings were saved and read back successfully. Original records were preserved. Retry any other unsaved actions, then reload once to check your settings remain.';moduleState.access.error='';}
+  catch(error){if(status)status.textContent=errorMessage(error);}finally{button.disabled=false;}
+ }
+}
 if (action === 'copy-storage-report') {
  const root=moduleRoot('access'),button=root?.querySelector('[data-action="copy-storage-report"]'),status=root?.querySelector('[data-storage-report-status]');
- if(button&&!button.disabled){button.disabled=true;try{if(status)status.textContent='Checking storage without changing it…';const report=JSON.stringify(await diagnosePdaStorage(),null,2),copied=await copyText(report);if(status)status.textContent=copied?'Read-only report copied. It contains no saved settings, keys or tokens.':'Select and copy the report below.';const output=root.querySelector('[data-storage-report]');if(output){output.value=report;output.hidden=copied;}}
+ if(button&&!button.disabled){button.disabled=true;try{if(status)status.textContent='Checking storage without changing it…';const result=await diagnosePdaStorage(),recover=root.querySelector('[data-action="recover-native-settings"]');if(recover)recover.hidden=!result.canRecoverSettings;const report=JSON.stringify(result,null,2),copied=await copyText(report);if(status)status.textContent=copied?'Read-only report copied. It contains no saved settings, keys or tokens.':'Select and copy the report below.';const output=root.querySelector('[data-storage-report]');if(output){output.value=report;output.hidden=copied;}}
  catch(error){if(status)status.textContent=errorMessage(error);}finally{button.disabled=false;}}
 }
 if (action === 'retry-local-storage') {

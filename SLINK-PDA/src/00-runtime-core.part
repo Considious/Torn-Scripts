@@ -896,6 +896,8 @@ if (node) {
 node.textContent=failedStorageWrites.size?'Some SLINK changes are not saved. Keep this page open and retry.':pendingStorageWrites.size?'Saving changes…':storageBackendName==='browser'?'Saved in browser storage; this PDA version has no confirmed native storage.':'';
 node.hidden=!node.textContent;
 }
+const recover=moduleRoot('access')?.querySelector('[data-action="recover-native-settings"]');
+if(recover)recover.hidden=![...failedStorageWrites.values()].some(entry=>/SLINK_NATIVE_READ: record=settings/.test(entry.error)&&/Null\/String/.test(entry.error));
 const retry=moduleRoot('access')?.querySelector('[data-action="retry-local-storage"]');
 if (retry) retry.hidden=!failedStorageWrites.size;
 } catch {}
@@ -922,6 +924,31 @@ async function diagnosePdaStorage() {
   const timer=setTimeout(()=>{document.removeEventListener(eventName,done);reject(Error('The storage diagnostic did not respond. No data was changed.'));},10000);
   document.addEventListener(eventName,done);document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({action:'diagnose',id})}));
  });
+}
+async function recoverPdaSettings(confirmed) {
+ if(confirmed!==true)throw Error('Settings recovery requires your confirmation.');
+ if(!PDA_STORAGE_WRITE_EVENT)throw Error('Update the installed PDA script before using native recovery.');
+ if(pendingStorageWrites.size)throw Error('A save is still pending. Wait for it to finish before recovering.');
+ const report=await diagnosePdaStorage();
+ if(typeof report.canRecoverSettings!=='boolean')throw Error('Update the installed PDA script to 0.4.152 or later before using native recovery. Refreshing the live runtime alone does not update its storage bridge.');
+ if(!report.canRecoverSettings)throw Error('This is not the native settings-read failure supported by recovery. Copy a storage report instead.');
+ const queue=schedulePdaCacheSave.state;if(queue){global.clearTimeout(queue.timer);queue.timer=null;queue.paused=true;}
+ global.clearTimeout(pdaPreferenceTimer);pdaPreferenceTimer=null;
+ const snapshot=JSON.parse(JSON.stringify(dataState));snapshot._savedAt=Math.max(Date.now(),Number(snapshot._savedAt||0)+1);
+ await new Promise((resolve,reject)=>{
+  const id='recovery:'+Date.now()+':'+Math.random(),name=PDA_STORAGE_WRITE_EVENT+':recovered';
+  const done=event=>{let value;try{value=JSON.parse(String(event.detail||''));}catch{return;}if(value.id!==id)return;clearTimeout(timer);document.removeEventListener(name,done);value.ok?resolve():reject(Error(value.error||'Recovery was not confirmed.'));};
+  const timer=setTimeout(()=>{document.removeEventListener(name,done);reject(Error('Native recovery has not been acknowledged. Keep this page open and copy a storage report before retrying.'));},30000);
+  document.addEventListener(name,done);document.dispatchEvent(new CustomEvent(PDA_STORAGE_WRITE_EVENT,{detail:JSON.stringify({action:'recover-settings',id,confirmed:true,value:snapshot})}));
+ });
+ dataState._savedAt=snapshot._savedAt;
+ storageBackendName='pda';failedStorageWrites.delete(DATA_STORAGE_KEY);
+ storageWrite.records ||= new Map();storageWrite.records.set(DATA_STORAGE_KEY,snapshot);writeDataMirror(snapshot);
+ acknowledgedDataBase=JSON.parse(JSON.stringify({settings:snapshot.settings||{},targetList:snapshot.caches?.targetList||{},protected:Object.fromEntries(Object.keys(lastPersistedProtected).map(key=>[key,snapshot[key]]))}));
+ if(queue){queue.paused=false;if(queue.dirty)schedulePdaCacheSave();}
+ // Preserve edits made while the recovery acknowledgement was in flight.
+ await writeDataState();
+ updateStorageNotice();
 }
 async function retryPdaStorage() {
 // An explicit retry may reopen a failed native-storage circuit. The launcher
