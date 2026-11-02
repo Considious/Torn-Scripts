@@ -94,7 +94,8 @@ bazaarEnabled:root?.querySelector('[data-field="bazaar-source"]')?.checked
 });
 }
 function saveMarketWatch() {
-const settings = marketSettings(); const limit = marketWatchLimit(); const watch = readMarketForm();
+const limit=marketWatchLimit();if(limit<=0){moduleState.market.error='A current Market Watch permission is required.';renderMarket();return;}
+const settings = marketSettings(); const watch = readMarketForm();
 if (!(watch.maxPrice > 0)) { moduleState.market.error = 'Enter a maximum price greater than zero.'; renderMarket(); return; }
 const catalog = moduleState.market.data?.catalog?.items || marketRuntime().catalog.items || [];
 if (watch.marketType === 'item' && (!(watch.itemId > 0) || !catalog.some(item => Number(item.id) === watch.itemId))) { moduleState.market.error = 'Choose an item from the API-loaded name list.'; renderMarket(); return; }
@@ -107,6 +108,7 @@ const runtime = marketRuntime(); delete runtime.results[watch.uid]; dataState.ca
 writeDataState(); renderMarket(false); void refreshMarket(false);
 }
 function addMuseumMarketWatch(itemId,maxPrice){
+if(marketWatchLimit()<=0)throw new Error('Market Watch permission is required to add a Museum watch.');
 const id=Math.trunc(Number(itemId)||0),price=Math.trunc(Number(maxPrice)||0),settings=marketSettings(),limit=marketWatchLimit();
 if(!id||price<1)throw new Error('Enter a maximum price greater than zero.');
 const item=(marketRuntime().catalog.items||[]).find(row=>Number(row.id)===id);

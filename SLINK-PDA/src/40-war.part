@@ -1021,6 +1021,7 @@ if (ok && primedFactionMessage === message) primedFactionMessage = null;
 return { ok, label:ok ? 'Sent to Faction' : 'Open/focus Faction Chat' };
 }
 function reconcileMarketNotifications(runtime) {
+if(marketWatchLimit()<=0){dataState.caches.marketNotificationIds=[];return;}
 const deals = marketOpportunities(runtime);
 const currentIds = deals.map(deal => deal.dismissKey);
 const prior = dataState.caches.marketNotificationIds;

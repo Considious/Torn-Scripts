@@ -22,7 +22,7 @@ ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : 
 ${PDA_API_KEY_AVAILABLE ? `<label class="check-row"><input type="checkbox" data-field="use-pda-api-key" ${dataState.usePdaApiKey ? 'checked' : ''}>Use Torn PDA's injected key for Torn API requests.</label><label class="check-row"><input type="checkbox" data-field="use-pda-ff-key" ${dataState.usePdaFfKey ? 'checked' : ''}>Use Torn PDA's injected key as the FFScouter fallback.</label>` : '<span class="muted wide">Torn PDA key injection was not detected. Saved Torn and FFScouter keys will be used independently.</span>'}
 <span class="muted wide">The FFScouter key is sent only to FFScouter when refining target estimates.</span>
 <label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK permission, Leveling, and War terms/disclosures shown below.</label>
-<div class="access-actions wide"><button type="button" data-action="save-access">Save &amp; authenticate</button><button type="button" data-action="load-terms">Load current terms</button><button class="danger" type="button" data-action="clear-access">Clear key &amp; sessions</button></div>
+<div class="access-actions wide"><button type="button" data-action="save-access">Save &amp; authenticate</button><button type="button" data-action="refresh-access-permissions">Refresh permissions</button><button type="button" data-action="load-terms">Load current terms</button><button class="danger" type="button" data-action="clear-access">Clear key &amp; sessions</button></div>
 </div>
 <div class="terms-list">${termLinks}</div>
 </article>
@@ -95,7 +95,7 @@ company:COMPANY_SCOPE,
 museums:MUSEUM_SCOPE
 });
 function canAccessModule(name) {
-if (name === 'market') return marketWatchLimit() > 0;
+if (name === 'market') return true; // Keep the locked view and permission refresh reachable.
 const plugin = pdaPlugins.get(name);
 if (Array.isArray(plugin?.scopes) && plugin.scopes.length) return plugin.scopes.some(hasScope);
 if (plugin?.scope) return hasScope(plugin.scope);
