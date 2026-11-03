@@ -2,9 +2,9 @@
   'use strict';
   // Owner explicitly approved publication as a shared client-side application key.
   const APPLICATION_KEY = '3HOMWQm6YvOIVJfRZsTNjiE3g86AqzoW';
-  const DEFAULTS = Object.freeze({ enabled:false, inlineMedia:true, keyMode:'integrated', apiKey:'' });
+  const DEFAULTS = Object.freeze({ enabled:true, inlineMedia:true, keyMode:'integrated', apiKey:'' });
   function normalize(value = {}) {
-    return { ...DEFAULTS, ...value, enabled:value.enabled === true, inlineMedia:value.inlineMedia !== false,
+    return { ...DEFAULTS, ...value, enabled:value.enabled !== false, inlineMedia:value.inlineMedia !== false,
       keyMode:value.keyMode === 'custom' ? 'custom' : 'integrated', apiKey:String(value.apiKey || '').trim() };
   }
   function publicSettings(value) {

@@ -380,7 +380,7 @@ current.data = dataState.caches.market || current.data;
 renderMarketUnlessEditing();
 return;
 }
-if(!force&&marketWatchLimit()<=0){if(marketWakeTimer)global.clearTimeout(marketWakeTimer);marketWakeTimer=null;return;}
+if(!force&&marketWatchLimit()<=0){if(marketWakeTimer)global.clearTimeout(marketWakeTimer);marketWakeTimer=null;renderMarketUnlessEditing();return;}
 if (current.busy) return;
 current.busy = true; current.error = ''; current.lastAttemptAt = Date.now();
 if (dashboardOpen) renderMarketUnlessEditing();
@@ -459,7 +459,7 @@ current.refreshPermissions = false;
 current.error = errorMessage(error);
 } finally {
 current.busy = false;
-renderAllModules();
+applyPermissionGates();renderMarket();
 }
 if (marketWatchLimit() > 0) void refreshMarket(false);
 }

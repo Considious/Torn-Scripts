@@ -1,9 +1,10 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.159",
+  "version": "0.4.160",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:market-media-browser": "node qa/market-media-access.browser.mjs",
     "test:room-management-isolation": "node qa/room-management-isolation.browser.mjs",
     "test:native-manual-recovery": "node test-native-manual-recovery.mjs",
     "test:native-diagnostic": "node test-native-storage-diagnostic.mjs",

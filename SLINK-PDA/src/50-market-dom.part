@@ -31,6 +31,10 @@ return;
 moduleState.market.renderPending = false;
 renderMarket();
 }
+function savedMarketWatchRemovalHtml(){
+const watches=marketSettings().watches;
+return '<article class="card full"><h2>Saved Market watches</h2><div class="market-watch-grid">'+(watches.length?watches.map(watch=>'<article class="market-watch"><strong>'+escapeHtml(watch.label||(watch.marketType==='points'?'Points Market':'Item '+watch.itemId))+'</strong><div class="target-actions"><button class="danger" type="button" data-action="remove-market-watch" data-market-watch="'+escapeHtml(watch.uid)+'">Remove</button></div></article>').join(''):'<p>No Market watches saved on this device.</p>')+'</div></article>';
+}
 function renderMarket(preserveForm = true) {
 if (!shouldRenderPdaModule('market')) return;
 const root = moduleRoot('market');
@@ -38,7 +42,7 @@ if (!root) return;
 if (preserveForm) captureMarketDraft();
 const current = moduleState.market;
 const limit = marketWatchLimit();
-if (!limit) { root.innerHTML = `${lockedModule('a slink.adhd.marketwatch tier (.5 through .40)', 'SLINK Market Watch')}${current.error ? moduleMessage(current.error, 'error') : ''}<div class="market-bulk-actions"><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing permissions…' : 'Refresh permissions'}</button></div>`; return; }
+if (!limit) { root.innerHTML = `${lockedModule('a slink.adhd.marketwatch tier (.5 through .40)', 'SLINK Market Watch')}${current.error ? moduleMessage(current.error, 'error') : ''}<div class="market-bulk-actions"><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing permissions…' : 'Refresh permissions'}</button></div>${savedMarketWatchRemovalHtml()}`; return; }
 const runtime = current.data || marketRuntime();
 const settings = marketSettings();
 const deals = marketOpportunities(runtime);

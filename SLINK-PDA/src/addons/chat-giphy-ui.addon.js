@@ -34,7 +34,7 @@
       <label><input type="checkbox" data-inline-media disabled> Show GIF/sticker images inside chat</label>\n      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
       <div class="actions"><button type="button" data-search disabled>Search</button><button type="button" data-trending disabled>Trending / popular</button><button type="button" data-next hidden>Next results</button></div>
       <a href="https://giphy.com/" target="_blank" rel="noopener noreferrer"><img class="attribution" data-attribution alt="Powered by GIPHY"></a>
-      <p data-status role="status"></p><div data-results></div>
+      <p data-status role="status"></p><div class="actions"><button type="button" data-enable-picker hidden>Enable GIFs &amp; stickers</button><button type="button" data-load-retry hidden>Retry loading settings</button><button type="button" data-save-retry hidden>Retry save</button></div><div data-results></div>
       <label data-link-label hidden>Selected media link — paste into chat<input data-link readonly></label>
       <p>Inspired by <a href="https://greasyfork.org/scripts/598147" target="_blank" rel="noopener noreferrer">Torn Chat GIF &amp; Image Embedder</a> by Carol [4021053].</p>
     </div>`;
@@ -50,7 +50,9 @@
     function state(){
       keyLabel.hidden=mode.value!=='custom';clearButton.hidden=!model?.hasCustomKey;
       const unavailable=!model||!enabled.checked||Object.keys(dirty).length>0;
-      $('[data-query]').disabled=unavailable;
+      $('[data-query]').disabled=!model;
+      $('[data-enable-picker]').hidden=!model||enabled.checked;
+      if(model&&!enabled.checked)status.textContent='GIFs and stickers are switched off. Enable them here or in QOL > Chat.';
       for(const button of root.querySelectorAll('[data-media-type]'))button.disabled=unavailable;
       for(const selector of ['[data-search]','[data-trending]','[data-next]'])$(selector).disabled=unavailable||searching;
     }
@@ -63,8 +65,8 @@
           if(stopped)return;
           if(Object.hasOwn(changes,'apiKey')&&!Object.hasOwn(dirty,'apiKey'))key.value='';
           key.placeholder=model.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';
-          saveStatus.textContent=Object.keys(dirty).length?'Newer edits pending…':'Saved on this device.';retryButton.hidden=true;
-        }catch(error){if(!stopped){saveStatus.textContent='Not saved: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));retryButton.hidden=false;}}
+          saveStatus.textContent=Object.keys(dirty).length?'Newer edits pending…':'Saved on this device.';retryButton.hidden=true;$('[data-save-retry]').hidden=true;if(options.chatWindow&&!Object.keys(dirty).length)status.textContent='';
+        }catch(error){if(!stopped){saveStatus.textContent='Not saved: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));retryButton.hidden=false;if(options.chatWindow){status.textContent=saveStatus.textContent;$('[data-save-retry]').hidden=false;}}}
         if(!stopped)state();
       });saveQueue=task;return task;
     }
@@ -76,6 +78,9 @@
     key.addEventListener('blur',()=>void save());
     clearButton.onclick=()=>{key.value='';change('apiKey','');};
     retryButton.onclick=()=>void save();
+    $('[data-save-retry]').onclick=()=>void save();
+    $('[data-enable-picker]').onclick=()=>{enabled.checked=true;change('enabled',true);};
+    $('[data-load-retry]').onclick=()=>void reloadSettings();
     function schedule(text,next=false,delay=450){
       revision++;queued={text,next};clearTimeout(searchTimer);
       if(!active())return;
@@ -155,9 +160,10 @@
     const visibleObserver=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{if(entries.some(e=>!e.isIntersecting))stopMedia();}):null;
     visibleObserver?.observe(host);
     function applySettings(settings){if(stopped)return;model=settings;enabled.checked=settings.enabled;inlineControl.checked=settings.inlineMedia!==false;inlineControl.disabled=false;mode.value=settings.keyMode;
-      enabled.disabled=false;mode.disabled=false;key.placeholder=settings.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';saveStatus.textContent='Settings save automatically.';state();
+      status.textContent='';$('[data-load-retry]').hidden=true;enabled.disabled=false;mode.disabled=false;key.placeholder=settings.hasCustomKey?'Key saved — type to replace':'Enter a GIPHY API key';saveStatus.textContent='Settings save automatically.';state();
     }
-    const ready=client.get().then(applySettings).catch(error=>{if(!stopped)saveStatus.textContent='Could not load settings: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));});
+    async function reloadSettings(){try{applySettings(await client.get());return true;}catch(error){if(!stopped){const message='Could not load media settings: '+((globalThis.SLINK_ERRORS?.message(error))||String(error?.message||'The action failed. Please retry.'));saveStatus.textContent=message;status.textContent=message;$('[data-load-retry]').hidden=false;}return false;}}
+    const ready=reloadSettings();
     function suspend(){suspended=true;revision++;queued=null;clearTimeout(searchTimer);stopMedia();}
     if(options.chatWindow){
       host.dataset.chatPicker='';
@@ -171,7 +177,7 @@
     return {host,ready,suspend,async open(type){
       const opening=++revision;suspended=false;await ready;await save();if(opening!==revision||!active())return;
       const ticket=revision;
-      try{const settings=await client.get();if(ticket===revision&&!Object.keys(dirty).length&&active())applySettings(settings);}catch{status.textContent='Could not refresh media settings. Please retry.';return;}
+      try{const settings=await client.get();if(ticket===revision&&!Object.keys(dirty).length&&active())applySettings(settings);}catch(error){status.textContent='Could not refresh media settings: '+String(error?.message||'Please retry.');$('[data-load-retry]').hidden=false;return;}
       if(opening!==revision||!active())return;mediaType=type==='sticker'?'sticker':'gif';cursors={};
       for(const tab of root.querySelectorAll('[data-media-type]'))tab.setAttribute('aria-pressed',String(tab.dataset.mediaType===mediaType));
       if(enabled.checked)schedule($('[data-query]').value,false,0);

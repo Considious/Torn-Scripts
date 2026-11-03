@@ -35,6 +35,7 @@ if (['leveling', 'war', 'mugging', 'market'].includes(name)) touchModuleActivity
 if (name === 'access') { renderAccess(); if (!dataState.terms?.fetchedAt) await loadTerms(false); return; }
 if (name === 'bounties') touchBounties();
 if (name === 'targetList') { renderTargetList(); return; }
+if(name==='market'&&moduleState.market.refreshPermissions&&!moduleState.market.busy){renderMarket();await refreshMarketPermissions();return;}
 if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
 if (name === 'company') { renderCompany(); await refreshCompany(force).catch(() => undefined); return; }
 if (name === 'museums') { renderMuseums(); await refreshMuseums(force).catch(() => undefined); return; }
@@ -1466,6 +1467,7 @@ finally { state.busyId = 0; renderTargetList(); }
 })();
 }
 if(action==='refresh-access-permissions'){const button=event.target.closest('button');if(button)button.disabled=true;try{await ensurePermissionSession(true);moduleState.access.error='';applyPermissionGates();renderAccess();const status=moduleRoot('access')?.querySelector('[data-storage-status]');if(status&&!failedStorageWrites.size){status.hidden=false;status.textContent=marketWatchLimit()>0?'Permissions refreshed. Market Watch access is active.':'Permissions refreshed. No Market Watch tier is currently assigned.';}}catch(error){moduleState.access.error=errorMessage(error);renderAccess();}finally{if(button)button.disabled=false;}}
+if(action==='open-market-watches'){selectSubpage('efficiency','market',false);moduleState.market.refreshPermissions=true;selectPage('efficiency');}
 if (action === 'refresh-market-permissions') void refreshMarketPermissions();
 if (action === 'toggle-market-dom-test' && hasScope('admin.*')) {
 marketPurchaseState.domTestEnabled = !marketPurchaseState.domTestEnabled;

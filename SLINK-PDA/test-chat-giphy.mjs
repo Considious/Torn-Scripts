@@ -5,6 +5,8 @@ const source=readFileSync(new URL('./src/addons/chat-giphy.addon.js',import.meta
 const context=vm.createContext({URL,setTimeout,clearTimeout,AbortController});
 vm.runInContext(source,context);
 const api=context.SLINK_GIPHY;
+assert.equal(api.publicSettings({}).enabled,true,'New/unset media preferences enable GIFs and stickers by default');
+assert.equal(api.publicSettings({enabled:false}).enabled,false,'An explicit saved opt-out remains disabled');
 let stored={enabled:true,keyMode:'integrated',extra:'preserve'},clock=10000,calls=[],deny=false,failSave=false,reply;
 const client=api.createClient({read:async()=>structuredClone(stored),write:async value=>{if(failSave)throw Error('write failed');stored=structuredClone(value);},authorize:async()=>{if(deny)throw Error('permission denied');},now:()=>clock,
  request:async url=>{calls.push(new URL(url));return typeof reply==='function'?reply():reply;}});
