@@ -176,7 +176,7 @@ return `${String(deal.id || '')}|${Math.max(0, Number(deal.price) || 0)}|${Math.
 }
 function marketOpportunities(runtime = marketRuntime()) {
 const limit = marketWatchLimit();if(limit<=0)return [];
-const settings = marketSettings();
+const settings = marketSettings();if(!settings.enabled)return [];
 const catalog = new Map((runtime.catalog?.items || []).map(item => [Number(item.id), item]));
 const now = Date.now();
 settings.dismissals = Object.fromEntries(Object.entries(settings.dismissals || {}).filter(([, until]) => Number(until) > now));

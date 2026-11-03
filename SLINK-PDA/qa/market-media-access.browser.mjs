@@ -33,16 +33,17 @@ try{
   await page.evaluate(()=>picker.open('sticker'));await page.waitForFunction(()=>requestPaths.includes('/v1/stickers/search'));
   await page.evaluate(()=>picker.stop());
  }
- const dom=read('src/50-market-dom.part'),shell=read('src/90-shell-bootstrap.part');
- await page.evaluate(({dom,shell})=>{
+ const dom=read('src/50-market-dom.part'),shell=read('src/90-shell-bootstrap.part'),runtimeSource=read('src/10-market-runtime.part');
+ await page.evaluate(({dom,shell,runtimeSource})=>{
   document.body.innerHTML='<section id="market"></section>';window.shadow=document;window.moduleState={market:{busy:false,editingUid:''}};window.dataState={settings:{market:{watches:[{uid:'saved-without-tier',label:'Saved item',maxPrice:100}]}},caches:{market:{results:{'saved-without-tier':{}}}}};
   window.marketSettings=()=>dataState.settings.market;window.marketRuntime=()=>dataState.caches.market;window.marketWatchLimit=()=>0;window.shouldRenderPdaModule=()=>true;window.moduleRoot=()=>document.getElementById('market');window.captureMarketDraft=()=>{};window.lockedModule=()=>'<p>Market is locked</p>';window.escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>'&#'+char.charCodeAt(0)+';');window.moduleMessage=()=>'';window.savedWrites=0;window.savePdaChanges=async()=>{savedWrites++;};window.schedulePurchaseOpportunityFormatting=()=>{};
+  const helper=runtimeSource.slice(runtimeSource.indexOf('function weaverPricelistItems('),runtimeSource.indexOf('function weaverPricelistTarget('));new Function(helper+';window.weaverPricelistItems=weaverPricelistItems;')();window.marketMoney=value=>'$'+value;
   const render=dom.slice(dom.indexOf('function savedMarketWatchRemovalHtml()'),dom.indexOf('function readMarketForm()'));
   new Function(render+';window.renderMarket=renderMarket;')();renderMarket();
   const begin=shell.indexOf("if (action === 'remove-market-watch')"),end=shell.indexOf('const marketOption',begin);
   const remove=new Function('event','return (async()=>{const action="remove-market-watch";'+shell.slice(begin,end)+'})();');
   document.getElementById('market').onclick=event=>{window.removing=remove(event);};
- },{dom,shell});
+ },{dom,shell,runtimeSource});
  assert.equal(await page.locator('[data-action="remove-market-watch"]').count(),1);assert.equal(await page.locator('[data-action="save-market-watch"]').count(),0);
  await page.locator('[data-action="remove-market-watch"]').click();await page.evaluate(()=>removing);assert.equal(await page.evaluate(()=>dataState.settings.market.watches.length),0);assert.equal(await page.evaluate(()=>savedWrites),1);
  const nav=read('src/30-dashboard-combat.part');assert(nav.includes('data-action="open-market-watches"'));

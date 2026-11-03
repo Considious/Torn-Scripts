@@ -32,8 +32,21 @@ moduleState.market.renderPending = false;
 renderMarket();
 }
 function savedMarketWatchRemovalHtml(){
-const watches=marketSettings().watches;
-return '<article class="card full"><h2>Saved Market watches</h2><div class="market-watch-grid">'+(watches.length?watches.map(watch=>'<article class="market-watch"><strong>'+escapeHtml(watch.label||(watch.marketType==='points'?'Points Market':'Item '+watch.itemId))+'</strong><div class="target-actions"><button class="danger" type="button" data-action="remove-market-watch" data-market-watch="'+escapeHtml(watch.uid)+'">Remove</button></div></article>').join(''):'<p>No Market watches saved on this device.</p>')+'</div></article>';
+const settings=marketSettings(),watches=settings.watches;
+const runtime=marketRuntime(),imports=weaverPricelistItems(runtime.weaverPricelist?.items||[]);
+const saved=watches.length?watches.map(watch=>'<article class="market-watch"><strong>'+escapeHtml(watch.label||(watch.marketType==='points'?'Points Market':'Item '+watch.itemId))+'</strong><span>Saved price watch · target '+marketMoney(watch.maxPrice)+'</span><div class="target-actions">'+(marketWatchLimit()>0?'<button type="button" data-action="edit-market-watch" data-market-watch="'+escapeHtml(watch.uid)+'">Edit</button>':'')+'<button class="danger" type="button" data-action="remove-market-watch" data-market-watch="'+escapeHtml(watch.uid)+'">Remove</button></div></article>').join(''):'<p>No individually saved price watches.</p>';
+const imported=imports.length||settings.weaverPricelistEnabled?'<article class="card full"><h2>Weaver price-list watches</h2><p>'+ (settings.weaverPricelistEnabled?'Enabled':'Stopped')+' · '+imports.length+' imported items. These are separate from individually saved watches.</p><div class="market-watch-grid">'+imports.map(item=>'<article class="market-watch"><strong>'+escapeHtml(item.name||'Item '+item.itemId)+'</strong><span>Weaver price list · target '+marketMoney(item.buyPrice)+'</span></article>').join('')+'</div><button type="button" data-action="stop-market-pricelist" '+(settings.weaverPricelistEnabled?'':'disabled')+'>Stop price-list watches</button></article>':'';
+return '<article class="card full"><h2>Saved Market watches</h2><p>'+(settings.enabled?'Price checks enabled':'Price checks stopped')+'</p><div class="market-watch-grid">'+saved+'</div><button class="danger" type="button" data-action="clear-market-watches">Clear all Market watches</button></article>'+imported;
+}
+async function stopMarketWatchSources(clearAll=false){
+const settings=marketSettings();
+if(clearAll){settings.enabled=false;settings.watches=[];moduleState.market.editingUid='';moduleState.market.draft=null;}
+settings.weaverPricelistEnabled=false;
+const runtime=marketRuntime();runtime.pricelistResults={};if(clearAll)runtime.results={};
+dataState.caches.market=runtime;moduleState.market.data=runtime;dataState.caches.marketNotificationIds=[];
+await savePdaChanges();
+moduleState.market.notice=clearAll?'Market watches cleared and price checks stopped.':'Weaver price-list watches stopped.';
+renderMarket(false);scheduleMarketWake(runtime);reconcileMarketNotifications(runtime);
 }
 function renderMarket(preserveForm = true) {
 if (!shouldRenderPdaModule('market')) return;
@@ -42,7 +55,7 @@ if (!root) return;
 if (preserveForm) captureMarketDraft();
 const current = moduleState.market;
 const limit = marketWatchLimit();
-if (!limit) { root.innerHTML = `${lockedModule('a slink.adhd.marketwatch tier (.5 through .40)', 'SLINK Market Watch')}${current.error ? moduleMessage(current.error, 'error') : ''}<div class="market-bulk-actions"><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing permissions…' : 'Refresh permissions'}</button></div>${savedMarketWatchRemovalHtml()}`; return; }
+if (!limit) { root.innerHTML = `${lockedModule('a slink.adhd.marketwatch tier (.5 through .40)', 'SLINK Market Watch')}${current.error ? moduleMessage(current.error, 'error') : ''}<div class="market-bulk-actions"><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>${current.busy ? 'Refreshing permissions…' : 'Refresh permissions'}</button></div>${current.notice?moduleMessage(current.notice,'ready'):''}${savedMarketWatchRemovalHtml()}`; return; }
 const runtime = current.data || marketRuntime();
 const settings = marketSettings();
 const deals = marketOpportunities(runtime);
@@ -60,7 +73,7 @@ const itemValue = form.itemText || (selectedItem ? marketItemLabel(selectedItem)
 const error = current.error || runtime.lastError;
 root.innerHTML = `<div class="grid">
 <article class="card full"><div class="card-head"><div><h2>${edit ? 'Edit market watch' : 'Add a market watch'}</h2></div><button type="button" data-action="refresh-market-permissions" ${current.busy ? 'disabled' : ''}>Refresh permissions</button><span class="badge ${current.busy ? 'warn' : 'ready'}">${settings.watches.length} / ${limit}</span></div>
-${error ? moduleMessage(error, 'error') : ''}
+${error ? moduleMessage(error, 'error') : ''}${current.notice?moduleMessage(current.notice,'ready'):''}
 <div class="market-form">
 <label>Watch type<select data-field="market-type"><option value="item" ${form.marketType === 'item' ? 'selected' : ''}>Item</option><option value="points" ${form.marketType === 'points' ? 'selected' : ''}>Points Market</option></select></label>
 <div class="market-item-field"><label for="slink-market-item-input">Item</label><div class="market-item-picker"><input id="slink-market-item-input" type="text" data-field="market-item" value="${escapeHtml(itemValue)}" placeholder="Type an item name" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" ${form.marketType === 'points' ? 'disabled' : ''}><div class="market-item-suggestions" data-market-item-suggestions role="listbox" hidden></div></div><small>${catalog.length ? `Type a name or ID to search ${number(catalog.length)} API catalog items.` : 'Loading Torn item names and shop sell prices automatically…'}</small></div>
@@ -75,7 +88,7 @@ ${error ? moduleMessage(error, 'error') : ''}
 <div class="market-bulk-actions"><button type="button" data-action="copy-market-list" ${deals.length ? '' : 'disabled'}>Copy item list</button><button type="button" data-action="send-market-list" ${deals.length ? '' : 'disabled'}>Send list to Faction</button></div>
 <div class="market-deals">${deals.length ? deals.map(deal => `<article class="market-deal"><strong>${escapeHtml(deal.source)} · ${escapeHtml(deal.itemName)}</strong><span>${escapeHtml(deal.detail)}</span><div class="target-actions"><a href="${escapeHtml(deal.href)}">Open &amp; highlight</a><button type="button" data-action="copy-market-deal" data-market-deal="${escapeHtml(deal.id)}">Copy</button><button type="button" data-action="send-market-deal" data-market-deal="${escapeHtml(deal.id)}">Send to Faction</button><button type="button" data-action="dismiss-market-deal" data-market-dismiss="${escapeHtml(deal.dismissKey)}">Dismiss 5m</button></div></article>`).join('') : '<div class="module-message">No watched listing is currently at or below its target.</div>'}</div>
 </article>
-<article class="card full"><div class="card-head"><div><h2>Configured watches</h2><span class="muted">High follows Torn cache timestamp + API delay + 1 second; normal reserves 10 calls/min and low reserves 20 for other features.</span></div></div><div class="market-watch-grid">${settings.watches.length ? settings.watches.map(watch => { const item = catalog.find(row => row.id === watch.itemId); const sell = item?.shopSellPrice > 0 ? ` · shop sells ${marketMoney(item.shopSellPrice)}${item.shopSellName ? ` at ${item.shopSellName}` : ''}` : ''; return `<article class="market-watch"><strong>${escapeHtml(watch.label || 'Points Market')}${watch.itemId ? ` [${watch.itemId}]` : ''}</strong><span>Target ${marketMoney(watch.maxPrice)} · ${escapeHtml(watch.priority)} · ${watch.marketType === 'points' ? 'Points Market' : [watch.marketEnabled && 'Item Market', watch.bazaarEnabled && 'Weaver Bazaar'].filter(Boolean).join(' + ')}${escapeHtml(sell)}</span><div class="target-actions"><button type="button" data-action="edit-market-watch" data-market-watch="${escapeHtml(watch.uid)}">Edit</button><button class="danger" type="button" data-action="remove-market-watch" data-market-watch="${escapeHtml(watch.uid)}">Remove</button></div></article>`; }).join('') : '<div class="module-message">No watches saved yet.</div>'}</div></article>
+${savedMarketWatchRemovalHtml()}
 </div>`;
 updateAlertIndicator(alertRows(moduleState.alerts.data).length);
 }

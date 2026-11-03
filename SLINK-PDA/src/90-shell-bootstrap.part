@@ -1492,6 +1492,8 @@ if (key) PDA_ABROAD.toggleWatch(key);
 }
 if (action === 'sync-market-weaver-pricelist') void syncMarketPricelistNow();
 if (action === 'save-market-watch') saveMarketWatch();
+if(action==='stop-market-pricelist')await stopMarketWatchSources(false);
+if(action==='clear-market-watches'&&global.confirm('Remove all saved Market watches and stop Market price checks, including imported Weaver price-list watches? Your price list on Weaver is not changed.'))await stopMarketWatchSources(true);
 if (action === 'clear-market-form') { moduleState.market.editingUid = ''; moduleState.market.draft = null; moduleState.market.error = ''; renderMarket(false); }
 if (action === 'edit-market-watch') {
 moduleState.market.editingUid = String(event.target.closest('[data-market-watch]')?.dataset.marketWatch || '');
