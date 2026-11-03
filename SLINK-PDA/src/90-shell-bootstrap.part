@@ -1064,10 +1064,6 @@ if (action === 'refresh-mugging') void refreshMugging(true);
 if (action === 'refresh-travel-safety') void refreshTravelSafety(true).catch(() => undefined);
 if (action === 'refresh-company') void refreshCompany(true).catch(() => undefined);
 if (action === 'refresh-museums') void refreshMuseums(true).catch(() => undefined);
-if (action === 'museum-track-abroad') {
-const set=MUSEUM_SETS.find(entry=>entry.id===event.target.closest('[data-museum-set]')?.dataset.museumSet);
-if(set?.travel){const added=PDA_ABROAD.addItemWatches(set.items.map(item=>item.name));moduleState.museums.notice=added?'Added '+added+' Abroad Stocks watch'+(added===1?'':'es')+'.':'Matching Abroad Stocks rows are already tracked. Refresh Abroad Stocks first if no rows are loaded.';renderMuseums()}
-}
 if (action === 'museum-add-market') {
 const button=event.target.closest('[data-museum-item]'),itemId=Number(button?.dataset.museumItem),price=Number(moduleRoot('museums')?.querySelector('[data-museum-price="'+itemId+'"]')?.value);
 try{addMuseumMarketWatch(itemId,price);moduleState.museums.notice='Museum item added to Market Watch. It counts toward your active slot limit.';moduleState.museums.error=''}catch(error){moduleState.museums.error=errorMessage(error)}renderMuseums()

@@ -13,6 +13,8 @@ assert(source.includes("if (!currentSettings.tornIntelKey) throw pageError"), 'A
 assert(/===\s*companyTypeId/.test(source), 'Company job points must match the current company type, not the individual company ID.');
 assert(source.includes('class="abroad-summary"'), 'Abroad Stocks must render a compact mobile summary.');
 assert(source.includes('class="museum-watch-controls"'), 'Museum market controls must use the mobile layout.');
+assert(!qualitySource.includes('museum-track-abroad'),'Museum must not offer category-wide Abroad Stocks watches');
+assert(qualitySource.includes('museum-add-market'),'Individual-item Market watches must remain available');
 assert(!source.includes('market USD'), 'Museum prices must use Torn cash notation rather than USD.');
 
 console.log('PDA Quality of Life data and mobile layout wiring is verified.');
