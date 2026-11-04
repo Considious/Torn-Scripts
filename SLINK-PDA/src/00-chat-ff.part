@@ -41,12 +41,61 @@
    return ids.map(id=>cache.get(id)?.row).filter(Boolean);
   };
  }
- function mount({lookup,activity,enabled,document=global.document}){
+ function mentionId(anchor){
+  try{const u=new URL(anchor.getAttribute('href'),'https://www.torn.com/');
+   if(u.origin!=='https://www.torn.com')return null;
+   const raw=u.pathname==='/profiles.php'?u.searchParams.get('XID'):u.pathname==='/page.php'&&u.searchParams.get('sid')==='attack'?u.searchParams.get('user2ID'):null;
+   return /^\d+$/.test(raw)&&Number.isSafeInteger(+raw)&&+raw>0?+raw:null;
+  }catch{return null;}
+ }
+ function textMentions(text,bare){
+  const matches=bare?/^\s*(\d{7,8})\s*$/.exec(text):null;
+  if(matches&&+matches[1]>0)return [{id:+matches[1],end:matches[0].lastIndexOf(matches[1])+matches[1].length}];
+  return [...text.matchAll(/\[(\d{7,8})\]/g)].filter(m=>+m[1]>0).map(m=>({id:+m[1],end:m.index+m[0].length}));
+ }
+ function mount({lookup,activity,enabled,mentions=()=>false,document=global.document}){
   document.__slinkChatFfController?.stop();
   let root=null,observer=null,discovery=null,visibility=null,timer=null,epoch=0,busy=false,again=false,lastLookup=0,stopped=false;
   const remembered=new Map();
   const entries=new Map(),slots=new WeakMap();
-  const active=()=>!stopped&&enabled()&&activity.eligible();
+  const active=()=>!stopped&&(enabled()||mentions())&&activity.eligible();
+  const bodySelector='[class*="body___"][class*="message___"]';
+  const inline=new Map();
+  function clearInline(body){
+   const group=inline.get(body);if(!group)return;inline.delete(body);visibility?.unobserve(body);
+   for(const entry of group.entries)entry.badge.remove();
+   for(const {node,parts,original} of group.splits){
+    if(parts.every(part=>part.node.parentNode===node.parentNode&&part.node.data===part.text)){
+     node.data=original;for(const part of parts.slice(1))part.node.remove();
+    }else for(const part of parts.slice(1))if(part.node.parentNode===node.parentNode)part.node.remove();
+   }
+  }
+  function scanInline(node){
+   if(!mentions()||node.nodeType!==1)return;
+   const nearest=node.closest(bodySelector);
+   for(const body of nearest?[nearest]:node.querySelectorAll(bodySelector)){
+    if(inline.has(body)||!eligible(body))continue;
+    const group={entries:[],splits:[],visible:!visibility};
+    function add(after,id,link){
+     const badge=document.createElement(link?'a':'span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;
+     badge.style.cssText='display:inline-block;vertical-align:middle;margin:0 3px;padding:1px 5px;border-radius:999px;color:white;font:700 10px/1.3 system-ui;white-space:nowrap;text-decoration:none';
+     if(link){badge.href='https://www.torn.com/profiles.php?XID='+id;badge.target='_self';}
+     after.after(badge);const entry={id,badge,at:0,source:after,link};group.entries.push(entry);
+    }
+    for(const a of body.querySelectorAll('a[href]')){const id=mentionId(a);if(id)add(a,id,false);}
+    const bare=/^\s*\d{7,8}\s*$/.test(body.textContent);
+    const walker=document.createTreeWalker(body,4),nodes=[];while(walker.nextNode())if(!walker.currentNode.parentElement.closest('a,[data-slink-chat-ff]'))nodes.push(walker.currentNode);
+    for(const text of nodes){
+     const original=text.data,found=textMentions(original,bare);if(!found.length)continue;
+     const parts=[];let part=text,offset=0;
+     for(const {id,end} of found){const tail=part.splitText(end-offset);parts.push({node:part,text:part.data});add(part,id,true);part=tail;offset=end;}
+     parts.push({node:part,text:part.data});group.splits.push({node:text,parts,original});
+    }
+    if(!group.entries.length)continue;
+    inline.set(body,group);visibility?.observe(body);
+   }
+   while(inline.size>300)clearInline(inline.keys().next().value);
+  }
   // The supplied Torn markup has exactly one sender-name link in this span.
   // Its fixed slot is after the avatar and immediately before the sender name.
   const selector='span[class*="senderContainer___"] > a[class*="sender___"][href*="profiles.php"][href*="XID="]';
@@ -54,34 +103,46 @@
   function eligible(anchor){return anchor.isConnected&&root?.contains(anchor)&&anchor.getClientRects().length>0&&!anchor.closest('textarea,[contenteditable="true"],[hidden],[aria-hidden="true"]');}
   function consider(node){if(!active()||node.nodeType!==1)return;const anchors=[...(node.matches?.(selector)?[node]:[]),...node.querySelectorAll(selector)];for(const anchor of anchors){if(entries.has(anchor))continue;const id=playerId(anchor),slot=anchor.parentElement,prior=slots.get(slot);if(!id||prior?.isConnected)continue;for(const stale of slot.querySelectorAll(':scope > [data-slink-chat-ff]'))stale.remove();const badge=document.createElement('span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;const entry={id,slot,badge,visible:!visibility,at:0};entries.set(anchor,entry);slots.set(slot,anchor);visibility?.observe(anchor);const row=remembered.get(id);if(row&&eligible(anchor))paint(anchor,entry,row);}while(entries.size>300){const [anchor,entry]=entries.entries().next().value;remove(anchor,entry);}}
   function schedule(){if(!active()||timer!==null)return;timer=global.setTimeout(()=>{timer=null;void flush();},Math.max(100,5000-(Date.now()-lastLookup)));}
-  function paint(anchor,entry,row){
+  function paint(anchor,entry,row,isInline=false){
    entry.row=row;remembered.set(entry.id,row);while(remembered.size>300)remembered.delete(remembered.keys().next().value);
    const value=positive(row.ff),age=row.at?Math.max(0,Math.floor((Date.now()-row.at)/3600000))+'h old':'age unknown';
    entry.badge.textContent=(value===null?'N/A':value.toFixed(2))+(row.backup?' †':'');
    entry.badge.style.backgroundColor=value===null?'#555b66':value<2?'#25623f':value<=3?'#775b12':'#a52b42';
    entry.badge.title=(value===null?'Fair Fight unavailable':'Fair Fight '+value.toFixed(2))+' · '+row.source+(row.backup?' · '+age:'');
    entry.badge.setAttribute('aria-label',entry.badge.title);entry.badge.hidden=false;
-   if(entry.badge.parentElement!==anchor.parentElement||entry.badge.nextElementSibling!==anchor)anchor.before(entry.badge);entry.at=Date.now();
+   if(!isInline&&(entry.badge.parentElement!==anchor.parentElement||entry.badge.nextElementSibling!==anchor))anchor.before(entry.badge);entry.at=Date.now();
   }
   async function flush(){
    if(!active())return;if(busy){again=true;return;}busy=true;const token=epoch;
    try{
     for(const [a,e]of entries)if(!a.isConnected||!root?.contains(a)||playerId(a)!==e.id)remove(a,e);
-    const selected=[...entries].filter(([a,e])=>e.visible&&eligible(a)&&(!e.at||Date.now()-e.at>=300000)).slice(-200);if(!selected.length)return;
+    const selected=[...entries].filter(([a,e])=>e.visible&&eligible(a)&&(!e.at||Date.now()-e.at>=300000));
+    for(const [body,group] of inline)if(group.visible&&eligible(body))for(const e of group.entries){
+     if(!e.badge.isConnected||(!e.link&&mentionId(e.source)!==e.id))continue;
+     if(!e.at&&remembered.has(e.id))paint(body,e,remembered.get(e.id),true);
+     if(!e.at||Date.now()-e.at>=300000)selected.push([body,e,group]);
+    }
+    selected.splice(0,Math.max(0,selected.length-200));if(!selected.length)return;
     lastLookup=Date.now();const rows=await lookup([...new Set(selected.map(([,e])=>e.id))]);if(token!==epoch||!active())return;
-    const byId=new Map(rows.map(row=>[Number(row.id),row]));for(const [a,e]of selected)if(entries.get(a)===e&&playerId(a)===e.id&&eligible(a)&&byId.has(e.id))paint(a,e,byId.get(e.id));
+    const byId=new Map(rows.map(row=>[Number(row.id),row]));for(const [a,e,g]of selected)if((g?inline.get(a)===g&&e.badge.isConnected&&(e.link||mentionId(e.source)===e.id):entries.get(a)===e&&playerId(a)===e.id)&&eligible(a)&&byId.has(e.id))paint(a,e,byId.get(e.id),!!g);
    }catch{/* Optional badges never interrupt chat. */}finally{busy=false;if(again){again=false;schedule();}}
   }
   function attach(){
    if(!active())return;const next=document.getElementById('chatRoot');if(next===root&&observer)return;
-   observer?.disconnect();root=next;if(!root)return;
+   observer?.disconnect();root=next;for(const body of inline.keys())clearInline(body);if(!root)return;
    observer=new global.MutationObserver(mutations=>{
-    if(!active())return;let changed=false,removed=false;
+    if(!active())return;let changed=false,removed=false;const dirty=new Set();
     for(const m of mutations){
      if(m.target?.closest?.('[data-slink-chat-ff]'))continue;
+     if(m.target?.parentElement?.closest('[data-slink-chat-ff]'))continue;
+     if(mentions()){
+      const body=(m.target.nodeType===1?m.target:m.target.parentElement)?.closest(bodySelector);
+      if(body)dirty.add(body);
+      for(const node of m.addedNodes||[])if(node.nodeType===1&&!node.matches('[data-slink-chat-ff]'))dirty.add(node);
+     }
      if(m.type==='attributes'){
       const entry=entries.get(m.target);if(entry&&playerId(m.target)!==entry.id)remove(m.target,entry);
-      consider(m.target);changed=true;
+      if(enabled())consider(m.target);changed=true;
      }else{
       // Only structural changes can detach a sender or its badge. Text ticks
       // elsewhere in chat must not measure every sender and force layout.
@@ -89,29 +150,38 @@
        removed=true;
        for(const anchor of m.target?.querySelectorAll?.(selector)||[]){const entry=entries.get(anchor);if(entry?.row&&(entry.badge.parentElement!==anchor.parentElement||entry.badge.nextElementSibling!==anchor)&&eligible(anchor))paint(anchor,entry,entry.row);}
       }
-      for(const node of m.addedNodes){if(node.nodeType!==1||node.matches?.('[data-slink-chat-ff]')||node.closest?.('[data-slink-chat-ff]'))continue;consider(node);changed=true;}
+      for(const node of m.addedNodes){if(node.nodeType!==1||node.matches?.('[data-slink-chat-ff]')||node.closest?.('[data-slink-chat-ff]'))continue;if(enabled())consider(node);changed=true;}
      }
     }
     if(removed)for(const [anchor,entry]of entries)if(!anchor.isConnected||!root?.contains(anchor))remove(anchor,entry);
-    if(changed)schedule();
+    if(removed)for(const body of inline.keys())if(!root.contains(body))clearInline(body);
+    for(const node of dirty)if(inline.has(node))clearInline(node);
+    for(const node of dirty)if(root.contains(node))scanInline(node);
+    if(dirty.size)observer.takeRecords(); // Ignore our own inline insertions and text splits.
+    if(changed||dirty.size)schedule();
    });
-   observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href']});consider(root);schedule();
+   observer.slinkModes=String(enabled())+mentions();
+   if(enabled())consider(root);scanInline(root);
+   observer.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['href'],characterData:mentions()});schedule();
   }
   function sync(){
+   if(stopped||!mentions())for(const body of inline.keys())clearInline(body);
+   if(stopped||!enabled())for(const [a,e]of entries)remove(a,e);
    if(!active()){
     epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
     // Focus/visibility loss pauses work, not presentation. Only an explicit
     // disable/revoked access or stop removes already-rendered badges.
-    if(stopped||!enabled()){for(const [a,e]of entries)remove(a,e);remembered.clear();root=null;}
+    if(stopped||(!enabled()&&!mentions())){remembered.clear();root=null;}
     return;
    }
-   if(active()&&root?.isConnected&&observer)return;
+   if(active()&&root?.isConnected&&observer&&observer.slinkModes===String(enabled())+mentions())return;
    epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
    for(const [a,e]of entries)if(!a.isConnected||!root?.contains(a))remove(a,e);
    root=null;
    if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot span[class*="senderContainer___"]>.slink-chat-ff-bubble{display:inline-block!important;position:static!important;transform:none!important;flex:0 0 auto!important;align-self:center;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin:0 3px!important;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:none;box-sizing:border-box;pointer-events:none}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}';(document.head||document.documentElement).append(style);}
-   if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
+   if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target)||inline.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
    attach();
+   for(const [body,group] of inline){if(!root?.contains(body))clearInline(body);else{group.visible=!visibility;visibility?.observe(body);}}
    for(const [a,e]of entries){visibility?.observe(a);if(e.row&&eligible(a))paint(a,e,e.row);}
    // Watch only the ancestor chain once chat exists. Attack/chat text changes
    // cannot replace that chain and must not wake a whole-document observer.
@@ -120,8 +190,8 @@
    watchDiscovery();
   }
   const unsubscribe=activity.subscribe(sync);sync();
-  const controller={sync,stop(){stopped=true;unsubscribe?.();observer?.disconnect();discovery?.disconnect();visibility?.disconnect();epoch++;global.clearTimeout(timer);for(const [a,e]of entries)remove(a,e);remembered.clear();}};document.__slinkChatFfController=controller;return controller;
+  const controller={sync,stop(){stopped=true;unsubscribe?.();sync();}};document.__slinkChatFfController=controller;return controller;
  }
- global.SLINK_CHAT_FF=Object.freeze({playerId,fromRow,fromIntelligence,createLookup,mount});
+ global.SLINK_CHAT_FF=Object.freeze({playerId,mentionId,textMentions,fromRow,fromIntelligence,createLookup,mount});
 })(globalThis);
 

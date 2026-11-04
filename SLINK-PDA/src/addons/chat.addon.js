@@ -1171,7 +1171,8 @@ try{for(const scope of scopes)if(scope?.isConnected)scan(scope);}finally{syncHig
 },80);}
 function renderBase(){const root=api.root(ID)?.querySelector('[data-chat-base]');if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea'))return;const rows=config().highlights;root.innerHTML='<div class="grid"><article class="card full"><div class="card-head"><div><h2>Custom chat buttons</h2><span class="muted">First click loads the HTML message; second click sends it.</span></div></div><p>Unquoted links are corrected to &lt;a href="link"&gt;. Page-link and page-URL tokens remain available in the existing custom-button editor.</p><div class="target-actions"><button type="button" data-chat-action="manage">Manage custom buttons</button></div></article><article class="card full"><div class="card-head"><div><h2>Highlight chat terms</h2><span class="muted">Case-insensitive custom words and phrases.</span></div></div><div data-chat-rows>'+(rows.length?rows.map((row,index)=>'<div class="module-toolbar" data-chat-row="'+index+'"><input type="text" data-chat-term value="'+api.escapeHtml(String(row.term||''))+'" placeholder="Term or phrase"><select data-chat-color>'+COLORS.map(color=>'<option value="'+color[0]+'" '+(row.color===color[0]?'selected':'')+'>'+color[0]+'</option>').join('')+'</select><label><input type="checkbox" data-chat-enabled '+(row.enabled!==false?'checked':'')+'>On</label><button type="button" data-chat-action="delete" data-chat-index="'+index+'">×</button></div>').join(''):'<p>No highlighted terms configured.</p>')+'</div><div class="target-actions"><button type="button" data-chat-action="add">Add term</button><button type="button" data-chat-action="save">Save highlights</button></div></article></div>';}
 let giphyPanel=null;
-const ffBubbles=global.SLINK_CHAT_FF.mount({activity:global.SLINK_PDA_PAGE_ACTIVITY,enabled:()=>config().ffBubbles===true&&(api.hasScope('slink.qol.chat')||api.hasScope('admin.*')),lookup:ids=>api.chatFairFight(ids)});
+const ffAllowed=()=>api.hasScope('slink.qol.chat')||api.hasScope('admin.*');
+const ffBubbles=global.SLINK_CHAT_FF.mount({activity:global.SLINK_PDA_PAGE_ACTIVITY,enabled:()=>ffAllowed()&&config().ffBubbles===true,mentions:()=>ffAllowed()&&config().ffMentions===true,lookup:ids=>api.chatFairFight(ids)});
 global.addEventListener('slink-chat-enable',()=>ffBubbles.sync());
 function render(){
   if (api.shouldRender && !api.shouldRender(ID)) return;
@@ -1179,9 +1180,11 @@ function render(){
   if(!root.querySelector('[data-chat-base]')){const base=document.createElement('div');base.dataset.chatBase='';root.append(base);}
   renderBase();
   if(!root.querySelector('[data-chat-ff-panel]')){
-   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input type="checkbox" data-chat-ff-toggle> Show Fair Fight bubbles beside chat names and profile links</label><p>Uses your saved FFScouter key and SLINK backup. † marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
-   const toggle=panel.querySelector('input');toggle.checked=config().ffBubbles===true;
-   api.listen(toggle,'change',async()=>{config().ffBubbles=toggle.checked;ffBubbles.sync();const status=panel.querySelector('[data-chat-ff-status]');status.textContent='Saving…';try{await api.save();status.textContent='Saved.';}catch{status.textContent='Not saved. Change the option again to retry.';}});
+   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input type="checkbox" data-chat-ff-toggle> Show Fair Fight beside chat names</label><label><input type="checkbox" data-chat-ff-mentions> Show Fair Fight next to player mentions</label><p>† marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
+   for(const [key,selector] of [['ffBubbles','[data-chat-ff-toggle]'],['ffMentions','[data-chat-ff-mentions]']]){
+    const toggle=panel.querySelector(selector),status=panel.querySelector('[data-chat-ff-status]');toggle.checked=config()[key]===true;
+    api.listen(toggle,'change',async()=>{config()[key]=toggle.checked;ffBubbles.sync();status.textContent='Saving…';try{await api.save();status.textContent='Saved.';}catch{status.textContent='Not saved. Change the option again to retry.';}});
+   }
   }
   if(!giphyPanel&&global.SLINK_GIPHY_PANEL)giphyPanel=global.SLINK_GIPHY_PANEL();
   if(giphyPanel&&!root.contains(giphyPanel.host))root.append(giphyPanel.host);
