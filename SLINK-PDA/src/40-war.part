@@ -795,22 +795,22 @@ const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1000));
 return !end ? '24-hour timer: not started' : remaining ? `24-hour timer: ${duration(remaining)} remaining` : '24-hour timer finished';
 }
 const PDA_CRIME_ALERT_IDS=new Set(PDA_ALERT_TYPES.filter(row=>row.group==='Crime uniques').map(row=>row.id));
-const PDA_CRIME_TABS=Object.freeze({searchCashUnique:'Search for Cash',bootleggingUniques:'Bootlegging',graffitiUniques:'Graffiti',clusterRing:'Shoplifting',pickpocketingUniques:'Pickpocketing',burglaryUniques:'Burglary',disposalUnique:'Disposal',arsonUnique:'Arson'});
-let activePdaCrime='searchCashUnique';
+const PDA_CRIME_TABS=Object.freeze({arson:'Arson',cracking:'Cracking',uniques:'Uniques'});
+let activePdaCrime='arson';
 function isPdaCrimeAlert(id){return PDA_CRIME_ALERT_IDS.has(id);}
 function alertSettingsHtml(crimes=false) {
-const definitions=PDA_ALERT_TYPES.filter(row=>crimes?row.id===activePdaCrime:!isPdaCrimeAlert(row.id));
+const definitions=PDA_ALERT_TYPES.filter(row=>crimes?isPdaCrimeAlert(row.id):!isPdaCrimeAlert(row.id));
 const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
 dataState.settings.alerts.enabledTypes = enabled;
 const enabledCount = definitions.filter(definition => enabled[definition.id]).length;
 const groups = [...new Set(definitions.map(definition => definition.group))];
 const crimeProgress = crimes ? crimeUniqueProgressRowsPda(({id})=>enabled[id]) : [];
 const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
-return `<details class="alert-settings" data-ui-key="${crimes?'crimes.settings':'alerts.settings'}" ${state.panels?.[crimes?'crimes.settings':'alerts.settings'] ? 'open' : ''}><summary>Alert settings · ${enabledCount}/${definitions.length} enabled</summary>
+return `${crimes?'<section class="alert-settings">':`<details class="alert-settings" data-ui-key="alerts.settings" ${state.panels?.['alerts.settings'] ? 'open' : ''}><summary>Alert settings · ${enabledCount}/${definitions.length} enabled</summary>`}
 <p>Disabled alerts are removed from both the PDA alert list and phone notification flow.</p>
 ${crimes?'':`<div class="alert-settings-actions"><button type="button" data-action="alerts-enable-all">Enable all</button><button type="button" data-action="alerts-disable-all">Disable all</button></div>`}
 <div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${definitions.filter(definition => definition.group === group).map(definition => { const progress = crimeById[definition.id]; const suffix = progress?.total ? ` · ${progress.completed}/${progress.total} · skill ${Math.floor(progress.skill || 0)}` : ''; return `<label><input type="checkbox" data-ui-autosave="true" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label + suffix)}</span></label>`; }).join('')}</fieldset>`).join('')}</div>
-</details>`;
+${crimes?'</section>':'</details>'}`;
 }
 function renderAlerts() {
 const crimes=activeModuleName()==='crimes';
@@ -828,7 +828,7 @@ const current = moduleState.alerts;
 const allAlerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
 updateAlertIndicator(allAlerts.length,allAlerts);
 if (!shouldRenderPdaModule(panel)) return;
-const alerts=allAlerts.flatMap(alert=>crimes?(alert.id===activePdaCrime?[alert]:[]):!isPdaCrimeAlert(alert.id)?[alert]:alert.id==='clusterRing'&&alert.clusterRingAvailable?[{...alert,title:'Cluster Ring opportunity',detail:'Current Jewelry Store security matches the Cluster Ring unique.'}]:[]);
+const alerts=allAlerts.flatMap(alert=>crimes?(activePdaCrime==='uniques'&&isPdaCrimeAlert(alert.id)?[alert]:[]):!isPdaCrimeAlert(alert.id)?[alert]:alert.id==='clusterRing'&&alert.clusterRingAvailable?[{...alert,title:'Cluster Ring opportunity',detail:'Current Jewelry Store security matches the Cluster Ring unique.'}]:[]);
 const cityBought = finite(current.data?.cityBought);
 const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
 const cityStatus = cityHidden
@@ -841,9 +841,10 @@ ${crimes?(current.error?moduleMessage(current.error,'error'):''):`<div class="mo
 <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
 <div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
 `}
-${crimes?'<nav class="war-tabs" aria-label="Crime tools">'+Object.entries(PDA_CRIME_TABS).map(([id,label])=>'<button type="button" data-action="select-crime-tab" data-crime-tab="'+id+'" aria-selected="'+String(id===activePdaCrime)+'">'+escapeHtml(label)+'</button>').join('')+'</nav><h3>'+escapeHtml(PDA_CRIME_TABS[activePdaCrime])+'</h3>':''}
-${crimes&&activePdaCrime==='arsonUnique'?`<label><input type="checkbox" data-arson-helper-enabled ${dataState.settings.alerts.arsonHelperEnabled===true?'checked':''}> Enable Arson Helper (preview)</label><label><input type="checkbox" data-arson-recipe-sharing ${pdaRecipeSharing()?'checked':''}> Share successful Arson recipes with SLINK (materials, actions and job requirements only)</label>`:''}
-${alertSettingsHtml(crimes)}
+${crimes?'<nav class="war-tabs" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr))" aria-label="Crime tools">'+Object.entries(PDA_CRIME_TABS).map(([id,label])=>'<button type="button" data-action="select-crime-tab" data-crime-tab="'+id+'" aria-selected="'+String(id===activePdaCrime)+'">'+escapeHtml(label)+'</button>').join('')+'</nav><h3>'+escapeHtml(PDA_CRIME_TABS[activePdaCrime])+'</h3>':''}
+${crimes&&activePdaCrime==='arson'?`<label><input type="checkbox" data-arson-helper-enabled ${dataState.settings.alerts.arsonHelperEnabled===true?'checked':''}> Enable Arson Helper</label><p>Hover or tap the fire icon in Torn. Enabling the helper also shares confirmed recipe details with SLINK.</p>`:''}
+${crimes&&activePdaCrime==='cracking'?'<p>Cracking helper coming soon.</p>':''}
+${!crimes||activePdaCrime==='uniques'?alertSettingsHtml(crimes):''}
 <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}${['disposalUnique', 'arsonUnique'].includes(alert.id) ? `<button type="button" data-action="crime-unique-checked" data-alert-id="${escapeHtml(alert.id)}">Checked today</button>` : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="720">Snooze 12h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
 </article></div>`;
 }

@@ -217,6 +217,8 @@
     if(!enabled||!root)return ()=>{};
     const doc=root.ownerDocument;
     const controls=new Map();
+    const ledger=global.SLINK_ARSON_LEDGER;
+    let portal=null,portalRoot=null,opened=null,leaveTimer=null;
     let observer=null,frame=null,disposed=false;
     const capture=journal&&captureArson({record:(...args)=>journal.record(...args)});
     function onAction(event){
@@ -229,9 +231,31 @@
     }
     if(capture)root.addEventListener('click',onAction,true);
     const active=()=>!disposed&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus());
-    function close(entry){entry.card.hidden=true;entry.button.setAttribute('aria-expanded','false');}
-    function remove(entry){entry.cancelPress?.();entry.wrap.remove();}
-    function clear(){for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();}
+    function close(entry){entry.pinned=false;entry.card.hidden=true;entry.button.setAttribute('aria-expanded','false');if(opened===entry)opened=null;if(ledger)entry.card.remove();}
+    function remove(entry){entry.cancelPress?.();entry.detach?.();close(entry);entry.wrap.remove();}
+    function clear(){global.clearTimeout(leaveTimer);for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();portal?.remove();portal=null;portalRoot=null;}
+    function movePopup(){
+      if(!opened||!ledger)return;
+      if(!opened.button.isConnected||!active()){close(opened);return;}
+      const {card,anchor}=opened,rect=anchor.getBoundingClientRect();
+      const viewport=global.visualViewport,offsetX=viewport?.offsetLeft||0,offsetY=viewport?.offsetTop||0;
+      const target={left:rect.left-offsetX,right:rect.right-offsetX,top:rect.top-offsetY,bottom:rect.bottom-offsetY,width:rect.width,height:rect.height};
+      const point=ledger.computeAnchorPosition(target,card.offsetWidth,card.offsetHeight,'top',{viewportWidth:viewport?.width||global.innerWidth,viewportHeight:viewport?.height||global.innerHeight});
+      card.style.left=(point.left+offsetX)+'px';card.style.top=(point.top+offsetY)+'px';
+    }
+    function attachPopup(entry){
+      if(!portal){
+        portal=doc.createElement('div');portal.dataset.slinkArsonPortal='';
+        portal.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+        portalRoot=portal.attachShadow({mode:'open'});doc.body.append(portal);
+      }
+      ledger.syncTornThemeVars(portal);
+      portalRoot.append(entry.card);
+    }
+    function outside(event){if(opened&&!event.composedPath().includes(portal)&&!event.composedPath().includes(opened.anchor))close(opened);}
+    function escape(event){if(opened&&event.key==='Escape')close(opened);}
+    function cancelLeave(){global.clearTimeout(leaveTimer);}
+    function delayClose(entry){cancelLeave();if(!entry.pinned)leaveTimer=global.setTimeout(()=>close(entry),180);}
     function paint(entry,job){
       const action=job.action[0].toUpperCase()+job.action.slice(1);
       const picker=[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]'));
@@ -242,7 +266,18 @@
       const message=[job.name,job.scenario,action+(job.nerveCost===null?'':' · '+job.nerveCost+' nerve'),
         job.damage===null?'Damage unknown':job.damage+'% damage',job.selected?'Selected: '+job.selected:null,guidance(job,entry.previousDamage),stockText,
         entry.recipe?'Previously successful on this device: '+entry.recipe.steps.map(step=>step.action+' '+step.item+(step.damageBefore===null?'':' at '+step.damageBefore+'%')).join(', ')+'. Check current requirements and inventory before reusing.':'No matching successful run recorded on this device.'].filter(Boolean).join(' — ');
-      if(entry.card.textContent!==message)entry.card.textContent=message;
+      if(ledger){
+        const key=JSON.stringify([job.name,job.scenario]);
+        if(entry.renderedKey!==key){
+          entry.card.replaceChildren(ledger.render(job));entry.renderedKey=key;
+          entry.live=doc.createElement('div');entry.live.style.cssText='font:11px/1.35 system-ui;padding:7px 10px;border-top:1px solid #8885';entry.card.append(entry.live);
+        }
+        const material=ledger.material(job.selected);
+        const stats=material?Object.entries(material.values).map(([name,value])=>name.replace(/[A-Z]/g,m=>' '+m.toLowerCase())+': '+value).join(' · '):'';
+        const detail=['Costs use Ledger reference prices.',job.damage===null?null:job.damage+'% damage',job.requestLabels.join(' · '),job.selected&&stats?job.selected+' — '+stats:null,stockText,job.phase==='burning'?guidance(job,entry.previousDamage):null,entry.recipe?message.split(' — ').at(-1):null].filter(Boolean).join(' — ');
+        if(entry.live.textContent!==detail)entry.live.textContent=detail;
+        movePopup();
+      }else if(entry.card.textContent!==message)entry.card.textContent=message;
     }
     function observe(entry,job){
       const identity=JSON.stringify([job.name,job.scenario,job.phase,job.requestLabels]);
@@ -256,42 +291,50 @@
       for(const row of root.querySelectorAll(rowSelector)){
         if(!row.getClientRects().length||row.closest('[hidden]'))continue;
         const job=readJob(row);capture?.inspect(row,job)?.catch(()=>{});if(!job)continue;rows.add(row);
-        const host=row.querySelector(prefix('titleSection'));
+        const host=(ledger&&row.querySelector('[class*="fireMeter"],.crime-image'))||row.querySelector(prefix('titleSection'));
         if(!host)continue;
         let entry=controls.get(row);
         if(entry?.wrap.parentNode!==host){if(entry)remove(entry);controls.delete(row);entry=null;}
         if(!entry){
           const wrap=doc.createElement('span');wrap.dataset.slinkArson='';wrap.style.cssText='position:relative;display:inline-block';
           const button=doc.createElement('button');button.type='button';button.textContent='Arson help';button.setAttribute('aria-expanded','false');
+          if(ledger){button.innerHTML=ledger.flame;button.setAttribute('aria-label','Arson help');button.style.cssText='display:inline-flex;align-items:center;gap:3px;cursor:help;border:1px solid currentColor;border-radius:10px;color:#ffb44e;background:#171b22;padding:2px 5px';}
           const card=doc.createElement('span');card.hidden=true;card.setAttribute('role','status');
           card.style.cssText='position:absolute;z-index:10000;width:min(300px,calc(100vw - 16px));max-height:40vh;overflow:auto;background:#171b22;color:#fff;padding:10px;border:1px solid #8a96aa;border-radius:6px;box-sizing:border-box;white-space:normal';
-          entry={wrap,button,card};controls.set(row,entry);
+          if(ledger)card.style.cssText='position:fixed;pointer-events:auto;width:max-content;max-width:min(440px,calc(100vw - 16px));max-height:65dvh;overflow:auto;background:var(--slink-arson-popup-bg,var(--tooltip-bg-color,#171b22));color:var(--crimes-baseText-color,#fff);border:1px solid var(--crimes-outcomeDivider-color,#8a96aa);border-radius:8px;box-shadow:0 2px 12px #0008;box-sizing:border-box';
+          const anchor=ledger?host:wrap;
+          entry={wrap,button,card,anchor};controls.set(row,entry);
+          if(ledger){const ranked=ledger.rank(job.scenario);if(ranked)button.append(doc.createTextNode(ledger.formatPpn(ranked.profitPerNerve)));card.addEventListener('pointerenter',cancelLeave);card.addEventListener('pointerleave',()=>delayClose(entry));}
           const open=()=>{
             if(!active())return;const latest=readJob(row);if(!latest)return;
+            if(ledger){cancelLeave();if(opened&&opened!==entry)close(opened);opened=entry;attachPopup(entry);}
             observe(entry,latest);entry.recipe=null;paint(entry,latest);card.hidden=false;button.setAttribute('aria-expanded','true');
             const key=signature(latest);
             journal?.find('arson',key).then(recipe=>{if(!active()||card.hidden||!entry.wrap.isConnected||entry.recipeKey!==key)return;const current=readJob(row);if(current&&signature(current)===key){entry.recipe=recipe;paint(entry,current);}}).catch(()=>{});
             entry.recipeKey=key;
+            if(ledger){movePopup();return;}
             const rect=button.getBoundingClientRect(),height=card.offsetHeight,width=card.offsetWidth;
             const origin=wrap.getBoundingClientRect();
             card.style.left=(Math.max(8,Math.min(rect.left,global.innerWidth-width-8))-origin.left)+'px';
             card.style.top=(Math.max(8,rect.bottom+height+8<=global.innerHeight?rect.bottom:rect.top-height)-origin.top)+'px';
           };
-          wrap.addEventListener('pointerenter',event=>{if(event.pointerType!=='touch')open();});
-          wrap.addEventListener('pointerleave',()=>{if(doc.activeElement!==button)close(entry);});
-          button.addEventListener('focus',open);button.addEventListener('blur',()=>close(entry));
+          const enter=event=>{if(event.pointerType!=='touch')open();};
+          const leave=()=>{if(doc.activeElement!==button){if(ledger)delayClose(entry);else close(entry);}};
+          anchor.addEventListener('pointerenter',enter);anchor.addEventListener('pointerleave',leave);
+          button.addEventListener('focus',open);button.addEventListener('blur',()=>{if(ledger)delayClose(entry);else close(entry);});
           let press=null,origin=null;
           entry.cancelPress=()=>{if(press!==null)global.clearTimeout(press);press=null;origin=null;};
+          entry.detach=()=>{anchor.removeEventListener('pointerenter',enter);anchor.removeEventListener('pointerleave',leave);};
           button.addEventListener('pointerdown',event=>{
             if(event.pointerType!=='touch')return;
             entry.cancelPress();origin=[event.clientX,event.clientY];
-            press=global.setTimeout(()=>{entry.cancelPress();open();},450);
+            press=global.setTimeout(()=>{entry.cancelPress();entry.pinned=true;open();},450);
           });
           button.addEventListener('pointermove',event=>{if(origin&&Math.hypot(event.clientX-origin[0],event.clientY-origin[1])>10)entry.cancelPress();});
           for(const event of ['pointerup','pointercancel','pointerleave'])button.addEventListener(event,entry.cancelPress);
-          button.addEventListener('click',event=>{event.stopPropagation();open();});
+          button.addEventListener('click',event=>{event.stopPropagation();if(ledger)entry.pinned=true;open();});
           wrap.addEventListener('keydown',event=>{if(event.key==='Escape'&&!card.hidden){event.stopPropagation();close(entry);}});
-          wrap.append(button,card);host.append(wrap);
+          if(ledger)wrap.append(button);else wrap.append(button,card);host.append(wrap);
         }
         observe(entry,job);
         if(!entry.card.hidden)paint(entry,job);
@@ -314,8 +357,9 @@
     const events=[[global,'focus'],[global,'blur'],[global,'hashchange'],[global,'pagehide'],[doc,'visibilitychange']];
     const handlers=events.map(([target,event])=>[target,event,(event==='blur'&&!focused)||event==='pagehide'?()=>{observer?.disconnect();observer=null;if(frame!==null)global.cancelAnimationFrame(frame);frame=null;clear();}:sync]);
     for(const [target,event,handler] of handlers)target.addEventListener(event,handler);
+    if(ledger){doc.addEventListener('click',outside,true);doc.addEventListener('keydown',escape);global.addEventListener('scroll',movePopup,true);global.addEventListener('resize',movePopup);}
     sync();
-    return ()=>{disposed=true;sync();if(capture)root.removeEventListener('click',onAction,true);for(const [target,event,handler] of handlers)target.removeEventListener(event,handler);};
+    return ()=>{disposed=true;sync();if(capture)root.removeEventListener('click',onAction,true);for(const [target,event,handler] of handlers)target.removeEventListener(event,handler);if(ledger){doc.removeEventListener('click',outside,true);doc.removeEventListener('keydown',escape);global.removeEventListener('scroll',movePopup,true);global.removeEventListener('resize',movePopup);}};
   }
   function connect({eligible=()=>false,focused,journal}={}){
     const doc=global.document;

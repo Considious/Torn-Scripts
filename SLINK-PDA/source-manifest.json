@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-523e0f90a2271b8b67958085b035c31dd7206e0ffc03dc7cb79f7e51d301eed6",
+  "revision": "sha256-c46b5b33aa28a6249fe34ceb4f574cddec6a84aacae3fc647c0ef71de6fa34fb",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -15,6 +15,7 @@
     "src/00-torn-theme.part",
     "src/00-shared-data.part",
     "src/00-target-records.part",
+    "src/00-arson-ledger.part",
     "src/00-arson-page.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
