@@ -143,6 +143,7 @@ const visibleTab = allowed.includes(state[stateKey]) ? state[stateKey] : allowed
 shadow.querySelectorAll(`[data-${group}-panel]`).forEach(panel => { panel.hidden = panel.dataset[panelKey] !== visibleTab; });
 shadow.querySelectorAll(`[data-${group}-tab]`).forEach(button => button.setAttribute('aria-selected', String(button.dataset[tabKey] === visibleTab)));
 }
+syncPdaArsonHelper();
 }
 function levelingRows(payload) {
 return Array.isArray(payload?.targets) ? payload.targets : Array.isArray(payload?.recommendations) ? payload.recommendations : [];

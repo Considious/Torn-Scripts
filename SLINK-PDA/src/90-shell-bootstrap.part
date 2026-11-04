@@ -1,4 +1,5 @@
 adoptPdaLegacyIntelligence();
+let pdaArsonHelper=null;
 function shouldRenderPdaModule(name) {
 const dirty=shouldRenderPdaModule.dirty ||= new Set();
 if (!dashboardOpen || !pdaDomActive() || activeModuleName() !== name) { dirty.add(name); return false; }
@@ -1116,6 +1117,10 @@ moduleState.access.error = '';
 setTheme('slink-dark');
 renderAllModules();
 }
+if(action==='select-crime-tab'){
+const id=event.target.closest('[data-crime-tab]')?.dataset.crimeTab;
+if(Object.hasOwn(PDA_CRIME_TABS,id)){activePdaCrime=id;renderAlerts();}
+}
 if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
 const enabled = action === 'alerts-enable-all';
 const types = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
@@ -1578,6 +1583,11 @@ queuePdaSettingsSave();
 scheduleRacingScan(0);
 });
 listenPdaAction(overlay,'change', async event => {
+if(event.target.matches('[data-arson-helper-enabled]')){
+dataState.settings.alerts.arsonHelperEnabled=event.target.checked===true;
+syncPdaArsonHelper();
+await savePdaChanges();return;
+}
 if (event.target.matches('[data-alert-type]')) {
 const id = String(event.target.dataset.alertType || '');
 if (PDA_ALERT_TYPES.some(definition => definition.id === id)) {
@@ -1944,6 +1954,12 @@ renderWar(true);
 openDashboard();
 }
 });
+function syncPdaArsonHelper(){
+  if(dataState.settings.alerts.arsonHelperEnabled!==true){pdaArsonHelper?.dispose();pdaArsonHelper=null;return;}
+  pdaArsonHelper ||= global.SLINK_ARSON_PAGE?.connect({focused:pdaDomActive,eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
+  pdaArsonHelper?.setEnabled(true);
+}
+syncPdaArsonHelper();
 global.SLINK_PDA_DASHBOARD = Object.freeze({
 storage:Object.freeze({flush:flushPdaStorage,retry:retryPdaStorage,diagnose:diagnosePdaStorage,status:()=>({pending:pendingStorageWrites.size,failed:failedStorageWrites.size,backend:storageBackendName})}),
 build:BUILD,
