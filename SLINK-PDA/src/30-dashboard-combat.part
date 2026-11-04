@@ -95,6 +95,7 @@ company:COMPANY_SCOPE,
 museums:MUSEUM_SCOPE
 });
 function canAccessModule(name) {
+if (name === 'crimes') return hasScope('slink.adhd.alerts');
 if (name === 'market') return true; // Keep the locked view and permission refresh reachable.
 const plugin = pdaPlugins.get(name);
 if (Array.isArray(plugin?.scopes) && plugin.scopes.length) return plugin.scopes.some(hasScope);
@@ -105,7 +106,7 @@ return !required || hasScope(required);
 function applyPermissionGates() {
 const gates = [
 ['combat','leveling'],['combat','bounties'],['combat','mugging'],['combat','targetList'],['combat','war'],['combat','stats'],
-['efficiency','alerts'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],
+['efficiency','alerts'],['efficiency','crimes'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],
 ['quality-of-life','racing'],['quality-of-life','abroadStocks'],['quality-of-life','company'],['quality-of-life','museums'],
 ...[...pdaPlugins.values()].map(plugin => ['quality-of-life', String(plugin.id)])
 ];

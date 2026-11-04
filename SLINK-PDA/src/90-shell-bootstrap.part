@@ -9,7 +9,7 @@ function renderActivePdaPanel() {
 if (!dashboardOpen || !pdaDomActive()) return;
 const name=activeModuleName(), plugin=pdaPlugins.get(name);
 if (plugin) { plugin.render?.(); return; }
-const renders={access:renderAccess,leveling:renderLeveling,bounties:renderBounties,mugging:renderMugging,targetList:renderTargetList,war:renderWar,stats:renderStats,alerts:renderAlerts,market:renderMarket,merits:renderMerits,dollarBazaars:renderDollarBazaars,racing:renderRacing,company:renderCompany,museums:renderMuseums,abroadStocks:PDA_ABROAD.render};
+const renders={access:renderAccess,leveling:renderLeveling,bounties:renderBounties,mugging:renderMugging,targetList:renderTargetList,war:renderWar,stats:renderStats,alerts:renderAlerts,crimes:renderAlerts,market:renderMarket,merits:renderMerits,dollarBazaars:renderDollarBazaars,racing:renderRacing,company:renderCompany,museums:renderMuseums,abroadStocks:PDA_ABROAD.render};
 renders[name]?.();
 if(name==='access')renderThemeChoices();
 }
@@ -41,7 +41,7 @@ if (name === 'company') { renderCompany(); await refreshCompany(force).catch(() 
 if (name === 'museums') { renderMuseums(); await refreshMuseums(force).catch(() => undefined); return; }
 if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
 if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
-const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
+const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts,crimes:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
 if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 }
 function renderAllModules() {
@@ -460,7 +460,7 @@ button:active{filter:brightness(1.25);transform:translateY(1px)}
 :host([data-theme-icons="true"]) .primary-nav button[data-page="quality-of-life"]::before{background-position:66.666% 0}
 :host([data-theme-icons="true"]) .primary-nav button[data-page="access"]::before{background-position:100% 25%}
 :host([data-theme-icons="true"]) [data-efficiency-tab="alerts"]::before{background-position:0 0}
-:host([data-theme-icons="true"]) [data-efficiency-tab="market"]::before{background-position:33.333% 0}
+:host([data-theme-icons="true"]) [data-efficiency-tab="crimes">Crimes</button><button type="button" data-efficiency-tab="market"]::before{background-position:33.333% 0}
 :host([data-theme-icons="true"]) [data-efficiency-tab="merits"]::before{background-position:66.666% 0}
 :host([data-theme-icons="true"]) [data-efficiency-tab="dollarBazaars"]::before{background-position:100% 0}
 :host([data-theme-icons="true"]) [data-combat-tab="leveling"]::before{background-position:66.666% 75%}
@@ -520,6 +520,7 @@ overlay.innerHTML = `<div class="gothic-nav-structure" aria-hidden="true"><i></i
 <div class="page-head"><div><h1>Efficiency</h1><p>API-backed reminders, market watches, and Merit farms coordinated inside PDA.</p></div><div class="page-actions"><button type="button" data-action="refresh-active">Refresh</button></div></div>
 <nav class="subnav" aria-label="Efficiency tools"><button type="button" data-efficiency-tab="alerts">Alerts</button><button type="button" data-efficiency-tab="market">Market</button><button type="button" data-efficiency-tab="merits">Merits</button><button type="button" data-efficiency-tab="dollarBazaars">$1 Bazaars</button></nav>
 <div class="subpage" data-efficiency-panel="alerts"><div data-module-root="alerts"></div></div>
+<div class="subpage" data-efficiency-panel="crimes" hidden><div data-module-root="crimes"></div></div>
 <div class="subpage" data-efficiency-panel="market" hidden><div data-module-root="market"></div></div>
 <div class="subpage" data-efficiency-panel="merits" hidden><div data-module-root="merits"></div></div>
 <div class="subpage" data-efficiency-panel="dollarBazaars" hidden><div data-module-root="dollarBazaars"></div></div>
@@ -729,7 +730,7 @@ function selectSubpage(group, tab, persist = true) {
 const requestedTab = tab;
 const allowedByGroup = {
 combat:['leveling','bounties','mugging','targetList','war','stats'],
-efficiency:['alerts','market','merits','dollarBazaars'],
+efficiency:['alerts','crimes','market','merits','dollarBazaars'],
 qualityOfLife:['racing','abroadStocks','company','museums',...pdaPlugins.keys()]
 };
 const allowed = allowedByGroup[group] || allowedByGroup.combat;
@@ -1117,7 +1118,9 @@ renderAllModules();
 }
 if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
 const enabled = action === 'alerts-enable-all';
-dataState.settings.alerts.enabledTypes = Object.fromEntries(PDA_ALERT_TYPES.map(definition => [definition.id, enabled]));
+const types = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
+for (const definition of PDA_ALERT_TYPES) if (isPdaCrimeAlert(definition.id) === (activeModuleName() === 'crimes')) types[definition.id] = enabled;
+dataState.settings.alerts.enabledTypes = types;
 reconcileAlertNotifications(moduleState.alerts.data);
 await savePdaChanges();
 renderAlerts();

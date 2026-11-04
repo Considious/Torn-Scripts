@@ -412,11 +412,11 @@ return Array.isArray(payload?.crimes?.uniques) ? payload.crimes.uniques : [];
 function clusterRingAchievedPda(payload) {
 return crimeUniqueCompletedRowsPda(payload).some(unique => (unique?.rewards?.items || []).some(item => Number(item?.id ?? item?.item_id) === 1465));
 }
-function crimeUniqueProgressRowsPda() {
+function crimeUniqueProgressRowsPda(enabled = () => true) {
 const cache = dataState.caches.crimeUniques || {};
 const catalogRows = Array.isArray(cache?.catalog?.crimes) ? cache.catalog.crimes : [];
 const users = cache.user && typeof cache.user === 'object' ? cache.user : {};
-return PDA_ALERT_TYPES.filter(definition => Number(definition.crimeId) > 0).map(definition => {
+return PDA_ALERT_TYPES.filter(definition => Number(definition.crimeId) > 0 && enabled(definition)).map(definition => {
 const catalog = catalogRows.find(row => Number(row?.id) === Number(definition.crimeId)) || {};
 const user = users[definition.crimeId] || {};
 const completedIds = [...new Set(crimeUniqueCompletedRowsPda(user).map(row => Number(row?.id)).filter(Number.isFinite))];
@@ -620,11 +620,11 @@ const fetchedAt = Number(snapshot?.at) || 0;
 const snapshotFresh = fetchedAt > 0 && Date.now() - fetchedAt <= 15 * 60_000;
 const snoozed = dataState.settings.alerts.snoozedUntil || {};
 const rows = [];
-const add = (id, active, title, detail, links = []) => {
+const add = (id, active, title, detail, links = [], metadata = {}) => {
 if (id !== 'timer24' && !snapshotFresh) return;
 if (dataState.settings.alerts.enabledTypes?.[id] === false) return;
 if (Number(dataState.settings.alerts.stackModeSince) > 0 && ['energyFull', 'energyRefill'].includes(id)) return;
-if (active && Number(snoozed[id] || 0) <= Date.now()) rows.push({ id, title, detail, links });
+if (active && Number(snoozed[id] || 0) <= Date.now()) rows.push({ id, title, detail, links, ...metadata });
 };
 const energy = body?.bars?.energy || {};
 const nerve = body?.bars?.nerve || {};
@@ -642,9 +642,9 @@ const activeRace = raceActive(body?.races, profile?.status, body?.icons);
 const racewayKnown = body?.enlistedcars !== undefined || body?.races !== undefined || body?.icons !== undefined;
 const playPoints = googlePlayPointsAccess();
 const timerEnd = Number(dataState.settings.alerts.timer24EndsAt) || 0;
-const crimeProgress = crimeUniqueProgressRowsPda();
+const crimeProgress = crimeUniqueProgressRowsPda(({id})=>dataState.settings.alerts.enabledTypes?.[id]!==false);
 const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
-const searchOpportunities = searchForCashOpportunitiesPda(crimeById.searchCashUnique?.skill);
+const searchOpportunities = crimeById.searchCashUnique ? searchForCashOpportunitiesPda(crimeById.searchCashUnique.skill) : [];
 add('timer24', timerEnd > 0 && timerEnd <= Date.now(), '24-hour timer finished', 'Your countdown has finished. Dismiss it or start another timer.');
 add('drugCooldown', drug === 0, 'Drug cooldown is clear', 'You can take a drug now.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
 add('medicalCooldown', medical === 0, 'Medical cooldown is clear', 'Fill a blood bag or use medical supplies.', [['Items','https://www.torn.com/item.php'],['Faction Armory','https://www.torn.com/factions.php?step=your#/tab=armoury']]);
@@ -680,7 +680,7 @@ add('searchCashUnique', crimeById.searchCashUnique?.canSpawnMissing && searchOpp
 const shopliftingOpportunities = shopliftingUniqueOpportunitiesPda(crimeById.clusterRing);
 const shopliftingSummary = shopliftingOpportunities.slice(0, 6).map(row => row.detail).join('; ');
 const shopliftingExtra = shopliftingOpportunities.length > 6 ? `; +${shopliftingOpportunities.length - 6} more` : '';
-add('clusterRing', crimeById.clusterRing?.canSpawnMissing && shopliftingOpportunities.length > 0, `${shopliftingOpportunities.length} missing Shoplifting unique${shopliftingOpportunities.length === 1 ? '' : 's'} match current security`, `${shopliftingSummary}${shopliftingExtra}. ${crimeById.clusterRing?.completed || 0}/${crimeById.clusterRing?.total || 0} completed.`, [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']]);
+add('clusterRing', crimeById.clusterRing?.canSpawnMissing && shopliftingOpportunities.length > 0, `${shopliftingOpportunities.length} missing Shoplifting unique${shopliftingOpportunities.length === 1 ? '' : 's'} match current security`, `${shopliftingSummary}${shopliftingExtra}. ${crimeById.clusterRing?.completed || 0}/${crimeById.clusterRing?.total || 0} completed.`, [['Shoplift','https://www.torn.com/page.php?sid=crimes#/shoplifting']], {clusterRingAvailable:shopliftingOpportunities.some(row=>Number(row.id)===20765)});
 add('disposalUnique', dailyCrimeUniqueDuePda(crimeById.disposalUnique), 'Check today’s Disposal jobs for missing uniques', `${crimeById.disposalUnique?.completed || 0}/${crimeById.disposalUnique?.total || 0} completed. Jobs refresh daily; check starred options before using today’s jobs.`, [['Check Disposal','https://www.torn.com/page.php?sid=crimes#/disposal']]);
 add('arsonUnique', dailyCrimeUniqueDuePda(crimeById.arsonUnique), 'Check today’s Arson targets for missing uniques', `${crimeById.arsonUnique?.completed || 0}/${crimeById.arsonUnique?.total || 0} completed at skill ${Math.floor(crimeById.arsonUnique?.skill || 0)}. Only skill-eligible missing targets trigger this reminder.`, [['Check Arson','https://www.torn.com/page.php?sid=crimes#/arson']]);
 return [...warRetalAlertRows(), ...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows].filter(alert => Number(snoozed[alert.id] || 0) <= Date.now());
@@ -794,21 +794,26 @@ const end = Number(dataState.settings.alerts.timer24EndsAt) || 0;
 const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1000));
 return !end ? '24-hour timer: not started' : remaining ? `24-hour timer: ${duration(remaining)} remaining` : '24-hour timer finished';
 }
-function alertSettingsHtml() {
+const PDA_CRIME_ALERT_IDS=new Set(PDA_ALERT_TYPES.filter(row=>row.group==='Crime uniques').map(row=>row.id));
+function isPdaCrimeAlert(id){return PDA_CRIME_ALERT_IDS.has(id);}
+function alertSettingsHtml(crimes=false) {
+const definitions=PDA_ALERT_TYPES.filter(row=>isPdaCrimeAlert(row.id)===crimes);
 const enabled = normalizePdaAlertTypes(dataState.settings.alerts.enabledTypes);
 dataState.settings.alerts.enabledTypes = enabled;
-const enabledCount = PDA_ALERT_TYPES.filter(definition => enabled[definition.id]).length;
-const groups = [...new Set(PDA_ALERT_TYPES.map(definition => definition.group))];
-const crimeProgress = crimeUniqueProgressRowsPda();
+const enabledCount = definitions.filter(definition => enabled[definition.id]).length;
+const groups = [...new Set(definitions.map(definition => definition.group))];
+const crimeProgress = crimes ? crimeUniqueProgressRowsPda(({id})=>enabled[id]) : [];
 const crimeById = Object.fromEntries(crimeProgress.map(progress => [progress.id, progress]));
-return `<details class="alert-settings" data-ui-key="alerts.settings" ${state.panels?.['alerts.settings'] ? 'open' : ''}><summary>Alert settings · ${enabledCount}/${PDA_ALERT_TYPES.length} enabled</summary>
+return `<details class="alert-settings" data-ui-key="${crimes?'crimes.settings':'alerts.settings'}" ${state.panels?.[crimes?'crimes.settings':'alerts.settings'] ? 'open' : ''}><summary>Alert settings · ${enabledCount}/${definitions.length} enabled</summary>
 <p>Disabled alerts are removed from both the PDA alert list and phone notification flow.</p>
 <div class="alert-settings-actions"><button type="button" data-action="alerts-enable-all">Enable all</button><button type="button" data-action="alerts-disable-all">Disable all</button></div>
-<div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${PDA_ALERT_TYPES.filter(definition => definition.group === group).map(definition => { const progress = crimeById[definition.id]; const suffix = progress?.total ? ` · ${progress.completed}/${progress.total} · skill ${Math.floor(progress.skill || 0)}` : ''; return `<label><input type="checkbox" data-ui-autosave="true" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label + suffix)}</span></label>`; }).join('')}</fieldset>`).join('')}</div>
+<div class="alert-settings-groups">${groups.map(group => `<fieldset><legend>${escapeHtml(group)}</legend>${definitions.filter(definition => definition.group === group).map(definition => { const progress = crimeById[definition.id]; const suffix = progress?.total ? ` · ${progress.completed}/${progress.total} · skill ${Math.floor(progress.skill || 0)}` : ''; return `<label><input type="checkbox" data-ui-autosave="true" data-alert-type="${escapeHtml(definition.id)}" ${enabled[definition.id] ? 'checked' : ''}><span>${escapeHtml(definition.label + suffix)}</span></label>`; }).join('')}</fieldset>`).join('')}</div>
 </details>`;
 }
 function renderAlerts() {
-const root = moduleRoot('alerts');
+const crimes=activeModuleName()==='crimes';
+const panel=crimes?'crimes':'alerts';
+const root=moduleRoot(panel);
 if (!root) return;
 const permitted = hasScope('slink.adhd.alerts');
 const stakeoutAlerts = stakeoutAlertRows();
@@ -816,11 +821,12 @@ const abroadAlerts = PDA_ABROAD.alerts();
 const companyAlerts = companyAlertRows();
 const pluginAlerts = [...warRetalAlertRows(), ...pdaPluginAlerts()];
 syncPdaRetalSound();
-if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); if (shouldRenderPdaModule('alerts')) root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
+if (!permitted && !stakeoutAlerts.length && !abroadAlerts.length && !companyAlerts.length && !pluginAlerts.length) { updateAlertIndicator(0, []); if (shouldRenderPdaModule(panel)) root.innerHTML = lockedModule('slink.adhd.alerts', 'SLINK Efficiency'); return; }
 const current = moduleState.alerts;
-const alerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
-updateAlertIndicator(alerts.length, alerts);
-if (!shouldRenderPdaModule('alerts')) return;
+const allAlerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
+updateAlertIndicator(allAlerts.length,allAlerts);
+if (!shouldRenderPdaModule(panel)) return;
+const alerts=allAlerts.flatMap(alert=>crimes?(isPdaCrimeAlert(alert.id)?[alert]:[]):!isPdaCrimeAlert(alert.id)?[alert]:alert.id==='clusterRing'&&alert.clusterRingAvailable?[{...alert,title:'Cluster Ring opportunity',detail:'Current Jewelry Store security matches the Cluster Ring unique.'}]:[]);
 const cityBought = finite(current.data?.cityBought);
 const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();
 const cityStatus = cityHidden
@@ -828,11 +834,12 @@ const cityStatus = cityHidden
 : cityBought === null ? 'City purchase total unavailable'
 : cityBought >= 100 ? 'City cap complete · 100 / 100 bought today'
 : `${number(cityBought)} / 100 city items bought today`;
-root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Efficiency</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
-<div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
+root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>${crimes?'Crimes':'SLINK Efficiency'}</h2><span class="muted">Direct Torn API timers · no Worker polling</span></div><span class="badge ${alerts.length ? 'warn' : 'ready'}">${alerts.length} active</span></div>
+${crimes?(current.error?moduleMessage(current.error,'error'):''):`<div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · checks every 5m while Torn PDA keeps this page alive</span><span>${escapeHtml(cityStatus)}</span></div>${current.error ? moduleMessage(current.error, 'error') : ''}
 <div class="module-toolbar"><span data-timer24-clock>${escapeHtml(timer24Label())}</span><div class="target-actions"><button type="button" data-action="timer24-start">${dataState.settings.alerts.timer24EndsAt ? 'Restart' : 'Start'} 24h timer</button>${dataState.settings.alerts.timer24EndsAt ? '<button type="button" data-action="timer24-cancel">Cancel / dismiss timer</button>' : ''}</div></div>
 <div class="module-toolbar"><span>${dataState.settings.alerts.stackModeSince > 0 ? 'Stack mode on — energy reminders paused until below 150E' : 'Stack mode off'}</span><button type="button" data-action="toggle-stack">${dataState.settings.alerts.stackModeSince > 0 ? 'Turn Stack mode off' : 'Enable Stack mode'}</button></div>
-${alertSettingsHtml()}
+`}
+${alertSettingsHtml(crimes)}
 <div class="alert-list">${alerts.length ? alerts.map(alert => `<article class="alert"><div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.detail)}</span></div><div class="target-actions">${alert.links.map(([label, href]) => actionLink(label, href)).join('')}${alert.id === 'cityItems' ? '<button type="button" data-action="hide-city-until-reset">Hide until reset</button>' : ''}${alert.id === 'googlePlayPoints' ? '<button type="button" data-action="claim-google-play-points">Claimed — remind in 7 days</button>' : ''}${['disposalUnique', 'arsonUnique'].includes(alert.id) ? `<button type="button" data-action="crime-unique-checked" data-alert-id="${escapeHtml(alert.id)}">Checked today</button>` : ''}<button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="5">Snooze 5m</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="60">Snooze 1h</button><button type="button" data-action="snooze-alert" data-alert-id="${escapeHtml(alert.id)}" data-minutes="720">Snooze 12h</button></div></article>`).join('') : moduleMessage('Nothing needs your attention right now.')}</div>
 </article></div>`;
 }

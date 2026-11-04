@@ -1010,7 +1010,7 @@ const source = value && typeof value === 'object' && !Array.isArray(value) ? val
 return {
 page:['combat', 'efficiency', 'quality-of-life', 'access'].includes(source.page) ? source.page : defaults.page,
 combatTab:['leveling', 'bounties', 'mugging', 'targetList', 'war', 'stats'].includes(source.combatTab) ? source.combatTab : defaults.combatTab,
-efficiencyTab:['alerts', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
+efficiencyTab:['alerts', 'crimes', 'market', 'merits', 'dollarBazaars'].includes(source.efficiencyTab) ? source.efficiencyTab : defaults.efficiencyTab,
 qualityOfLifeTab:typeof source.qualityOfLifeTab === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(source.qualityOfLifeTab) ? source.qualityOfLifeTab : defaults.qualityOfLifeTab,
 theme:String(source.theme || defaults.theme),
 minimizedMode:['bar', 'bubble', 'chat'].includes(source.minimizedMode) ? source.minimizedMode : defaults.minimizedMode,

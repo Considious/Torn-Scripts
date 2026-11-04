@@ -16,7 +16,7 @@ assert(/editableState\s*=\s*protectEditableState\(shadow\)/.test(source), 'The g
 assert(source.includes('function installModuleRenderGuard(root)'), 'Every module root must share the background-render guard.');
 assert(/if\s*\(moduleHasActiveEditor\(root\)\)/.test(source), 'Background rendering must defer while a user is editing.');
 assert(source.includes("tagName==='DETAILS'") || source.includes("tagName === 'DETAILS'"), 'Open module sections must survive background rendering.');
-assert(source.includes("data-ui-key=\"alerts.settings\""), 'Alert settings must have a stable persisted panel identity.');
+assert(source.includes("'crimes.settings':'alerts.settings'"), 'Alert settings must have a stable persisted panel identity.');
 assert(source.includes('data-ui-autosave="true" data-alert-type='), 'Alert checkboxes must use committed model state after rendering.');
 assert(source.includes("restoreKeyedPanels(root)"), 'Module replacements must restore keyed panel state immediately.');
 assert(source.includes("state.panels[key] = event.target.open"), 'User-controlled panel state must be saved, not inferred from API renders.');
