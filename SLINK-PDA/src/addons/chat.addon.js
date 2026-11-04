@@ -1180,7 +1180,7 @@ function render(){
   if(!root.querySelector('[data-chat-base]')){const base=document.createElement('div');base.dataset.chatBase='';root.append(base);}
   renderBase();
   if(!root.querySelector('[data-chat-ff-panel]')){
-   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input type="checkbox" data-chat-ff-toggle> Show Fair Fight beside chat names</label><label><input type="checkbox" data-chat-ff-mentions> Show Fair Fight next to player mentions</label><p>† marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
+   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input type="checkbox" data-chat-ff-toggle> Show Fair Fight beside chat names</label><br><label><input type="checkbox" data-chat-ff-mentions> Show Fair Fight next to player mentions</label><p>† marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
    for(const [key,selector] of [['ffBubbles','[data-chat-ff-toggle]'],['ffMentions','[data-chat-ff-mentions]']]){
     const toggle=panel.querySelector(selector),status=panel.querySelector('[data-chat-ff-status]');toggle.checked=config()[key]===true;
     api.listen(toggle,'change',async()=>{config()[key]=toggle.checked;ffBubbles.sync();status.textContent='Saving…';try{await api.save();status.textContent='Saved.';}catch{status.textContent='Not saved. Change the option again to retry.';}});

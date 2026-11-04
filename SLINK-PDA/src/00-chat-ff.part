@@ -78,7 +78,6 @@
     const group={entries:[],splits:[],visible:!visibility};
     function add(after,id,link){
      const badge=document.createElement(link?'a':'span');badge.className='slink-chat-ff-bubble';badge.dataset.slinkChatFf='';badge.hidden=true;
-     badge.style.cssText='display:inline-block;vertical-align:middle;margin:0 3px;padding:1px 5px;border-radius:999px;color:white;font:700 10px/1.3 system-ui;white-space:nowrap;text-decoration:none';
      if(link){badge.href='https://www.torn.com/profiles.php?XID='+id;badge.target='_self';}
      after.after(badge);const entry={id,badge,at:0,source:after,link};group.entries.push(entry);
     }
@@ -178,7 +177,7 @@
    epoch++;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;visibility?.disconnect();visibility=null;global.clearTimeout(timer);timer=null;
    for(const [a,e]of entries)if(!a.isConnected||!root?.contains(a))remove(a,e);
    root=null;
-   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot span[class*="senderContainer___"]>.slink-chat-ff-bubble{display:inline-block!important;position:static!important;transform:none!important;flex:0 0 auto!important;align-self:center;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin:0 3px!important;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:none;box-sizing:border-box;pointer-events:none}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}';(document.head||document.documentElement).append(style);}
+   if(!document.getElementById('slink-chat-ff-style')){const style=document.createElement('style');style.id='slink-chat-ff-style';style.textContent='#chatRoot [data-slink-chat-ff].slink-chat-ff-bubble{display:inline-block!important;position:static!important;transform:none!important;flex:0 0 auto!important;align-self:center;height:auto!important;min-height:0!important;width:auto!important;vertical-align:middle;margin:0 3px!important;padding:1px 5px;border:1px solid rgba(255,255,255,.65);border-radius:999px;color:#fff!important;text-decoration:none!important;font:700 10px/1.3 system-ui,sans-serif;white-space:nowrap;max-width:none;box-sizing:border-box;pointer-events:none}#chatRoot a[data-slink-chat-ff].slink-chat-ff-bubble{pointer-events:auto}#chatRoot .slink-chat-ff-bubble[hidden]{display:none!important}';(document.head||document.documentElement).append(style);}
    if(global.IntersectionObserver)visibility=new global.IntersectionObserver(changes=>{if(!active())return;for(const change of changes){const e=entries.get(change.target)||inline.get(change.target);if(e)e.visible=change.isIntersecting;}schedule();});
    attach();
    for(const [body,group] of inline){if(!root?.contains(body))clearInline(body);else{group.visible=!visibility;visibility?.observe(body);}}
