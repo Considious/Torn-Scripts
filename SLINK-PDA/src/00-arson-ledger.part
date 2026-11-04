@@ -3535,9 +3535,28 @@
     const scenario=scenarioIndex.get(String(name||'').trim().toLowerCase());
     return scenario?rankForScenario(scenario,prices,DEFAULT_THRESHOLDS):null;
   }
-  function render(job,prices={}){
-    const ranked=rank(job.scenario,prices),node=ranked?buildTooltipContent(ranked,prices,false):el('div','pyro-tt');
-    if(!ranked)node.appendChild(txt("This scenario isn't covered by Arsonist's Ledger yet — no scenario data available."));
+  function render(job,plan={}){
+    const scenario=scenarioIndex.get(String(job.scenario||'').trim().toLowerCase()),node=el('div','pyro-tt');
+    const title=el('div','pyro-tt-name');title.textContent=job.scenario||job.name||'Arson';node.append(title);
+    const stats=el('div','pyro-tt-stats');node.append(stats);
+    if(scenario)stats.append(row('Payout',scenario.payoutMax>scenario.payoutMin?formatPayoutValue(scenario.payoutMin)+'–'+formatPayoutValue(scenario.payoutMax):formatPayoutValue(scenario.payoutMin)));
+    if(plan.record){
+      const actions=Object.values(CATALOG);
+      const items=plan.record.steps.map(step=>actions.find(item=>item.name.toLowerCase()===step.item.toLowerCase()));
+      const nerve=5+plan.record.steps.reduce((sum,step)=>sum+(step.nerveCost??5),0);
+      const cost=items.every(Boolean)?items.reduce((sum,item)=>sum+(item.isTool?0:item.defaultPrice),0):null;
+      if(cost!==null)stats.append(row('Cost',formatCost(cost)+' est.'));
+      stats.append(row('Nerve',String(nerve)));
+      if(scenario&&cost!==null)stats.append(row('Per nerve',formatPpn((effectivePayout(scenario,'average')-cost)/nerve)+' est.',true));
+      node.append(el('hr','pyro-tt-divider'));
+      for(const step of plan.record.steps){
+        const label=step.action[0].toUpperCase()+step.action.slice(1),timing=['stoke','dampen'].includes(step.action)&&Number.isFinite(step.damageBefore)?' at '+step.damageBefore+'% observed damage':'';
+        node.append(row(label,step.item+timing));
+      }
+      const note=el('div','pyro-tt-notes');note.textContent='Previously successful with these requirements. Fire timing can vary.';node.append(note);
+    }else{
+      const note=el('div','pyro-tt-notes');note.textContent=plan.reason||'No available formula confirmed.';node.append(note);
+    }
     const style=el('style');style.textContent=buildTooltipStyles();node.prepend(style);
     const building=Object.hasOwn(BUILDINGS,job.name)?BUILDINGS[job.name]:null;
     if(building){

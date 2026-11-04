@@ -1981,7 +1981,7 @@ function syncPdaArsonHelper(){
   const arsonPage=global.SLINK_ARSON_PAGE;
   if(arsonPage&&!pdaArsonHelper)pdaArsonHelper=arsonPage.connect({
     focused:pdaDomActive,eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts'),
-    journal:{find:(...args)=>pdaRecipes().find(...args),record:async(crime,key,steps)=>{
+    journal:{candidates:(...args)=>pdaRecipes().candidates(...args),record:async(crime,key,steps)=>{
       const owner=pdaRecipeOwner();await pdaRecipes().record(crime,key,steps,owner||null);
       void syncPdaCrimeRecipes().catch(()=>{});
     }}

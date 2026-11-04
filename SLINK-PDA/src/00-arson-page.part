@@ -142,6 +142,7 @@
     }
     return {
       async find(crime,key){return (await current())[crime]?.find(record=>record.key===key)||null;},
+      async candidates(crime,key){return ((await current())[crime]||[]).filter(record=>record.key===key);},
       record(crime,key,steps,owner=null){return update(old=>{
         const rows=old[crime]||[],formula=JSON.stringify(steps),prior=rows.find(row=>row.key===key&&JSON.stringify(row.steps)===formula);
         const record={key,steps,successes:(prior?.successes||0)+1,observedAt:Date.now()};
@@ -218,6 +219,8 @@
     const doc=root.ownerDocument;
     const controls=new Map();
     const ledger=global.SLINK_ARSON_LEDGER;
+    const planner=global.SLINK_EXTENSION?.core.arsonAdvice||global.SLINK_ARSON_ADVICE;
+    let inventory=new Map(),pickerAction=null,watchedPicker=null,pickerObserver=null;
     let portal=null,portalRoot=null,opened=null,leaveTimer=null;
     let observer=null,frame=null,disposed=false;
     const capture=journal&&captureArson({record:(...args)=>journal.record(...args)});
@@ -226,6 +229,7 @@
       const button=event.target.closest?.('button.commit-button'),row=button?.closest(rowSelector);
       if(!row||!root.contains(row)||row.querySelector('button.commit-button')!==button)return;
       const job=readJob(row);
+      if(job?.usable){inventory=new Map();pickerAction=null;}
       capture.inspect(row,job)?.catch(()=>{});
       capture.click(row,job);
     }
@@ -233,7 +237,7 @@
     const active=()=>!disposed&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus());
     function close(entry){entry.pinned=false;entry.card.hidden=true;entry.button.setAttribute('aria-expanded','false');if(opened===entry)opened=null;if(ledger)entry.card.remove();}
     function remove(entry){entry.cancelPress?.();entry.detach?.();close(entry);entry.wrap.remove();}
-    function clear(){global.clearTimeout(leaveTimer);for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();portal?.remove();portal=null;portalRoot=null;}
+    function clear(){global.clearTimeout(leaveTimer);for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();portal?.remove();portal=null;portalRoot=null;pickerObserver?.disconnect();pickerObserver=null;watchedPicker=null;inventory=new Map();pickerAction=null;}
     function movePopup(){
       if(!opened||!ledger)return;
       if(!opened.button.isConnected||!active()){close(opened);return;}
@@ -256,6 +260,20 @@
     function escape(event){if(opened&&event.key==='Escape')close(opened);}
     function cancelLeave(){global.clearTimeout(leaveTimer);}
     function delayClose(entry){cancelLeave();if(!entry.pinned)leaveTimer=global.setTimeout(()=>close(entry),180);}
+    function updateInventory(){
+      const triggers=root.querySelectorAll('button[aria-expanded="true"]:is('+prefix('itemButton')+')');
+      const row=triggers.length===1?triggers[0].closest(rowSelector):null;
+      const picker=row?[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]')):null;
+      if(picker!==watchedPicker){
+        pickerObserver?.disconnect();watchedPicker=picker;
+        if(picker){pickerObserver ||= new global.MutationObserver(()=>{if(active()&&frame===null)frame=global.requestAnimationFrame(refresh);});pickerObserver.observe(picker,{subtree:true,childList:true,attributes:true,attributeFilter:['aria-label','aria-disabled','disabled']});}
+      }
+      if(picker){
+        const items=readPicker(picker).filter(item=>item.name);
+        inventory=new Map(items.map(item=>[item.name,item]));
+        pickerAction=readJob(row)?.action;
+      }
+    }
     function paint(entry,job){
       const action=job.action[0].toUpperCase()+job.action.slice(1);
       const picker=[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]'));
@@ -267,14 +285,16 @@
         job.damage===null?'Damage unknown':job.damage+'% damage',job.selected?'Selected: '+job.selected:null,guidance(job,entry.previousDamage),stockText,
         entry.recipe?'Previously successful on this device: '+entry.recipe.steps.map(step=>step.action+' '+step.item+(step.damageBefore===null?'':' at '+step.damageBefore+'%')).join(', ')+'. Check current requirements and inventory before reusing.':'No matching successful run recorded on this device.'].filter(Boolean).join(' — ');
       if(ledger){
-        const key=JSON.stringify([job.name,job.scenario]);
+        const available=job.action==='place'&&pickerAction!=='place'?new Map([...inventory].map(([name,item])=>[name,{...item,selectable:false}])):inventory;
+        const plan=planner?.observedFormula(job,available,entry.recipes)||{};
+        const key=JSON.stringify([job.name,job.scenario,plan]);
         if(entry.renderedKey!==key){
-          entry.card.replaceChildren(ledger.render(job));entry.renderedKey=key;
+          entry.card.replaceChildren(ledger.render(job,plan));entry.renderedKey=key;
           entry.live=doc.createElement('div');entry.live.style.cssText='font:11px/1.35 system-ui;padding:7px 10px;border-top:1px solid #8885';entry.card.append(entry.live);
         }
         const material=ledger.material(job.selected);
         const stats=material?Object.entries(material.values).map(([name,value])=>name.replace(/[A-Z]/g,m=>' '+m.toLowerCase())+': '+value).join(' · '):'';
-        const detail=['Costs use Ledger reference prices.',job.damage===null?null:job.damage+'% damage',job.requestLabels.join(' · '),job.selected&&stats?job.selected+' — '+stats:null,stockText,job.phase==='burning'?guidance(job,entry.previousDamage):null,entry.recipe?message.split(' — ').at(-1):null].filter(Boolean).join(' — ');
+        const detail=[job.damage===null?null:job.damage+'% damage',job.requestLabels.join(' · '),job.selected&&stats?job.selected+' — '+stats:null,stockText,job.phase==='burning'?guidance(job,entry.previousDamage):null].filter(Boolean).join(' — ');
         if(entry.live.textContent!==detail)entry.live.textContent=detail;
         movePopup();
       }else if(entry.card.textContent!==message)entry.card.textContent=message;
@@ -287,11 +307,12 @@
     }
     function refresh(){
       frame=null;if(!active())return;
+      if(ledger)updateInventory();
       const rows=new Set();
       for(const row of root.querySelectorAll(rowSelector)){
         if(!row.getClientRects().length||row.closest('[hidden]'))continue;
         const job=readJob(row);capture?.inspect(row,job)?.catch(()=>{});if(!job)continue;rows.add(row);
-        const host=(ledger&&row.querySelector('[class*="fireMeter"],.crime-image'))||row.querySelector(prefix('titleSection'));
+        const host=ledger?(row.querySelector(prefix('fireMeter'))||row.querySelector(prefix('itemButton'))?.parentElement):row.querySelector(prefix('titleSection'));
         if(!host)continue;
         let entry=controls.get(row);
         if(entry?.wrap.parentNode!==host){if(entry)remove(entry);controls.delete(row);entry=null;}
@@ -304,13 +325,15 @@
           if(ledger)card.style.cssText='position:fixed;pointer-events:auto;width:max-content;max-width:min(440px,calc(100vw - 16px));max-height:65dvh;overflow:auto;background:var(--slink-arson-popup-bg,var(--tooltip-bg-color,#171b22));color:var(--crimes-baseText-color,#fff);border:1px solid var(--crimes-outcomeDivider-color,#8a96aa);border-radius:8px;box-shadow:0 2px 12px #0008;box-sizing:border-box';
           const anchor=ledger?host:wrap;
           entry={wrap,button,card,anchor};controls.set(row,entry);
-          if(ledger){const ranked=ledger.rank(job.scenario);if(ranked)button.append(doc.createTextNode(ledger.formatPpn(ranked.profitPerNerve)));card.addEventListener('pointerenter',cancelLeave);card.addEventListener('pointerleave',()=>delayClose(entry));}
+          if(ledger){card.addEventListener('pointerenter',cancelLeave);card.addEventListener('pointerleave',()=>delayClose(entry));}
           const open=()=>{
             if(!active())return;const latest=readJob(row);if(!latest)return;
             if(ledger){cancelLeave();if(opened&&opened!==entry)close(opened);opened=entry;attachPopup(entry);}
-            observe(entry,latest);entry.recipe=null;paint(entry,latest);card.hidden=false;button.setAttribute('aria-expanded','true');
+            if(ledger)updateInventory();
+            observe(entry,latest);entry.recipe=null;entry.recipes=[];paint(entry,latest);card.hidden=false;button.setAttribute('aria-expanded','true');
             const key=signature(latest);
-            journal?.find('arson',key).then(recipe=>{if(!active()||card.hidden||!entry.wrap.isConnected||entry.recipeKey!==key)return;const current=readJob(row);if(current&&signature(current)===key){entry.recipe=recipe;paint(entry,current);}}).catch(()=>{});
+            const found=journal?.candidates?journal.candidates('arson',key):journal?.find('arson',key).then(value=>value?[value]:[]);
+            found?.then(recipes=>{if(!active()||card.hidden||!entry.wrap.isConnected||entry.recipeKey!==key)return;const current=readJob(row);if(current&&signature(current)===key){entry.recipes=recipes||[];entry.recipe=entry.recipes[0];paint(entry,current);}}).catch(()=>{});
             entry.recipeKey=key;
             if(ledger){movePopup();return;}
             const rect=button.getBoundingClientRect(),height=card.offsetHeight,width=card.offsetWidth;
@@ -352,7 +375,7 @@
           (record.type==='childList'&&[...record.addedNodes,...record.removedNodes].length>0&&[...record.addedNodes,...record.removedNodes].every(node=>node.matches?.('[data-slink-arson]')))))return;
         frame=global.requestAnimationFrame(refresh);
       });
-      observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['aria-label','aria-disabled','aria-valuenow','disabled','class']});refresh();
+      observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['aria-label','aria-disabled','aria-expanded','aria-valuenow','disabled','class']});refresh();
     }
     const events=[[global,'focus'],[global,'blur'],[global,'hashchange'],[global,'pagehide'],[doc,'visibilitychange']];
     const handlers=events.map(([target,event])=>[target,event,(event==='blur'&&!focused)||event==='pagehide'?()=>{observer?.disconnect();observer=null;if(frame!==null)global.cancelAnimationFrame(frame);frame=null;clear();}:sync]);
