@@ -132,6 +132,7 @@
     return parts.join(' ');
   }
   const signature=job=>JSON.stringify([job.name,job.scenario,[...job.requestLabels].sort()]);
+  const RECIPE_SLOT_MS=12*60*60*1000;
   function recipeJournal({load,save}){
     let queue=Promise.resolve();
     async function current(){return (await load())||{};}
@@ -141,11 +142,38 @@
     }
     return {
       async find(crime,key){return (await current())[crime]?.find(record=>record.key===key)||null;},
-      record(crime,key,steps){return update(old=>{
+      record(crime,key,steps,owner=null){return update(old=>{
         const rows=old[crime]||[],formula=JSON.stringify(steps),prior=rows.find(row=>row.key===key&&JSON.stringify(row.steps)===formula);
         const record={key,steps,successes:(prior?.successes||0)+1,observedAt:Date.now()};
-        return {...old,[crime]:[record,...rows.filter(row=>row!==prior)].slice(0,60)};
-      });}
+        const next={...old,[crime]:[record,...rows.filter(row=>row!==prior)].slice(0,60)};
+        if(owner){
+          const sharing=old.sharing?.owner===owner?old.sharing:{owner,pending:[]};
+          const duplicate=sharing.pending.some(row=>row.crime===crime&&row.key===key&&JSON.stringify(row.steps)===formula);
+          if(!duplicate&&sharing.pending.length<120)next.sharing={...sharing,pending:[...sharing.pending,{id:global.crypto.randomUUID(),crime,key,steps}]};
+        }
+        return next;
+      });},
+      discard(){return update(old=>{if(!old.sharing)return old;const {sharing,...next}=old;return next;});},
+      sync(owner,send,allowed=()=>true,now=Date.now){
+        const task=queue.catch(()=>{}).then(async()=>{
+          if(!owner||!await allowed())return;
+          const old=await current(),sharing=old.sharing,slot=Math.floor(now()/RECIPE_SLOT_MS);
+          if(sharing?.owner!==owner||!sharing.pending.length||sharing.lastSlot===slot||Number(sharing.retryAt)>now())return;
+          const batch=sharing.batch&&sharing.batch.slot>=slot-6?sharing.batch:{slot,records:sharing.pending.slice(0,20)};
+          const sending={...sharing,batch,retryAt:now()+15*60*1000};
+          await save({...old,sharing:sending});
+          if(!await allowed())return;
+          let reply;
+          try{reply=await send({schema:1,...batch});}catch(error){
+            if(Number(error?.status)===409)await save({...old,sharing:{...sending,batch:null,lastSlot:slot}});
+            return;
+          }
+          const ids=batch.records.map(row=>row.id);
+          if(reply?.ok!==true||reply.slot!==batch.slot||!Array.isArray(reply.accepted)||reply.accepted.length!==ids.length||ids.some(id=>!reply.accepted.includes(id)))return;
+          await save({...old,sharing:{...sending,batch:null,pending:sharing.pending.filter(row=>!ids.includes(row.id)),lastSlot:slot,retryAt:0}});
+        });
+        queue=task;return task;
+      }
     };
   }
   function liveOutcome(row){

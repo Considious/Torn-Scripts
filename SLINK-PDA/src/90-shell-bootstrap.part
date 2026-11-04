@@ -1,5 +1,5 @@
 adoptPdaLegacyIntelligence();
-let pdaArsonHelper=null;
+let pdaArsonHelper=null,pdaCrimeRecipeJournal=null,pdaCrimeRecipeSync=null;
 function shouldRenderPdaModule(name) {
 const dirty=shouldRenderPdaModule.dirty ||= new Set();
 if (!dashboardOpen || !pdaDomActive() || activeModuleName() !== name) { dirty.add(name); return false; }
@@ -79,6 +79,7 @@ function startScheduler() {
 if (schedulerTimer) return;
 schedulerTimer = global.setInterval(() => {
 if (!pdaPagePresent) return;
+if(pdaDomActive())void syncPdaCrimeRecipes().catch(()=>{});
 if (currentApiKey() && termsAccepted('permission') && !validSession('permission')) void ensureAutomaticPermissionSession(false);
 const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
 if (canRefreshAlerts && pdaDomActive()) {
@@ -1583,6 +1584,16 @@ queuePdaSettingsSave();
 scheduleRacingScan(0);
 });
 listenPdaAction(overlay,'change', async event => {
+if(event.target.matches('[data-arson-recipe-sharing]')){
+  const toggle=event.target,enabled=toggle.checked,owner=pdaRecipeOwner();
+  if(enabled&&!owner){toggle.checked=false;throw Error('Verify SLINK access before sharing recipes.');}
+  const consent=pdaPluginCache('crime-recipe-consent',{}),previous=consent.owner;
+  consent.owner=enabled?owner:null;
+  try{if(!enabled)await pdaRecipes()?.discard();await savePdaChanges();}
+  catch(error){pdaPluginCache('crime-recipe-consent',{}).owner=previous;toggle.checked=!enabled;throw error;}
+  if(enabled)void syncPdaCrimeRecipes().catch(()=>{});
+  return;
+}
 if(event.target.matches('[data-arson-helper-enabled]')){
 dataState.settings.alerts.arsonHelperEnabled=event.target.checked===true;
 syncPdaArsonHelper();
@@ -1954,16 +1965,39 @@ renderWar(true);
 openDashboard();
 }
 });
+function pdaRecipeOwner(){
+  const session=validSession('permission');
+  return session?.token&&hasScope('slink.adhd.alerts')?String(session.userId??session.user_id??''):'';
+}
+function pdaRecipeSharing(owner=pdaRecipeOwner()){
+  return !!owner&&dataState.caches.plugins?.['crime-recipe-consent']?.owner===owner;
+}
+function pdaRecipes(){
+  return pdaCrimeRecipeJournal ||= global.SLINK_ARSON_PAGE?.recipeJournal({load:()=>pdaPluginCache('crime-recipes',{}),save:value=>{
+      const caches=dataState.caches.plugins;
+      const prior=caches['crime-recipes'];caches['crime-recipes']=value;
+      return savePdaChanges().catch(error=>{if(caches['crime-recipes']===value)caches['crime-recipes']=prior;throw error;});
+  }});
+}
+function syncPdaCrimeRecipes(){
+  if(pdaCrimeRecipeSync)return pdaCrimeRecipeSync;
+  const owner=pdaRecipeOwner(),session=validSession('permission');
+  const allowed=()=>pdaDomActive()&&dataState.settings.alerts.arsonHelperEnabled===true&&pdaRecipeOwner()===owner&&pdaRecipeSharing(owner);
+  if(!allowed()||!pdaRecipes())return Promise.resolve();
+  pdaCrimeRecipeSync=pdaRecipes().sync(owner,batch=>requestJson(URLS.permission+'/api/crime-recipes',{
+    method:'POST',headers:{Authorization:'Bearer '+session.token},body:{...batch,client:'pda'},timeout:8000
+  }),allowed).finally(()=>{pdaCrimeRecipeSync=null;});
+  return pdaCrimeRecipeSync;
+}
 function syncPdaArsonHelper(){
   if(dataState.settings.alerts.arsonHelperEnabled!==true){pdaArsonHelper?.dispose();pdaArsonHelper=null;return;}
   const arsonPage=global.SLINK_ARSON_PAGE;
   if(arsonPage&&!pdaArsonHelper)pdaArsonHelper=arsonPage.connect({
     focused:pdaDomActive,eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts'),
-    journal:arsonPage.recipeJournal({load:()=>pdaPluginCache('crime-recipes',{}),save:value=>{
-      const caches=dataState.caches.plugins;
-      const prior=caches['crime-recipes'];caches['crime-recipes']=value;
-      return savePdaChanges().catch(error=>{if(caches['crime-recipes']===value)caches['crime-recipes']=prior;throw error;});
-    }})
+    journal:{find:(...args)=>pdaRecipes().find(...args),record:async(crime,key,steps)=>{
+      const owner=pdaRecipeOwner();await pdaRecipes().record(crime,key,steps,pdaRecipeSharing(owner)?owner:null);
+      void syncPdaCrimeRecipes().catch(()=>{});
+    }}
   });
   pdaArsonHelper?.setEnabled(true);
 }
