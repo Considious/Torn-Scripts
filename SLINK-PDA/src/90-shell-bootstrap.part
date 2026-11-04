@@ -1956,7 +1956,15 @@ openDashboard();
 });
 function syncPdaArsonHelper(){
   if(dataState.settings.alerts.arsonHelperEnabled!==true){pdaArsonHelper?.dispose();pdaArsonHelper=null;return;}
-  pdaArsonHelper ||= global.SLINK_ARSON_PAGE?.connect({focused:pdaDomActive,eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
+  const arsonPage=global.SLINK_ARSON_PAGE;
+  if(arsonPage&&!pdaArsonHelper)pdaArsonHelper=arsonPage.connect({
+    focused:pdaDomActive,eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts'),
+    journal:arsonPage.recipeJournal({load:()=>pdaPluginCache('crime-recipes',{}),save:value=>{
+      const caches=dataState.caches.plugins;
+      const prior=caches['crime-recipes'];caches['crime-recipes']=value;
+      return savePdaChanges().catch(error=>{if(caches['crime-recipes']===value)caches['crime-recipes']=prior;throw error;});
+    }})
+  });
   pdaArsonHelper?.setEnabled(true);
 }
 syncPdaArsonHelper();

@@ -131,15 +131,79 @@
     else if(!job.bounds)parts.push('Read the current job requirements before choosing a material. Compatible recipes are not confirmed yet.');
     return parts.join(' ');
   }
-  function mount({root,enabled=false,eligible=()=>false,focused}={}){
+  const signature=job=>JSON.stringify([job.name,job.scenario,[...job.requestLabels].sort()]);
+  function recipeJournal({load,save}){
+    let queue=Promise.resolve();
+    async function current(){return (await load())||{};}
+    function update(change){
+      const task=queue.catch(()=>{}).then(async()=>{const old=await current(),next=change(old);if(next!==old)await save(next);return next;});
+      queue=task;return task;
+    }
+    return {
+      async find(crime,key){return (await current())[crime]?.find(record=>record.key===key)||null;},
+      record(crime,key,steps){return update(old=>{
+        const rows=old[crime]||[],formula=JSON.stringify(steps),prior=rows.find(row=>row.key===key&&JSON.stringify(row.steps)===formula);
+        const record={key,steps,successes:(prior?.successes||0)+1,observedAt:Date.now()};
+        return {...old,[crime]:[record,...rows.filter(row=>row!==prior)].slice(0,60)};
+      });}
+    };
+  }
+  function liveOutcome(row){
+    return row.querySelector('[class*="entered___"] .outcome-content');
+  }
+  function captureArson({record,now=Date.now}){
+    const runs=new Map();
+    function inspect(row,job){
+      const run=runs.get(row),pending=run?.pending;
+      if(!run)return;
+      if(!job||job.name!==run.name||job.scenario!==run.scenario){runs.delete(row);return;}
+      if(job.requestLabels.length)run.key=signature(job);
+      if(!pending)return;
+      if(now()-pending.at>15000){runs.delete(row);return;}
+      const result=liveOutcome(row);
+      if(!result||clean(result.textContent)===pending.previousText)return;
+      if(!result.matches('.crimes-outcome-success')){runs.delete(row);return;}
+      if(pending.action==='collect'){
+        if(!/already collected your reward/i.test(job.disabledReason||'')||!result.querySelector(prefix('reward')))return;
+        runs.delete(row);
+        if(run.steps.some(step=>step.action==='ignite'))return record('arson',run.key,run.steps);
+      }else{
+        run.pending=null;
+        if(pending.action!=='breach'){
+          run.steps.push({action:pending.action,item:pending.item,damageBefore:pending.damage});
+          if(run.steps.length>24)runs.delete(row);
+        }
+      }
+    }
+    return {inspect,forget:row=>runs.delete(row),clear:()=>runs.clear(),click(row,job){
+      if(!job?.usable||!job.name||!job.scenario)return;
+      if(job.action==='breach')runs.set(row,{name:job.name,scenario:job.scenario,key:signature(job),steps:[]});
+      const run=runs.get(row);if(!run)return;
+      if(run.pending||run.name!==job.name||run.scenario!==job.scenario||
+        (job.action==='collect'?job.nerveCost!==2:job.action!=='breach'&&(!job.selected||job.damage===null))){runs.delete(row);return;}
+      const result=liveOutcome(row);
+      run.pending={action:job.action,item:job.selected,damage:job.damage,previousText:clean(result?.textContent),at:now()};
+    }};
+  }
+  function mount({root,enabled=false,eligible=()=>false,focused,journal}={}){
     if(!enabled||!root)return ()=>{};
     const doc=root.ownerDocument;
     const controls=new Map();
     let observer=null,frame=null,disposed=false;
+    const capture=journal&&captureArson({record:(...args)=>journal.record(...args)});
+    function onAction(event){
+      if(!active()||!event.isTrusted)return;
+      const button=event.target.closest?.('button.commit-button'),row=button?.closest(rowSelector);
+      if(!row||!root.contains(row)||row.querySelector('button.commit-button')!==button)return;
+      const job=readJob(row);
+      capture.inspect(row,job)?.catch(()=>{});
+      capture.click(row,job);
+    }
+    if(capture)root.addEventListener('click',onAction,true);
     const active=()=>!disposed&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus());
     function close(entry){entry.card.hidden=true;entry.button.setAttribute('aria-expanded','false');}
     function remove(entry){entry.cancelPress?.();entry.wrap.remove();}
-    function clear(){for(const entry of controls.values())remove(entry);controls.clear();}
+    function clear(){for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();}
     function paint(entry,job){
       const action=job.action[0].toUpperCase()+job.action.slice(1);
       const picker=[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]'));
@@ -149,7 +213,7 @@
       const stockText=stock.length?'Observed stock matching the material family: '+stock.map(item=>item.name+' ×'+item.ownedQty).join(', ')+'. Stock does not confirm suitability for this job.':null;
       const message=[job.name,job.scenario,action+(job.nerveCost===null?'':' · '+job.nerveCost+' nerve'),
         job.damage===null?'Damage unknown':job.damage+'% damage',job.selected?'Selected: '+job.selected:null,guidance(job,entry.previousDamage),stockText,
-        'No full formula has been validated for this job.'].filter(Boolean).join(' — ');
+        entry.recipe?'Previously successful on this device: '+entry.recipe.steps.map(step=>step.action+' '+step.item+(step.damageBefore===null?'':' at '+step.damageBefore+'%')).join(', ')+'. Check current requirements and inventory before reusing.':'No matching successful run recorded on this device.'].filter(Boolean).join(' — ');
       if(entry.card.textContent!==message)entry.card.textContent=message;
     }
     function observe(entry,job){
@@ -163,7 +227,7 @@
       const rows=new Set();
       for(const row of root.querySelectorAll(rowSelector)){
         if(!row.getClientRects().length||row.closest('[hidden]'))continue;
-        const job=readJob(row);if(!job)continue;rows.add(row);
+        const job=readJob(row);capture?.inspect(row,job)?.catch(()=>{});if(!job)continue;rows.add(row);
         const host=row.querySelector(prefix('titleSection'));
         if(!host)continue;
         let entry=controls.get(row);
@@ -176,7 +240,10 @@
           entry={wrap,button,card};controls.set(row,entry);
           const open=()=>{
             if(!active())return;const latest=readJob(row);if(!latest)return;
-            observe(entry,latest);paint(entry,latest);card.hidden=false;button.setAttribute('aria-expanded','true');
+            observe(entry,latest);entry.recipe=null;paint(entry,latest);card.hidden=false;button.setAttribute('aria-expanded','true');
+            const key=signature(latest);
+            journal?.find('arson',key).then(recipe=>{if(!active()||card.hidden||!entry.wrap.isConnected||entry.recipeKey!==key)return;const current=readJob(row);if(current&&signature(current)===key){entry.recipe=recipe;paint(entry,current);}}).catch(()=>{});
+            entry.recipeKey=key;
             const rect=button.getBoundingClientRect(),height=card.offsetHeight,width=card.offsetWidth;
             const origin=wrap.getBoundingClientRect();
             card.style.left=(Math.max(8,Math.min(rect.left,global.innerWidth-width-8))-origin.left)+'px';
@@ -201,7 +268,7 @@
         observe(entry,job);
         if(!entry.card.hidden)paint(entry,job);
       }
-      for(const [row,entry] of controls)if(!rows.has(row)){remove(entry);controls.delete(row);}
+      for(const [row,entry] of controls)if(!rows.has(row)){remove(entry);controls.delete(row);capture?.forget(row);}
     }
     function sync(){
       if(!active()){
@@ -210,19 +277,19 @@
       }
       if(observer)return;
       observer=new global.MutationObserver(records=>{
-        if(!active()||frame!==null||records.every(record=>record.target.closest?.('[data-slink-arson]')||
+        if(!active()||frame!==null||records.every(record=>(record.attributeName==='class'&&!record.target.matches?.('.outcome-content,[class*="outcome___"]'))||record.target.closest?.('[data-slink-arson]')||
           (record.type==='childList'&&[...record.addedNodes,...record.removedNodes].length>0&&[...record.addedNodes,...record.removedNodes].every(node=>node.matches?.('[data-slink-arson]')))))return;
         frame=global.requestAnimationFrame(refresh);
       });
-      observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['aria-label','aria-disabled','aria-valuenow','disabled']});refresh();
+      observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['aria-label','aria-disabled','aria-valuenow','disabled','class']});refresh();
     }
     const events=[[global,'focus'],[global,'blur'],[global,'hashchange'],[global,'pagehide'],[doc,'visibilitychange']];
     const handlers=events.map(([target,event])=>[target,event,(event==='blur'&&!focused)||event==='pagehide'?()=>{observer?.disconnect();observer=null;if(frame!==null)global.cancelAnimationFrame(frame);frame=null;clear();}:sync]);
     for(const [target,event,handler] of handlers)target.addEventListener(event,handler);
     sync();
-    return ()=>{disposed=true;sync();for(const [target,event,handler] of handlers)target.removeEventListener(event,handler);};
+    return ()=>{disposed=true;sync();if(capture)root.removeEventListener('click',onAction,true);for(const [target,event,handler] of handlers)target.removeEventListener(event,handler);};
   }
-  function connect({eligible=()=>false,focused}={}){
+  function connect({eligible=()=>false,focused,journal}={}){
     const doc=global.document;
     let enabled=false,disposed=false,observer=null,stopCards=null,mountedRoot=null,frame=null;
     const active=()=>!disposed&&enabled&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus())&&
@@ -237,7 +304,7 @@
       const root=row?.parentElement;
       if(!root||root===doc.body)return;
       mountedRoot=root;
-      stopCards=mount({root,enabled:true,eligible:active,focused});
+      stopCards=mount({root,enabled:true,eligible:active,focused,journal});
     }
     function sync(){
       if(!active()){clear();return;}
@@ -255,7 +322,7 @@
     for(const [target,event,handler] of events)target.addEventListener(event,handler);
     return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){disposed=true;clear();for(const [target,event,handler] of events)target.removeEventListener(event,handler);}};
   }
-  const api=Object.freeze({readJob,readPicker,readRequests,parseDamageRequirement,damagePosition,guidance,mount,connect});
+  const api=Object.freeze({readJob,readPicker,readRequests,parseDamageRequirement,damagePosition,guidance,mount,connect,captureArson,recipeJournal});
   if(global.SLINK_EXTENSION?.define)global.SLINK_EXTENSION.define('core','arsonPage',api);
   else global.SLINK_ARSON_PAGE=api;
 })(globalThis);
