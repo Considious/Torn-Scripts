@@ -299,7 +299,7 @@
         entry.recipe?'Previously successful on this device: '+entry.recipe.steps.map(step=>step.action+' '+step.item+(step.damageBefore===null?'':' at '+step.damageBefore+'%')).join(', ')+'. Check current requirements and inventory before reusing.':'No matching successful run recorded on this device.'].filter(Boolean).join(' — ');
       if(ledger){
         const available=new Map([...inventory].map(([name,item])=>[name,item.observedAction===job.action?item:{...item,selectable:null}]));
-        const plan=planner?.observedFormula(job,available,entry.recipes,ledger.starterSteps(job.scenario))||{};
+        const plan=planner?.observedFormula(job,available,entry.recipes,ledger.starterSteps(job.scenario),ledger.building(job.name))||{};
         const key=JSON.stringify([job.name,job.scenario,plan]);
         if(entry.renderedKey!==key){
           entry.card.replaceChildren(ledger.render(job,plan));entry.renderedKey=key;

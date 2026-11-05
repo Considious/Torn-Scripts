@@ -205,7 +205,7 @@
       starters:(isInsurance(prepared[index].requirements)||isAccidental(prepared[index].requirements)||visibilityLevels(prepared[index].requirements).length||
         prepared[index].requirements?.some(requirement=>requirement?.kind==='damage'))&&!row.recommended?[]:prepared[index].starters}));
   }
-  function observedFormula(job,inventory,records,starter=[]){
+  function observedFormula(job,inventory,records,starter=[],building={}){
     if(!inventory.size)return {reason:'Open the material picker to check what you have unlocked and in stock.'};
     const requirements=job.requirements||[];
     if(requirements.some(row=>!requirementKey(row)))return {reason:'No formula can be checked against all of this job’s requirements.'};
@@ -236,6 +236,19 @@
     // Keep the scenario's original sequence and timing for modified jobs.
     // It is a starting point, not proof of a damage or visibility outcome.
     if(!choices.length&&fits({steps:recipe}))return {record:{steps:recipe},provisional:true,modified:requirements.some(row=>row.kind!=='family')};
+    // A single-area total burn has no upper damage limit. Replace the
+    // high-unlock tool with separate ignition and fuel actions, not a
+    // one-for-one material swap across incompatible actions.
+    if(!choices.length&&building.areas===1&&requirements.some(row=>row.kind==='damage'&&row.limit.kind==='total')&&
+      requirements.every(row=>row.kind==='family'||row.kind==='damage'&&row.limit.kind==='total')&&
+      recipe.some(step=>step.item==='Flamethrower'&&step.action==='ignite')&&
+      recipe.every(step=>step.item!=='Flamethrower'||['ignite','stoke'].includes(step.action))){
+      const fuel=starter.find(step=>step.action==='place'&&['liquid','solid','gas'].includes(materials[step.item]?.family))?.item;
+      for(const igniter of ['Windproof Lighter','Lighter']){
+        const steps=recipe.map(step=>step.item!=='Flamethrower'?step:step.action==='ignite'?{...step,item:igniter}:{...step,item:fuel,timing:'Only if damage stalls below 100% and the fire is still burning'});
+        if(fits({steps}))return {record:{steps},provisional:true,modified:true,substitution:true};
+      }
+    }
     if(!choices.length&&requirements.every(row=>row.kind==='family')){
       const ignitions=recipe.filter(step=>step.action==='ignite');
       if(ignitions.length===1&&!recipe.some(step=>step.action!=='ignite'&&materials[step.item]?.family==='igniter')){

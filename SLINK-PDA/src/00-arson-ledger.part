@@ -3581,5 +3581,5 @@
     const values=ACCELERANT_INFO[item.id]||IGNITER_INFO[item.id]||DAMPENER_INFO[item.id]||{};
     return {name:item.name,cost:item.defaultPrice,values};
   }
-  global.SLINK_ARSON_LEDGER=Object.freeze({rank,render,starterSteps,material,flame:ICON_FLAME,computeAnchorPosition,syncTornThemeVars,formatPpn,version:SCENARIOS_VERSION,scenarioCount:SCENARIOS.length});
+  global.SLINK_ARSON_LEDGER=Object.freeze({rank,render,starterSteps,building:name=>Object.hasOwn(BUILDINGS,name)?BUILDINGS[name]:{},material,flame:ICON_FLAME,computeAnchorPosition,syncTornThemeVars,formatPpn,version:SCENARIOS_VERSION,scenarioCount:SCENARIOS.length});
 })(globalThis);
