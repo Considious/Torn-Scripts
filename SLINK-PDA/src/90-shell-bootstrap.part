@@ -1795,6 +1795,7 @@ global.clearTimeout(targetPollingKickoff);global.clearTimeout(targetStakeoutKick
 targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targetStakeoutKickoff=null;
 }
 function syncPdaForeground(active=pdaDomActive()) {
+if(pdaArsonHelper)pdaArsonHelper.sync();
 if (active===pdaForegroundActive) return;
 pdaForegroundActive=active;
 marketObserver.disconnect();guardian.disconnect();racingStateObserver?.disconnect();

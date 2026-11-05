@@ -271,6 +271,16 @@
       const triggers=root.querySelectorAll('button[aria-expanded="true"]:is('+prefix('itemButton')+')');
       const row=triggers.length===1?triggers[0].closest(rowSelector):null;
       const picker=row?[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]')):null;
+      if(portal){
+        let z=null;
+        for(let el=picker;el&&el!==doc.body;el=el.parentElement){
+          const style=global.getComputedStyle(el);
+          if(style.position!=='static'&&style.zIndex!=='auto'&&Number.isFinite(Number(style.zIndex)))z=Number(style.zIndex);
+        }
+        portal.style.zIndex=picker?String((z??1)-1):'2147483647';
+        portal.style.visibility=picker&&z===null?'hidden':'';
+        if(opened)opened.card.style.pointerEvents=picker?'none':'auto';
+      }
       if(picker!==watchedPicker){
         pickerObserver?.disconnect();watchedPicker=picker;
         if(picker){pickerObserver ||= new global.MutationObserver(()=>{if(active()&&frame===null)frame=global.requestAnimationFrame(refresh);});pickerObserver.observe(picker,{subtree:true,childList:true,attributes:true,attributeFilter:['aria-label','aria-disabled','disabled']});}
@@ -395,7 +405,9 @@
     for(const [target,event,handler] of handlers)target.addEventListener(event,handler);
     if(ledger){doc.addEventListener('click',outside,true);doc.addEventListener('keydown',escape);global.addEventListener('scroll',movePopup,true);global.addEventListener('resize',movePopup);}
     sync();
-    return ()=>{disposed=true;sync();if(capture)root.removeEventListener('click',onAction,true);for(const [target,event,handler] of handlers)target.removeEventListener(event,handler);if(ledger){doc.removeEventListener('click',outside,true);doc.removeEventListener('keydown',escape);global.removeEventListener('scroll',movePopup,true);global.removeEventListener('resize',movePopup);}};
+    const stop=()=>{disposed=true;sync();if(capture)root.removeEventListener('click',onAction,true);for(const [target,event,handler] of handlers)target.removeEventListener(event,handler);if(ledger){doc.removeEventListener('click',outside,true);doc.removeEventListener('keydown',escape);global.removeEventListener('scroll',movePopup,true);global.removeEventListener('resize',movePopup);}};
+    stop.refresh=()=>{if(active()&&frame===null)frame=global.requestAnimationFrame(refresh);};
+    return stop;
   }
   function connect({eligible=()=>false,focused,journal}={}){
     const doc=global.document;
@@ -410,7 +422,7 @@
     function discover(){
       frame=null;if(!active()||stopCards)return;
       const row=[...doc.querySelectorAll(rowSelector)].find(element=>element.getClientRects().length&&readJob(element));
-      const root=row?.parentElement;
+      const root=doc.querySelector('.arson-root')||row?.parentElement;
       if(!root||root===doc.body)return;
       mountedRoot=root;
       stopCards=mount({root,enabled:true,eligible:active,focused,journal,stockCache});
@@ -420,14 +432,17 @@
       if(stopCards||observer)return;
       discover();
       if(doc.body){
-        observer=new global.MutationObserver(()=>{
+        observer=new global.MutationObserver(records=>{
+          if(!active()){clear();return;}
+          if(mountedRoot&&!mountedRoot.matches('.arson-root')&&!mountedRoot.querySelector(rowSelector)){stopCards?.();stopCards=null;mountedRoot=null;}
+          if(stopCards&&records.some(record=>[...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1&&(node.matches(prefix('itemSelector'))||node.querySelector(prefix('itemSelector'))))))stopCards.refresh();
           if(mountedRoot&&!mountedRoot.isConnected){stopCards?.();stopCards=null;mountedRoot=null;}
           if(!mountedRoot&&frame===null&&active())frame=global.requestAnimationFrame(discover);
         });
         observer.observe(doc.body,{childList:true,subtree:true});
       }
     }
-    const events=[[global,'focus',sync],[global,'blur',focused?sync:clear],[global,'hashchange',sync],[global,'pageshow',sync],[global,'pagehide',clear],[doc,'visibilitychange',sync]];
+    const events=[[global,'focus',sync],[global,'blur',focused?sync:clear],[global,'hashchange',sync],[global,'popstate',sync],[global,'pageshow',sync],[global,'pagehide',clear],[doc,'visibilitychange',sync]];
     for(const [target,event,handler] of events)target.addEventListener(event,handler);
     return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){disposed=true;clear();for(const [target,event,handler] of events)target.removeEventListener(event,handler);}};
   }
