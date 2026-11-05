@@ -20,7 +20,11 @@
     const makeSocket = options.socket || ((url, protocols) => new WebSocket(url, protocols));
     const http = options.request || request, listeners = new Set(), rooms = new Map();
     let background=false,active=false, destroyed=false, generation=0, ticket=null, authenticating=null, renewal=null, identity=null,authRetries=0;
+    let viewedRoom=null;
     const model = {status:'idle',error:'',rooms:[],leader:false,userId:null,userName:'',factionId:null};
+    function pollDelay(state){return background||viewedRoom!==state.id?30000:now()<(state.fastUntil||0)?5000:15000;}
+    function wakePoll(state){if(!state?.http||!state.pollTimer)return;cancel(state.pollTimer);state.pollTimer=null;void state.pollNow?.();}
+    function preferHttp(state,permanent=false){state.httpPreferred=true;state.socketRetryAt=permanent?Infinity:now()+5*60_000;return httpConnect(state);}
     function emit(type, detail={}) { for (const callback of listeners) callback({type,...detail}); }
     function room(id) { if(!validId(id))throw Error('Invalid chat room.'); if(!rooms.has(id))rooms.set(id,{id,messages:new Map(),pending:new Map(),actions:new Map(),access:{read:false,speak:false},status:'closed',error:'',socket:null,open:false,attempts:0,retry:null,nextBefore:null,unread:0}); return rooms.get(id); }
     function closeConnection(state) { cancel(state.pollTimer);state.pollTimer=null;state.pollNow=null;state.httpVersion=(state.httpVersion||0)+1;state.http=false;state.connectVersion=(state.connectVersion||0)+1;cancel(state.retry);cancel(state.connectionTimer);state.connectionTimer=null;state.retry=null;for(const action of state.actions.values()){cancel(action.timer);action.reject(Error('Chat disconnected before this action was confirmed.'));}state.actions.clear();const socket=state.socket;state.socket=null;if(socket){socket.onopen=socket.onmessage=socket.onerror=socket.onclose=null;try{socket.close(1000,'Page inactive');}catch{}} }
@@ -69,7 +73,7 @@
       if(data.protocol!==1){closeConnection(state);state.error='This chat node uses an unsupported protocol. Update SLINK.';state.status='error';emit('room',{id:state.id});return;}
       let incoming=false;
       switch(data.type){
-        case 'welcome': cancel(state.connectionTimer);state.connectionTimer=null;state.status='connected';state.connectedAt=now();state.error='';state.access=data.access;state.nextBefore=data.next_before;state.unread=Number(data.unread)||0;for(const message of data.messages||[])merge(state,message);state.presence=data.presence||[];transmitPending(state);break;
+        case 'welcome': cancel(state.connectionTimer);state.connectionTimer=null;state.status='connected';state.connectedAt=now();state.error='';state.access=data.access;if(Object.hasOwn(data,'next_before'))state.nextBefore=data.next_before;state.unread=Number(data.unread)||0;for(const message of data.messages||[])merge(state,message);state.presence=data.presence||[];transmitPending(state);break;
         case 'message':case 'message_update':{const known=state.messages.has(data.message?.message_id);merge(state,data.message);if(!known&&data.type==='message'&&data.message?.user_id!==model.userId){state.unread++;incoming=true;}break;}
         case 'ack': merge(state,data.message);state.pending.delete(data.client_id);break;
         case 'access':state.access=data.access;break;
@@ -80,13 +84,14 @@
         case 'error':state.error=String(data.error||'This chat action failed.');if(state.pending.has(data.command_id))state.pending.get(data.command_id).error=state.error;{const action=state.actions.get(data.command_id);if(action){cancel(action.timer);state.actions.delete(data.command_id);action.reject(Error(state.error));}}break;
         case 'delivery_pending':case 'delivery_failed':case 'delivery_confirmed':state.delivery={messageId:data.message_id,status:data.type,reason:data.reason||''};break;
       }
-      emit('room',{id:state.id,event:data.type,incoming});
+      emit('room',{id:state.id,event:data.type,incoming,message:data.type==='message'||data.type==='message_update'||data.type==='ack'?data.message:null});
     }
     async function httpCommand(state,value){
       const version=state.httpVersion,current=generation,key=value.command_id||value.type;state.httpPending||=new Set();if(state.httpPending.has(key))return;state.httpPending.add(key);
       try{const auth=await access(),result=await http(auth.endpoint+'/api/rooms/'+state.id+'/events',{method:'POST',headers:{Authorization:'Bearer '+auth.token,'Content-Type':'application/json'},body:JSON.stringify(value)});
         if(!active||current!==generation||version!==state.httpVersion)return;
         for(const event of result.events||[])receive(state,null,{data:JSON.stringify(event)});
+        if(value.type==='send'){state.fastUntil=now()+60000;wakePoll(state);}
       }catch(error){if(!active||current!==generation||version!==state.httpVersion)return;receive(state,null,{data:JSON.stringify({protocol:1,type:'error',command_id:value.command_id,error:error.message})});}finally{state.httpPending.delete(key);}
     }
     function dispatch(state,value){if(state.http)void httpCommand(state,value);else state.socket.send(JSON.stringify(value));}
@@ -95,13 +100,13 @@
       async function poll(){
         if(!active||destroyed||!state.open||version!==state.httpVersion||current!==generation)return;
         if(state.httpPollingVersion===version)return;state.httpPollingVersion=version;
-        try{const auth=await access(),result=await http(auth.endpoint+'/api/rooms/'+state.id+'/sync?after='+Number(state.httpAfter||0)+'&changed='+Number(state.httpChanged||0),{headers:{Authorization:'Bearer '+auth.token}});
+        try{const auth=await access(),result=await http(auth.endpoint+'/api/rooms/'+state.id+'/sync?delta=1&after='+Number(state.httpAfter||0)+'&changed='+Number(state.httpChanged||0),{headers:{Authorization:'Bearer '+auth.token}});
           if(!active||version!==state.httpVersion||current!==generation)return;
           if(result.protocol!==1||result.type!=='welcome'||typeof result.access?.read!=='boolean'||typeof result.access?.speak!=='boolean')throw Error('The faction node needs the HTTPS chat update. Your draft has been kept.');
           state.httpAfter=Number(result.after)||0;state.httpChanged=Number(result.changed)||0;
           const incoming=state.httpLoaded&&(result.messages||[]).some(message=>!state.messages.has(message.message_id)&&message.user_id!==model.userId);state.httpLoaded=true;
-          receive(state,null,{data:JSON.stringify(result)});if(incoming)emit('room',{id:state.id,incoming:true});
-          state.pollTimer=later(()=>void poll(),result.more?0:background?30000:5000);
+          receive(state,null,{data:JSON.stringify(result)});if(incoming){state.fastUntil=now()+60000;emit('room',{id:state.id,incoming:true});}
+          state.pollTimer=later(()=>void poll(),result.more?0:pollDelay(state));
         }catch(error){if(!active||version!==state.httpVersion||current!==generation)return;state.status='disconnected';state.access={read:false,speak:false};state.error=error.message;emit('room',{id:state.id});if(![401,403,404,426].includes(Number(error.status)))state.pollTimer=later(()=>void poll(),15000);}finally{if(state.httpPollingVersion===version)delete state.httpPollingVersion;}
       }
       state.pollNow=poll;await poll();
@@ -112,11 +117,11 @@
       if(!active||destroyed||state.socket||state.http||state.status==='connecting')return;
       const current=generation,connection=state.connectVersion=(state.connectVersion||0)+1;state.status='connecting';state.error='';emit('room',{id});
       try{
-        if(state.httpPreferred){await httpConnect(state);return;}const auth=await access(manual);if(current!==generation||connection!==state.connectVersion||!active||!state.open||rooms.get(id)!==state)return;
+        if(state.httpPreferred&&(!manual||state.socketRetryAt===Infinity)&&(background||viewedRoom!==id||now()<(state.socketRetryAt??Infinity))){await httpConnect(state);return;}const auth=await access(manual);if(current!==generation||connection!==state.connectVersion||!active||!state.open||rooms.get(id)!==state)return;
         const socket=makeSocket(auth.endpoint.replace(/^https:/,'wss:')+'/api/rooms/'+id+'/socket',['slink.chat.v1','slink.token.'+auth.token]);state.socket=socket;
-        state.connectionTimer=later(()=>{if(state.socket===socket&&state.status!=='connected'){state.httpPreferred=true;void httpConnect(state);}},12000);
-        socket.onmessage=event=>receive(state,socket,event);
-        socket.onerror=()=>{if(state.socket===socket){state.httpPreferred=true;void httpConnect(state);}};
+        state.connectionTimer=later(()=>{if(state.socket===socket&&state.status!=='connected')void preferHttp(state);},12000);
+        socket.onmessage=event=>{receive(state,socket,event);if(state.status==='connected'){state.httpPreferred=false;state.socketRetryAt=null;}};
+        socket.onerror=()=>{if(state.socket===socket)void preferHttp(state);};
         socket.onclose=event=>{
           if(state.socket!==socket)return;cancel(state.connectionTimer);state.connectionTimer=null;state.socket=null;if(state.status==='connected'&&now()-state.connectedAt>=30000)state.attempts=0;state.status='disconnected';
           if(event.code===4003){state.open=false;state.access={read:false,speak:false};state.error='Your access to this room has ended.';}
@@ -126,7 +131,7 @@
           else if(state.open)state.error='Chat is disconnected. Press Reconnect when ready.';
           emit('room',{id});
         };
-      }catch(error){if(connection!==state.connectVersion)return;if(error.name==='SecurityError'||/operation is insecure|content security policy/i.test(error.message||'')){state.httpPreferred=true;await httpConnect(state);return;}state.status='error';state.error=error.message;emit('room',{id});}
+      }catch(error){if(connection!==state.connectVersion)return;if(error.name==='SecurityError'||/operation is insecure|content security policy/i.test(error.message||'')){await preferHttp(state,true);return;}state.status='error';state.error=error.message;emit('room',{id});}
     }
     async function refresh() {try{model.status='loading';model.error='';emit('status');const result=await api('/api/rooms');model.rooms=result.rooms||[];model.leader=result.leader===true;model.status='ready';emit('list');if(options.watchRooms){const allowed=new Set(model.rooms.map(item=>item.room_id));for(const state of rooms.values())if(!allowed.has(state.id)){state.open=false;state.access={read:false,speak:false};closeConnection(state);}for(const item of model.rooms)void connect(item.room_id);}}catch(error){model.status='error';model.error=error.message;emit('status');throw error;} }
     function send(id,content) {
@@ -138,7 +143,8 @@
     function setActive(value) {if(active===Boolean(value)||destroyed)return;active=Boolean(value);generation++;if(!active){disconnectAll();emit('status');}else for(const state of rooms.values())if(state.open)void connect(state.id);}
     async function older(id){const state=room(id);if(state.loadingOlder||!state.nextBefore)return;state.loadingOlder=true;emit('room',{id});try{const auth=await access(),result=await http(auth.endpoint+'/api/rooms/'+id+'/history?before='+encodeURIComponent(state.nextBefore),{headers:{Authorization:'Bearer '+auth.token}});for(const message of result.messages||[])merge(state,message);state.nextBefore=result.messages?.length?result.next_before:null;}finally{state.loadingOlder=false;emit('room',{id});}}
     return Object.freeze({model,room,refresh,api,send,command,connect,setActive,older,
-      setBackground(value){const previous=background;background=Boolean(value);if(previous&&!background)for(const state of rooms.values())if(state.http&&state.pollTimer){cancel(state.pollTimer);state.pollTimer=null;void state.pollNow?.();}},
+      setViewedRoom(id){if(viewedRoom===id)return;viewedRoom=id;if(id){const state=room(id);state.fastUntil=now()+60000;if(!background)wakePoll(state);}},
+      setBackground(value){const previous=background;background=Boolean(value);if(previous&&!background&&viewedRoom)wakePoll(rooms.get(viewedRoom));},
       action(id,value){const state=room(id),commandId=options.uuid?.()||crypto.randomUUID();if(state.actions.size>=8)return Promise.reject(Error('Wait for the current chat changes to finish.'));return new Promise((resolve,reject)=>{const timer=later(()=>{state.actions.delete(commandId);reject(Error('This chat change was not confirmed. Your draft has been kept.'));},15000);state.actions.set(commandId,{resolve,reject,timer});try{command(id,{...value,command_id:commandId});}catch(error){cancel(timer);state.actions.delete(commandId);reject(error);}});},
       retryPending(id,clientId){const state=room(id),pending=state.pending.get(clientId);if(!pending)return;if(!active||state.status!=='connected'||!state.access.speak)throw Error('Reconnect to a room where you can speak first.');pending.at=now();pending.error='';dispatch(state,{type:'send',client_id:clientId,command_id:clientId,content:pending.content});emit('room',{id});},
       discardPending(id,clientId){room(id).pending.delete(clientId);emit('room',{id});},
@@ -217,9 +223,11 @@
   const ROOM_NOTICE='third-party-rooms-v1';
   const ROOM_NOTICE_TEXT='SLINK Rooms are independent, third-party chat rooms, not managed or endorsed by Torn. Messages are hosted outside Torn by the faction node operator and may be read or moderated by authorized room members and administrators. They are not end-to-end encrypted. Use at your own risk; do not share API keys or sensitive information.';
   function roomSettings(value={}){return {...value,enabled:value.enabled!==false,soundEnabled:value.soundEnabled!==false,autoMedia:value.autoMedia!==false,idleMinutes:[0,1,5,15,60].includes(value.idleMinutes)?value.idleMinutes:0,roomSounds:value.roomSounds&&typeof value.roomSounds==='object'?value.roomSounds:{}};}
+  const pinIcons=['◆','●','★','⚑','☰'],pinColors=['#563571','#20516d','#2c6049','#784442','#75541e'];
+  function validPins(value){return Array.isArray(value)&&value.length<=5&&new Set(value.map(pin=>pin?.id)).size===value.length&&value.every(pin=>pin&&validId(pin.id)&&pinIcons.includes(pin.icon)&&pinColors.includes(pin.color));}
   function patchRoomSettings(current,input){
-    if(!input||!Object.keys(input).length||Object.entries(input).some(([key,value])=>key==='idleMinutes'?![0,1,5,15,60].includes(value):key==='noticeAccepted'?value!==ROOM_NOTICE:key==='roomSounds'?(!value||Array.isArray(value)||typeof value!=='object'||Object.keys(value).length>500||Object.entries(value).some(([id,on])=>!/^[A-Za-z0-9_-]{1,100}$/.test(id)||typeof on!=='boolean')):!['enabled','soundEnabled','autoMedia'].includes(key)||typeof value!=='boolean'))throw Error('Invalid faction room preference.');
+    if(!input||!Object.keys(input).length||Object.entries(input).some(([key,value])=>key==='pins'?!validPins(value):key==='idleMinutes'?![0,1,5,15,60].includes(value):key==='noticeAccepted'?value!==ROOM_NOTICE:key==='roomSounds'?(!value||Array.isArray(value)||typeof value!=='object'||Object.keys(value).length>500||Object.entries(value).some(([id,on])=>!/^[A-Za-z0-9_-]{1,100}$/.test(id)||typeof on!=='boolean')):!['enabled','soundEnabled','autoMedia'].includes(key)||typeof value!=='boolean'))throw Error('Invalid faction room preference.');
     const saved=roomSettings(current);return {...saved,...input,roomSounds:{...saved.roomSounds,...input.roomSounds}};
   }
-  global.SLINK_FACTION_NODE=Object.freeze({create,origin,createTestAccess,createRoomActivity,TEST_CENTRAL,ROOM_NOTICE,ROOM_NOTICE_TEXT,roomSettings,patchRoomSettings});
+  global.SLINK_FACTION_NODE=Object.freeze({create,origin,createTestAccess,createRoomActivity,TEST_CENTRAL,ROOM_NOTICE,ROOM_NOTICE_TEXT,roomSettings,patchRoomSettings,pinIcons,pinColors,validPins});
 })(globalThis);
