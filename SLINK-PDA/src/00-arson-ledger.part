@@ -3535,6 +3535,12 @@
     const scenario=scenarioIndex.get(String(name||'').trim().toLowerCase());
     return scenario?rankForScenario(scenario,prices,DEFAULT_THRESHOLDS):null;
   }
+  function starterSteps(name){
+    const scenario=scenarioIndex.get(String(name||'').trim().toLowerCase());
+    if(!scenario||scenario.needsVerification||scenario.actions.evidence?.length)return [];
+    const actions=scenario.actions;
+    return ['place','ignite','stoke','dampen'].flatMap(action=>(actions[action]||(action==='ignite'?[{resourceId:RESOURCE.LIGHTER,qty:1}]:[])).filter(item=>!item.optional).flatMap(item=>Array.from({length:item.qty},()=>({action,item:CATALOG[item.resourceId]?.name,timing:actions[action+'Time']}))));
+  }
   function render(job,plan={}){
     const scenario=scenarioIndex.get(String(job.scenario||'').trim().toLowerCase()),node=el('div','pyro-tt');
     const title=el('div','pyro-tt-name');title.textContent=job.scenario||job.name||'Arson';node.append(title);
@@ -3550,10 +3556,10 @@
       if(scenario&&cost!==null)stats.append(row('Per nerve',formatPpn((effectivePayout(scenario,'average')-cost)/nerve)+' est.',true));
       node.append(el('hr','pyro-tt-divider'));
       for(const step of plan.record.steps){
-        const label=step.action[0].toUpperCase()+step.action.slice(1),timing=['stoke','dampen'].includes(step.action)&&Number.isFinite(step.damageBefore)?' at '+step.damageBefore+'% observed damage':'';
+        const label=step.action[0].toUpperCase()+step.action.slice(1),timing=step.timing?' · '+step.timing:['stoke','dampen'].includes(step.action)&&Number.isFinite(step.damageBefore)?' at '+step.damageBefore+'% observed damage':'';
         node.append(row(label,step.item+timing));
       }
-      const note=el('div','pyro-tt-notes');note.textContent='Previously successful with these requirements. Fire timing can vary.';node.append(note);
+      const note=el('div','pyro-tt-notes');note.textContent=plan.provisional?(plan.substitution?'Starting formula with an owned igniter substituted. This combination isn’t verified; check the burn as it progresses.':'Starting formula matched to your inventory. Not verified for this run; check the burn as it progresses.'):'Previously successful with these requirements. Fire timing can vary.';node.append(note);
     }else{
       const note=el('div','pyro-tt-notes');note.textContent=plan.reason||'No available formula confirmed.';node.append(note);
     }
@@ -3573,5 +3579,5 @@
     const values=ACCELERANT_INFO[item.id]||IGNITER_INFO[item.id]||DAMPENER_INFO[item.id]||{};
     return {name:item.name,cost:item.defaultPrice,values};
   }
-  global.SLINK_ARSON_LEDGER=Object.freeze({rank,render,material,flame:ICON_FLAME,computeAnchorPosition,syncTornThemeVars,formatPpn,version:SCENARIOS_VERSION,scenarioCount:SCENARIOS.length});
+  global.SLINK_ARSON_LEDGER=Object.freeze({rank,render,starterSteps,material,flame:ICON_FLAME,computeAnchorPosition,syncTornThemeVars,formatPpn,version:SCENARIOS_VERSION,scenarioCount:SCENARIOS.length});
 })(globalThis);

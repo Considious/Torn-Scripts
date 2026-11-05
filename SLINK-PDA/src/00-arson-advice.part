@@ -205,14 +205,14 @@
       starters:(isInsurance(prepared[index].requirements)||isAccidental(prepared[index].requirements)||visibilityLevels(prepared[index].requirements).length||
         prepared[index].requirements?.some(requirement=>requirement?.kind==='damage'))&&!row.recommended?[]:prepared[index].starters}));
   }
-  function observedFormula(job,inventory,records){
+  function observedFormula(job,inventory,records,starter=[]){
     if(!inventory.size)return {reason:'Open the material picker to check what you have unlocked and in stock.'};
     const requirements=job.requirements||[];
     if(requirements.some(row=>!requirementKey(row)))return {reason:'No formula can be checked against all of this job’s requirements.'};
     if(job.phase==='burning'||job.phase==='collection')return {reason:'A full recipe starts before ignition. Use the current damage and fire guidance below.'};
     const choices=[];
-    for(const record of records||[]){
-      if(!record.steps?.length||!record.steps.some(step=>step.action==='ignite'))continue;
+    function fits(record){
+      if(!record.steps?.length||!record.steps.some(step=>step.action==='ignite'))return false;
       const used=new Map();let valid=true;
       for(const step of record.steps){
         const item=materials[step.item],stock=inventory.get(step.item);
@@ -223,15 +223,27 @@
         if(!Number.isSafeInteger(owned)||owned<quantity){valid=false;break;}
         used.set(step.item,quantity);
       }
-      if(!valid)continue;
+      if(!valid)return false;
       // A full recorded recipe is a starting plan; an already prepared row
       // has an unknown placed-material history and must not replay it.
-      if(job.action==='ignite')continue;
+      if(job.action==='ignite')return false;
       if(job.action==='place'){
         const first=record.steps[0];
-        if(first.action!=='place'||inventory.get(first.item)?.selectable!==true)continue;
+        if(first.action!=='place'||inventory.get(first.item)?.selectable!==true)return false;
       }
-      choices.push(record);
+      return true;
+    }
+    for(const record of records||[])if(fits(record))choices.push(record);
+    if(!choices.length&&requirements.every(row=>row.kind==='family')){
+      if(fits({steps:starter}))return {record:{steps:starter},provisional:true};
+      const ignitions=starter.filter(step=>step.action==='ignite');
+      if(ignitions.length===1&&!starter.some(step=>step.action!=='ignite'&&materials[step.item]?.family==='igniter')){
+        for(const item of ['Windproof Lighter','Lighter','Molotov Cocktail','Flamethrower']){
+          if(item===ignitions[0].item)continue;
+          const steps=starter.map(step=>step.action==='ignite'?{...step,item}:step);
+          if(fits({steps}))return {record:{steps},provisional:true,substitution:true};
+        }
+      }
     }
     if(!choices.length)return {reason:'No successful recipe is confirmed for this job with the materials you have. Don’t start it based on an unverified substitution.'};
     choices.sort((a,b)=>b.successes-a.successes||a.steps.length-b.steps.length);
