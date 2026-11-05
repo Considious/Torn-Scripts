@@ -214,13 +214,16 @@
       run.pending={action:job.action,item:job.selected,damage:job.damage,previousText:clean(result?.textContent),at:now()};
     }};
   }
-  function mount({root,enabled=false,eligible=()=>false,focused,journal}={}){
+  function mount({root,enabled=false,eligible=()=>false,focused,journal,stockCache={}}={}){
     if(!enabled||!root)return ()=>{};
     const doc=root.ownerDocument;
     const controls=new Map();
     const ledger=global.SLINK_ARSON_LEDGER;
     const planner=global.SLINK_EXTENSION?.core.arsonAdvice||global.SLINK_ARSON_ADVICE;
-    let inventory=new Map(),pickerAction=null,watchedPicker=null,pickerObserver=null;
+    const stockKey='slink.arson.picker-stock.v1';
+    let inventory=stockCache.items,watchedPicker=null,pickerObserver=null;
+    if(!inventory){try{inventory=new Map(JSON.parse(global.sessionStorage.getItem(stockKey)||'[]'));}catch{inventory=new Map();}stockCache.items=inventory;}
+    function saveInventory(){try{global.sessionStorage.setItem(stockKey,JSON.stringify([...inventory]));}catch{}}
     let portal=null,portalRoot=null,opened=null,leaveTimer=null;
     let observer=null,frame=null,disposed=false;
     const capture=journal&&captureArson({record:(...args)=>journal.record(...args)});
@@ -229,7 +232,11 @@
       const button=event.target.closest?.('button.commit-button'),row=button?.closest(rowSelector);
       if(!row||!root.contains(row)||row.querySelector('button.commit-button')!==button)return;
       const job=readJob(row);
-      if(job?.usable){inventory=new Map();pickerAction=null;}
+      if(job?.usable&&['place','ignite','stoke','dampen'].includes(job.action)){
+        const item=planner?.materials?.[job.selected],stock=inventory.get(job.selected);
+        // Conservatively account for a potentially consumed item until the next picker read.
+        if(item?.consumed&&Number.isSafeInteger(stock?.ownedQty)&&stock.ownedQty>0){inventory.set(job.selected,{...stock,ownedQty:stock.ownedQty-1});saveInventory();}
+      }
       capture.inspect(row,job)?.catch(()=>{});
       capture.click(row,job);
     }
@@ -237,7 +244,7 @@
     const active=()=>!disposed&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus());
     function close(entry){entry.pinned=false;entry.card.hidden=true;entry.button.setAttribute('aria-expanded','false');if(opened===entry)opened=null;if(ledger)entry.card.remove();}
     function remove(entry){entry.cancelPress?.();entry.detach?.();close(entry);entry.wrap.remove();}
-    function clear(){global.clearTimeout(leaveTimer);for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();portal?.remove();portal=null;portalRoot=null;pickerObserver?.disconnect();pickerObserver=null;watchedPicker=null;inventory=new Map();pickerAction=null;}
+    function clear(){global.clearTimeout(leaveTimer);for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();portal?.remove();portal=null;portalRoot=null;watchedPicker=null;pickerObserver?.disconnect();pickerObserver=null;}
     function movePopup(){
       if(!opened||!ledger)return;
       if(!opened.button.isConnected||!active()){close(opened);return;}
@@ -270,8 +277,14 @@
       }
       if(picker){
         const items=readPicker(picker).filter(item=>item.name);
-        inventory=new Map(items.map(item=>[item.name,item]));
-        pickerAction=readJob(row)?.action;
+        const action=readJob(row)?.action;
+        let changed=false;
+        for(const item of items){
+          const old=inventory.get(item.name);
+          const next={...item,ownedQty:item.ownedQty??old?.ownedQty??null,observedAction:action};
+          if(JSON.stringify(old)!==JSON.stringify(next)){inventory.set(item.name,next);changed=true;}
+        }
+        if(changed)saveInventory();
       }
     }
     function paint(entry,job){
@@ -285,7 +298,7 @@
         job.damage===null?'Damage unknown':job.damage+'% damage',job.selected?'Selected: '+job.selected:null,guidance(job,entry.previousDamage),stockText,
         entry.recipe?'Previously successful on this device: '+entry.recipe.steps.map(step=>step.action+' '+step.item+(step.damageBefore===null?'':' at '+step.damageBefore+'%')).join(', ')+'. Check current requirements and inventory before reusing.':'No matching successful run recorded on this device.'].filter(Boolean).join(' — ');
       if(ledger){
-        const available=job.action==='place'&&pickerAction!=='place'?new Map([...inventory].map(([name,item])=>[name,{...item,selectable:false}])):inventory;
+        const available=new Map([...inventory].map(([name,item])=>[name,item.observedAction===job.action?item:{...item,selectable:null}]));
         const plan=planner?.observedFormula(job,available,entry.recipes,ledger.starterSteps(job.scenario))||{};
         const key=JSON.stringify([job.name,job.scenario,plan]);
         if(entry.renderedKey!==key){
@@ -386,6 +399,7 @@
   }
   function connect({eligible=()=>false,focused,journal}={}){
     const doc=global.document;
+    const stockCache={};
     let enabled=false,disposed=false,observer=null,stopCards=null,mountedRoot=null,frame=null;
     const active=()=>!disposed&&enabled&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus())&&
       new URL(global.location.href).searchParams.get('sid')==='crimes'&&/^#\/?arson(?:[/?]|$)/i.test(global.location.hash);
@@ -399,7 +413,7 @@
       const root=row?.parentElement;
       if(!root||root===doc.body)return;
       mountedRoot=root;
-      stopCards=mount({root,enabled:true,eligible:active,focused,journal});
+      stopCards=mount({root,enabled:true,eligible:active,focused,journal,stockCache});
     }
     function sync(){
       if(!active()){clear();return;}

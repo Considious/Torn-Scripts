@@ -224,23 +224,24 @@
         used.set(step.item,quantity);
       }
       if(!valid)return false;
-      // A full recorded recipe is a starting plan; an already prepared row
-      // has an unknown placed-material history and must not replay it.
-      if(job.action==='ignite')return false;
       if(job.action==='place'){
         const first=record.steps[0];
-        if(first.action!=='place'||inventory.get(first.item)?.selectable!==true)return false;
+        if(first.action!=='place'||inventory.get(first.item)?.selectable===false)return false;
       }
       return true;
     }
-    for(const record of records||[])if(fits(record))choices.push(record);
+    const remaining=steps=>job.action==='ignite'?steps.slice(steps.findIndex(step=>step.action==='ignite')):steps;
+    for(const record of records||[]){const candidate={...record,steps:remaining(record.steps||[])};if(fits(candidate))choices.push(candidate);}
+    const recipe=remaining(starter);
+    // Keep the scenario's original sequence and timing for modified jobs.
+    // It is a starting point, not proof of a damage or visibility outcome.
+    if(!choices.length&&fits({steps:recipe}))return {record:{steps:recipe},provisional:true,modified:requirements.some(row=>row.kind!=='family')};
     if(!choices.length&&requirements.every(row=>row.kind==='family')){
-      if(fits({steps:starter}))return {record:{steps:starter},provisional:true};
-      const ignitions=starter.filter(step=>step.action==='ignite');
-      if(ignitions.length===1&&!starter.some(step=>step.action!=='ignite'&&materials[step.item]?.family==='igniter')){
+      const ignitions=recipe.filter(step=>step.action==='ignite');
+      if(ignitions.length===1&&!recipe.some(step=>step.action!=='ignite'&&materials[step.item]?.family==='igniter')){
         for(const item of ['Windproof Lighter','Lighter','Molotov Cocktail','Flamethrower']){
           if(item===ignitions[0].item)continue;
-          const steps=starter.map(step=>step.action==='ignite'?{...step,item}:step);
+          const steps=recipe.map(step=>step.action==='ignite'?{...step,item}:step);
           if(fits({steps}))return {record:{steps},provisional:true,substitution:true};
         }
       }

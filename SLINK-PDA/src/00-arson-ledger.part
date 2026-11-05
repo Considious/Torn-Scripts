@@ -3555,11 +3555,13 @@
       stats.append(row('Nerve',String(nerve)));
       if(scenario&&cost!==null)stats.append(row('Per nerve',formatPpn((effectivePayout(scenario,'average')-cost)/nerve)+' est.',true));
       node.append(el('hr','pyro-tt-divider'));
-      for(const step of plan.record.steps){
+      const groups=[];
+      for(const step of plan.record.steps){const last=groups.at(-1);if(last&&last.action===step.action&&last.item===step.item&&last.timing===step.timing&&(step.action==='place'||last.damageBefore===step.damageBefore))last.quantity++;else groups.push({...step,quantity:1});}
+      for(const step of groups){
         const label=step.action[0].toUpperCase()+step.action.slice(1),timing=step.timing?' · '+step.timing:['stoke','dampen'].includes(step.action)&&Number.isFinite(step.damageBefore)?' at '+step.damageBefore+'% observed damage':'';
-        node.append(row(label,step.item+timing));
+        node.append(row(label,step.item+(step.quantity>1?' ×'+step.quantity:'')+timing));
       }
-      const note=el('div','pyro-tt-notes');note.textContent=plan.provisional?(plan.substitution?'Starting formula with an owned igniter substituted. This combination isn’t verified; check the burn as it progresses.':'Starting formula matched to your inventory. Not verified for this run; check the burn as it progresses.'):'Previously successful with these requirements. Fire timing can vary.';node.append(note);
+      const note=el('div','pyro-tt-notes');note.textContent=plan.provisional?(plan.modified?'Starting formula for this scenario. The modifier outcome isn’t verified; monitor damage and other requirements.':plan.substitution?'Starting formula with an owned igniter substituted. Check the burn as it progresses.':'Starting formula matched to your inventory. Check the burn as it progresses.'):'Previously successful with these requirements. Fire timing can vary.';node.append(note);
     }else{
       const note=el('div','pyro-tt-notes');note.textContent=plan.reason||'No available formula confirmed.';node.append(note);
     }
