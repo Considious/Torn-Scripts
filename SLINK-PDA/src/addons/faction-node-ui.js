@@ -1,15 +1,20 @@
 (function installFactionNodeUI(global) {
   'use strict';
   const labels={faction:'Entire faction',selected:'Selected members',leaders:'Leaders only'};
-  function mount({client,activity,domActivity=activity,theme,media,view,preferences,onManage,document:doc=global.document}) {
+  // UI inspiration: Torn Rooms by Manuel Cecchetto (github.com/manuelcecchetto/torn-rooms).
+  // SLINK implementation and artwork; no Torn Rooms code or generated assets are reused.
+  function mount({client,activity,domActivity=activity,theme,media,view,preferences,onManage,document:doc=global.document,child=null}) {
     let launcher=null,host=null,root=null,observer=null,discovery=null,observedChat=null,selected=null,mediaPanel=null,disposed=false,readTimer=null,typingTimer=null,actionMenu=null,pressTimer=null;
-    const rows=new Map(),drafts=new Map(),names=new Map(),reserved=new Set(),watched=new Set();
-    let resizeObserver=null,placementFrame=null,dockStyle=null,lastGap=3,lastSize={width:300,height:400},soundEnabled=true,autoMedia=true,roomSounds={},consented=!preferences,preferencesReady=!preferences,audio=null,lastSoundAt=0,sending=false,preferenceLoading=null;
+    const rows=new Map(),drafts=new Map(),names=child?.names||new Map(),reserved=new Set(),watched=new Set();
+    const roomWindows=new Map();
+    let recentRoom=null,hubFront=false;
+    const openPanels=()=>[host,...[...roomWindows.values()].map(item=>item.ui.element())].filter(el=>el&&!el.hidden);
+    let resizeObserver=null,placementFrame=null,dockStyle=null,lastGap=3,lastSize={width:300,height:400},soundEnabled=true,autoMedia=child?.autoMedia?.()!==false,roomSounds={},consented=!preferences,preferencesReady=!preferences,audio=null,lastSoundAt=0,sending=false,preferenceLoading=null;
     const nativePanelSelector='[class*="item___"] [class*="root___Ex8tg"]';
     function unreserve(){for(const el of reserved)el.removeAttribute('data-slink-room-reserve');reserved.clear();dockStyle?.remove();dockStyle=null;}
     function sizeInput(event){if(event.target.matches?.('#chatRoot input[type="range"]'))schedulePlace();}
     function nativeTransition(event){if(!domEligible()||!['transform','width','height'].includes(event.propertyName))return;if(event.target.matches?.('#chatRoot [class*="item___"],#chatRoot [class*="root___Ex8tg"]'))schedulePlace();}
-    function schedulePlace(){if(!domEligible()||!host||host.hidden||placementFrame!==null)return;placementFrame=global.requestAnimationFrame(()=>{placementFrame=null;place();});}
+    function schedulePlace(){if(child||!domEligible()||!openPanels().length||placementFrame!==null)return;placementFrame=global.requestAnimationFrame(()=>{placementFrame=null;place();});}
     function loadPreferences(){if(!preferences||preferenceLoading)return;preferenceLoading=Promise.resolve(preferences.get()).then(value=>{const oldConsent=consented;activity.setIdleMinutes?.([0,1,5,15,60].includes(value.idleMinutes)?value.idleMinutes:0);soundEnabled=value.soundEnabled!==false;const mediaChanged=autoMedia!==(value.autoMedia!==false);autoMedia=value.autoMedia!==false;roomSounds=value.roomSounds||{};pins=global.SLINK_FACTION_NODE?.validPins?.(value.pins)?value.pins:[];paintPins();consented=value.noticeAccepted===global.SLINK_FACTION_NODE?.ROOM_NOTICE;const first=!preferencesReady;preferencesReady=true;if(root){$('[data-room-sound]').checked=soundEnabled;paintList();if(mediaChanged){if(!autoMedia)for(const row of rows.values())for(const image of row.querySelectorAll('img.preview'))image.remove();paintRoom();}}if(first||oldConsent!==consented)global.queueMicrotask(sync);}).catch(()=>{}).finally(()=>{preferenceLoading=null;});}
     async function saveSound(){const next=$('[data-room-sound]').checked;try{if(preferences)await preferences.patch({soundEnabled:next});soundEnabled=next;if(next)primeAudio();else{void audio?.close().catch(()=>{});audio=null;}}catch(error){$('[data-room-sound]').checked=soundEnabled;throw error;}}
     async function ensureConsent(){if(!preferences)return true;await preferenceLoading;if(consented)return true;if(!global.confirm(global.SLINK_FACTION_NODE.ROOM_NOTICE_TEXT+'\n\nContinue to SLINK Rooms?'))return false;await preferences.patch({noticeAccepted:global.SLINK_FACTION_NODE.ROOM_NOTICE});consented=true;client.setActive(true);return true;}
@@ -28,12 +33,27 @@
     function button(text,handler){const el=node('button',text);el.type='button';el.addEventListener('click',()=>void attempt(handler));return el;}
     function notice(message){if(root){const el=$('[data-notice]');el.textContent=String(message||'');el.hidden=!message;}}
     async function attempt(task){if(!eligible())return;try{await task();}catch(error){notice(error.message||'This action could not be completed.');}}
-    function remember(){syncButtons();if(!view||!host)return;const identified=!!client.model.userId&&!!client.model.factionId;if((restoring||!identified)&&!host.hidden)return;const record=!identified||restoring?{visible:false}:{visible:!host.hidden,view:currentView==='media'?'chat':currentView,userId:client.model.userId,factionId:client.model.factionId,roomId:selected||null},encoded=JSON.stringify(record);if(encoded===lastWritten)return;lastWritten=encoded;void Promise.resolve().then(()=>view.save(record)).catch(error=>{if(lastWritten===encoded)lastWritten='';if(!disposed&&!host.hidden)notice('Could not remember this window: '+error.message);});}
-    async function restore(){if(!preferencesReady||!consented||!viewReady||!savedView?.visible||restoreStarted||!eligible()||!domEligible()||!launcher?.isConnected||navigationRevision)return;restoreStarted=true;restoring=true;try{create();host.hidden=false;show('home');const revision=navigationRevision;await client.refresh();if(revision!==navigationRevision||host.hidden)return;const same=savedView.userId===client.model.userId&&savedView.factionId===client.model.factionId;if(same&&savedView.view==='chat'&&client.model.rooms.some(room=>room.room_id===savedView.roomId))openRoom(savedView.roomId);place();}catch(error){notice(error.message);}finally{restoring=false;remember();}}
+    function remember(){syncButtons();if(!view||!host)return;const identified=!!client.model.userId&&!!client.model.factionId;if(restoring||!identified)return;const record=!identified||restoring?{visible:false}:{visible:!host.hidden,view:currentView==='media'?'chat':currentView,userId:client.model.userId,factionId:client.model.factionId,roomId:selected||null,windows:[...roomWindows].map(([id,{ui}])=>({id,minimized:ui.element()?.hidden===true}))},encoded=JSON.stringify(record);if(encoded===lastWritten)return;lastWritten=encoded;void Promise.resolve().then(()=>view.save(record)).catch(error=>{if(lastWritten===encoded)lastWritten='';if(!disposed&&!host.hidden)notice('Could not remember this window: '+error.message);});}
+    async function restore(){
+      if(!preferencesReady||!consented||!viewReady||!(savedView?.visible||savedView?.windows?.length)||restoreStarted||!eligible()||!domEligible()||!launcher?.isConnected||navigationRevision)return;
+      restoreStarted=true;restoring=true;
+      try{
+        create();host.hidden=!savedView.visible;show('home');const revision=navigationRevision;
+        await client.refresh();if(revision!==navigationRevision)return;
+        const same=savedView.userId===client.model.userId&&savedView.factionId===client.model.factionId;
+        const previous=savedView.windows??(savedView.view==='chat'&&savedView.roomId?[{id:savedView.roomId,minimized:false}]:[]);
+        if(same)for(const entry of previous.slice(0,12))if(client.model.rooms.some(room=>room.room_id===entry.id)){
+          openRoom(entry.id);if(entry.minimized)roomWindows.get(entry.id)?.ui.hideRoom();
+        }
+        updateRoomFocus();
+      }catch(error){notice(error.message);}finally{restoring=false;remember();}
+    }
     function paintTheme(){if(!host)return;const tokens=theme?.()||{};for(const [name,value]of Object.entries(tokens))if(name.startsWith('--slink-')&&typeof value==='string'){host.style.setProperty(name,value);launcher?.style.setProperty(name,value);}}
     function place(){
+      if(child){child.layout();return;}
       syncButtons();
-      if(!host||host.hidden||!launcher?.isConnected){unreserve();return;}
+      const windows=openPanels();
+      if(!windows.length||!launcher?.isConnected){unreserve();return;}
       if(!domEligible())return;
       const chat=doc.getElementById('chatRoot'),bar=launcher.parentElement,barRect=bar.getBoundingClientRect(),panels=[...(chat?.querySelectorAll(nativePanelSelector)||[])].filter(el=>{const r=el.getBoundingClientRect();return !el.hidden&&r.width>40&&r.height>80&&global.getComputedStyle(el).visibility!=='hidden';});
       // Share Torn's outer chat stacking level, but paint before its native UI.
@@ -41,7 +61,7 @@
       // unrelated page content or changing any native z-index.
       const ancestors=[];for(let el=bar;el&&el!==chat;el=el.parentElement)ancestors.unshift(el);
       let layer=0;for(const el of ancestors){const style=global.getComputedStyle(el);if(style.zIndex!=='auto'){layer=Number(style.zIndex)||0;break;}if(['fixed','sticky'].includes(style.position)||style.transform!=='none'||Number(style.opacity)<1||style.isolation==='isolate')break;}
-      if(host.style.zIndex!==String(layer))host.style.zIndex=String(layer);if(chat.firstElementChild!==host)chat.prepend(host);
+      for(const panel of windows){if(panel.style.zIndex!==String(layer))panel.style.zIndex=String(layer);if(panel.parentElement!==chat)chat.prepend(panel);}
       const primary=panels.find(el=>!['notes_panel','people_panel'].includes(el.id))||panels[0];
       if(primary){const r=primary.getBoundingClientRect();lastSize={width:r.width,height:r.height};}
       else for(const input of chat?.querySelectorAll('[class*="panelSizeContainer___"] input[type="range"]')||[]){const label=(input.closest('label')||input.parentElement.querySelector('label'))?.textContent||'',percent=Number(input.value);if(!Number.isFinite(percent))continue;if(/^Height\b/i.test(label))lastSize.height=400*percent/100;else if(/^Width\b/i.test(label))lastSize.width=300*percent/100;}
@@ -60,14 +80,19 @@
       const ordered=natural.map(item=>item.rect).sort((a,b)=>a.left-b.left),gaps=ordered.slice(1).map((rect,i)=>rect.left-ordered[i].right).filter(gap=>gap>0&&gap<64).sort((a,b)=>a-b);
       if(gaps.length)lastGap=gaps[Math.floor(gaps.length/2)];
       const panelRect=primary?.getBoundingClientRect(),width=Math.min(lastSize.width,global.innerWidth-16),bottom=Math.max(0,global.innerHeight-(panelRect?.bottom??barRect.top)),height=Math.min(lastSize.height,global.innerHeight-bottom-8),rightmost=natural.length?Math.max(...natural.map(item=>item.rect.right)):barRect.right;
-      host.style.width=width+'px';host.style.height=Math.max(120,height)+'px';host.style.bottom=bottom+'px';host.style.right=Math.max(0,Math.min(global.innerWidth-width,global.innerWidth-rightmost))+'px';host.style.maxHeight=Math.max(120,global.innerHeight-bottom-8)+'px';
-      const required=Math.max(0,rightmost-host.getBoundingClientRect().left+lastGap),shifts=new Map([...next].map(wrapper=>[wrapper,required]));
+      const base=Math.max(0,Math.min(global.innerWidth-width,global.innerWidth-rightmost));
+      const capacity=Math.max(1,Math.floor((global.innerWidth-base+lastGap)/(width+lastGap)));
+      const candidates=hubFront&&windows.includes(host)?[...windows.filter(panel=>panel!==host),host]:windows;
+      const visible=(candidates.length>capacity?candidates.slice(-capacity):candidates).sort((a,b)=>Number(a===host)-Number(b===host));
+      for(const panel of windows)panel.style.visibility=visible.includes(panel)?'visible':'hidden';
+      visible.forEach((panel,i)=>{panel.style.width=width+'px';panel.style.height=Math.max(120,height)+'px';panel.style.bottom=bottom+'px';panel.style.right=(base+i*(width+lastGap))+'px';panel.style.maxHeight=Math.max(120,global.innerHeight-bottom-8)+'px';});
+      const required=Math.max(0,rightmost-visible.at(-1).getBoundingClientRect().left+lastGap),shifts=new Map([...next].map(wrapper=>[wrapper,required]));
       const apply=()=>{if(dockStyle)dockStyle.textContent=baseCSS+[...shifts].map(([wrapper,pixels])=>'[data-slink-room-reserve="'+wrapper.getAttribute('data-slink-room-reserve')+'"]{translate:-'+pixels+'px 0!important}').join('');};
       apply();
       // CSS pixels in Torn's rail can be scaled. Calibrate against the actual
       // visible movement instead of assuming a 300px translate moved 300px.
       for(const wrapper of next){const sample=natural.find(item=>item.wrapper===wrapper),moved=sample.rect.right-exterior(sample.el).right;if(moved>0&&Math.abs(moved-required)>.25)shifts.set(wrapper,required*required/moved);}
-      apply();host.style.visibility='visible';
+      apply();
       if(!next.size){dockStyle?.remove();dockStyle=null;}
       if(!resizeObserver&&global.ResizeObserver)resizeObserver=new global.ResizeObserver(schedulePlace);const observe=new Set([...panels,bar]);for(const el of watched)if(!observe.has(el)){resizeObserver?.unobserve(el);watched.delete(el);}for(const el of observe)if(!watched.has(el)){watched.add(el);resizeObserver?.observe(el);}
       paintTheme();
@@ -81,7 +106,21 @@
       /* Compact Torn-style Rooms chrome, with independent SLINK artwork. */
       :host{font:13px/1.35 Arial,sans-serif}
       .window{border-radius:6px 6px 3px 3px;border-color:var(--slink-border,#4b4b4b);background-color:var(--slink-panel,#292929);box-shadow:0 3px 12px #0007}
-      header{min-height:36px;padding:4px 6px;flex-wrap:nowrap;gap:4px;background:linear-gradient(#ffffff19,#0000002a),var(--slink-surface,#383838);border-bottom:1px solid #0008}
+      header{min-height:36px;padding:4px 6px;flex-wrap:nowrap;gap:4px;background:linear-gradient(#ffffff19,#0000002a),var(--room-header-color,#20516d);border-bottom:1px solid #0008}
+      .directory-tools{display:flex;gap:4px;padding:5px;border-bottom:1px solid #ffffff26;background:#333}
+      .directory-tools input[type=search]{height:32px;background:#090909;color:#eee;border:1px solid #555;flex:1;min-width:0}
+      .directory-menu{padding:4px 6px;background:#363636}.directory-menu>summary,.room-options>summary{cursor:pointer;list-style:none}
+      .room-row{grid-template-columns:minmax(0,1fr) auto;border:0;align-items:center}
+      .room-list .room-entry{display:grid;grid-template-columns:42px minmax(0,1fr);min-height:58px;align-items:center;width:100%;gap:8px}
+      .room-icon{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font-size:19px;color:#fff;position:relative}
+      .room-icon b{position:absolute;left:-2px;top:-3px;border-radius:50%;background:#668b2a;border:1px solid #c4ea75;padding:0 3px;font-size:10px}
+      .room-copy{min-width:0}.room-copy strong,.room-copy small{display:block;overflow:hidden;text-overflow:ellipsis}
+      .room-copy strong{white-space:nowrap}.room-copy small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+      .room-options{font-size:12px}.room-options summary{padding:4px}.room-options[open]{min-width:65px}
+      .window .scroll{background:#303030;color:#eee}.message{display:table;max-width:100%;background:#202020;color:#eee}.message[data-mine]{margin-left:auto;background:#080808}
+      .message .meta,.message .text{display:inline}.message .meta small{display:none}.message .meta a{color:inherit;text-decoration:none}.message .meta a:hover{text-decoration:underline}
+      [data-personal-rooms]{padding:4px 6px;margin:0;border-top:0}.personal-create{display:block;font-weight:700;padding:5px 0}
+
       header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:3px}
       header button,.room-tools button{display:grid;place-items:center;width:28px;height:27px;padding:0;border:0;background:transparent;border-radius:4px}
       header button:hover,.room-tools button:hover{background:#ffffff26}
@@ -98,18 +137,22 @@
       .compose [data-send]{display:grid;place-items:center;width:28px;flex:none}.compose [data-cancel-reply]{font-size:11px}
       .footer{min-height:17px;background:#0003;color:var(--slink-muted,#bbb);padding:2px 6px}
       [data-personal-rooms]{padding:4px 2px;border-top:1px solid #ffffff21;margin-top:4px}
-      </style><div class="window"><header><strong data-window-title>SLINK Rooms</strong><button type="button" data-home aria-label="Room list" title="Room list">${roomGlyph}</button><button type="button" data-admin aria-label="Manage rooms" title="Manage rooms" hidden>⚙</button><button type="button" data-close aria-label="Minimize faction rooms">−</button></header>
-      <p class="notice" data-notice role="status" hidden></p><div class="body" data-home-view><div class="toolbar"><button type="button" data-refresh>Refresh rooms</button><label><input type="checkbox" data-room-sound checked> Notification sounds</label></div><div class="scroll"><div class="room-list" data-rooms></div><section data-personal-rooms></section></div></div>
-      <div class="body" data-chat-view hidden><div class="toolbar room-tools"><button type="button" data-room-info aria-expanded="false" aria-label="Room information" title="Room information">ⓘ</button></div><div data-room-details hidden><p class="room-description" data-room-description></p><div class="toolbar"><button type="button" data-reconnect>Reconnect</button><button type="button" data-older>Earlier messages</button></div></div><div class="scroll" data-scroller><ol class="messages" data-messages></ol></div><div class="pending" data-pending></div><div class="compose"><div class="reply" data-reply hidden></div><div class="compose-line"><textarea data-draft maxlength="4096" rows="1" placeholder="Type your message here…" aria-label="Room message"></textarea><button type="button" data-gifs>GIF</button><button type="button" data-stickers>Sticker</button><button type="button" data-send aria-label="Send" title="Send">${sendGlyph}</button></div><button type="button" data-cancel-reply hidden>Cancel reply/edit</button></div><div class="footer" data-room-status></div></div>
+      </style><div class="window"><header><span aria-hidden="true">${roomGlyph}</span><strong data-window-title>SLINK Rooms</strong><button type="button" data-home aria-label="Room list" title="Room list">${roomGlyph}</button><button type="button" data-admin aria-label="Manage rooms" title="Manage rooms" hidden>⚙</button><button type="button" data-room-info aria-expanded="false" aria-label="Room information" title="Room information" hidden>⌄</button><button type="button" data-close aria-label="Minimize faction rooms">−</button><button type="button" data-close-room aria-label="Close room" title="Close room" hidden>×</button></header>
+      <p class="notice" data-notice role="status" hidden></p><div class="body" data-home-view><div class="directory-tools"><input data-room-search type="search" placeholder="Search your rooms" aria-label="Search your rooms"><details class="directory-menu"><summary aria-label="Room settings">⚙</summary><button type="button" data-refresh>Refresh rooms</button><label><input type="checkbox" data-room-sound checked> Notification sounds</label><p><a href="https://github.com/manuelcecchetto/torn-rooms" target="_blank" rel="noopener noreferrer">Design inspired by Torn Rooms</a></p></details></div><div class="scroll"><section data-personal-rooms></section><div class="room-list" data-rooms></div></div></div>
+      <div class="body" data-chat-view hidden><div data-room-details hidden><p class="room-description" data-room-description></p><div class="toolbar"><button type="button" data-reconnect>Reconnect</button><button type="button" data-older>Earlier messages</button></div></div><div class="scroll" data-scroller><ol class="messages" data-messages></ol></div><div class="pending" data-pending></div><div class="compose"><div class="reply" data-reply hidden></div><div class="compose-line"><textarea data-draft maxlength="4096" rows="1" placeholder="Type your message here…" aria-label="Room message"></textarea><button type="button" data-gifs>GIF</button><button type="button" data-stickers>Sticker</button><button type="button" data-send aria-label="Send" title="Send">${sendGlyph}</button></div><button type="button" data-cancel-reply hidden>Cancel reply/edit</button></div><div class="footer" data-room-status></div></div>
       <div class="body" data-media-view hidden><div class="toolbar"><button type="button" data-media-back>Back to room</button></div><div class="media-surface" data-media></div></div>
       <div data-admin-view hidden></div></div>`;
       // Static template only. All server/user strings below use textContent or text nodes.
-      root.addEventListener('pointerdown',event=>{if(actionMenu&&!event.target.closest('.message-menu'))closeMessageActions();},true);root.addEventListener('scroll',event=>{if(!actionMenu?.contains(root.activeElement)&&!actionMenu?.contains(event.target))closeMessageActions();},true);
+      root.addEventListener('pointerdown',event=>{child?.focus();if(actionMenu&&!event.target.closest('.message-menu'))closeMessageActions();},true);root.addEventListener('scroll',event=>{if(!actionMenu?.contains(root.activeElement)&&!actionMenu?.contains(event.target))closeMessageActions();},true);
       root.querySelector('style').textContent+=' .window{background-image:linear-gradient(#161616c4,#161616c4),var(--slink-theme-background-image,none);background-position:center;background-size:cover}';
-      $('[data-close]').onclick=()=>{closeMessageActions();host.hidden=true;client.setViewedRoom?.(null);unreserve();resizeObserver?.disconnect();watched.clear();mediaPanel?.suspend();remember();};
+      $('[data-close-room]').hidden=!child;
+      $('[data-close-room]').onclick=()=>child?.close();
+      if(child){$('[data-home]').hidden=true;$('[data-admin]').hidden=true;}
+      $('[data-close]').onclick=()=>{if(child){child.minimize();return;}closeMessageActions();host.hidden=true;place();mediaPanel?.suspend();remember();};
       host.setAttribute('role','dialog');host.setAttribute('aria-label','SLINK Faction Rooms');doc.getElementById('chatRoot')?.prepend(host);
       $('[data-home]').onclick=()=>show('home');$('[data-admin]').onclick=()=>void attempt(openAdmin);
       $('[data-refresh]').onclick=()=>void attempt(()=>client.refresh());$('[data-reconnect]').onclick=()=>selected&&void client.connect(selected,true);
+      $('[data-room-search]').oninput=paintList;
       $('[data-send]').onclick=()=>void attempt(sendDraft);
       $('[data-room-sound]').onchange=()=>void attempt(saveSound);
       $('[data-room-info]').onclick=()=>{const info=$('[data-room-details]');info.hidden=!info.hidden;$('[data-room-info]').setAttribute('aria-expanded',String(!info.hidden));};
@@ -120,19 +163,19 @@
       $('[data-gifs]').onclick=()=>void attempt(()=>openMedia('gif'));$('[data-stickers]').onclick=()=>void attempt(()=>openMedia('sticker'));$('[data-media-back]').onclick=()=>{mediaPanel?.suspend();show('chat');};
 
     }
-    function show(nextView){if(!host)return;closeMessageActions();navigationRevision++;currentView=nextView;client.setViewedRoom?.(nextView==='chat'&&!host.hidden?selected:null);for(const name of ['home','chat','admin','media'])$('[data-'+name+'-view]').hidden=name!==nextView;if(nextView!=='media')mediaPanel?.suspend();notice('');place();if(nextView==='chat')paintRoom();else if(nextView==='home')paintList();remember();}
+    function show(nextView){if(!host)return;closeMessageActions();navigationRevision++;currentView=nextView;for(const name of ['home','chat','admin','media'])$('[data-'+name+'-view]').hidden=name!==nextView;if(nextView!=='media')mediaPanel?.suspend();notice('');place();if(nextView==='chat')paintRoom();else if(nextView==='home')paintList();remember();}
     function markRead(){if(readTimer||!selected||host.hidden||$('[data-chat-view]').hidden||!domEligible())return;const scroller=$('[data-scroller]');if(scroller.scrollHeight-scroller.scrollTop-scroller.clientHeight>30)return;const readingRoom=selected;readTimer=global.setTimeout(()=>{readTimer=null;if(!domEligible()||host.hidden||selected!==readingRoom||$('[data-chat-view]').hidden||scroller.scrollHeight-scroller.scrollTop-scroller.clientHeight>30)return;const state=client.room(readingRoom),seq=Math.max(0,...[...state.messages.values()].map(m=>m.seq));if(seq>(state.lastRead||0)){try{client.command(selected,{type:'read',seq});state.lastRead=seq;state.unread=0;paintBadge();}catch{}}},1500);}
     function paintBadge(){if(!launcher)return;const count=[...client.model.rooms].reduce((n,item)=>n+client.room(item.room_id).unread,0);launcher.setAttribute('aria-label','SLINK Faction Rooms'+(count?', '+count+' unread messages':''));let badge=launcher.querySelector('[data-node-unread]');if(!count){badge?.remove();return;}if(!badge){badge=node('div');badge.dataset.nodeUnread='';badge.className='messageCount___EWpiR';const span=node('span');span.className='root___XpplE headingH1___VK9XQ root____FDYX oneDigit___FJ3vn';span.style.color='white';badge.append(span);launcher.append(badge);}badge.firstChild.textContent=count>99?'99+':String(count);badge.firstChild.classList.toggle('oneDigit___FJ3vn',count<10);}
     let pins=[],pinBar=null,pinSignature='',pinSaving=false;
     function paintPins(){
       if(!launcher?.parentElement||!domEligible())return;
-      const visible=pins.flatMap(pin=>{const item=client.model.rooms.find(room=>room.room_id===pin.id);return item?[{...pin,name:item.name,unread:client.room(pin.id).unread}]:[];});
+      const visible=[...roomWindows.keys()].flatMap(id=>{const item=client.model.rooms.find(room=>room.room_id===id),pin=pins.find(pin=>pin.id===id);return item?[{id,name:item.name,icon:pin?.icon||'◆',color:pin?.color||'#20516d',unread:client.room(id).unread}]:[];});
       if(!pinBar&&!visible.length)return;
       if(!pinBar){pinBar=node('span');pinBar.dataset.slinkRoomPins='';pinBar.style.cssText='display:inline-flex;flex:none;align-items:center;gap:2px';}
       if(pinBar.nextElementSibling!==launcher)launcher.before(pinBar);
       const key=JSON.stringify(visible);if(pinSignature===key)return;pinSignature=key;
       pinBar.replaceChildren(...visible.map(pin=>{
-        const el=button(pin.icon,()=>void attempt(async()=>{if(!await ensureConsent())return;create();host.hidden=false;primeAudio();openRoom(pin.id);place();}));
+        const el=button(pin.icon,()=>toggleRoom(pin.id));
         el.className=launcher.className;el.dataset.roomPin=pin.id;el.title=pin.name;el.setAttribute('aria-label',pin.name+(pin.unread?', '+pin.unread+' unread':''));
         el.style.cssText=barButtonCss+';background-color:'+pin.color;
         if(pin.unread){const badge=node('span',pin.unread>99?'99+':String(pin.unread));badge.style.cssText='position:absolute;top:-4px;right:-2px;background:#19743c;color:white;border-radius:9px;font:700 10px system-ui;padding:1px 3px';el.append(badge);}
@@ -145,7 +188,7 @@
     async function savePins(next){if(pinSaving)return;pinSaving=true;try{const saved=await preferences.patch({pins:next});pins=saved?.pins||next;paintList();}catch(error){notice('Not saved: '+error.message);paintList();}finally{pinSaving=false;}}
     function pinControls(item){
       const box=node('span'),pin=pins.find(row=>row.id===item.room_id),{pinIcons,pinColors}=global.SLINK_FACTION_NODE;
-      const toggle=button(pin?'Unpin':'Pin',()=>void savePins(pin?pins.filter(row=>row.id!==pin.id):[...pins,{id:item.room_id,icon:pinIcons[0],color:pinColors[0]}]));toggle.disabled=!pin&&pins.length>=5;box.append(toggle);
+      const toggle=button(pin?'Reset style':'Customize',()=>void savePins(pin?pins.filter(row=>row.id!==pin.id):[...pins,{id:item.room_id,icon:pinIcons[0],color:pinColors[0]}]));toggle.disabled=!pin&&pins.length>=5;box.append(toggle);
       if(pin)for(const [key,values] of [['icon',pinIcons],['color',pinColors]]){
         const select=node('select');select.setAttribute('aria-label',key+' for '+item.name);
         values.forEach((value,index)=>{const option=node('option',key==='icon'?value:['Purple','Blue','Green','Red','Gold'][index]);option.value=value;select.append(option);});select.value=pin[key];
@@ -159,7 +202,7 @@
       panel.dataset.signature=signature;panel.replaceChildren(node('p','Personal rooms · '+data.used+'/'+data.limit+' rooms available.'));
       const contact=node('a','Contact Considious [3853023] to purchase more rooms');contact.href='https://www.torn.com/profiles.php?XID=3853023';contact.target='_blank';contact.rel='noopener noreferrer';panel.append(contact);
       const makeField=(label,value,max)=>{const wrap=node('label',label+' '),input=node('input');input.value=value;input.maxLength=max;wrap.className='field';wrap.append(input);return [wrap,input];};
-      const details=node('details'),summary=node('summary','Create personal room');details.append(summary);
+      const details=node('details'),summary=node('summary','Create New Chat Room');summary.className='personal-create';details.append(summary);
       const [nameField,name]=makeField('Room name','',60),[descField,description]=makeField('Description','',300);
       let createId=null,createSignature='';
       async function change(control,input){
@@ -169,7 +212,7 @@
       }
       const create=button('Create personal room',async()=>{const value=JSON.stringify([name.value.trim(),description.value]);if(value!==createSignature){createSignature=value;createId=global.crypto.randomUUID();}await change(create,{action:'create',request_id:createId,name:name.value.trim(),description:description.value});});
       if(data.used<data.limit){details.append(nameField,descField,create);panel.append(details);}
-      else{create.disabled=true;panel.append(create);}
+      else{const unavailable=node('strong','Create New Chat Room');unavailable.className='personal-create';unavailable.setAttribute('aria-disabled','true');panel.prepend(unavailable);}
       for(const room of data.rooms||[]){
         const form=node('details');form.append(node('summary','Manage '+room.name));
         const [titleField,title]=makeField('Room name',room.name,60),[aboutField,about]=makeField('Description',room.description,300);
@@ -185,12 +228,61 @@
         panel.append(form);
       }
     }
-    function paintList(){paintBadge();paintPins();if(!root||host.hidden||currentView!=='home')return;paintPersonal();$('[data-admin]').hidden=!client.model.leader;const list=$('[data-rooms]'),key=JSON.stringify([client.model.status,client.model.rooms.map(item=>[item.room_id,item.name,item.description,item.visibility,client.room(item.room_id).unread]),roomSounds,pins]);if(list.dataset.signature===key)return;list.dataset.signature=key;list.replaceChildren();for(const item of client.model.rooms){const el=button('',()=>openRoom(item.room_id));el.className='room-entry';el.append(node('strong',item.name));if(item.description){const description=node('small',item.description);description.className='room-description';el.append(description);}el.append(node('small',labels[item.visibility]||'Room'));const unread=client.room(item.room_id).unread;if(unread)el.append(node('small',unread+' unread'));const row=node('div');row.className='room-row';row.append(el);const label=node('label'),check=node('input');check.type='checkbox';check.checked=roomSounds[item.room_id]!==false;check.dataset.roomSoundId=item.room_id;label.className='room-sound';check.setAttribute('aria-label','Notification sounds for '+item.name);check.onchange=()=>{check.disabled=true;void roomSound(item.room_id,check.checked).catch(error=>{check.checked=roomSounds[item.room_id]!==false;notice('Not saved: '+error.message);}).finally(()=>{check.disabled=false;});};label.append(check,doc.createTextNode(' Sound'));row.append(label);if(preferences&&global.SLINK_FACTION_NODE?.pinIcons)row.append(pinControls(item));list.append(row);}if(!client.model.rooms.length)list.append(node('p',client.model.status==='loading'?'Loading rooms…':'No accessible rooms.'));paintBadge();}
+    function paintList(){
+      paintBadge();paintPins();if(!root||host.hidden||currentView!=='home')return;
+      paintPersonal();$('[data-admin]').hidden=!client.model.leader;
+      const list=$('[data-rooms]'),query=$('[data-room-search]').value.trim().toLowerCase();
+      const items=client.model.rooms.filter(item=>item.name.toLowerCase().includes(query));
+      const snapshot=items.map(item=>{
+        const state=client.room(item.room_id);
+        let latest=null;for(const message of state.messages?.values()||[])if(!latest||message.seq>latest.seq)latest=message;
+        return {item,unread:state.unread,latest};
+      });
+      const key=JSON.stringify([query,client.model.status,snapshot,roomSounds,pins]);if(list.dataset.signature===key)return;list.dataset.signature=key;list.replaceChildren();
+      for(const {item,unread,latest} of snapshot){
+        const pin=pins.find(pin=>pin.id===item.room_id),el=button('',()=>openRoom(item.room_id));el.className='room-entry';
+        const icon=node('span',pin?.icon||'◆');icon.className='room-icon';icon.style.backgroundColor=pin?.color||'#20516d';icon.setAttribute('aria-hidden','true');if(unread)icon.append(node('b',unread>99?'99+':String(unread)));
+        const copy=node('span');copy.className='room-copy';copy.append(node('strong',item.name));
+        copy.append(node('small',latest&&!latest.deleted_at?knownName(latest)+': '+(latest.content?.text||'Media message'):item.description||labels[item.visibility]||'Room'));
+        el.append(icon,copy);el.setAttribute('aria-label',item.name+(unread?', '+unread+' unread':''));const row=node('div');row.className='room-row';row.append(el);
+        if(preferences){const options=node('details');options.className='room-options';const summary=node('summary','⋯');summary.setAttribute('aria-label','Options for '+item.name);options.append(summary);
+          const label=node('label'),check=node('input');check.type='checkbox';check.checked=roomSounds[item.room_id]!==false;check.setAttribute('aria-label','Notification sounds for '+item.name);
+          check.onchange=()=>void attempt(()=>roomSound(item.room_id,check.checked));label.append(check,doc.createTextNode(' Sound'));options.append(label);
+          if(global.SLINK_FACTION_NODE?.pinIcons)options.append(pinControls(item));row.append(options);
+        }list.append(row);
+      }
+      if(!items.length)list.append(node('p',query?'No matching rooms.':client.model.status==='loading'?'Loading rooms…':'No accessible rooms.'));
+    }
     function clearReply(){if(!root)return;$('[data-reply]').hidden=true;$('[data-reply]').textContent='';$('[data-cancel-reply]').hidden=true;delete host.dataset.replyTo;delete host.dataset.editId;}
-    function openRoom(id){if(selected)drafts.set(selected,$('[data-draft]').value);selected=id;rows.clear();$('[data-messages]').replaceChildren();$('[data-draft]').value=drafts.get(id)||'';clearReply();show('chat');void client.connect(id);}
+    function updateRoomFocus(){
+      const active=roomWindows.get(recentRoom)?.ui.element();
+      client.setViewedRoom?.(active&&!active.hidden?recentRoom:[...roomWindows].reverse().find(([,item])=>!item.ui.element()?.hidden)?.[0]||null);
+      paintPins();place();remember();
+    }
+    function toggleRoom(id){
+      const entry=roomWindows.get(id),panel=entry?.ui.element();
+      if(panel&&!panel.hidden&&panel.style.visibility!=='hidden'){entry.ui.hideRoom();updateRoomFocus();return;}
+      openRoom(id);
+    }
+    function removeRoom(id){
+      const entry=roomWindows.get(id);if(!entry)return;roomWindows.delete(id);entry.ui.dispose();
+      if(recentRoom===id)recentRoom=null;updateRoomFocus();
+    }
+    function openRoom(id){
+      let entry=roomWindows.get(id);
+      if(!entry&&roomWindows.size>=12){notice('Close a room before opening another.');return;}
+      if(!entry){
+        const shared={...client,setActive(){},setBackground(){},setViewedRoom(){},dispose(){}};
+        const ui=mount({client:shared,activity:{eligible,subscribe:()=>()=>{}},domActivity:{eligible:domEligible,subscribe:()=>()=>{}},theme,media,document:doc,
+          child:{names,autoMedia:()=>autoMedia,focus:()=>{if(recentRoom!==id){recentRoom=id;updateRoomFocus();}},layout:schedulePlace,minimize:()=>{ui.hideRoom();updateRoomFocus();},close:()=>removeRoom(id),color:()=>pins.find(pin=>pin.id===id)?.color||'#20516d'}});
+        entry={ui};roomWindows.set(id,entry);
+      }else{roomWindows.delete(id);roomWindows.set(id,entry);}
+      recentRoom=id;hubFront=false;entry.ui.openRoomWindow(id);updateRoomFocus();
+    }
+    function openLocalRoom(id){if(selected)drafts.set(selected,$('[data-draft]').value);selected=id;rows.clear();$('[data-messages]').replaceChildren();$('[data-draft]').value=drafts.get(id)||'';clearReply();show('chat');void client.connect(id);}
     function replyTo(message,edit=false){if(!eligible())return;host.dataset[edit?'editId':'replyTo']=message.message_id;delete host.dataset[edit?'replyTo':'editId'];$('[data-reply]').textContent=(edit?'Editing: ':'Replying to: ')+(message.content?.text||'Media message');$('[data-reply]').hidden=false;$('[data-cancel-reply]').hidden=false;if(edit)$('[data-draft]').value=message.content?.text||'';$('[data-draft]').focus();}
     async function sendDraft(){if(!selected||sending||$('[data-send]').disabled)return;const roomId=selected,text=$('[data-draft]').value,editing=host.dataset.editId,prior=editing&&client.room(roomId).messages.get(editing);if(!text.trim()&&prior?.content?.type!=='media')return;const content=prior?{...prior.content,text}:{type:host.dataset.replyTo?'reply':'text',text,...(host.dataset.replyTo?{reply_to:host.dataset.replyTo}:{})};sending=true;try{if(editing)await client.action(roomId,{type:'edit',message_id:editing,content});else client.send(roomId,content);}finally{sending=false;}if(selected===roomId&&$('[data-draft]').value===text){$('[data-draft]').value='';drafts.delete(roomId);clearReply();}}
-    function messageRow(message,state){const li=node('li');li.className='message';li.dataset.messageId=message.message_id;li.dataset.revision=String(message.revision);li.dataset.displayName=knownName(message);li.dataset.mediaMode=autoMedia?'auto':'click';const meta=node('div');meta.className='meta';const profile=node('a',knownName(message)+' ['+Number(message.user_id)+']');profile.href='https://www.torn.com/profiles.php?XID='+Number(message.user_id);profile.target='_blank';profile.rel='noopener noreferrer';meta.append(profile);if(message.origin_faction_id!==client.model.factionId)meta.append(node('small','Faction '+message.origin_faction_id));meta.append(node('small',new Date(message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})));li.append(meta);
+    function messageRow(message,state){const li=node('li');li.className='message';if(Number(message.user_id)===Number(client.model.userId))li.dataset.mine='';li.dataset.messageId=message.message_id;li.dataset.revision=String(message.revision);li.dataset.displayName=knownName(message);li.dataset.mediaMode=autoMedia?'auto':'click';const meta=node('div');meta.className='meta';const profile=node('a',knownName(message) + ': ');profile.href='https://www.torn.com/profiles.php?XID='+Number(message.user_id);profile.target='_blank';profile.rel='noopener noreferrer';meta.append(profile);if(message.origin_faction_id!==client.model.factionId)meta.append(node('small','Faction '+message.origin_faction_id));meta.append(node('small',new Date(message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})));li.append(meta);
       if(message.deleted_at){li.append(node('p','Message removed'));return li;}
       if(message.reply_to){const quoted=state.messages.get(message.reply_to);const quote=node('div',(quoted?.display_name||'Earlier message')+': '+(quoted?.content?.text||'Media or unavailable message'));quote.className='reply';li.append(quote);}
       const text=node('div',message.content?.text||'');text.className='text';li.append(text);
@@ -258,13 +350,13 @@
       const opened=!!host&&!host.hidden,chat=opened&&currentView==='chat';
       if(root){const title=$('[data-window-title]');if(title)title.textContent=chat?(client.model.rooms.find(room=>room.room_id===selected)?.name||'Room'):'SLINK Rooms';}
       if(launcher){launcher.setAttribute('aria-pressed',String(opened&&!chat));launcher.style.boxShadow=opened&&!chat?'inset 0 -2px currentColor':'';}
-      for(const el of pinBar?.children||[]){const on=chat&&el.dataset.roomPin===selected;el.setAttribute('aria-pressed',String(on));el.style.boxShadow=on?'inset 0 -2px currentColor':'';}
+      for(const el of pinBar?.children||[]){const panel=roomWindows.get(el.dataset.roomPin)?.ui.element(),on=panel&&!panel.hidden&&panel.style.visibility!=='hidden';el.setAttribute('aria-pressed',String(!!on));el.style.boxShadow=on?'inset 0 -2px currentColor':'';}
     }
-    function attach(){if(!domEligible())return;const chat=doc.getElementById('chatRoot'),anchor=chat?.querySelector('#people_panel_button');if(!anchor)return;if(!launcher){launcher=node('button');launcher.innerHTML=roomGlyph;launcher.type='button';launcher.id='slink-faction-node-button';launcher.title='SLINK Faction Rooms';launcher.className=anchor.className;launcher.style.cssText=barButtonCss+';background-color:var(--slink-surface,#3c3c3c)';launcher.onclick=()=>void attempt(async()=>{if(!await ensureConsent())return;const first=!host;create();host.hidden=!host.hidden;client.setViewedRoom?.(!host.hidden&&currentView==='chat'?selected:null);if(host.hidden){unreserve();resizeObserver?.disconnect();}primeAudio();if(!host.hidden){if(first)show('home');await client.refresh();paintList();paintRoom();place();if(currentView==='media')await mediaPanel?.open(mediaType);}remember();});}if(launcher.parentElement!==anchor.parentElement)anchor.before(launcher);const w=anchor.offsetWidth,h=anchor.offsetHeight;for(const el of [launcher,pinBar])if(el){if(w>20)el.style.setProperty('--room-button-width',w+'px');if(h>20)el.style.setProperty('--room-button-height',h+'px');}paintPins();syncButtons();if(host&&!host.isConnected)chat.prepend(host);paintTheme();if(host&&!host.hidden)schedulePlace();void restore();}
-    function sync(){observer?.disconnect();discovery?.disconnect();resizeObserver?.disconnect();watched.clear();client.setBackground?.(!domEligible());client.setViewedRoom?.(host&&!host.hidden&&currentView==='chat'?selected:null);if(!eligible()){void audio?.suspend().catch(()=>{});client.setActive(false);mediaPanel?.suspend();return;}loadPreferences();client.setActive(preferencesReady&&consented);if(!domEligible())return;attach();observedChat=doc.getElementById('chatRoot');if(observedChat){observer||=new MutationObserver(records=>{if(!domEligible())return;const containsAnchor=n=>n.nodeType===1&&(n.id==='people_panel_button'||n.querySelector?.('#people_panel_button'));if(records.some(record=>record.type==='attributes'&&record.target.matches?.('[class*="root___Ex8tg"],[class*="item___"],[class*="root___PF7AM"],[class*="root___Ef1Ql"]')||[...record.addedNodes,...record.removedNodes].some(n=>n.nodeType===1&&(n.matches?.(nativePanelSelector)||n.querySelector?.('[class*="root___Ex8tg"]')))))schedulePlace();if(records.some(record=>[...record.addedNodes].some(containsAnchor)||[...record.removedNodes].some(n=>n===launcher||containsAnchor(n))))attach();});observer.observe(observedChat,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class']});}discovery||=new MutationObserver(()=>{if(domEligible()&&doc.getElementById('chatRoot')!==observedChat)sync();});discovery.observe(observedChat?.parentElement||doc.body,{childList:true,subtree:!observedChat});if(host&&!host.hidden){paintRoom();place();if(currentView==='media')void attempt(()=>mediaPanel?.open(mediaType));}if(preferencesReady&&consented&&client.model.status==='idle')void client.refresh().catch(()=>{});void restore();}
-    const unsubscribe=client.subscribe(event=>{if(!eligible())return;messageSound(event);if(event.type==='room'||event.type==='list'){paintBadge();paintPins();}if(!root)return;if(event.type==='identity'){selected=null;drafts.clear();rows.clear();names.clear();loadNames.loaded=false;$('[data-draft]').value='';$('[data-messages]').replaceChildren();show('home');}if(event.type==='list'){loadNames();paintList();}else if(event.type==='room'){if(currentView==='home')paintList();if(event.id===selected)paintRoom(event.message);}else if(event.type==='status')notice(client.model.error);});
-    const stopActivity=activity.subscribe(sync),stopDom=domActivity===activity?null:domActivity.subscribe(sync);global.addEventListener('resize',schedulePlace);doc.addEventListener('input',sizeInput,true);doc.addEventListener('transitionend',nativeTransition,true);if(view)void view.get().then(record=>{if(disposed)return;savedView=record;viewReady=true;void restore();}).catch(()=>{viewReady=true;});sync();
-    return {sync,async open(manage=false){if(!await ensureConsent())return;create();host.hidden=false;client.setActive(true);await client.refresh();paintList();if(manage){if(!client.model.leader){show('home');throw Error('Only explicitly assigned Chat Leaders can manage rooms.');}await openAdmin();}else show('home');place();},dispose(){disposed=true;closeMessageActions();unreserve();resizeObserver?.disconnect();global.cancelAnimationFrame(placementFrame);void audio?.close().catch(()=>{});observer?.disconnect();discovery?.disconnect();stopActivity?.();stopDom?.();unsubscribe();activity.dispose?.();global.removeEventListener('resize',schedulePlace);doc.removeEventListener('input',sizeInput,true);doc.removeEventListener('transitionend',nativeTransition,true);global.clearTimeout(readTimer);global.clearTimeout(typingTimer);mediaPanel?.stop();pinBar?.remove();launcher?.remove();host?.remove();client.dispose();}};
+    function attach(){if(child||!domEligible())return;const chat=doc.getElementById('chatRoot'),anchor=chat?.querySelector('#people_panel_button');if(!anchor)return;if(!launcher){launcher=node('button');launcher.innerHTML=roomGlyph;launcher.type='button';launcher.id='slink-faction-node-button';launcher.title='SLINK Faction Rooms';launcher.className=anchor.className;launcher.style.cssText=barButtonCss+';background-color:var(--slink-surface,#3c3c3c)';launcher.onclick=()=>void attempt(async()=>{if(!await ensureConsent())return;const first=!host;create();host.hidden=!host.hidden&&host.style.visibility!=='hidden';if(!host.hidden)hubFront=true;client.setViewedRoom?.(!host.hidden&&currentView==='chat'?selected:null);if(host.hidden)place();primeAudio();if(!host.hidden){if(first)show('home');await client.refresh();paintList();paintRoom();place();if(currentView==='media')await mediaPanel?.open(mediaType);}remember();});}if(launcher.parentElement!==anchor.parentElement)anchor.before(launcher);const w=anchor.offsetWidth,h=anchor.offsetHeight;for(const el of [launcher,pinBar])if(el){if(w>20)el.style.setProperty('--room-button-width',w+'px');if(h>20)el.style.setProperty('--room-button-height',h+'px');}paintPins();syncButtons();if(host&&!host.isConnected)chat.prepend(host);paintTheme();if(host&&!host.hidden)schedulePlace();void restore();}
+    function sync(){if(child){autoMedia=child.autoMedia();if(eligible()&&root)paintRoom();return;}observer?.disconnect();discovery?.disconnect();resizeObserver?.disconnect();watched.clear();client.setBackground?.(!domEligible());if(!eligible()){void audio?.suspend().catch(()=>{});client.setActive(false);mediaPanel?.suspend();return;}loadPreferences();client.setActive(preferencesReady&&consented);if(!domEligible())return;attach();observedChat=doc.getElementById('chatRoot');if(observedChat){observer||=new MutationObserver(records=>{if(!domEligible())return;const containsAnchor=n=>n.nodeType===1&&(n.id==='people_panel_button'||n.querySelector?.('#people_panel_button'));if(records.some(record=>record.type==='attributes'&&record.target.matches?.('[class*="root___Ex8tg"],[class*="item___"],[class*="root___PF7AM"],[class*="root___Ef1Ql"]')||[...record.addedNodes,...record.removedNodes].some(n=>n.nodeType===1&&(n.matches?.(nativePanelSelector)||n.querySelector?.('[class*="root___Ex8tg"]')))))schedulePlace();if(records.some(record=>[...record.addedNodes].some(containsAnchor)||[...record.removedNodes].some(n=>n===launcher||containsAnchor(n))))attach();});observer.observe(observedChat,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class']});}discovery||=new MutationObserver(()=>{if(domEligible()&&doc.getElementById('chatRoot')!==observedChat)sync();});discovery.observe(observedChat?.parentElement||doc.body,{childList:true,subtree:!observedChat});for(const item of roomWindows.values())item.ui.sync();if(openPanels().length)place();if(host&&!host.hidden){paintRoom();if(currentView==='media')void attempt(()=>mediaPanel?.open(mediaType));}if(preferencesReady&&consented&&client.model.status==='idle')void client.refresh().catch(()=>{});void restore();}
+    const unsubscribe=client.subscribe(event=>{if(!eligible())return;if(!child)messageSound(event);if(event.type==='room'||event.type==='list'){paintBadge();paintPins();}if(!root)return;if(event.type==='identity'){if(!child)for(const id of [...roomWindows.keys()])removeRoom(id);selected=null;drafts.clear();rows.clear();names.clear();loadNames.loaded=false;$('[data-draft]').value='';$('[data-messages]').replaceChildren();show('home');}if(event.type==='list'){loadNames();paintList();}else if(event.type==='room'){if(currentView==='home')paintList();if(event.id===selected)paintRoom(event.message);}else if(event.type==='status')notice(client.model.error);});
+    const stopActivity=activity.subscribe(sync),stopDom=domActivity===activity?null:domActivity.subscribe(sync);if(!child){global.addEventListener('resize',schedulePlace);doc.addEventListener('input',sizeInput,true);doc.addEventListener('transitionend',nativeTransition,true);}if(view)void view.get().then(record=>{if(disposed)return;savedView=record;viewReady=true;void restore();}).catch(()=>{viewReady=true;});sync();
+    return {sync,element:()=>host,hideRoom(){if(host){host.hidden=true;closeMessageActions();mediaPanel?.suspend();}},openRoomWindow(id){create();host.hidden=false;if(child)host.style.setProperty("--room-header-color",child.color());if(selected!==id)openLocalRoom(id);else show("chat");},async open(manage=false){if(!await ensureConsent())return;create();host.hidden=false;client.setActive(true);await client.refresh();paintList();if(manage){if(!client.model.leader){show('home');throw Error('Only explicitly assigned Chat Leaders can manage rooms.');}await openAdmin();}else show('home');place();},dispose(){disposed=true;for(const {ui} of roomWindows.values())ui.dispose();roomWindows.clear();closeMessageActions();unreserve();resizeObserver?.disconnect();global.cancelAnimationFrame(placementFrame);void audio?.close().catch(()=>{});observer?.disconnect();discovery?.disconnect();stopActivity?.();stopDom?.();unsubscribe();activity.dispose?.();global.removeEventListener('resize',schedulePlace);doc.removeEventListener('input',sizeInput,true);doc.removeEventListener('transitionend',nativeTransition,true);global.clearTimeout(readTimer);global.clearTimeout(typingTimer);mediaPanel?.stop();pinBar?.remove();launcher?.remove();host?.remove();client.dispose();}};
   }
 
   function mountAdmin({container,client,preferences,document:doc=global.document}){
