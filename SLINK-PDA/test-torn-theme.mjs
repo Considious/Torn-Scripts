@@ -27,6 +27,8 @@ const background='url("https://raw.githubusercontent.com/Considious/SLINK-Cloudf
 assert.equal(api.asset(background),background);
 const result=api.compile({theme:{tokens:{'--slink-bg':'red;}body{display:none','--slink-text':'#fefefe'}},settings:{enabled:true,opacity:37},assetCss:{'--slink-theme-background-image':background}});
 assert.equal(result.hasImage,true);assert.ok(!result.css.includes('display:none'));assert.ok(result.css.includes('--slt-bg:#121922'));assert.ok(result.css.includes('37%,transparent'));
+assert.ok(result.css.includes('--slt-header:'),'App headers have their own translucent palette token.');
+for(const [,body]of result.css.matchAll(/[^{}]*data-slink-torn-frames[^{}]*\\{([^{}]*)\\}/g))assert.ok(!/(?:^|;)\\s*(?:padding(?:-[a-z]+)?|border(?:-width|-style)?|width|height|display|position)\\s*:/.test(body),'Decorative frames must never change native layout.');
 assert.ok(result.css.includes('--appheader-dropdown-background'),'Include the neutral native-variable map, not just a few container colors.');
 assert.ok(!result.css.includes('backdrop-filter'));assert.ok(!result.css.includes('transform:'));assert.ok(!result.css.includes('z-index:'));
 assert.ok(!/querySelectorAll|fetch\(|XMLHttpRequest|setInterval|requestAnimationFrame/.test(source.slice(0,source.indexOf('function mountSettings'))),'Engine must not scan Torn, scrape, poll or fetch scripts. Settings may query their own controls.');

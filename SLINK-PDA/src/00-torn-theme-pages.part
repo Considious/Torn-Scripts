@@ -7,10 +7,10 @@
   const groups=Object.freeze([
     {id:'crimes',selector:'.crimes-app :is(.crimes-hub-root,.crime-root,[class*="crimeOptionWrapper___"],[class*="statsPanel___"],[class*="virtualItemsBackdrop___"])',role:'panel'},
     {id:'crime-hub-cards',selector:'.crimes-app .crimes-hub-crime:not(.max-level)',role:'panel'},
-    {id:'crime-header',selector:'.crimes-app .crimes-app-header',role:'control'},
+    {id:'crime-header',selector:'.crimes-app .crimes-app-header',role:'header'},
     {id:'travel',selector:'#travel-root :is([class*="departPanel___"],[class*="inventoryPanel___"],[class*="searchResults___"],[class*="flightTypeList___"]):not([class*="selected___"]):not([class*="disabled___"])',role:'panel'},
     {id:'attack',selector:'#attack-root [class*="coreWrap___"]',role:'panel'},
-    {id:'attack-header',selector:'#attack-root [class*="appHeaderWrapper___"]',role:'control'},
+    {id:'attack-header',selector:'#attack-root [class*="appHeaderWrapper___"]',role:'header'},
     {id:'attack-log',selector:'[aria-label="Attack log"], [aria-label="Attack log"] :is([class*="containerHeader___"],[class*="containerBody___"],[class*="logContent___"])',role:'panel'},
     {id:'chat-panels',selector:'#chatRoot :is(#settings_panel,#notes_panel,#private-channel-list,#company,#faction,[id^="private-"])',role:'panel',chat:true},
     {id:'chat-buttons',selector:'#chatRoot :is([id^="chat_panel_button:"],#notes_panel_button,#notes_settings_button,[title="Settings"],[title="Your private chats"])',role:'control',chat:true}

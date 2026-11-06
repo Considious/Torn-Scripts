@@ -39,11 +39,15 @@ ${S}[data-slink-torn-background] body{background-image:var(--slt-blood),var(--sl
 ${S}[data-slink-torn-background] .backdrops-container{visibility:hidden!important;}
 ${S}[data-slink-torn-background] :is(.content-wrapper,#mainContainer,.content){background-color:transparent!important;}
 ${S} :is(#topHeaderBanner,.header-wrapper-top,.header-wrapper-bottom,#sidebar){background-color:var(--slt-panel)!important;}
-${S} :is(.content-title,.title-black,.title-gray){background-color:var(--slt-control)!important;color:var(--slt-text)!important;}
+${S} :is(.content-title,.title-black,.title-gray){background-color:var(--slt-header)!important;color:var(--slt-text)!important;}
+${S}[data-slink-torn-theme] :is(.content-title,.title-black,.title-gray,.app-header,.appHeader,.crimes-app-header,[class^="appHeader___"],[class*=" appHeader___"],[class^="appHeaderWrapper___"],[class*=" appHeaderWrapper___"]),
+${S}[data-slink-torn-theme] #sidebar > :is([class^="header___"],[class*=" header___"]){background-color:var(--slt-header)!important;background-image:none!important;color:var(--slt-text)!important;}
 ${S} :is(.cont-gray,.cont-white){background-color:var(--slt-panel)!important;color:var(--slt-text)!important;}
-${S}[data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image-source:var(--slt-texture)!important;border-image-slice:25% 8% fill!important;border-image-width:20px!important;border-image-repeat:stretch!important;padding:28px 22px!important;}
+/* Border-image paints inside the native box without changing its border width,
+   padding, sizing or positioning. Fixed-width profile floats must retain space. */
+${S}[data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image-source:var(--slt-texture)!important;border-image-slice:25% 8%!important;border-image-width:12px!important;border-image-outset:0!important;border-image-repeat:stretch!important;}
 ${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-background] body{background-image:var(--slt-image)!important;background-repeat:repeat-y!important;}
-${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-frames] :is(.cont-gray,.cont-white){border:12px solid transparent!important;border-image:var(--slt-frame) 16% / 12px / 0 round!important;padding:20px!important;}
+${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image:var(--slt-frame) 16% / 12px / 0 round!important;}
 ${S} :is(#mainContainer,.content-wrapper) :is(input[type=text],input[type=search],input[type=password],textarea,select):not(:disabled){background-color:var(--slt-control)!important;color:var(--slt-text)!important;caret-color:var(--slt-text);}
 ${S} :is(#mainContainer,.content-wrapper) :is(input,textarea,select):focus-visible{outline:2px solid var(--slt-accent);outline-offset:2px;}
 ${S}[data-slink-torn-chat] #chatRoot,
@@ -59,6 +63,7 @@ ${S}[data-slink-torn-chat] #chatRoot textarea{background-color:var(--slt-control
       declarations.push('--slt-'+name+':'+safe);
     }
     declarations.push('--slt-panel:color-mix(in srgb,var(--slt-surface) '+options.opacity+'%,transparent)');
+    declarations.push('--slt-header:color-mix(in srgb,var(--slt-surface) '+Math.round(options.opacity*.3)+'%,transparent)');
     const image=asset(assetCss['--slink-theme-background-image']),frame=asset(assetCss['--slink-theme-frame-image']);
     declarations.push('--slt-image:'+image,'--slt-frame:'+(options.frames?frame:'none'),
       '--slt-texture:'+asset(assetCss['--slink-theme-panel-smoke-image']),
@@ -111,7 +116,7 @@ ${S}[data-slink-torn-chat] #chatRoot textarea{background-color:var(--slt-control
   function mountSettings(container,{read,patch}) {
     const host=document.createElement('section');host.dataset.slinkTornThemeSettings='';host.dataset.uiExplicitCommit='true';
     host.innerHTML='<h3>Theme Torn pages</h3><p>Optional CSS styling using your selected SLINK theme. Gameplay/status colors stay native. No page layout or controls are rebuilt.</p>'+
-      [['enabled','Apply my SLINK theme to Torn'],['background','Use the supplied page background'],['frames','Use supplied frame and panel textures (adds inner spacing)'],['ornaments','Show supplied health decorations'],['chat','Also style chat (experimental)']].map(([name,label])=>'<label style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" data-torn-theme-field="'+name+'" disabled>'+label+'</label>').join('')+
+      [['enabled','Apply my SLINK theme to Torn'],['background','Use the supplied page background'],['frames','Use supplied decorative frames'],['ornaments','Show supplied health decorations'],['chat','Also style chat (experimental)']].map(([name,label])=>'<label style="display:flex;align-items:center;gap:8px;margin:8px 0"><input type="checkbox" data-torn-theme-field="'+name+'" disabled>'+label+'</label>').join('')+
       '<label style="display:grid;gap:6px">Torn panel color opacity <output>92%</output><input data-torn-theme-field="opacity" aria-label="Torn panel color opacity" type="range" min="0" max="100" value="92" style="width:100%" disabled></label><p>Supplied panel artwork remains opaque. Turn textures off to see through panel backgrounds.</p><p data-torn-theme-save role="status">Loading…</p><button type="button" data-torn-theme-retry hidden>Retry saving</button>';
     container.append(host);let queue=Promise.resolve(),timer,dirty={},disposed=false;
     const controls=[...host.querySelectorAll('[data-torn-theme-field]')],notice=host.querySelector('[data-torn-theme-save]'),retry=host.querySelector('[data-torn-theme-retry]');
