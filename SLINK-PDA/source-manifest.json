@@ -1,11 +1,12 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-892c97c3638874203145caebc2802474638ef2f46a4e61b471938bcc5d95a7ee",
+  "revision": "sha256-40021b5c6afbf5534c617974433380a0c07999ecaaab398c4f4670871e39b689",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
     "src/00-christmas-theme.part",
+    "src/00-candy-theme.part",
     "src/00-errors.part",
     "src/00-mugging-ff.part",
     "src/00-ff-backup.part",

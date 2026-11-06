@@ -42,6 +42,8 @@ ${S} :is(#topHeaderBanner,.header-wrapper-top,.header-wrapper-bottom,#sidebar){b
 ${S} :is(.content-title,.title-black,.title-gray){background-color:var(--slt-control)!important;color:var(--slt-text)!important;}
 ${S} :is(.cont-gray,.cont-white){background-color:var(--slt-panel)!important;color:var(--slt-text)!important;}
 ${S}[data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image-source:var(--slt-texture)!important;border-image-slice:25% 8% fill!important;border-image-width:20px!important;border-image-repeat:stretch!important;padding:28px 22px!important;}
+${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-background] body{background-image:var(--slt-image)!important;background-repeat:repeat-y!important;}
+${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-frames] :is(.cont-gray,.cont-white){border:12px solid transparent!important;border-image:var(--slt-frame) 16% / 12px / 0 round!important;padding:20px!important;}
 ${S} :is(#mainContainer,.content-wrapper) :is(input[type=text],input[type=search],input[type=password],textarea,select):not(:disabled){background-color:var(--slt-control)!important;color:var(--slt-text)!important;caret-color:var(--slt-text);}
 ${S} :is(#mainContainer,.content-wrapper) :is(input,textarea,select):focus-visible{outline:2px solid var(--slt-accent);outline-offset:2px;}
 ${S}[data-slink-torn-chat] #chatRoot,
@@ -71,7 +73,7 @@ ${S}[data-slink-torn-chat] #chatRoot textarea{background-color:var(--slt-control
     const eligible=()=>!activity||activity.eligible();
     function remove(){
       observer?.disconnect();current=null;
-      for(const name of [ATTRIBUTE,'data-slink-torn-background','data-slink-torn-frames','data-slink-torn-chat'])root.removeAttribute(name);
+      for(const name of [ATTRIBUTE,'data-slink-torn-palette','data-slink-torn-background','data-slink-torn-frames','data-slink-torn-chat'])root.removeAttribute(name);
       document.getElementById(STYLE_ID)?.remove();
     }
     function write(){
@@ -79,7 +81,7 @@ ${S}[data-slink-torn-chat] #chatRoot textarea{background-color:var(--slt-control
       let style=document.getElementById(STYLE_ID);
       if(!style){style=document.createElement('style');style.id=STYLE_ID;(document.head||root).append(style);}
       if(style.textContent!==current.css)style.textContent=current.css;
-      const flags={[ATTRIBUTE]:'on','data-slink-torn-background':current.options.background&&current.hasImage?'on':null,
+      const flags={[ATTRIBUTE]:'on','data-slink-torn-palette':/^[a-z0-9-]+$/.test(snapshot.theme?.id||'')?snapshot.theme.id:null,'data-slink-torn-background':current.options.background&&current.hasImage?'on':null,
         'data-slink-torn-frames':current.options.frames&&current.hasFrame?'on':null,'data-slink-torn-chat':current.options.chat?'on':null};
       for(const [name,value]of Object.entries(flags))if(value===null){if(root.hasAttribute(name))root.removeAttribute(name);}else if(root.getAttribute(name)!==value)root.setAttribute(name,value);
     }

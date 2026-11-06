@@ -652,6 +652,7 @@ host.style.setProperty('--s-theme-panel-opacity', `${value}%`);
 host.style.setProperty('--s-theme-panel-blur', `${(value * 7 / 87).toFixed(2)}px`);
 host.style.setProperty('--s-theme-veil-top', `${(value * 25 / 87).toFixed(2)}%`);
 host.style.setProperty('--s-theme-veil-bottom', `${(value * 48 / 87).toFixed(2)}%`);
+globalThis.SLINK_CANDY_THEME?.refresh(host);
 const opacity = shadow.querySelector('[data-theme-panel-opacity]');
 const label = shadow.querySelector('[data-theme-panel-opacity-label]');
 if (opacity) opacity.value = String(value);
@@ -821,6 +822,7 @@ if(definition.assets?.dividerMiddle)host.style.setProperty('--s-theme-divider-mi
 if(definition.assets?.dividerRight)host.style.setProperty('--s-theme-divider-right-image',`url("${definition.assets.dividerRight}")`);
 syncThemeHealthAssets(definition);
 globalThis.SLINK_CHRISTMAS_THEME?.apply(host,theme,'pda');
+globalThis.SLINK_CANDY_THEME?.apply(host,theme);
 syncPdaChatButtonTheme();
 shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
 syncThemePanelOpacityControls();

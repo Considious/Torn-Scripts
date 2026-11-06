@@ -2655,7 +2655,8 @@ return [
 }
 function themeCatalog() {
 const themes = dataState.caches.themeCatalog?.catalog?.themes;
-const catalog=Array.isArray(themes) && themes.length ? themes : bundledThemes();
+const catalog=[...(Array.isArray(themes) && themes.length ? themes : bundledThemes())];
+const candy=globalThis.SLINK_CANDY_THEME?.definition;if(candy&&!catalog.some(theme=>theme.id===candy.id))catalog.push(candy);
 const christmas=globalThis.SLINK_CHRISTMAS_THEME?.definition;
 if(christmas&&!catalog.some(theme=>theme.id===christmas.id))return [...catalog,christmas].map(theme=>theme?.id==='gothic-valentines'?{...theme,ornament:'gothic',assets:normalizeThemeAssets(theme,'gothic-valentines')}:theme);
 // Older deployed catalog workers only returned the four legacy image fields.
