@@ -21,7 +21,7 @@
     const http = options.request || request, listeners = new Set(), rooms = new Map();
     let background=false,active=false, destroyed=false, generation=0, ticket=null, authenticating=null, renewal=null, identity=null,authRetries=0;
     let viewedRoom=null;
-    const model = {status:'idle',error:'',rooms:[],personal:null,leader:false,userId:null,userName:'',factionId:null};
+    const model = {status:'idle',error:'',rooms:[],personal:null,leader:false,christmasIcons:false,userId:null,userName:'',factionId:null};
     function pollDelay(state){return background||viewedRoom!==state.id?30000:now()<(state.fastUntil||0)?5000:15000;}
     function wakePoll(state){if(!state?.http||!state.pollTimer)return;cancel(state.pollTimer);state.pollTimer=null;void state.pollNow?.();}
     function preferHttp(state,permanent=false){state.httpPreferred=true;state.socketRetryAt=permanent?Infinity:now()+5*60_000;return httpConnect(state);}
@@ -39,7 +39,7 @@
         if(current!==generation||!active||destroyed)throw Error('Chat access changed while connecting.');
         if(!value?.token||!validId(value.node_id)||value.expires_at<=now()+1000||!Number.isSafeInteger(value.user_id)||value.user_id<=0||!Number.isSafeInteger(value.faction_id)||value.faction_id<=0)throw Error('Faction chat returned incomplete access information.');
         const endpoint=origin(value.endpoint),nextIdentity=value.user_id+':'+value.faction_id+':'+value.node_id;
-        if(identity&&identity!==nextIdentity){disconnectAll();rooms.clear();model.rooms=[];model.personal=null;emit('identity');}
+        if(identity&&identity!==nextIdentity){disconnectAll();rooms.clear();model.rooms=[];model.personal=null;model.christmasIcons=false;emit('identity');}
         identity=nextIdentity;ticket={...value,endpoint};model.userId=value.user_id;model.userName=String(value.user_name||'');model.factionId=value.faction_id;
         cancel(renewal);renewal=later(()=>void renew(),Math.max(1000,value.expires_at-now()-20000));return ticket;
       })();
@@ -133,7 +133,7 @@
         };
       }catch(error){if(connection!==state.connectVersion)return;if(error.name==='SecurityError'||/operation is insecure|content security policy/i.test(error.message||'')){await preferHttp(state,true);return;}state.status='error';state.error=error.message;emit('room',{id});}
     }
-    async function refresh() {try{model.status='loading';model.error='';emit('status');const result=await api('/api/rooms');model.rooms=result.rooms||[];model.personal=result.personal||null;model.leader=result.leader===true;model.status='ready';emit('list');if(options.watchRooms){const allowed=new Set(model.rooms.map(item=>item.room_id));for(const state of rooms.values())if(!allowed.has(state.id)){state.open=false;state.access={read:false,speak:false};closeConnection(state);}for(const item of model.rooms)void connect(item.room_id);}}catch(error){model.status='error';model.error=error.message;emit('status');throw error;} }
+    async function refresh() {try{model.status='loading';model.error='';emit('status');const result=await api('/api/rooms');model.rooms=result.rooms||[];model.christmasIcons=result.christmas_icons===true;model.personal=result.personal||null;model.leader=result.leader===true;model.status='ready';emit('list');if(options.watchRooms){const allowed=new Set(model.rooms.map(item=>item.room_id));for(const state of rooms.values())if(!allowed.has(state.id)){state.open=false;state.access={read:false,speak:false};closeConnection(state);}for(const item of model.rooms)void connect(item.room_id);}}catch(error){model.status='error';model.error=error.message;emit('status');throw error;} }
     function send(id,content) {
       const state=room(id);if(!active||state.status!=='connected'||!state.access.speak)throw Error('This room is not ready to send messages.');
       if(state.pending.size>=20)throw Error('Too many messages are waiting to send. Review them before sending more.');

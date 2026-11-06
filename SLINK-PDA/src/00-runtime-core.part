@@ -2656,6 +2656,8 @@ return [
 function themeCatalog() {
 const themes = dataState.caches.themeCatalog?.catalog?.themes;
 const catalog=Array.isArray(themes) && themes.length ? themes : bundledThemes();
+const christmas=globalThis.SLINK_CHRISTMAS_THEME?.definition;
+if(christmas&&!catalog.some(theme=>theme.id===christmas.id))return [...catalog,christmas].map(theme=>theme?.id==='gothic-valentines'?{...theme,ornament:'gothic',assets:normalizeThemeAssets(theme,'gothic-valentines')}:theme);
 // Older deployed catalog workers only returned the four legacy image fields.
 // Re-normalize the saved Gothic Valentines entry every time it is consumed so
 // a stale cache cannot collapse the complete kit back to a background/icon.

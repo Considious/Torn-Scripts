@@ -820,6 +820,7 @@ if(definition.assets?.dividerLeft)host.style.setProperty('--s-theme-divider-left
 if(definition.assets?.dividerMiddle)host.style.setProperty('--s-theme-divider-middle-image',`url("${definition.assets.dividerMiddle}")`);
 if(definition.assets?.dividerRight)host.style.setProperty('--s-theme-divider-right-image',`url("${definition.assets.dividerRight}")`);
 syncThemeHealthAssets(definition);
+globalThis.SLINK_CHRISTMAS_THEME?.apply(host,theme,'pda');
 syncPdaChatButtonTheme();
 shadow.querySelectorAll('[data-theme-choice]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.themeChoice === theme)));
 syncThemePanelOpacityControls();
