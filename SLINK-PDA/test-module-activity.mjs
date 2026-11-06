@@ -21,7 +21,7 @@ test('PDA modules keep independent five-minute activity clocks', () => {
   assert.equal(context.touchModuleActivity('unknown',now),0);
 });
 
-test('Market Watch idles independently and keeps its five-second active cadence', () => {
+test('Market Watch idles independently and uses deadline-driven active polling', () => {
   assert.match(source, /moduleIsActive\(['"]market['"]\)/);
   assert.match(source, /scheduleMarketWake/);
   assert.match(source, /5_000|5000/);
@@ -33,7 +33,7 @@ test('shared contribution uses only spare capacity from the common ledger', () =
   assert.match(source, /CONTRIBUTION_INTERACTIVE_RESERVE\s*=\s*10/);
   assert.match(source, /priority:\s*['"]contribution['"]/);
   assert.match(source, /contribution:\s*true/);
-  const context=vm.createContext({API_LIMIT:60,CONTRIBUTION_CEILING:40,CONTRIBUTION_INTERACTIVE_RESERVE:10});
+  const context=vm.createContext({API_LIMIT:60,CONTRIBUTION_CEILING:40,CONTRIBUTION_INTERACTIVE_RESERVE:10,protectedApiCapacity:()=>0});
   vm.runInContext(extractFunction('contributionCapacity','src/00-runtime-core.part'),context);
   const ledger=(total,contribution)=>({events:Array.from({length:total},(_,i)=>({priority:i<contribution?'contribution':'normal'}))});
   assert.equal(context.contributionCapacity(ledger(0,0)).available,40);

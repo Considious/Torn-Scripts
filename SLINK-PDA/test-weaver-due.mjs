@@ -9,11 +9,11 @@ const end=source.indexOf(pda?'function marketErrorSummary(':'  function nextAt('
 assert(start>=0&&end>start,'Weaver polling function boundaries are missing');
 const functionSource=source.slice(start,end);
 const now=1800000000000;
-let summaries=0,details=[];
+let summaries=0,details=[],summaryPrice=50;
 const watches=[{uid:'a',itemId:1},{uid:'b',itemId:2}];
 let targets=watches.map(watch=>({itemId:watch.itemId,threshold:100,manual:[watch],pricelist:false}));
 const runtime={results:{a:{bazaar:{nextCheckAt:now+5000,marker:'cached-a'}},b:{bazaar:{nextCheckAt:now+5000,marker:'cached-b'}}},pricelistResults:{}};
-const summary=async()=>{summaries++;return {fetchedAt:now,items:[{itemId:1,lowestPrice:50},{itemId:2,lowestPrice:50}]};};
+const summary=async()=>{summaries++;return {fetchedAt:now,items:[{itemId:1,lowestPrice:summaryPrice},{itemId:2,lowestPrice:summaryPrice}]};};
 const request=async url=>{details.push(url);return {listings:[{price:50}]};};
 const store=(target,current,payload)=>{
   for(const watch of target.manual)current.results[watch.uid].bazaar=payload;
@@ -55,4 +55,5 @@ runtime.results.a.bazaar.nextCheckAt=now;
 runtime.pricelistResults[1].bazaar.nextCheckAt=now;
 await poll(false);
 assert.equal(details.length,before+2,'One item shared by manual and pricelist watches needs one detail fetch');
+summaryPrice=101;runtime.results.a.bazaar.nextCheckAt=now;runtime.pricelistResults[1].bazaar.nextCheckAt=now;const beforeScreen=details.length;await poll(false);assert.equal(details.length,beforeScreen,'Above-target summary must not request item details');
 console.log((pda?'PDA':'Extension')+' Weaver due-time, unrelated-watch preservation, forced refresh, retry and shared-item checks passed.');

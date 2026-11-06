@@ -228,14 +228,14 @@ if(marketWatchLimit()<=0)throw new Error('A current Market Watch permission is r
 const key = currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const normalized = normalizeMarketPriority(priority);
-await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:normalized });
+await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:'market' });
 if(marketWatchLimit()<=0)throw new Error('Market Watch permission expired before the price check.');
 const body = await requestJson(url, { headers:{ Authorization:`ApiKey ${key}` } });
 if (body?.error) throw new Error(body.error.message || body.error.error || 'Torn API request failed.');
 return body;
 }
 async function marketEnsureCatalog(runtime, force = false) {
-runtime.catalog=await pdaSharedData().catalog({key:currentApiKey(),force,maxAgeMs:86_400_000,needPrices:true});
+runtime.catalog=await pdaSharedData().catalog({key:currentApiKey(),force,maxAgeMs:86_400_000,needPrices:false});
 return runtime.catalog;
 }
 function marketDue(source, force) {
@@ -278,7 +278,7 @@ runtime.weaverPricelist = { ...previous, userId, nextCheckAt:Date.now() + (Numbe
 return runtime.weaverPricelist;
 }
 async function marketWeaverSummary(runtime, force = false, maxAgeMs = WEAVER_SUMMARY_REFRESH_MS) {
-if (!force && runtime.weaverSummary?.items?.length && Date.now() - Number(runtime.weaverSummary.fetchedAt) < maxAgeMs) return runtime.weaverSummary;
+if (!force && Number(runtime.weaverSummary?.fetchedAt) > 0 && Date.now() - Number(runtime.weaverSummary.fetchedAt) < maxAgeMs) return runtime.weaverSummary;
 const body = await marketWeaverJson(`${URLS.weaver}/api/marketplace`, runtime); const now = Date.now();
 runtime.weaverSummary = { fetchedAt:now, items:weaverMarketplaceItems(body) };
 return runtime.weaverSummary;
@@ -416,7 +416,7 @@ next.points = { ...(previous.points || {}), nextCheckAt:tornBlockedUntil };
 const body = await marketTornJson(`${URLS.torn}/v2/market?selections=pointsmarket&limit=100`, '/v2/market?selections=pointsmarket', 'high');
 const now = Date.now(); next.points = { fetchedAt:now, nextCheckAt:now + POINTS_MARKET_REFRESH_MS, listings:pointsListings(body) }; delete next.errors.points;
 } catch (error) {
-const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.points = errorMessage(error); next.points = { ...(previous.points || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
+const retry = Date.now() + (Number(error?.retryAfterMs) || 30_000); next.errors.points = errorMessage(error); next.points = { ...(previous.points || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
 }
 }
 } else if (watch.itemId > 0) {
@@ -427,12 +427,13 @@ next.errors.market = 'Waiting for shared Torn API capacity.'; next.market = { ..
 const priority = marketPriorityFor(watch, previous);
 const body = await marketTornJson(`${URLS.torn}/v2/market/${encodeURIComponent(watch.itemId)}/itemmarket?limit=5`, `/v2/market/${watch.itemId}/itemmarket`, priority);
 const source = body?.itemmarket || body?.data?.itemmarket || body;
-const now = Date.now(); const cacheTimestamp = Math.max(0, Math.trunc(Number(source?.cache_timestamp) || 0)); const delay = Number(source?.cache_delay); const cacheDelayMs = Number.isFinite(delay) && delay >= 0 ? Math.ceil(delay * 1_000) : null;
+const now = Date.now(); const cacheTimestamp = Math.max(0, Math.trunc(Number(source?.cache_timestamp) || 0)); const delay = source?.cache_delay == null ? NaN : Number(source.cache_delay); const cacheDelayMs = Number.isFinite(delay) && delay >= 0 ? Math.ceil(delay * 1_000) : null;
 const stale = cacheTimestamp > 0 && cacheTimestamp === Number(previous.market?.cacheTimestamp); const cacheRetryCount = stale ? Number(previous.market?.cacheRetryCount || 0) + 1 : 0;
-const nextCheckAt = stale ? now + Math.min(5_000, 2_000 + Math.max(0, cacheRetryCount - 1) * 1_000) : cacheTimestamp > 0 && cacheDelayMs !== null ? Math.max(cacheTimestamp * 1_000 + cacheDelayMs + 1_000, now + 1_000) : now + ITEM_MARKET_FALLBACK_MS;
+const deadline = cacheTimestamp * 1_000 + Number(cacheDelayMs) + 1_000;
+const nextCheckAt = cacheTimestamp > 0 && cacheDelayMs !== null ? deadline > now ? deadline : deadline + (Math.floor((now - deadline) / ITEM_MARKET_FALLBACK_MS) + 1) * ITEM_MARKET_FALLBACK_MS : now + ITEM_MARKET_FALLBACK_MS;
 next.market = { fetchedAt:now, listings:marketListings(body), cacheTimestamp, cacheDelayMs, cacheRetryCount, nextCheckAt }; delete next.errors.market;
 } catch (error) {
-const retry = Date.now() + (Number(error?.retryAfterMs) || 5_000); next.errors.market = errorMessage(error); next.market = { ...(previous.market || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
+const retry = Date.now() + (Number(error?.retryAfterMs) || 30_000); next.errors.market = errorMessage(error); next.market = { ...(previous.market || {}), nextCheckAt:retry }; if (error.code === 'SLINK_TORN_API_LIMIT') tornBlockedUntil = retry;
 }
 }
 }

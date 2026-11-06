@@ -557,12 +557,12 @@ const now = Date.now();
 const previous = dataState.caches.crimeUniques || {};
 const cache = { ...previous, user:{ ...(previous.user || {}) }, userFetchedAt:{ ...(previous.userFetchedAt || {}) } };
 if (force || !cache.catalog || Number(cache.catalogFetchedAt || 0) + 7 * 86_400_000 <= now) {
-cache.catalog = await tornJson('/v2/torn/crimes', 'SLINK PDA crime unique catalog');
+cache.catalog = await tornJson('/v2/torn/crimes', 'SLINK PDA crime unique catalog', {priority:'alerts'});
 cache.catalogFetchedAt = now;
 }
 for (const definition of definitions) {
 if (!force && cache.user[definition.crimeId] && Number(cache.userFetchedAt[definition.crimeId] || 0) + 86_400_000 > now) continue;
-cache.user[definition.crimeId] = await tornJson(`/v2/user/${definition.crimeId}/crimes`, `SLINK PDA ${definition.label} progress`);
+cache.user[definition.crimeId] = await tornJson(`/v2/user/${definition.crimeId}/crimes`, `SLINK PDA ${definition.label} progress`, {priority:'alerts'});
 cache.userFetchedAt[definition.crimeId] = now;
 }
 dataState.caches.crimeUniques = cache;
@@ -588,14 +588,14 @@ const progress = crimeUniqueProgressRowsPda();
 const search = progress.find(row => row.id === 'searchCashUnique');
 const cluster = progress.find(row => row.id === 'clusterRing');
 if (search && !search.complete && enabled.searchCashUnique !== false) {
-cache.searchForCashStatus = await tornJson('/v2/torn/searchforcash', 'SLINK PDA Search for Cash unique windows');
+cache.searchForCashStatus = await tornJson('/v2/torn/searchforcash', 'SLINK PDA Search for Cash unique windows', {priority:'alerts'});
 cache.searchForCashFetchedAt = now;
 }
 if (cluster && !cluster.complete && enabled.clusterRing !== false) {
-cache.shopliftingStatus = await tornJson('/v2/torn/shoplifting', 'SLINK PDA Shoplifting unique status');
+cache.shopliftingStatus = await tornJson('/v2/torn/shoplifting', 'SLINK PDA Shoplifting unique status', {priority:'alerts'});
 cache.shopliftingFetchedAt = now;
 if (!cache.shopliftingSubcrimes || Number(cache.shopliftingSubcrimesFetchedAt || 0) + 7 * 86_400_000 <= now) {
-cache.shopliftingSubcrimes = await tornJson('/v2/torn/4/subcrimes', 'SLINK PDA Shoplifting unique map');
+cache.shopliftingSubcrimes = await tornJson('/v2/torn/4/subcrimes', 'SLINK PDA Shoplifting unique map', {priority:'alerts'});
 cache.shopliftingSubcrimesFetchedAt = now;
 }
 }
@@ -863,8 +863,8 @@ const day = utcDay();
 const reset = day * 86_400_000;
 const energyObservedAt = Date.now();
 const [body, cityResult] = await Promise.all([
-tornJson(`/v2/user?selections=${selections}`, 'SLINK PDA efficiency alerts'),
-tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total')
+tornJson(`/v2/user?selections=${selections}`, 'SLINK PDA efficiency alerts', {priority:'alerts'}),
+tornJson('/v2/user/personalstats?stat=cityitemsbought', 'SLINK PDA city item total', {priority:'alerts'})
 .then(value => ({ value }))
 .catch(error => ({ error }))
 ]);
@@ -875,7 +875,7 @@ if (!cityError) {
 try {
 currentBought = personalStat(cityResult.value, 'cityitemsbought');
 if (resetBought === null) {
-const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000) - 1}`, 'SLINK PDA city item baseline');
+const atReset = await tornJson(`/v2/user/personalstats?stat=cityitemsbought&timestamp=${Math.floor(reset / 1000) - 1}`, 'SLINK PDA city item baseline', {priority:'alerts'});
 resetBought = personalStat(atReset, 'cityitemsbought');
 }
 if (currentBought === null || resetBought === null) cityError = 'Torn returned no usable city-item purchase total.';
@@ -883,14 +883,14 @@ if (currentBought === null || resetBought === null) cityError = 'Torn returned n
 }
 let stockCatalog = dataState.caches.stockCatalog?.data || null;
 if (!dataState.caches.stockCatalog?.at || Date.now() - dataState.caches.stockCatalog.at >= 7 * 86_400_000) {
-stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names');
+stockCatalog = await tornJson('/v2/torn/stocks', 'SLINK PDA stock names', {priority:'alerts'});
 dataState.caches.stockCatalog = { at:Date.now(), data:stockCatalog };
 }
 let cityShops = cached?.cityShops || null;
 const cityStockEnabled = PDA_CITY_SHOP_TARGETS.some(target => dataState.settings.alerts.enabledTypes?.[`cityStock:${target.id}`] === true);
 const cityProgressComplete = Number(dataState.settings.alerts.cityDoneDay) === day || (currentBought !== null && resetBought !== null && currentBought - resetBought >= 100);
 if (cityStockEnabled && !cityProgressComplete && (force || !Number(cityShops?.fetchedAt) || Date.now() - Number(cityShops.fetchedAt) >= 5 * 60_000)) {
-try { cityShops = { ...(await tornJson('/v2/torn/cityshops', 'SLINK PDA city stock alerts')), fetchedAt:Date.now() }; }
+try { cityShops = { ...(await tornJson('/v2/torn/cityshops', 'SLINK PDA city stock alerts', {priority:'alerts'})), fetchedAt:Date.now() }; }
 catch (error) { cityError = [cityError, `City stock alerts: ${errorMessage(error)}`].filter(Boolean).join(' '); }
 }
 try {

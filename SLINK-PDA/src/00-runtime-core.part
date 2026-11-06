@@ -88,6 +88,7 @@ const SHARED_API_LOCK = 'considious-torn-api-limiter-v1';
 const ROOT_OVERFLOW_KEY = 'slinkPdaPreviousOverflow';
 const API_WINDOW_MS = 60_000;
 const API_LIMIT = 60;
+let volatileApiLedger = {events:[],cooldownUntil:0};
 const MODULE_INACTIVE_AFTER_MS = 5 * 60_000;
 const CONTRIBUTION_CEILING = 40;
 const CONTRIBUTION_INTERACTIVE_RESERVE = 10;
@@ -790,7 +791,7 @@ return match ? normalizeRacingTrackName(match[1]) : null;
 const MARKET_PRIORITIES = Object.freeze({ high:0, normal:1, low:2 });
 const TORN_PRIORITY_LIMITS = Object.freeze({ high:60, normal:50, low:40 });
 const WEAVER_REFRESH_MS = Object.freeze({ high:35_000, normal:70_000, low:140_000 });
-const WEAVER_SUMMARY_REFRESH_MS = 5_000;
+const WEAVER_SUMMARY_REFRESH_MS = 10_000;
 const MARKET_TIERS = Object.freeze([5, 10, 15, 20, 25, 30, 35, 40]);
 const MARKET_SUGGESTION_LIMIT = 10;
 const MUG_RESULT_DEDUPE_MS = 5 * 60_000;
@@ -1773,7 +1774,7 @@ let source = {};
 try { source = JSON.parse(global.localStorage.getItem(SHARED_API_LEDGER_KEY) || '{}'); } catch {}
 if (Array.isArray(source)) source = { events:source };
 const seen = new Set();
-const events = (Array.isArray(source?.events) ? source.events : [])
+const events = [...(Array.isArray(source?.events) ? source.events : []),...volatileApiLedger.events]
 .map((event, index) => Number.isFinite(Number(event))
 ? { at:Number(event), id:`legacy:${event}:${index}` }
 : event && Number.isFinite(Number(event.at)) ? { ...event, at:Number(event.at) } : null)
@@ -1786,21 +1787,39 @@ event.id = id;
 return true;
 })
 .sort((left, right) => left.at - right.at);
-const cooldownUntil = Number(source?.cooldownUntil) > now ? Number(source.cooldownUntil) : 0;
+const cooldownUntil = Math.max(Number(source?.cooldownUntil) > now ? Number(source.cooldownUntil) : 0,Number(volatileApiLedger.cooldownUntil)>now?Number(volatileApiLedger.cooldownUntil):0);
 return { events, cooldownUntil };
 }
 function writeApiLedger(ledger) {
+volatileApiLedger=ledger; // Quota/permission failures must not reset the API budget to zero.
 try { global.localStorage.setItem(SHARED_API_LEDGER_KEY, JSON.stringify(ledger)); } catch {}
 }
 async function withApiLock(task) {
 if (global.navigator?.locks?.request) return global.navigator.locks.request(SHARED_API_LOCK, task);
 return task();
 }
+// Public polling consumes forecast capacity before any shared contribution.
+function foregroundApiDemand() {
+const session=validSession('permission');
+const alerts=session&&hasScope('slink.adhd.alerts')?5:0;
+let market=0;
+if(session&&moduleIsActive('market')&&marketWatchLimit()>0){
+const settings=marketSettings();
+if(settings.enabled&&settings.listedItemsEnabled)market=settings.watches.slice(0,marketWatchLimit()).filter(w=>w.enabled&&w.maxPrice>0&&(w.marketType==='points'||w.marketEnabled)).length*2;
+}
+return {market,alerts};
+}
+function protectedApiCapacity(ledger,priority='normal') {
+const demand=foregroundApiDemand();
+const count=p=>ledger.events.filter(e=>e.priority===p||(p==='market'&&/^\/v2\/market(?:\/|\?|$)/.test(e.endpoint))).length;
+const market=Math.max(0,demand.market-count('market')),alerts=Math.max(0,demand.alerts-count('alerts'));
+return priority==='alerts'?0:priority==='market'?alerts:market+alerts;
+}
 function contributionCapacity(ledger = readApiLedger()) {
 const contributionCount = ledger.events.filter(event => event.priority === 'contribution').length;
 return {
 available:Math.min(
-Math.max(0, API_LIMIT - CONTRIBUTION_INTERACTIVE_RESERVE - ledger.events.length),
+Math.max(0, API_LIMIT - CONTRIBUTION_INTERACTIVE_RESERVE - protectedApiCapacity(ledger) - ledger.events.length),
 Math.max(0, CONTRIBUTION_CEILING - contributionCount)
 ),
 count:ledger.events.length,
@@ -1814,14 +1833,13 @@ async function reserveTornApi(endpoint = 'unknown', options = {}) {
 const limit = Math.max(1, Math.min(API_LIMIT, Number(options.limit) || API_LIMIT));
 const wait = options.wait !== false;
 const contribution = options.contribution === true || String(options.priority) === 'contribution';
-const priority = contribution ? 'contribution' : ['high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
-return serializeNetwork(async () => {
+const priority = contribution ? 'contribution' : ['alerts', 'market', 'high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
 while (true) {
-const reservation = await withApiLock(() => {
+const reservation = await serializeNetwork(() => withApiLock(() => {
 const now = Date.now();
 const ledger = readApiLedger(now);
 const spare = contributionCapacity(ledger);
-const full = contribution ? spare.available <= 0 : ledger.events.length >= limit;
+const full = contribution ? spare.available <= 0 : ledger.events.length >= Math.min(limit,Math.max(0,API_LIMIT-protectedApiCapacity(ledger,priority)));
 if (ledger.cooldownUntil > now || full) return { waitUntil:Math.max(ledger.cooldownUntil, Number(ledger.events[0]?.at || now) + API_WINDOW_MS + 25) };
 ledger.events.push({
 at:now,
@@ -1830,7 +1848,7 @@ script:'SLINK PDA Dashboard', priority, method:'GET', endpoint:String(endpoint).
 });
 writeApiLedger(ledger);
 return { reservedAt:now, contribution };
-});
+}));
 if (reservation.reservedAt) return reservation;
 if (!wait) {
 const error = new Error('Waiting for shared Torn API capacity.');
@@ -1840,7 +1858,6 @@ throw error;
 }
 await new Promise(resolve => global.setTimeout(resolve, Math.max(50, Math.min(5_000, reservation.waitUntil - Date.now()))));
 }
-});
 }
 function apiUsage() {
 const ledger = readApiLedger();
@@ -1884,7 +1901,7 @@ dataState.caches.ownBattleStats={...latest,sharedProviderPersonal:value.personal
 await Promise.all(writes);
 },
 normalizeItems:catalogItems,
-request:(kind,key)=>tornJson(kind==='personal'?'/v2/user?selections=battlestats,basic':'/v2/torn/items?cat=All&sort=ASC','SLINK PDA shared data',{priority:'high',apiKey:key})
+request:(kind,key)=>tornJson(kind==='personal'?'/v2/user?selections=battlestats,basic':'/v2/torn/items?cat=All&sort=ASC','SLINK PDA shared data',{priority:kind==='catalog'?'market':'high',apiKey:key})
 });
 return sharedDataProvider;
 }
