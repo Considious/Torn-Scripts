@@ -1,17 +1,20 @@
 (function(){
   'use strict';
-  const routes={friends:'friends',enemies:'enemies',targets:'targets',hospital:'hospital patients',jail:'jail inmates',userlist:'users'};
+  const routes={friends:'friends',enemies:'enemies',targets:'targets',hospital:'hospital patients',jail:'jail inmates',userlist:'users',abroad:'people abroad'};
   const route=()=>{
     if(location.pathname==='/factions.php')return 'faction-members';
     if(location.pathname==='/hospitalview.php')return 'hospital';
     if(location.pathname==='/jailview.php')return 'jail';
     const q=new URLSearchParams(location.search),type=q.get('type');
+    if(location.pathname==='/index.php'&&q.get('page')==='people')return 'abroad';
+    if(['/shops.php','/bigalgunshop.php'].includes(location.pathname))return 'city-shop';
     if(location.pathname!=='/page.php')return '';
+    if(q.get('sid')==='travel')return 'travel-stock';
     if(q.get('sid')?.toLowerCase()==='userlist')return 'userlist';
     return q.get('sid')==='list'&&['friends','enemies','targets'].includes(type)?type:'';
   };
   if(!route())return;
-  const hostSelector=':is(.faction-info-wrap .members-list,.tableWrapper,.userlist-wrapper)';
+  const hostSelector=':is(.faction-info-wrap .members-list,.tableWrapper,.userlist-wrapper,[class*="stockTableWrapper___"],.buy-items-wrap .items-list)';
   const rosterBody=':is(.table-body,ul,.users-list,.user-info-list-wrap)';
   const normalize=v=>String(v??'').trim().toLowerCase().replace(/\s+/g,' ');
   const make=(tag,label)=>{const n=document.createElement(tag);if(label)n.textContent=label;return n;};
@@ -29,11 +32,12 @@
   const ext=globalThis.SLINK_EXTENSION;
   const lookup=ids=>pda?.factionMemberIntel?pda.factionMemberIntel(ids):ext?.core.messaging?.send('factionMembers.cachedIntel',{ids})||{};
   let mounted,queued=false;
+  const shops=new Map();
   const sheet=make('style');
   sheet.textContent=`${hostSelector} [${marker}="hide"]{display:none!important}${hostSelector} [${marker}="mask"]{visibility:hidden!important;pointer-events:none!important}${hostSelector} ${rosterBody}[${sortMarker}]{display:flex!important;flex-direction:column;align-items:stretch}${hostSelector} ${rosterBody}[${sortMarker}] > li{order:var(--slink-roster-order,0)}`;
   function rowData(row){
     const level=numeric(row.querySelector('.level .value,.lvl,.level,[class*="level__"],[data-label="level"]')?.textContent.trim().match(/^(?:level\s*)?(\d+)$/i)?.[1]);
-    const state=normalize(row.querySelector('.status .ellipsis,.status')?.textContent);
+    const state=normalize((row.querySelector('.status .ellipsis')||row.querySelector('.status > :last-child')||row.querySelector('.status'))?.textContent);
     const activity=row.querySelector('[class*="userOnlineStatusIcon___"],[data-activity],[class*="userStatus"],.online,.idle,.offline,[title="Online" i],[title="Idle" i],[title="Offline" i],[aria-label="Online" i],[aria-label="Idle" i],[aria-label="Offline" i]');
     const desc=[activity?.dataset.activity,activity?.getAttribute('alt'),activity?.title,activity?.closest('[aria-label]')?.getAttribute('aria-label'),activity?.getAttribute('class'),row.querySelector('#iconTray li')?.title].join(' ');
     const icons=Array.from(row.querySelectorAll('.icons [title],.icons [aria-label],.user-icons [title],[data-icon][title]'),n=>normalize(n.title||n.getAttribute('aria-label')));
@@ -50,7 +54,7 @@
   }
   function mount(host,kind){
     const faction=kind==='faction-members',noun=faction?'members':routes[kind];
-    const timed=kind==='hospital'||kind==='jail',directory=timed||kind==='userlist';
+    const timed=kind==='hospital'||kind==='jail',abroad=kind==='abroad',directory=timed||abroad||kind==='userlist';
     const listMetrics={...metrics,...(timed?{minutes:'Time left (min)'}:{})};
     const key='slink-native-list-filter:'+kind+':v1';
     const read=()=>{try{return JSON.parse(localStorage.getItem(key))||{};}catch{return {};}};
@@ -95,7 +99,7 @@
     search.addEventListener('input',schedule);
     role.addEventListener('change',()=>{selected=role.value;schedule();});
     if(!faction)selected='';
-    controls.append(search,...(faction?[role]:[]),activity,...(faction?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
+    controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
     function clearSort(){
       sortedBody?.removeAttribute(sortMarker);sortedBody=null;
@@ -104,7 +108,7 @@
     }
     function render(){
       frame=0;if(!active)return;
-      const body=host.querySelector(faction?'.table-body':timed?'.users-list':directory?'.user-info-list-wrap':':scope > ul');
+      const body=host.querySelector(faction?'.table-body':timed||abroad?'.users-list':directory?'.user-info-list-wrap':':scope > ul');
       const rows=Array.from(body?.children||[]).filter(row=>row.matches('li')&&!row.querySelector('.ajax-preloader,.ajax-placeholder')&&row.querySelector('a[href*="profiles.php?XID="]'));
       const entries=rows.map(row=>{
         const a=row.querySelector('a[href*="profiles.php?XID="]');
@@ -135,9 +139,9 @@
       const matches=[];
       for(const e of entries){
         const match=(!query||(/^\d+$/.test(idQuery)?e.id===idQuery:normalize(e.name).includes(query)))&&(!selected||selected===e.position)
-          &&(!activity.value||e.activity===activity.value)&&(!faction||!state.value||e.state===state.value)
+          &&(!activity.value||e.activity===activity.value)&&(!(faction||abroad)||!state.value||e.state===state.value)
           &&(kind!=='hospital'||!revive.value||e.revive===revive.value)
-          &&(!(faction||kind==='userlist')||specials.every(flag=>!fields[flag].value||(fields[flag].value==='yes')===e.flags.has(flag)))
+          &&(!(faction||abroad||kind==='userlist')||specials.every(flag=>!fields[flag].value||(fields[flag].value==='yes')===e.flags.has(flag)))
           &&Object.entries(range).every(([k,[min,max]])=>[min,max].every(v=>v===null)||(e[k]!==null&&(min===null||e[k]>=min)&&(max===null||e[k]<=max)));
         if(match){matches.push(e);e.row.removeAttribute(marker);}
         else{e.row.setAttribute(marker,virtual||e.row.matches('[class*="virtual"],[style*="position: absolute"]')?'mask':'hide');next.add(e.row);}
@@ -172,10 +176,63 @@
     configure();
     return {host,box,kind,dispose(){stop();box.remove();}};
   }
+  function mountShop(host,travel){
+    const box=make('div'), fields=make('div'), status=make('span');
+    fields.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:5px 0';
+    status.setAttribute('role','status');
+    const input=(type,label)=>{const el=make('input');el.type=type;el.placeholder=label;el.setAttribute('aria-label',label);if(type==='number'){el.min='0';el.style.width='7em';}el.addEventListener('input',schedule);return el;};
+    const name=input('search','Item name'),price=input('number','Max price'),stock=input('number','Minimum stock');
+    const category=make('select');category.setAttribute('aria-label','Item type');category.addEventListener('change',schedule);
+    let active=false,observer,frame=0,marked=new Set(),type='';
+    const toggle=button('Filter items',()=>{active=!active;configure();});
+    fields.append(name,...(travel?[category]:[]),price,stock,button('Reset',()=>{name.value=price.value=stock.value=type='';schedule();}),status);
+    box.append(toggle,fields);host.before(box);
+    function clear(){for(const row of marked)row.removeAttribute(marker);marked.clear();}
+    function configure(){
+      fields.hidden=!active;fields.style.display=active?'flex':'none';toggle.textContent=active?'Hide item filter':'Filter items';toggle.setAttribute('aria-expanded',String(active));
+      if(active){if(!sheet.isConnected)document.head.append(sheet);observer=new MutationObserver(schedule);observer.observe(host,{childList:true,subtree:true,characterData:true});schedule();}
+      else{observer?.disconnect();cancelAnimationFrame(frame);frame=0;clear();}
+    }
+    function schedule(){if(active&&!frame)frame=requestAnimationFrame(render);}
+    const number=(v,re)=>{const m=v?.trim().match(re);return m?numeric(m[1].replaceAll(',','')):null;};
+    function render(){
+      frame=0;if(!active)return;
+      const items=[];
+      for(const row of host.children){
+        if(!row.matches('li')||row.querySelector('[class*="buyPanel___"]'))continue;
+        const item=travel?row.querySelector('[class*="itemName___"]'):row.querySelector('.item[itemid],.item-desc');
+        if(!item)continue;
+        const cells=travel?Array.from(row.querySelector('[class*="row___"]')?.children||[]):[];
+        const cell=(label)=>cells.find(el=>normalize(el.textContent).startsWith(label+' ')||normalize(el.textContent).startsWith(label+':'))?.textContent;
+        const text=(travel?item.textContent:(item.querySelector('.name,.item-name')?.textContent||item.getAttribute('title')||item.textContent)).trim();
+        const cost=travel?(cell('cost')||cells.find(el=>el.textContent.trim().startsWith('$'))?.textContent):row.querySelector('.price')?.firstChild?.textContent;
+        const quantity=travel?cell('stock'):row.querySelector('.instock')?.textContent;
+        items.push({row,name:text,type:(cell('type')||'').trim().replace(/^type\s*:?\s*/i,''),price:number(cost,/^(?:cost\s*:?\s*)?\$?([\d,]+)/i),stock:number(quantity,/^(?:stock\s*:?\s*)?([\d,]+)/i)});
+      }
+      const types=['',...new Set(items.map(i=>i.type).filter(Boolean).sort())];
+      if(travel&&(types.length!==category.options.length||types.some((v,i)=>category.options[i].value!==v))){
+        category.replaceChildren(...types.map(v=>{const o=make('option',v||'All types');o.value=v;return o;}));
+      }
+      if(travel){if(category.value!==type&&types.includes(type))category.value=type;else if(!types.includes(type))type='';}
+      const q=normalize(name.value),max=numeric(price.value),min=numeric(stock.value),next=new Set();
+      for(const i of items)if((q&&!normalize(i.name).includes(q))||(type&&i.type!==type)||(max!==null&&(i.price===null||i.price>max))||(min!==null&&(i.stock===null||i.stock<min))){i.row.setAttribute(marker,'hide');next.add(i.row);}
+      for(const row of marked)if(!next.has(row))row.removeAttribute(marker);
+      marked=next;
+      const message=items.length?`${items.length-next.size} of ${items.length} loaded items`:'No loaded items to filter.';
+      if(status.textContent!==message)status.textContent=message;
+    }
+    category.addEventListener('change',()=>{type=category.value;});
+    configure();
+    return {box,dispose(){active=false;configure();box.remove();}};
+  }
   function sync(){
     queued=false;
     if(document.hidden)return;
-    const kind=route(),host=kind?document.querySelector(kind==='faction-members'?'.faction-info-wrap .members-list':kind==='userlist'?'.userlist-wrapper:has(.user-info-list-wrap)':kind==='hospital'||kind==='jail'?'.userlist-wrapper:has(.users-list)':'.tableWrapper:has(> ul)'):null;
+    const kind=route(),shopSelector=kind==='travel-stock'?'[class*="stockTableWrapper___"]':kind==='city-shop'?'.buy-items-wrap .items-list':'';
+    const lists=new Set(shopSelector?document.querySelectorAll(shopSelector):[]);
+    for(const [node,ui] of shops)if(!lists.has(node)||!ui.box.isConnected){ui.dispose();shops.delete(node);}
+    for(const node of lists)if(!shops.has(node))shops.set(node,mountShop(node,kind==='travel-stock'));
+    const host=kind&&!shopSelector?document.querySelector(kind==='faction-members'?'.faction-info-wrap .members-list':kind==='userlist'?'.userlist-wrapper:has(.user-info-list-wrap)':['hospital','jail','abroad'].includes(kind)?'.userlist-wrapper:has(.users-list)':'.tableWrapper:has(> ul)'):null;
     if(mounted?.host===host&&mounted.kind===kind&&mounted.box.isConnected)return;
     mounted?.dispose();mounted=host?mount(host,kind):null;
   }
