@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-ff0e44233e37c98e52db6445c6990423a04a47e77361de51c94472ef53cd5272",
+  "revision": "sha256-fc76e024ec21dd96012eb6e731974ed64bdeed3d23dbbb479a50a2bc5e1ff20d",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -111,8 +111,11 @@
     },
     {
       "source": "src/addons/weapon-merits.addon.js"
+    },
+    {
+      "source": "src/addons/gym-guide.addon.js"
     }
   ],
   "channel": "feature/qol-batch-5",
-  "clientVersion": "0.4.208"
+  "clientVersion": "0.4.209"
 }
