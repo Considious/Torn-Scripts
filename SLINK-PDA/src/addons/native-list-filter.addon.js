@@ -8,6 +8,7 @@
   const make=(tag,label)=>{const n=document.createElement(tag);if(label)n.textContent=label;return n;};
   const button=(label,fn)=>{const n=make('button',label);n.type='button';n.onclick=fn;return n;};
   const marker='data-slink-faction-filtered';
+  const sortMarker='data-slink-roster-sorted';
   const metrics={level:'Level',ff:'Fair Fight',stats:'Battle-stat estimate'};
   const activities=['Online','Idle','Offline'];
   const states=['Okay','Hospital','Jail','Abroad','Traveling','Unknown'];
@@ -20,7 +21,7 @@
   const lookup=ids=>pda?.factionMemberIntel?pda.factionMemberIntel(ids):ext?.core.messaging?.send('factionMembers.cachedIntel',{ids})||{};
   let mounted,queued=false;
   const sheet=make('style');
-  sheet.textContent=`${hostSelector} [${marker}="hide"]{display:none!important}${hostSelector} [${marker}="mask"]{visibility:hidden!important;pointer-events:none!important}`;
+  sheet.textContent=`${hostSelector} [${marker}="hide"]{display:none!important}${hostSelector} [${marker}="mask"]{visibility:hidden!important;pointer-events:none!important}${hostSelector} .table-body[${sortMarker}]{display:flex!important;flex-direction:column;align-items:stretch}${hostSelector} .table-body[${sortMarker}] > li{order:var(--slink-roster-order,0)}`;
   function rowData(row){
     const level=numeric(row.querySelector('.lvl,.level,[data-label="level"]')?.textContent.trim());
     const state=normalize(row.querySelector('.status .ellipsis,.status')?.textContent);
@@ -34,7 +35,7 @@
   }
   function mount(host){
     const saved=read();
-    let active=saved.active===true, listObserver, frame=0, previous=new Set(), requested='', intel={}, generation=0;
+    let active=saved.active===true, listObserver, frame=0, previous=new Set(), requested='', intel={}, generation=0, sortedBody=null, sortedRows=new Set();
     const box=make('div');box.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 0';
     const controls=make('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px';
     const search=make('input');search.type='search';search.placeholder='Name or player ID';search.maxLength=60;search.setAttribute('aria-label','Filter faction members by name or ID');
@@ -64,7 +65,6 @@
     special.append(summary,...specials.map(flag=>{
       const l=make('label',flag+' ');l.style.display='block';l.append(choose(flag,flag,[['','Either'],['yes','Yes'],['no','No']]));return l;
     }));
-    const results=make('ol');results.hidden=true;results.setAttribute('aria-label','Sorted faction members');
     const toggle=button('',()=>{active=!active;configure();});
     const reset=button('Reset',()=>{search.value='';selected='';Object.values(fields).forEach(f=>f.value='');schedule();});
     const preset=button('Save preset',()=>{
@@ -73,8 +73,13 @@
     });
     search.addEventListener('input',schedule);
     role.addEventListener('change',()=>{selected=role.value;schedule();});
-    controls.append(search,role,activity,state,sort,...ranges,special,reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';box.append(results);host.before(box);
+    controls.append(search,role,activity,state,sort,...ranges,special,reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
+    function clearSort(){
+      sortedBody?.removeAttribute(sortMarker);sortedBody=null;
+      for(const row of sortedRows)row.style.removeProperty('--slink-roster-order');
+      sortedRows.clear();
+    }
     function render(){
       frame=0;if(!active)return;
       const body=host.querySelector('.table-body');
@@ -116,20 +121,22 @@
       }
       for(const row of previous)if(!next.has(row))row.removeAttribute(marker);
       previous=next;
-      results.hidden=!metric;
-      if(metric){
+      const canSort=body&&rows.length&&!virtual&&!rows.some(row=>row.matches('[class*="virtual"],[style*="position: absolute"]'));
+      if(!metric||!canSort||sortedBody!==body)clearSort();
+      if(metric&&canSort){
         matches.sort((a,b)=>a[metric]===null?b[metric]===null?0:1:b[metric]===null?-1:(a[metric]-b[metric])*(dir==='desc'?-1:1));
-        results.replaceChildren(...matches.map(e=>{
-          const li=make('li'),link=make('a',e.name||'Player '+e.id);link.href='/profiles.php?XID='+encodeURIComponent(e.id);
-          const v=e[metric];li.append(link,document.createTextNode(' — '+(v===null?'Unavailable':v.toLocaleString())));return li;
-        }));
+        const nextSorted=new Set(matches.map(e=>e.row));
+        for(const row of sortedRows)if(!nextSorted.has(row))row.style.removeProperty('--slink-roster-order');
+        // Keep React's native rows and handlers mounted. Only their visual order changes.
+        matches.forEach(({row},i)=>row.style.setProperty('--slink-roster-order',String(i-matches.length)));
+        sortedRows=nextSorted;sortedBody=body;body.setAttribute(sortMarker,'');
       }
       const shown=matches.length;
-      const message=(!rows.length?'No loaded members to filter.':shown===0?`No matches among ${rows.length} loaded members.`:`${shown} of ${rows.length} loaded members`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Stats from SLINK cache only.':'');
+      const message=(!rows.length?'No loaded members to filter.':shown===0?`No matches among ${rows.length} loaded members.`:`${shown} of ${rows.length} loaded members`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Stats from SLINK cache only.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this roster layout.':'');
       if(status.textContent!==message)status.textContent=message;
     }
     function schedule(){if(active&&!frame)frame=requestAnimationFrame(render);}
-    function stop(){listObserver?.disconnect();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};results.hidden=true;results.replaceChildren();clear();}
+    function stop(){listObserver?.disconnect();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};clearSort();clear();}
     function configure(){
       stop();
       controls.hidden=!active;controls.style.display=active?'flex':'none';
