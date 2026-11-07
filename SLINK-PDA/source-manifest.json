@@ -1,10 +1,11 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-e4d3f66c92ad4348b91ba4b16eb76b0aac894e3e806c2d85bfae4d8b6207a1e7",
+  "revision": "sha256-5a196c13e442a737bff770b2275c938a34350a83962d522682afa0516d8d2660",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
+    "src/00-halloween-theme.part",
     "src/00-christmas-theme.part",
     "src/00-candy-theme.part",
     "src/00-errors.part",

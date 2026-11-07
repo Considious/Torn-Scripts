@@ -2657,6 +2657,7 @@ return [
 function themeCatalog() {
 const themes = dataState.caches.themeCatalog?.catalog?.themes;
 const catalog=[...(Array.isArray(themes) && themes.length ? themes : bundledThemes())];
+const halloween=globalThis.SLINK_HALLOWEEN_THEME?.definition;if(halloween){const index=catalog.findIndex(t=>t.id===halloween.id);if(index<0)catalog.push(halloween);else catalog[index]=halloween;}
 const candy=globalThis.SLINK_CANDY_THEME?.definition;if(candy&&!catalog.some(theme=>theme.id===candy.id))catalog.push(candy);
 const christmas=globalThis.SLINK_CHRISTMAS_THEME?.definition;
 if(christmas&&!catalog.some(theme=>theme.id===christmas.id))return [...catalog,christmas].map(theme=>theme?.id==='gothic-valentines'?{...theme,ornament:'gothic',assets:normalizeThemeAssets(theme,'gothic-valentines')}:theme);

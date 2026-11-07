@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';import {readFile} from 'node:fs/promises';import vm from 'node:vm';
+const read=p=>readFile(new URL('./'+p,import.meta.url),'utf8'),source=await read('src/00-halloween-theme.part'),c=vm.createContext({URL,console});vm.runInContext(source,c);
+assert.equal(c.SLINK_HALLOWEEN_THEME.definition.scope,'slink.theme.halloween');
+assert.equal(c.SLINK_HALLOWEEN_THEME.files.length,14);
+assert.doesNotMatch(source,/MutationObserver|setInterval|localStorage|fetch\(/);
+const manifest=JSON.parse(await read('source-manifest.json'));assert.equal(manifest.fragments[0],'src/00-halloween-theme.part');
+assert.match(await read('src/00-runtime-core.part'),/catalog\[index\]=halloween/);
+assert.match(await read('src/90-shell-bootstrap.part'),/SLINK_HALLOWEEN_THEME\?\.apply\(host,theme\)/);
+assert.match(await read('src/40-war.part'),/data-halloween-kind/);assert.match(await read('src/40-war.part'),/SLINK_HALLOWEEN_THEME\?\.refresh\(host\)/);
+assert.match(await read('src/00-torn-theme.part'),/halloween-2026.*data-slink-torn-frames/);
+console.log('PDA Halloween: existing permission, startup, refreshed alert decoration, Torn frame integration and no storage writes passed.');

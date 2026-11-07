@@ -46,6 +46,8 @@ ${S} :is(.cont-gray,.cont-white){background-color:var(--slt-panel)!important;col
 /* Border-image paints inside the native box without changing its border width,
    padding, sizing or positioning. Fixed-width profile floats must retain space. */
 ${S}[data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image-source:var(--slt-texture)!important;border-image-slice:25% 8%!important;border-image-width:12px!important;border-image-outset:0!important;border-image-repeat:stretch!important;}
+${S}[data-slink-torn-palette="halloween-2026"][data-slink-torn-background] body{background-image:var(--slt-image)!important;background-repeat:repeat-y!important;}
+${S}[data-slink-torn-palette="halloween-2026"][data-slink-torn-frames] :is(.cont-gray,.cont-white,.crimes-app .crime-root,.crimes-app .crimes-hub-root,#travel-root [class*="departPanel___"],#travel-root [class*="inventoryPanel___"],#attack-root [class*="coreWrap___"]){border-image:var(--slt-frame) 38% 20% / 18px 26px / 0 stretch!important;}
 ${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-background] body{background-image:var(--slt-image)!important;background-repeat:repeat-y!important;}
 ${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image:var(--slt-frame) 16% / 12px / 0 round!important;}
 ${S} :is(#mainContainer,.content-wrapper) :is(input[type=text],input[type=search],input[type=password],textarea,select):not(:disabled){background-color:var(--slt-control)!important;color:var(--slt-text)!important;caret-color:var(--slt-text);}
