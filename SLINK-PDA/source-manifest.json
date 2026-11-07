@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-fc76e024ec21dd96012eb6e731974ed64bdeed3d23dbbb479a50a2bc5e1ff20d",
+  "revision": "sha256-6d08c2797bc2303a29e5eefe4d102635d7043e3a9736c0f67e892d35bc3bf518",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -114,8 +114,11 @@
     },
     {
       "source": "src/addons/gym-guide.addon.js"
+    },
+    {
+      "source": "src/addons/weapon-details.addon.js"
     }
   ],
   "channel": "feature/qol-batch-5",
-  "clientVersion": "0.4.209"
+  "clientVersion": "0.4.210"
 }
