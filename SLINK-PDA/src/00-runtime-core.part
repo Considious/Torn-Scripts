@@ -933,7 +933,7 @@ async function recoverPdaSettings(confirmed,reset=false) {
  if(pendingStorageWrites.size)throw Error('A save is still pending. Wait for it to finish before recovering.');
  const report=await diagnosePdaStorage();
  if(reset&&Number(report.manualResetVersion)<2&&[...failedStorageWrites.values()].some(entry=>/RowTooBig|CursorWindow|SLINK_STORAGE_ROW_TOO_LARGE/.test(entry.error)))throw Error('Update the installed PDA script to 0.4.185 or later and reload before rebuilding oversized native settings. No data was deleted.');
- if(reset&&report.manualResetVersion!==1)throw Error('Update the installed PDA script to 0.4.155 or later and reload Torn before using native reset. No data was deleted.');
+ if(reset&&(!Number.isSafeInteger(report.manualResetVersion)||report.manualResetVersion<1))throw Error('The loaded SLINK storage bridge does not report compatible reset support. Reload Torn after updating the installed SLINK PDA script, then retry. No data was deleted. [SLINK_STORAGE_RESET_UNSUPPORTED]');
  if(Number(report.manualRecoveryVersion)<2||!report.manualRecoveryVersion)throw Error('Update the installed PDA script to 0.4.154 or later before using native recovery. Refreshing the live runtime alone does not update its storage bridge.');
  if(!report.coordinationAvailable)throw Error('This PDA WebView cannot safely coordinate the recovered native records. Copy the storage report; no original data has been replaced. [SLINK_STORAGE_COORDINATION_UNAVAILABLE]');
  if(!(reset?report.canResetSettings:report.canRecoverSettings))throw Error('This is not the native settings-read failure supported by recovery. Copy a storage report instead.');

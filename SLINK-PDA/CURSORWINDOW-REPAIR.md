@@ -8,6 +8,13 @@ Do not assume a universal numeric Android row-size limit.
 
 ## Affected users
 
+If 0.4.185 showed an instruction to install “0.4.155 or later”, that was a
+runtime compatibility-check bug: reset capability 2 was incorrectly rejected
+by a leftover capability-1-only condition. The corrected live runtime accepts
+capability 2. Reload Torn to fetch it; do not downgrade. The updated installer
+is 0.4.186. Regression coverage now exercises the complete runtime-to-native
+delete/rebuild/save path, not just the adapter in isolation.
+
 1. Update the installed SLINK PDA userscript to **0.4.185 or later**. The storage
    adapter is in the installed launcher, not just the downloaded runtime.
 2. Keep Torn open. In SLINK, review the settings currently available on this page.
