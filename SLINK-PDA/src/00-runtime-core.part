@@ -1307,6 +1307,7 @@ company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinu
 function portableBackupPayload() {
 const settings=JSON.parse(JSON.stringify(dataState.settings || {}));
 if(settings.plugins?.chat?.giphy)delete settings.plugins.chat.giphy.apiKey;
+if(settings.plugins)delete settings.plugins.profileNotes;
 return {
 schema:1,
 client:'pda',
@@ -1335,7 +1336,10 @@ throw new Error('The saved SLINK backup is invalid or incompatible.');
 if (pdaTargetRecords) await pdaTargetRecords.replace(backup.targetList);
 else dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
 const localGiphyKey=dataState.settings?.plugins?.chat?.giphy?.apiKey;
+const localProfileNotes=dataState.settings?.plugins?.profileNotes;
 dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
+if(dataState.settings.plugins)delete dataState.settings.plugins.profileNotes;
+if(localProfileNotes){dataState.settings.plugins ||= {};dataState.settings.plugins.profileNotes=localProfileNotes;}
 if(dataState.settings.plugins?.chat?.giphy){
 delete dataState.settings.plugins.chat.giphy.apiKey;
 if(localGiphyKey)dataState.settings.plugins.chat.giphy.apiKey=localGiphyKey;

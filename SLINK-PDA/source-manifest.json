@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-2bbb3f3f6daaf569f3e34d39e4d57f6f27e182252c17495ab6f3a8ad55983676",
+  "revision": "sha256-3d3297ef00c5d24941fea34a5be17288bce9728a0ee710edf290bd377d2b6693",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -90,8 +90,11 @@
     },
     {
       "source": "src/addons/mission-preview.addon.js"
+    },
+    {
+      "source": "src/addons/profile-notes.addon.js"
     }
   ],
   "channel": "feature/qol-batch-3",
-  "clientVersion": "0.4.196"
+  "clientVersion": "0.4.197"
 }
