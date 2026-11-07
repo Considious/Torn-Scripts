@@ -21,7 +21,7 @@
   const money=n=>n==null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n);
   const element=(tag,text)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;return el;};
   const button=(label,fn)=>{const b=element('button',label);b.type='button';b.addEventListener('click',fn);return b;};
-  let hidden=new Set(), saving=false, showHidden=false, data=null, root=null, observer=null, pending=false, loading=false, status, summary, controls, picker;
+  let hidden=new Set(), saving=false, showHidden=false, data=null, root=null, observer=null, pending=false, loading=false, status, summary, controls, picker, search, ownership;
   const visible=()=>document.visibilityState!=='hidden';
   const market=()=>new Map((data?.market||[]).map(s=>[s.id,s]));
   const holding=id=>data?.holdings?.find(h=>h.id===id);
@@ -85,15 +85,21 @@
     pending=false;if(!root?.isConnected||!visible()||!onPage())return;
     const lookup=market();
     for(const row of root.querySelectorAll(rowSelector)){
-      const id=rowId(row);if(!id)continue;
-      row.classList.toggle('slink-stock-filtered',hidden.has(id)&&!showHidden);
+      const id=rowId(row), stock=lookup.get(id);
+      const title=row.querySelector('[class*="stockName___"]');
+      const name=[title?.getAttribute('aria-label'),title?.textContent,stock?.name,stock?.acronym,row.id].join(' ').toLowerCase();
+      const count=row.querySelector('p[class*="count___"]')?.textContent.trim();
+      const owned=data?Number(holding(id)?.shares)>0:count==='None'?false:count&&/\d/.test(count)?model.amount(count)>0:null;
+      const wanted=ownership.value;
+      row.classList.toggle('slink-stock-filtered',(hidden.has(id)&&!showHidden)||!name.includes(search.value.trim().toLowerCase())||(wanted==='owned'&&owned!==true)||(wanted==='unowned'&&owned!==false));
+      if(!id)continue;
       let label=row.querySelector('.slink-stock-detail');
       if(!label){
         label=element('div');label.className='slink-stock-detail';
         label.append(element('span'),button('Hide stock',e=>{e.stopPropagation();void toggle(id);}));
         row.append(label);
       }
-      const stock=lookup.get(id), h=holding(id), price=stock?.market?.price;
+      const h=holding(id), price=stock?.market?.price;
       const shares=h?.shares??0;
       const goal=stock&&model.threshold(stock.bonus?.requirement,shares,{passive:stock.bonus?.passive===true,cap:stock.acronym==='MCS'?10:Infinity});
       const msg=goal!=null&&price>0?`Next benefit: ${(goal-shares).toLocaleString()} more shares · estimated ${money((goal-shares)*price)} `:'';
@@ -125,7 +131,9 @@
     summary=element('div');status=element('div');status.setAttribute('role','status');
     controls=button('',()=>{showHidden=!showHidden;refreshDisplay();schedule();});
     picker=button('Load / refresh stocks',()=>void load());
-    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,status,style);root.prepend(panel);
+    search=element('input');search.type='search';search.placeholder='Stock name or symbol';search.setAttribute('aria-label','Stock name or symbol');search.addEventListener('input',schedule);
+    ownership=element('select');ownership.setAttribute('aria-label','Stock ownership');for(const [value,label] of [['','All stocks'],['owned','Owned'],['unowned','Not owned']]){const option=element('option',label);option.value=value;ownership.append(option);}ownership.addEventListener('change',schedule);
+    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,search,ownership,status,style);root.prepend(panel);
     observer=new MutationObserver(schedule);observer.observe(root,{childList:true,subtree:true});
     refreshDisplay();schedule();
   }
