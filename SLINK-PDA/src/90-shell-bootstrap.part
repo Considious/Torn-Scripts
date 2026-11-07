@@ -1920,6 +1920,17 @@ const result=await access().central(path,force);if(path==='token')endpoint=globa
 return Object.freeze({central,view:Object.freeze({async get(){return state.factionNodeView||{};},async save(record){if(record.visible===false&&Object.keys(record).length===1){state.factionNodeView={...state.factionNodeView,visible:false};await writeState();return state.factionNodeView;}state.factionNodeView={visible:record.visible===true,view:['home','chat','admin'].includes(record.view)?record.view:'home',userId:Number(record.userId)||0,factionId:Number(record.factionId)||0,roomId:typeof record.roomId==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(record.roomId)?record.roomId:null,windows:(Array.isArray(record.windows)?record.windows:[]).filter(item=>item&&typeof item.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(item.id)).slice(0,12).map(item=>({id:item.id,minimized:item.minimized===true}))};await writeState();return state.factionNodeView;}}),request(url,options){const parsed=new URL(url);if(!endpoint||parsed.origin!==endpoint||!parsed.pathname.startsWith('/api/'))throw new Error('Faction chat request does not match the verified node.');return requestJson(url,options);},theme(){const style=global.getComputedStyle(host),out={};for(let i=0;i<style.length;i++){const key=style[i];if(key.startsWith('--slink-'))out[key]=style.getPropertyValue(key).trim();}out['--slink-panel']=out['--slink-panel-bg']||out['--slink-bg']||style.getPropertyValue('--s-panel').trim();return out;}});
 })();
 global.SLINK_PDA_PLUGIN_API = Object.freeze({
+factionMemberIntel:ids=>{
+  const session=validSession('permission'),own=dataState.caches.ownBattleStats;
+  const observer=Number(session?.userId??session?.user_id);
+  if(!observer||!Array.isArray(ids)||ids.length>200)return {};
+  const ownAt=Number(own?.accountId)===observer?Number(own?.statsAt)||0:0;
+  return Object.fromEntries([...new Set(ids)].filter(id=>/^[1-9]\d{0,9}$/.test(id)).map(id=>{
+    const record=playerIntelligenceRecord(id),bound=record?.fairFightContext;
+    return [id,{ff:ownAt&&Number(bound?.observerId)===observer&&Number(bound?.ownStatsAt)===ownAt&&Number(record?.fairFight)>0?Number(record.fairFight):null,
+      stats:Number(record?.battleStatsEstimate)>0?Number(record.battleStatsEstimate):null}];
+  }));
+},
 missionPrices:()=>dataState.caches.sharedProviders?.catalog?.items,
 inlineStatus:()=>{
   const session=validSession('permission');
