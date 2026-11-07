@@ -852,6 +852,7 @@ typeof global.__SLINK_PDA_STORAGE_BRIDGE__.channel==='string'
 : PDA_BOOTSTRAP.storageWriteEvent || ''
 );
 const pendingStorageWrites=new Map(), failedStorageWrites=new Map(), latestStorageWrites=new Map();
+let storageAutoRecoveryNotice=typeof PDA_BOOTSTRAP!=='undefined'&&PDA_BOOTSTRAP.storageAutoRecovery?.status==='recovered'?PDA_BOOTSTRAP.storageAutoRecovery:null;
 let storageWriteSequence=0, storageBackendName='unknown';
 let acknowledgedDataBase=null,acknowledgedDataSequence=0;
 let pdaTargetRecords=null;
@@ -894,7 +895,7 @@ function updateStorageNotice() {
 try {
 const node=moduleRoot('access')?.querySelector('[data-storage-status]');
 if (node) {
-node.textContent=failedStorageWrites.size?'Some SLINK changes are not saved. Keep this page open and retry.':pendingStorageWrites.size?'Saving changes…':storageBackendName==='browser'?'Saved in browser storage; this PDA version has no confirmed native storage.':'';
+node.textContent=failedStorageWrites.size?'Some SLINK changes are not saved. Keep this page open and retry.':pendingStorageWrites.size?'Saving changes…':storageAutoRecoveryNotice?'SLINK repaired local storage automatically from a verified saved copy. Please check your most recent settings changes.':storageBackendName==='browser'?'Saved in browser storage; this PDA version has no confirmed native storage.':'';
 node.hidden=!node.textContent;
 }
 const recover=moduleRoot('access')?.querySelector('[data-action="recover-native-settings"]');
@@ -904,6 +905,9 @@ const retry=moduleRoot('access')?.querySelector('[data-action="retry-local-stora
 if (retry) retry.hidden=!failedStorageWrites.size;
 } catch {}
 }
+if (PDA_STORAGE_WRITE_EVENT) document.addEventListener(PDA_STORAGE_WRITE_EVENT+':repaired',event=>{
+try{const notice=JSON.parse(String(event.detail||''));if(notice?.status==='recovered'){storageAutoRecoveryNotice={status:'recovered'};updateStorageNotice();}}catch{}
+});
 if (PDA_STORAGE_WRITE_EVENT) document.addEventListener(PDA_STORAGE_WRITE_EVENT+':ack',event=>{
 let value;try {value=JSON.parse(String(event?.detail || ''));} catch {return;}
 const pending=pendingStorageWrites.get(value?.id);if (!pending) return;

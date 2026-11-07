@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.187
+// @version      0.4.188
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -33,7 +33,7 @@
 // @connect      slinkmuggingworker.richard-johnson554.workers.dev
 // @run-at       document-end
 // ==/UserScript==
-(async()=>{'use strict';const e='https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/',t=e+'source-manifest.json',r=String('###PDA-APIKEY###').trim(),o='slink-pda-runtime-load-error',a='slink-pda-dashboard-host',n='slink-pda-dashboard:data:v1',s='slink-pda-dashboard:data:mirror:v1',i='slink-pda-dashboard:own-battle-stats:v1',l='slink-pda-dashboard:ui:v1',c='slink-pda-dashboard:alert-snoozes:v1',u='slink-pda-dashboard:targets:v1',d=new Set([n,i,l,c,u]),f='slink-pda-dashboard:runtime-cache:v1',g='slink-pda-dashboard:runtime-cache-retry:v1';let h=!1,w=null;const residentBridge=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;const m=residentBridge?.protocol===1&&residentBridge.document===document&&typeof residentBridge.channel==='string'?residentBridge.channel:'slink-pda-storage-write:'+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random());function showFailure(e){const t=String(e?.message||e||'Unknown startup error');console.error('SLINK PDA runtime failed to load:',e),document.getElementById(o)?.remove();const r=document.createElement('button');r.id=o,r.type='button',r.textContent='SLINK could not load. '+t.replace(/([?&](?:key|api_key|token)=)[^&#\\s]+/gi,'$1[redacted]').slice(0,350)+' Torn is unaffected — tap to retry',r.title='Startup files could not finish loading. Check your connection, tap Retry once, then update SLINK if it continues. Saved settings have not been cleared. [SLINK_RUNTIME_LOAD]',r.style.cssText='position:fixed;right:10px;bottom:76px;z-index:2147483647;max-width:calc(100vw - 20px);white-space:normal;overflow-wrap:anywhere;padding:10px 12px;border:2px solid #111;border-radius:8px;background:#b91c1c;color:#fff;font:bold 12px Arial,sans-serif',r.addEventListener('click',()=>{r.remove(),loadRuntime(!0)}),(document.body||document.documentElement).appendChild(r)}function isRecord(value){return Boolean(value&&'object'==typeof value&&!Array.isArray(value))}function hasData(value){return Boolean(isRecord(value)&&Object.keys(value).length)}function savedAt(value){return Math.max(0,Number(isRecord(value)?value._savedAt||value.savedAt:0)||0)}function writeMirror(value){if(isRecord(value))try{globalThis.localStorage?.setItem(s,JSON.stringify({schema:1,savedAt:Date.now(),data:value})),globalThis.localStorage?.setItem(n,JSON.stringify(value))}catch{}}async function readPersistedData(){readPersistedData.failed=!1;let primary=null,primaryFailed=!1;try{const e=nativeStorage();if(e){const value=await e.get(n,null);if(hasData(value))return writeMirror(value),value}const value=await gmRead(n,{});isRecord(value)&&(primary=value)}catch{primaryFailed=!0,readPersistedData.failed=!0}const mirror=function(){try{const e=JSON.parse(globalThis.localStorage?.getItem(s)||'null');return isRecord(e?.data)?e.data:isRecord(e)?e:null}catch{return null}}();let selected=hasData(primary)?primary:mirror||{};return hasData(mirror)&&savedAt(mirror)>savedAt(selected)&&(selected=mirror),hasData(selected)&&writeMirror(selected),selected!==mirror||selected===primary||primaryFailed||await gmWrite(n,selected),selected}async function collectBootstrap(){const[data,e]=await Promise.all([readPersistedData(),gmRead(i,null)]),t=u;let r;try{if(r=await targetJournal(),readPersistedData.failed&&!r.ops.some(e=>'migration'===e.kind))throw Error('Legacy target storage could not be read.')}catch{r={ops:[],error:'Target storage is unavailable. Reload to retry; saved targets have not been changed.'}}let o=null;try{o=JSON.parse(globalThis.localStorage?.getItem(i)||'null')}catch{}const a=[e,o,data?.caches?.ownBattleStats].filter(value=>isRecord(value)&&Number(value.total)>0).sort((e,t)=>Number(t.checkedAt||0)-Number(e.checkedAt||0))[0]||null;return{[n]:data,[i]:a,[t]:r,storageWriteEvent:m,[l]:await gmRead(l,{}),[c]:await gmRead(c,{})}}function nativeStorage(){
+(async()=>{'use strict';const e='https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/',t=e+'source-manifest.json',r=String('###PDA-APIKEY###').trim(),o='slink-pda-runtime-load-error',a='slink-pda-dashboard-host',n='slink-pda-dashboard:data:v1',s='slink-pda-dashboard:data:mirror:v1',i='slink-pda-dashboard:own-battle-stats:v1',l='slink-pda-dashboard:ui:v1',c='slink-pda-dashboard:alert-snoozes:v1',u='slink-pda-dashboard:targets:v1',d=new Set([n,i,l,c,u]),f='slink-pda-dashboard:runtime-cache:v1',g='slink-pda-dashboard:runtime-cache-retry:v1';let h=!1,w=null;const residentBridge=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;const m=residentBridge?.protocol===1&&residentBridge.document===document&&typeof residentBridge.channel==='string'?residentBridge.channel:'slink-pda-storage-write:'+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random());function showFailure(e){const t=String(e?.message||e||'Unknown startup error');console.error('SLINK PDA runtime failed to load:',e),document.getElementById(o)?.remove();const r=document.createElement('button');r.id=o,r.type='button',r.textContent='SLINK could not load. '+t.replace(/([?&](?:key|api_key|token)=)[^&#\\s]+/gi,'$1[redacted]').slice(0,350)+' Torn is unaffected — tap to retry',r.title='Startup files could not finish loading. Check your connection, tap Retry once, then update SLINK if it continues. Saved settings have not been cleared. [SLINK_RUNTIME_LOAD]',r.style.cssText='position:fixed;right:10px;bottom:76px;z-index:2147483647;max-width:calc(100vw - 20px);white-space:normal;overflow-wrap:anywhere;padding:10px 12px;border:2px solid #111;border-radius:8px;background:#b91c1c;color:#fff;font:bold 12px Arial,sans-serif',r.addEventListener('click',()=>{r.remove(),loadRuntime(!0)}),(document.body||document.documentElement).appendChild(r)}function isRecord(value){return Boolean(value&&'object'==typeof value&&!Array.isArray(value))}function hasData(value){return Boolean(isRecord(value)&&Object.keys(value).length)}function savedAt(value){return Math.max(0,Number(isRecord(value)?value._savedAt||value.savedAt:0)||0)}function writeMirror(value){if(isRecord(value))try{globalThis.localStorage?.setItem(s,JSON.stringify({schema:1,savedAt:Date.now(),data:value})),globalThis.localStorage?.setItem(n,JSON.stringify(value))}catch{}}async function readPersistedData(){readPersistedData.failed=!1;let primary=null,primaryFailed=!1;try{const e=nativeStorage();if(e){const value=await e.get(n,null);if(hasData(value))return writeMirror(value),value}const value=await gmRead(n,{});isRecord(value)&&(primary=value)}catch{primaryFailed=!0,readPersistedData.failed=!0}const mirror=function(){try{const e=JSON.parse(globalThis.localStorage?.getItem(s)||'null');return isRecord(e?.data)?e.data:isRecord(e)?e:null}catch{return null}}();let selected=hasData(primary)?primary:mirror||{};return hasData(mirror)&&savedAt(mirror)>savedAt(selected)&&(selected=mirror),hasData(selected)&&writeMirror(selected),selected!==mirror||selected===primary||primaryFailed||await gmWrite(n,selected),selected}async function collectBootstrap(){const[data,e]=await Promise.all([readPersistedData(),gmRead(i,null)]),t=u;let r;try{if(r=await targetJournal(),readPersistedData.failed&&!r.ops.some(e=>'migration'===e.kind))throw Error('Legacy target storage could not be read.')}catch{r={ops:[],error:'Target storage is unavailable. Reload to retry; saved targets have not been changed.'}}let o=null;try{o=JSON.parse(globalThis.localStorage?.getItem(i)||'null')}catch{}const a=[e,o,data?.caches?.ownBattleStats].filter(value=>isRecord(value)&&Number(value.total)>0).sort((e,t)=>Number(t.checkedAt||0)-Number(e.checkedAt||0))[0]||null;return{[n]:data,[i]:a,[t]:r,storageAutoRecovery:nativeStorage.automaticRecovery||null,storageWriteEvent:m,[l]:await gmRead(l,{}),[c]:await gmRead(c,{})}}function nativeStorage(){
  const store=typeof PDA_storage==='object'?PDA_storage:globalThis.PDA_storage;
  if(!store||typeof store.get!=='function'||typeof store.set!=='function')return null;
  const key=value=>{if(typeof value!=='string'||!value)throw Error('SLINK storage requires a non-empty key.');return value};
@@ -41,8 +41,8 @@
  const rowTooBig=error=>/Row too big to fit into CursorWindow|SQLiteBlobTooBigException/i.test([error?.code,error?.message,String(error)].join(' '));
  const recoverableRead=error=>rowTooBig(error)||(castError(error)&&error.code===error.message);
  const canSegment=()=>!!globalThis.navigator?.locks?.request&&!!globalThis.crypto?.subtle?.digest&&typeof store.getMany==='function'&&typeof store.setMany==='function'&&typeof store.list==='function';
- // Recovery is opt-in and stays in the same native namespace. The original
- // settings record is never overwritten, deleted or automatically replaced.
+ // Automatic repair requires a committed native checkpoint with verified parts.
+ // Legacy records without one still require the explicit Access rebuild.
  const selector=n+':manual-recovery:v2',legacySelector=n+':manual-recovery:v1',prefix=n+':manual-recovery:v2:record:',legacyPrefix=n+':manual-recovery:v1:record:';
  async function selectedRecord(){
   if(!nativeStorage.selection)nativeStorage.selection=(async()=>{
@@ -58,15 +58,16 @@
  const segmented=value=>isRecord(value)&&value.$slinkNativeParts===1;
  const lock=run=>{const locks=globalThis.navigator?.locks;if(!locks?.request)throw Error('This WebView cannot coordinate segmented native saving safely. Original records were not replaced. [SLINK_STORAGE_COORDINATION_UNAVAILABLE]');return locks.request('slink-pda-recovered-settings-v2',run);};
  const digest=async text=>[...new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
- function validateParts(header){if(!segmented(header)||!['a','b'].includes(header.bank)||!Number.isSafeInteger(header.count)||header.count<1||header.count>65536||!Number.isSafeInteger(header.length)||header.length<1||!/^[a-f0-9]{64}$/.test(header.sha256||''))throw Error('Recovered settings have an invalid native segment header. Saved records were not cleared.');}
+ const invalidParts=message=>Object.assign(Error(message),{code:'SLINK_NATIVE_SEGMENTS_INVALID'});
+ function validateParts(header){if(!segmented(header)||!['a','b'].includes(header.bank)||!Number.isSafeInteger(header.count)||header.count<1||header.count>65536||!Number.isSafeInteger(header.length)||header.length<1||!/^[a-f0-9]{64}$/.test(header.sha256||''))throw invalidParts('Recovered settings have an invalid native segment header. Saved records were not cleared.');}
  async function readParts(record,header){
   validateParts(header);const cached=nativeStorage.partsCache?.get(record);if(cached?.header===JSON.stringify(header))return JSON.parse(cached.source);let source='';
   for(let offset=0;offset<header.count;offset+=4){
    const keys=Array.from({length:Math.min(4,header.count-offset)},(_,index)=>record+':part:'+header.bank+':'+(offset+index));
    const values=await store.getMany(keys);
-   for(const name of keys){if(typeof values?.[name]!=='string')throw Error('A recovered settings segment is missing. Keep this page open; no settings were cleared.');source+=values[name];}
+   for(const name of keys){if(typeof values?.[name]!=='string')throw invalidParts('A recovered settings segment is missing. Keep this page open; no settings were cleared.');source+=values[name];}
   }
-  if(source.length!==header.length||await digest(source)!==header.sha256)throw Error('Recovered settings segments did not pass verification. Keep this page open; no settings were cleared.');
+  if(source.length!==header.length||await digest(source)!==header.sha256)throw invalidParts('Recovered settings segments did not pass verification. Keep this page open; no settings were cleared.');
   (nativeStorage.partsCache ||= new Map()).set(record,{header:JSON.stringify(header),source});return JSON.parse(source);
  }
  async function writeParts(record,value){
@@ -77,6 +78,12 @@
  }
  async function writePartsInner(record,value){
   const old=await store.get(record,null),bank=segmented(old)&&old.bank==='a'?'b':'a',source=JSON.stringify(value),count=Math.ceil(source.length/48000);
+  if(segmented(old)){
+   const saved=await readParts(record,old);
+   // No-op saves must not rotate banks or destroy the last distinct checkpoint.
+   if(JSON.stringify(saved)===source){await saveCheckpoint(record,old);return;}
+   await saveCheckpoint(record,old);
+  }
   // Fixed A/B slots bound storage growth. Only the inactive bank is changed;
   // its small header is committed after every segment has been read back.
   // 48000 is a transport batch choice, NOT a claimed PDA storage-size limit.
@@ -85,10 +92,66 @@
    const before=await store.getMany(Object.keys(parts)),changed=Object.fromEntries(Object.entries(parts).filter(([key,value])=>before?.[key]!==value));
    if(Object.keys(changed).length){await store.setMany(changed);const saved=await store.getMany(Object.keys(changed));for(const [name,text]of Object.entries(changed))if(saved?.[name]!==text)throw Error('PDA did not retain a new settings segment. The previous saved bank remains selected.');}
   }
-  const header={$slinkNativeParts:1,bank,count,length:source.length,sha256:await digest(source)};
+  const header={$slinkNativeParts:1,bank,count,length:source.length,sha256:await digest(source),generation:(Number.isSafeInteger(old?.generation)&&old.generation>=0?old.generation:0)+1};
   await store.set(record,header);
   const saved=await store.get(record,null);if(JSON.stringify(saved)!==JSON.stringify(header))throw Error('PDA did not confirm the segmented settings save. Keep this page open; original records were not cleared.');
   (nativeStorage.partsCache ||= new Map()).set(record,{header:JSON.stringify(saved),source});
+  await saveCheckpoint(record,saved);
+ }
+ const checkpointKey=(record,bank)=>record+':checkpoint:'+bank;
+ async function saveCheckpoint(record,header){
+  validateParts(header);const name=checkpointKey(record,header.bank),signature=JSON.stringify(header);
+  if(nativeStorage.checkpointCache?.get(name)===signature)return;
+  try{
+   const previous=await store.get(name,null);
+   if(previous?.schema!==1||previous.record!==record||JSON.stringify(previous.header)!==signature){
+    const checkpoint={schema:1,record,header,committedAt:Date.now()};await store.set(name,checkpoint);
+    if(JSON.stringify(await store.get(name,null))!==JSON.stringify(checkpoint))throw Error('Checkpoint was not acknowledged.');
+   }
+   (nativeStorage.checkpointCache ||= new Map()).set(name,signature);
+   nativeStorage.checkpointStatus='verified';
+  }catch{nativeStorage.checkpointStatus='unavailable';}
+ }
+ async function automaticallyRecover(record){
+  if(!canSegment()||typeof store.delete!=='function')return false;
+  return lock(async()=>{
+   nativeStorage.selection=null;if(await selectedRecord()!==record)return true;
+   const names=await store.list(),checkpoints=[];
+   // Never read loadAll or adopt arbitrary mirrors/orphaned recovery roots.
+   for(const bank of ['a','b']){
+    const name=checkpointKey(record,bank);if(!names.includes(name))continue;
+    try{const cp=await store.get(name,null);if(cp?.schema!==1||cp.record!==record||cp.header?.bank!==bank)continue;validateParts(cp.header);checkpoints.push(cp);}catch{}
+   }
+   if(!checkpoints.length)return false;
+   let currentHeader=null;
+   const knownFailure=error=>recoverableRead(error)||error?.code==='SLINK_NATIVE_SEGMENTS_INVALID';
+   // Two independent requested-key reads must confirm the failure. A network,
+   // quota, timeout or readable replacement can never authorize deletion.
+   for(const batch of [true,false]){
+    try{
+     currentHeader=batch?(await store.getMany([record]))?.[record]:await store.get(record,null);
+     if(currentHeader===null||currentHeader===undefined)continue;
+     if(!segmented(currentHeader))return false;
+     nativeStorage.partsCache?.delete(record);await readParts(record,currentHeader);return true;
+    }catch(error){if(!knownFailure(error))return false;}
+   }
+   checkpoints.sort((a,b)=>(Number(b.header.generation)||0)-(Number(a.header.generation)||0)||(Number(b.committedAt)||0)-(Number(a.committedAt)||0));
+   let verified=null,value=null;
+   for(const cp of checkpoints){try{nativeStorage.partsCache?.delete(record);const candidate=await readParts(record,cp.header);if(!isRecord(candidate)||!isRecord(candidate.settings))continue;verified=cp;value=candidate;break;}catch{}}
+   if(!verified)return false;
+   // Keep checkpoint metadata and BOTH banks intact. Only the confirmed broken
+   // header is deleted; the validated native snapshot is never removed.
+   try{
+    if(names.includes(record)){await store.delete(record);if((await store.list()).includes(record))throw Error('Header deletion was not acknowledged.');}
+    await store.set(record,verified.header);
+    const restored=await store.get(record,null);if(JSON.stringify(restored)!==JSON.stringify(verified.header))throw Error('Restored header was not acknowledged.');
+    nativeStorage.partsCache?.delete(record);if(JSON.stringify(await readParts(record,restored))!==JSON.stringify(value))throw Error('Restored settings did not match the checkpoint.');
+   }catch{nativeStorage.partsCache?.delete(record);throw Error('SLINK could not finish automatic storage repair. The verified checkpoint is retained; keep this page open and retry saving or reload once. [SLINK_STORAGE_AUTORECOVERY_FAILED]');}
+   const report={status:'recovered',restoredAt:Date.now(),generation:Number(verified.header.generation)||0,usedPrevious:!currentHeader||verified!==checkpoints[0]||Number(currentHeader?.generation)>Number(verified.header.generation)};
+   nativeStorage.automaticRecovery=report;nativeStorage.segmentFailure=null;
+   if(typeof m==='string')try{globalThis.document?.dispatchEvent(new CustomEvent(m+':repaired',{detail:JSON.stringify(report)}));}catch{}
+   return true;
+  });
  }
  async function recoverSettings(value,confirmed){return lock(async()=>{
   return recoverSettingsLocked(value,confirmed);
@@ -128,6 +191,7 @@
    const broken=[];for(const record of roots){nativeStorage.partsCache?.delete(record);if(await unreadable(record))broken.push(record);}
    if(!broken.includes(selected))throw Error('The selected settings failure changed during the check. Nothing was deleted.');
    const removing=new Set(broken);
+   for(const record of broken)for(const bank of ['a','b'])if(names.includes(checkpointKey(record,bank)))removing.add(checkpointKey(record,bank));
    for(const name of names)for(const record of broken)if(name.startsWith(record+':part:')&&/^[ab]:[0-9]+$/.test(name.slice((record+':part:').length)))removing.add(name);
    for(const name of [selector,legacySelector])if(names.includes(name)){const pointer=await store.get(name,null);if(broken.includes(pointer?.record))removing.add(name);}
    let deleted=0;
@@ -200,14 +264,17 @@
    throw first;
   }
  }
- async function getMany(keys){
+ async function getMany(keys,allowAutomatic=true){
   const selected=keys.includes(n)?await selectedRecord():n;
-  const physical=keys.map(k=>k===n?selected:k),values=await getManyLegacy(physical);
+  const physical=keys.map(k=>k===n?selected:k);let values;
+  try{values=await getManyLegacy(physical);}
+  catch(error){if(!allowAutomatic||keys.length!==1||keys[0]!==n||!await automaticallyRecover(selected))throw error;return getMany(keys,false);}
+  if(allowAutomatic&&keys.length===1&&keys[0]===n&&values[selected]==null&&await automaticallyRecover(selected))return getMany(keys,false);
   const out={};for(let index=0;index<keys.length;index++){
    const value=values[physical[index]];
    if(keys[index]===n&&segmented(value)){
-    try{out[keys[index]]=await lock(async()=>readParts(selected,await store.get(selected,null)));nativeStorage.segmentFailure=null;}
-    catch(error){nativeStorage.segmentFailure=castError(error)&&error.code===error.message?{record:selected,kind:'Null/String',stage:'native-response'}:null;const wrapped=failed('recovered settings segment read',error);wrapped.message+=' [SLINK_NATIVE_READ: record=recovered settings; batch='+(castError(error)?'Null/String':'other failure')+'; single=segment read; all=not attempted]';throw wrapped;}
+    try{out[keys[index]]=await lock(async()=>{const header=await store.get(selected,null),value=await readParts(selected,header);await saveCheckpoint(selected,header);return value;});nativeStorage.segmentFailure=null;}
+    catch(error){if(allowAutomatic&&keys.length===1&&keys[0]===n&&await automaticallyRecover(selected))return getMany(keys,false);nativeStorage.segmentFailure=castError(error)&&error.code===error.message?{record:selected,kind:'Null/String',stage:'native-response'}:null;const wrapped=failed('recovered settings segment read',error);wrapped.message+=' [SLINK_NATIVE_READ: record=recovered settings; batch='+(castError(error)?'Null/String':'other failure')+'; single=segment read; all=not attempted]';throw wrapped;}
    }else out[keys[index]]=value;
   }return out;
  }
@@ -259,7 +326,7 @@
   getMany,setMany,recoverSettings,resetSettings,
   async diagnose(){
    const active=await selectedRecord().catch(()=>n);
-   const report={nativeAvailable:true,manualRecoveryVersion:3,manualResetVersion:2,coordinationAvailable:canSegment(),selectedRecord:active===n?'original':'recovered',reads:{}};
+   const report={nativeAvailable:true,manualRecoveryVersion:3,manualResetVersion:2,automaticRecoveryVersion:1,automaticRecovery:nativeStorage.automaticRecovery||null,checkpointStatus:nativeStorage.checkpointStatus||'not-created',coordinationAvailable:canSegment(),selectedRecord:active===n?'original':'recovered',reads:{}};
    const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
    for(const [name,run,summarize]of [
     ['settingsBatch',async()=>({[n]:(await store.getMany([active]))?.[active]}),value=>({resultType:type(value),recordPresent:value?.[n]!=null,segmented:segmented(value?.[n]),...(segmented(value?.[n])?{segmentCount:value[n].count,serializedCharacters:value[n].length}:{})})],
@@ -366,7 +433,7 @@ function runStorageJob(run){
    clearTimeout(timer);nativeOutstanding=false;
    const readContext=String(error?.message||error).match(/\[SLINK_NATIVE_(?:READ|RECOVERY):[^\]]*\]/g);
    if(readContext)storageReadFailure=readContext.join(' ');
-   if(expired||/type ['"]Null['"] is not a subtype of type ['"]String['"]|QuotaExceeded|quota exceeded/i.test(String(error?.message||error)))storagePaused=true;
+   if(expired||/type ['"]Null['"] is not a subtype of type ['"]String['"]|QuotaExceeded|quota exceeded|Row too big|SLINK_STORAGE_ROW_TOO_LARGE|SLINK_STORAGE_AUTORECOVERY_FAILED/i.test(String(error?.message||error)))storagePaused=true;
    reject(error);
   });
  });

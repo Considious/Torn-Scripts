@@ -27,7 +27,7 @@ assert.deepEqual(plain(await healthy.adapter().get('data',null)),current,'Normal
 assert(healthy.calls.filter(([method])=>method==='set').every(([,key])=>key!=='data'),'No normal save writes a giant original row');
 for(let i=0;i<6;i++)await healthy.adapter().set('data',{...current,settings:{...current.settings,theme:'theme-'+i}});
 const header=plain(healthy.records.get(selected)),previous=plain(await healthy.adapter().get('data',null));
-assert(healthy.records.size<=2*header.count+6,'Normal saves reuse fixed banks, not new recovery roots');
+assert(healthy.records.size<=2*header.count+8,'Normal saves reuse fixed banks and two tiny checkpoints, not new recovery roots');
 healthy.dropPart=true;await assert.rejects(a.set('data',{...current,settings:{theme:'dropped'}}),/did not retain/);
 assert.deepEqual(healthy.records.get(selected),header);assert.deepEqual(plain(await healthy.adapter().get('data',null)),previous);
 healthy.quota=true;await assert.rejects(a.set('data',{...current,settings:{theme:'quota'}}),/SLINK_STORAGE_FULL/);assert.deepEqual(healthy.records.get(selected),header);
@@ -50,7 +50,7 @@ const concurrent=fixture(),left=concurrent.adapter(),right=concurrent.adapter();
 assert.equal(results.filter(r=>r.status==='rejected').length,1,'A stale page must retry, not silently overwrite the newly selected record');
 assert.match(results.find(r=>r.status==='rejected').reason.message,/SLINK_STORAGE_SELECTION_CHANGED/);
 const latest=await right.get('data',null);assert.equal(latest.settings.retained,true);await right.set('data',{...latest,settings:{...latest.settings,theme:'right'}});
-assert.equal([...concurrent.records.keys()].filter(k=>/:record:/.test(k)&&!/:part:/.test(k)).length,1,'Concurrent migration selects one verified record');
+assert.equal([...concurrent.records.keys()].filter(k=>/:record:/.test(k)&&!/:part:|:checkpoint:/.test(k)).length,1,'Concurrent migration selects one verified record');
 assert.equal((await concurrent.adapter().get('data',null)).settings.theme,'right');
 assert.equal((await concurrent.adapter().get('data',null)).settings.retained,true);
 console.log('CursorWindow: normal segmented saving, Unicode roundtrip/reload, fixed-bank reuse, failed parts/header/quota safety, exact oversize diagnostics, confirmed delete-before-rebuild, deletion/rebuild failure safeguards, unrelated-record preservation, unsupported coordination and concurrent migration passed. Synthetic reader bounds are not a claimed Android size limit.');

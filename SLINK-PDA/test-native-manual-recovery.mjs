@@ -59,7 +59,7 @@ for(let index=0;index<12;index++){
  const loaded=await growth.freshAdapter().get('data',null);assert.deepEqual(JSON.parse(JSON.stringify(loaded)),next,'Growing caches survive fresh reads after every save');
 }
 const previous=JSON.parse(JSON.stringify(await growth.freshAdapter().get('data',null))),header=structuredClone(growth.records.get(selected));
-assert(growth.records.size<=2*header.count+6,'Repeated saves reuse two fixed banks rather than leak a generation per save');
+assert(growth.records.size<=2*header.count+8,'Repeated saves reuse two fixed banks and two checkpoint headers rather than leak a generation per save');
 growth.dropNextPart=true;await assert.rejects(resumed.set('data',{...previous,settings:{theme:'unacknowledged'}}),/did not retain/);
 assert.deepEqual(growth.records.get(selected),header,'Interrupted segment write must not switch the active header');
 assert.deepEqual(JSON.parse(JSON.stringify(await growth.freshAdapter().get('data',null))),previous,'Interrupted save retains last confirmed settings');

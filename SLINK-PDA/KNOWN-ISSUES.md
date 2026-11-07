@@ -2,6 +2,24 @@
 
 This document records recurring problems, the evidence we have, and recovery steps that have actually helped. A workaround is not proof that every similar error has the same cause. Do not clear all saved data as a general troubleshooting step.
 
+## Automatic recovery of split native settings — 0.4.188
+
+The installed launcher now records two small verified checkpoint headers for
+the existing split settings banks. A confirmed oversized-row or native Null/String
+failure can be repaired automatically when one of these checkpoints still has a
+complete, checksum-verified native saved copy. Only the broken selected header
+is replaced; data parts, targets, other saved records and browser storage remain.
+
+If the latest bank is damaged, the previous verified version can be restored.
+Access displays a repair notice asking the user to check recent changes. Quota,
+network, timeout and unrelated failures do not authorize automatic deletion.
+
+Already-unreadable legacy records without a checkpoint still need the manual
+rebuild below once; ordinary browser mirrors and defaults are not proof of a
+complete native backup. Install 0.4.188 and reload Torn to update this launcher
+logic. Healthy split-record reads/saves establish checkpoint protection without
+the user toggling anything. See [Automatic storage recovery](AUTOMATIC-STORAGE-RECOVERY.md).
+
 ## PDA cannot save settings: native Null/String read failure
 
 Last updated: November 2, 2026.
@@ -75,3 +93,4 @@ The failure occurs while reading native records, before SLINK can complete the u
 ### If it returns
 
 Record the installed SLINK script version, PDA version, device/OS, exact error, whether delete-and-rebuild completed successfully, and how long settings remained saved. Use **Copy storage report** rather than sharing API keys or raw saved records. Do not mark the issue fully resolved for all users until further affected-device results support that conclusion.
+
