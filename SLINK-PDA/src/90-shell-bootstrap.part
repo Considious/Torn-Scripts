@@ -1920,6 +1920,16 @@ const result=await access().central(path,force);if(path==='token')endpoint=globa
 return Object.freeze({central,view:Object.freeze({async get(){return state.factionNodeView||{};},async save(record){if(record.visible===false&&Object.keys(record).length===1){state.factionNodeView={...state.factionNodeView,visible:false};await writeState();return state.factionNodeView;}state.factionNodeView={visible:record.visible===true,view:['home','chat','admin'].includes(record.view)?record.view:'home',userId:Number(record.userId)||0,factionId:Number(record.factionId)||0,roomId:typeof record.roomId==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(record.roomId)?record.roomId:null,windows:(Array.isArray(record.windows)?record.windows:[]).filter(item=>item&&typeof item.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(item.id)).slice(0,12).map(item=>({id:item.id,minimized:item.minimized===true}))};await writeState();return state.factionNodeView;}}),request(url,options){const parsed=new URL(url);if(!endpoint||parsed.origin!==endpoint||!parsed.pathname.startsWith('/api/'))throw new Error('Faction chat request does not match the verified node.');return requestJson(url,options);},theme(){const style=global.getComputedStyle(host),out={};for(let i=0;i<style.length;i++){const key=style[i];if(key.startsWith('--slink-'))out[key]=style.getPropertyValue(key).trim();}out['--slink-panel']=out['--slink-panel-bg']||out['--slink-bg']||style.getPropertyValue('--s-panel').trim();return out;}});
 })();
 global.SLINK_PDA_PLUGIN_API = Object.freeze({
+inlineStatus:()=>{
+  const session=validSession('permission');
+  if(!session?.userId)return null;
+  const a=dataState.caches.alerts,c=dataState.caches.company?.snapshot,w=dataState.caches.war;
+  const user=Number(a?.body?.profile?.id??a?.body?.profile?.player_id??a?.body?.player_id);
+  return {owner:session.userId,expiresAt:session.expiresAt,canVirus:hasScope('slink.adhd.alerts'),canCompany:hasScope('slink.qol.company'),canWar:hasScope('slink.war'),
+    alerts:hasScope('slink.adhd.alerts')&&user===Number(session.userId)?a:null,
+    company:hasScope('slink.qol.company')&&c?.userId===Number(session.userId)?c:null,
+    war:hasScope('slink.war')&&String(w?.activeWar?.warId).startsWith('rw_'+Number(session.factionId)+'_')?{...w.activeWar,detectedAt:w.at}:null};
+},
 accountId:()=>validSession('permission')?.userId??validSession('permission')?.user_id??null,
 clientVersion:global.__SLINK_PDA_BOOTSTRAP__?.clientVersion||'',
 releaseInfo:async()=>{const c=pdaPluginCache('releaseInfo',{});if(c.at&&Date.now()-c.at<(c.value?.error?300000:21600000))return c.value;let value;try{value=await requestJson(URLS.permission+'/api/releases');if(value?.schema!==1)throw Error('Release information unavailable.');}catch{value={schema:1,error:'Update information is temporarily unavailable.'};}c.value=value;c.at=Date.now();return value;},

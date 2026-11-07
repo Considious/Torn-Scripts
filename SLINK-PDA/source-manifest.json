@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-c34636e46f9625e680a533ed57f79d6634bfb5ddadb3873c69263f5e3ded45b8",
+  "revision": "sha256-1be4a071eb24fb35741580f1036dfe3470546b0fbadab6d8e08229359ed4311f",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -78,8 +78,11 @@
     },
     {
       "source": "src/addons/bank-preview.addon.js"
+    },
+    {
+      "source": "src/addons/inline-status.addon.js"
     }
   ],
   "channel": "feature/qol-batch-2",
-  "clientVersion": "0.4.192"
+  "clientVersion": "0.4.193"
 }
