@@ -42,6 +42,7 @@
     for(const [value,text] of modes){const o=make('option',text);o.value=value;mode.append(o);}
     mode.value=modes.some(([v])=>v===prefs.mode)?prefs.mode:'ranked-all';
     let members=Array.isArray(prefs.members)?prefs.members:[], protectedIds=new Set((Array.isArray(prefs.protectedIds)?prefs.protectedIds:[]).map(String)),working=false,chosen=null,frame=0,marked=new Set(),choices=[];
+    const submitted=new WeakMap();
     const manager=make('details'),memberSearch=input('Search member, rank, or ID'),memberList=make('div');
     memberList.style.cssText='max-height:13em;overflow:auto';
     const summary=make('summary');
@@ -79,13 +80,14 @@
     memberSearch.oninput=paintMembers;
     const recall=btn('Recall next',async event=>{
       if(!event.isTrusted||working||!focused()||tab()!==root)return;
-      working=true;
+      working=true;recall.disabled=true;
+      let opened=false;
       try{
         const current=await read();
         if(current?.owner!==prefs.owner||!focused()||tab()!==root||!box.open||current.mode!==mode.value)return;
         const currentProtected=new Set((Array.isArray(current.protectedIds)?current.protectedIds:[]).map(String));
         const candidate=choices.find(({row,id})=>row.isConnected&&root.contains(row)&&row.getClientRects().length&&
-          eligibility(row,current.mode,currentProtected)&&!currentProtected.has(id));
+          eligibility(row,current.mode,currentProtected)===id&&submitted.get(row)!==id);
         if(!candidate){status.textContent='No eligible visible items. Check the filters or load the faction roster.';return;}
         if(Array.from(root.querySelectorAll('.retrieve-cont .retrieve-yes')).some(n=>n.getClientRects().length)){
           status.textContent='Finish or cancel the open Torn recall first.';return;
@@ -93,14 +95,31 @@
         const control=candidate.row.querySelector(retrieveSelector);
         if(!control?.getClientRects().length||control.disabled||control.getAttribute('aria-disabled')==='true')return;
         chosen?.removeAttribute(pick);chosen=candidate.row;chosen.setAttribute(pick,'');
-        control.click();
-        chosen.scrollIntoView({block:'nearest'});
-        status.textContent='Review and confirm the recall in Torn.';
-      }catch(error){status.textContent=error.message;}
-      finally{working=false;}
+        opened=true;control.click();
+        candidate.row.scrollIntoView({block:'nearest'});
+        for(let attempt=0;attempt<20;attempt++){
+          await new Promise(resolve=>setTimeout(resolve,50));
+          if(!focused()||tab()!==root||!box.isConnected||!box.open||!candidate.row.isConnected||!root.contains(candidate.row)||borrowerId(candidate.row)!==candidate.id)
+            throw Error('The page or loan changed before confirmation.');
+          const confirm=candidate.row.querySelector('.retrieve-cont .retrieve-yes');
+          if(!confirm?.getClientRects().length||confirm.disabled||confirm.getAttribute('aria-disabled')==='true')continue;
+          const latest=await read();
+          if(latest?.owner!==prefs.owner||latest.mode!==current.mode||(latest.protectedIds||[]).map(String).includes(candidate.id)||
+            !focused()||tab()!==root||!box.isConnected||!box.open||!root.contains(candidate.row)||borrowerId(candidate.row)!==candidate.id||
+            !candidate.row.contains(confirm)||!confirm.getClientRects().length||confirm.disabled||confirm.getAttribute('aria-disabled')==='true')
+            throw Error('Access, filters, or the loan changed before confirmation.');
+          submitted.set(candidate.row,candidate.id);
+          confirm.click();
+          status.textContent='One recall submitted to Torn.';
+          return;
+        }
+        throw Error('Torn did not show the recall confirmation.');
+      }catch(error){status.textContent=error.message+(opened?' SLINK did not confirm the recall.':'');}
+      finally{working=false;recall.disabled=!choices.some(({row,id})=>row.isConnected&&submitted.get(row)!==id);schedule();}
     });
+    const borrowerId=row=>row.querySelector('.loaned a[href*="XID="]')?.getAttribute('href')?.match(/[?&]XID=(\d+)/i)?.[1];
     function eligibility(row,selection,excluded){
-      const link=row.querySelector('.loaned a[href*="XID="]'),id=link?.getAttribute('href')?.match(/[?&]XID=(\d+)/i)?.[1];
+      const id=borrowerId(row);
       const ranked=row.querySelector('.img-wrap img.torn-item:is(.glow-yellow,.glow-orange,.glow-red)');
       if(!id||excluded.has(id)||!ranked||!row.querySelector(retrieveSelector))return null;
       const prof=!!row.querySelector('.bonus-attachment-experience');
@@ -120,7 +139,7 @@
         if((!match||(only.checked&&!id))&&row!==chosen){row.setAttribute(marker,'');next.add(row);}
       }
       for(const row of marked)if(!next.has(row))row.removeAttribute(marker);
-      marked=next;recall.disabled=!choices.length;
+      marked=next;recall.disabled=working||!choices.some(({row,id})=>submitted.get(row)!==id);
     }
     function schedule(){if(box.open&&!frame&&focused())frame=requestAnimationFrame(update);}
     const observer=new MutationObserver(schedule);
