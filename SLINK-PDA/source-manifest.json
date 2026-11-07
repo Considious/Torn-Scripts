@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-760f42a123cee601064bab16b583c1aaa51baec9ae2cdc2a7164c9417fbf7f29",
+  "revision": "sha256-c34636e46f9625e680a533ed57f79d6634bfb5ddadb3873c69263f5e3ded45b8",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -75,8 +75,11 @@
     },
     {
       "source": "src/addons/stocks-preview.addon.js"
+    },
+    {
+      "source": "src/addons/bank-preview.addon.js"
     }
   ],
   "channel": "feature/qol-batch-2",
-  "clientVersion": "0.4.191"
+  "clientVersion": "0.4.192"
 }

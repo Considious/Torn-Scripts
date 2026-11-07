@@ -390,6 +390,16 @@ error = api.errorMessage(caught);
 throw caught;
 } finally { busy = false; render(); }
 }
+global.SLINK_PDA_BANK_PREVIEW=Object.freeze({
+  compare:bankComparison,
+  load:async()=>{
+    await api.ensurePermission(false);
+    if(!api.hasScope(SCOPE))throw Error('Money & Property access is required.');
+    if(busy)throw Error('Money & Property is already refreshing. Try again in a moment.');
+    await refresh(true);
+    return cache().bankPlanner;
+  }
+});
 function alerts() {
 const status = cache().status;
 return status ? buildAlerts(status) : [];
