@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-9117179ccd0295f9bf9162f0bd30d8b4918a8f0e78c518faba286fefe2e6565b",
+  "revision": "sha256-a10c5aba41da348a226cb6afb543c0c9bf3fbd6800cdaa577aa24426e2522235",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -45,6 +45,9 @@
     },
     {
       "source": "src/addons/events.addon.js"
+    },
+    {
+      "source": "src/addons/oc-participants.addon.js"
     },
     {
       "source": "src/addons/faction-officers.addon.js"
@@ -99,5 +102,5 @@
     }
   ],
   "channel": "feature/qol-batch-4",
-  "clientVersion": "0.4.200"
+  "clientVersion": "0.4.201"
 }
