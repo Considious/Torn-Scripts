@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-7475bc9f23d6972da2c1a8df498d5a43d5a9ba83d8aa617728122932cd830d9c",
+  "revision": "sha256-c643d32b893ee873bb347374fa0ea693a22afd964d128ce3d3ea3cacd2df306d",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -84,8 +84,11 @@
     },
     {
       "source": "src/addons/rehab-preview.addon.js"
+    },
+    {
+      "source": "src/addons/city-items.addon.js"
     }
   ],
-  "channel": "feature/qol-batch-2",
-  "clientVersion": "0.4.194"
+  "channel": "feature/qol-batch-3",
+  "clientVersion": "0.4.195"
 }
