@@ -1,14 +1,18 @@
 (function(){
   'use strict';
-  const routes={friends:'friends',enemies:'enemies',targets:'targets'};
+  const routes={friends:'friends',enemies:'enemies',targets:'targets',hospital:'hospital patients',jail:'jail inmates',userlist:'users'};
   const route=()=>{
     if(location.pathname==='/factions.php')return 'faction-members';
+    if(location.pathname==='/hospitalview.php')return 'hospital';
+    if(location.pathname==='/jailview.php')return 'jail';
     const q=new URLSearchParams(location.search),type=q.get('type');
-    return location.pathname==='/page.php'&&q.get('sid')==='list'&&Object.hasOwn(routes,type)?type:'';
+    if(location.pathname!=='/page.php')return '';
+    if(q.get('sid')?.toLowerCase()==='userlist')return 'userlist';
+    return q.get('sid')==='list'&&['friends','enemies','targets'].includes(type)?type:'';
   };
   if(!route())return;
-  const hostSelector=':is(.faction-info-wrap .members-list,.tableWrapper)';
-  const rosterBody=':is(.table-body,ul)';
+  const hostSelector=':is(.faction-info-wrap .members-list,.tableWrapper,.userlist-wrapper)';
+  const rosterBody=':is(.table-body,ul,.users-list,.user-info-list-wrap)';
   const normalize=v=>String(v??'').trim().toLowerCase().replace(/\s+/g,' ');
   const make=(tag,label)=>{const n=document.createElement(tag);if(label)n.textContent=label;return n;};
   const button=(label,fn)=>{const n=make('button',label);n.type='button';n.onclick=fn;return n;};
@@ -28,18 +32,26 @@
   const sheet=make('style');
   sheet.textContent=`${hostSelector} [${marker}="hide"]{display:none!important}${hostSelector} [${marker}="mask"]{visibility:hidden!important;pointer-events:none!important}${hostSelector} ${rosterBody}[${sortMarker}]{display:flex!important;flex-direction:column;align-items:stretch}${hostSelector} ${rosterBody}[${sortMarker}] > li{order:var(--slink-roster-order,0)}`;
   function rowData(row){
-    const level=numeric(row.querySelector('.lvl,.level,[class*="level__"],[data-label="level"]')?.textContent.trim());
+    const level=numeric(row.querySelector('.level .value,.lvl,.level,[class*="level__"],[data-label="level"]')?.textContent.trim().match(/^(?:level\s*)?(\d+)$/i)?.[1]);
     const state=normalize(row.querySelector('.status .ellipsis,.status')?.textContent);
     const activity=row.querySelector('[class*="userOnlineStatusIcon___"],[data-activity],[class*="userStatus"],.online,.idle,.offline,[title="Online" i],[title="Idle" i],[title="Offline" i],[aria-label="Online" i],[aria-label="Idle" i],[aria-label="Offline" i]');
     const desc=[activity?.dataset.activity,activity?.getAttribute('alt'),activity?.title,activity?.closest('[aria-label]')?.getAttribute('aria-label'),activity?.getAttribute('class'),row.querySelector('#iconTray li')?.title].join(' ');
     const icons=Array.from(row.querySelectorAll('.icons [title],.icons [aria-label],.user-icons [title],[data-icon][title]'),n=>normalize(n.title||n.getAttribute('aria-label')));
     const iconIds=new Set(Array.from(row.querySelectorAll('li[id^="icon"]'),n=>Number(/^icon(\d+)/.exec(n.id)?.[1])));
-    return {level,activity:activities.find(v=>new RegExp('(?:^|[^a-z])'+v+'(?:[^a-z]|$)','i').test(desc))||'Unknown',
+    const time=row.querySelector('.info-wrap .time'),last=time?.lastChild?.textContent||'';
+    const duration=(/\d\s*(?:h|m|s)\b/i.test(last)?last:time?.textContent)||'';
+    const units=[...duration.matchAll(/(\d+)\s*(d(?:ays?)?|h(?:ours?)?|m(?:in(?:utes?)?)?|s(?:ec(?:onds?)?)?)(?![a-z])/gi)];
+    const minutes=units.length?units.reduce((sum,m)=>sum+Number(m[1])*({d:1440,h:60,m:1,s:1/60}[m[2][0].toLowerCase()]),0):null;
+    const revive=row.querySelector('.revive');
+    return {level,minutes,revive:revive?(revive.matches('.reviveNotAvailable,[disabled],[aria-disabled="true"]')?'no':'yes'):'',
+      activity:activities.find(v=>new RegExp('(?:^|[^a-z])'+v+'(?:[^a-z]|$)','i').test(desc))||'Unknown',
       state:/^okay\b/.test(state)?'Okay':/^hospital\b/.test(state)?'Hospital':/^jail\b/.test(state)?'Jail':/^travel/.test(state)?'Traveling':/^(abroad|in (?!hospital\b|jail\b))/.test(state)?'Abroad':'Unknown',
       flags:new Set(specials.filter((_,i)=>flagIds[i].some(id=>iconIds.has(id))||icons.some(icon=>[/fed(?:ded|eral jail)/,/fallen/,/new player/,/company/,/donator|subscriber/,/recruit/][i].test(icon))))};
   }
   function mount(host,kind){
     const faction=kind==='faction-members',noun=faction?'members':routes[kind];
+    const timed=kind==='hospital'||kind==='jail',directory=timed||kind==='userlist';
+    const listMetrics={...metrics,...(timed?{minutes:'Time left (min)'}:{})};
     const key='slink-native-list-filter:'+kind+':v1';
     const read=()=>{try{return JSON.parse(localStorage.getItem(key))||{};}catch{return {};}};
     const saved=read();
@@ -60,8 +72,9 @@
     };
     const activity=choose('activity','Activity',[['','Any activity'],...[...activities,'Unknown'].map(v=>[v,v])]);
     const state=choose('state','Status',[['','Any status'],...states.map(v=>[v,v])]);
-    const sort=choose('sort','Sort '+noun,[['','Torn order'],...Object.entries(metrics).flatMap(([id,v])=>[[id+'-desc',v+' ↓'],[id+'-asc',v+' ↑']])]);
-    const ranges=Object.entries(metrics).map(([id,label])=>{
+    const revive=choose('revive','Revive availability',[['','Any revive status'],['yes','Revive available'],['no','Revive unavailable']]);
+    const sort=choose('sort','Sort '+noun,[['','Torn order'],...Object.entries(listMetrics).flatMap(([id,v])=>[[id+'-desc',v+' ↓'],[id+'-asc',v+' ↑']])]);
+    const ranges=Object.entries(listMetrics).map(([id,label])=>{
       const group=make('span',label+' ');
       for(const bound of ['min','max']){
         const field=make('input');field.type='number';field.min='0';field.step='any';field.placeholder=bound;field.style.width='6em';field.setAttribute('aria-label',label+' '+bound);
@@ -82,7 +95,7 @@
     search.addEventListener('input',schedule);
     role.addEventListener('change',()=>{selected=role.value;schedule();});
     if(!faction)selected='';
-    controls.append(search,...(faction?[role]:[]),activity,...(faction?[state]:[]),sort,...ranges,...(faction?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
+    controls.append(search,...(faction?[role]:[]),activity,...(faction?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
     function clearSort(){
       sortedBody?.removeAttribute(sortMarker);sortedBody=null;
@@ -91,8 +104,8 @@
     }
     function render(){
       frame=0;if(!active)return;
-      const body=host.querySelector(faction?'.table-body':':scope > ul');
-      const rows=Array.from(body?.children||[]).filter(row=>row.matches('li')&&row.querySelector('a[href*="profiles.php?XID="]'));
+      const body=host.querySelector(faction?'.table-body':timed?'.users-list':directory?'.user-info-list-wrap':':scope > ul');
+      const rows=Array.from(body?.children||[]).filter(row=>row.matches('li')&&!row.querySelector('.ajax-preloader,.ajax-placeholder')&&row.querySelector('a[href*="profiles.php?XID="]'));
       const entries=rows.map(row=>{
         const a=row.querySelector('a[href*="profiles.php?XID="]');
         const id=new URL(a.href,location.href).searchParams.get('XID')||'';
@@ -101,7 +114,7 @@
         return {row,id,name,position,...rowData(row),ff:numeric(intel[id]?.ff),stats:numeric(intel[id]?.stats)};
       });
       const [metric,dir]=sort.value.split('-');
-      const range=Object.fromEntries(Object.keys(metrics).map(id=>[id,['min','max'].map(bound=>numeric(fields[id+bound].value))]));
+      const range=Object.fromEntries(Object.keys(listMetrics).map(id=>[id,['min','max'].map(bound=>numeric(fields[id+bound].value))]));
       if(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)){
         const ids=[...new Set(entries.map(e=>e.id).filter(id=>/^[1-9]\d{0,9}$/.test(id)))].slice(0,200), signature=ids.slice().sort().join(',');
         if(signature!==requested){
@@ -122,8 +135,9 @@
       const matches=[];
       for(const e of entries){
         const match=(!query||(/^\d+$/.test(idQuery)?e.id===idQuery:normalize(e.name).includes(query)))&&(!selected||selected===e.position)
-          &&(!activity.value||e.activity===activity.value)&&(!faction||((!state.value||e.state===state.value)
-          &&specials.every(flag=>!fields[flag].value||(fields[flag].value==='yes')===e.flags.has(flag))))
+          &&(!activity.value||e.activity===activity.value)&&(!faction||!state.value||e.state===state.value)
+          &&(kind!=='hospital'||!revive.value||e.revive===revive.value)
+          &&(!(faction||kind==='userlist')||specials.every(flag=>!fields[flag].value||(fields[flag].value==='yes')===e.flags.has(flag)))
           &&Object.entries(range).every(([k,[min,max]])=>[min,max].every(v=>v===null)||(e[k]!==null&&(min===null||e[k]>=min)&&(max===null||e[k]<=max)));
         if(match){matches.push(e);e.row.removeAttribute(marker);}
         else{e.row.setAttribute(marker,virtual||e.row.matches('[class*="virtual"],[style*="position: absolute"]')?'mask':'hide');next.add(e.row);}
@@ -152,7 +166,7 @@
       toggle.textContent=active?(faction?'Hide member filter':'Hide '+noun+' filter'):'Filter '+noun;toggle.setAttribute('aria-expanded',String(active));
       if(!active){try{localStorage.setItem(key,JSON.stringify({...read(),active:false}));}catch{}return;}
       if(!sheet.isConnected)document.head.append(sheet);
-      listObserver=new MutationObserver(schedule);listObserver.observe(host,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','class','title','alt','aria-label','data-activity']});
+      listObserver=new MutationObserver(schedule);listObserver.observe(host,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','class','title','alt','aria-label','data-activity','disabled','aria-disabled']});
       schedule();
     }
     configure();
@@ -161,7 +175,7 @@
   function sync(){
     queued=false;
     if(document.hidden)return;
-    const kind=route(),host=kind?document.querySelector(kind==='faction-members'?'.faction-info-wrap .members-list':'.tableWrapper:has(> ul)'):null;
+    const kind=route(),host=kind?document.querySelector(kind==='faction-members'?'.faction-info-wrap .members-list':kind==='userlist'?'.userlist-wrapper:has(.user-info-list-wrap)':kind==='hospital'||kind==='jail'?'.userlist-wrapper:has(.users-list)':'.tableWrapper:has(> ul)'):null;
     if(mounted?.host===host&&mounted.kind===kind&&mounted.box.isConnected)return;
     mounted?.dispose();mounted=host?mount(host,kind):null;
   }
