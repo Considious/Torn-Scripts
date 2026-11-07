@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-ddcdca41e42a0c56fa20f43af6525c47804c7ef78ca8a05edd96602ae2ade173",
+  "revision": "sha256-ff0e44233e37c98e52db6445c6990423a04a47e77361de51c94472ef53cd5272",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -105,8 +105,14 @@
     },
     {
       "source": "src/addons/qol-native-extras.addon.js"
+    },
+    {
+      "source": "src/addons/weapon-merits-model.js"
+    },
+    {
+      "source": "src/addons/weapon-merits.addon.js"
     }
   ],
-  "channel": "feature/qol-batch-4",
-  "clientVersion": "0.4.207"
+  "channel": "feature/qol-batch-5",
+  "clientVersion": "0.4.208"
 }
