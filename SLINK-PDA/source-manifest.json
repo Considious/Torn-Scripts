@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-c643d32b893ee873bb347374fa0ea693a22afd964d128ce3d3ea3cacd2df306d",
+  "revision": "sha256-2bbb3f3f6daaf569f3e34d39e4d57f6f27e182252c17495ab6f3a8ad55983676",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -87,8 +87,11 @@
     },
     {
       "source": "src/addons/city-items.addon.js"
+    },
+    {
+      "source": "src/addons/mission-preview.addon.js"
     }
   ],
   "channel": "feature/qol-batch-3",
-  "clientVersion": "0.4.195"
+  "clientVersion": "0.4.196"
 }
