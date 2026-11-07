@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-e1fc666f91a2dd403a2a6defcf34048e428de2dfdf318cff6e05ac66b664cee0",
+  "revision": "sha256-3c0769c5f60dc1085c310786b68d6d50ce364cdd229a813890cf41d4d0b4d9bc",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -120,8 +120,11 @@
     },
     {
       "source": "src/addons/casino-guide.addon.js"
+    },
+    {
+      "source": "src/addons/lease-compare.addon.js"
     }
   ],
   "channel": "feature/qol-batch-5",
-  "clientVersion": "0.4.211"
+  "clientVersion": "0.4.212"
 }
