@@ -40,7 +40,7 @@ if (process.argv.includes('--write')) {
     throw new Error('PDA source manifest digest is stale. Run node build.mjs --write after editing runtime/add-on source.');
   }
 }
-if (!loaderSource.includes('JSON.stringify({...await collectBootstrap(),sourceRevision:e.revision})')) {
+if (!loaderSource.includes('JSON.stringify({...await collectBootstrap(),sourceRevision:e.revision,clientVersion:e.clientVersion})')) {
   throw new Error('PDA loader must pass the manifest content revision into the runtime bootstrap.');
 }
 new Script(loaderSource, { filename:loaderPath });
@@ -61,7 +61,7 @@ if (!loaderSource.includes('slink-pda-dashboard:runtime-cache:v1')) {
 if (loaderSource.includes('SLINK_PDA_Runtime.js?v=')) {
   throw new Error('PDA loader still depends on the generated runtime.');
 }
-if (!loaderSource.includes('raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/')) {
+if (!loaderSource.includes('raw.githubusercontent.com/Considious/Torn-Scripts/' + (manifest.channel || 'main') + '/SLINK-PDA/')) {
   throw new Error('PDA loader must follow the stable main branch instead of a pinned historical commit.');
 }
 if (/Torn-Scripts\/[a-f0-9]{40}\/SLINK-PDA\//.test(loaderSource)) {

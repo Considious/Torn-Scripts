@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-7f0d438e45f4e4e422562344da27b7e2a1f056af1fbec0dd00907518ead0e737",
+  "revision": "sha256-8ad2bcf4ed335ce0aa4d6d9d768438df9b8d6f1df8cc723e08959177d0ab8fe8",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -60,6 +60,17 @@
     },
     {
       "source": "src/addons/faction-rooms.addon.js"
+    },
+    {
+      "source": "src/addons/qol-core.js"
+    },
+    {
+      "source": "src/addons/qol-ui.js"
+    },
+    {
+      "source": "src/addons/page-tools.addon.js"
     }
-  ]
+  ],
+  "channel": "feature/qol-batch-1",
+  "clientVersion": "0.4.190"
 }
