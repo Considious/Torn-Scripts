@@ -100,6 +100,7 @@
     role.addEventListener('change',()=>{selected=role.value;schedule();});
     if(!faction)selected='';
     controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
+    if(faction)globalThis.SLINK_FACTION_CSV?.attach(box,{name:'Export visible members',file:'slink-faction-members.csv',produce:()=>host.isConnected?globalThis.SLINK_FACTION_CSV.native(host,false):''});
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
     function clearSort(){
       sortedBody?.removeAttribute(sortMarker);sortedBody=null;

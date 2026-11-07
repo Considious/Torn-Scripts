@@ -47,6 +47,7 @@
     });
     fields.append(button('Reset',()=>{for(const {type,n} of inputs){if(type==='check')n.checked=false;else n.value='';}apply();}),status);
     box.append(make('summary',spec.title),fields);root.before(box);
+    if(kind==='war')g.SLINK_FACTION_CSV?.attach(box,{name:'Export visible war roster',file:'slink-ranked-war-roster.csv',produce:()=>root.isConnected?g.SLINK_FACTION_CSV.native(root,true):''});
     if(!sheet.isConnected)document.head.append(sheet);
     let marked=new Set();
     const observer=new MutationObserver(schedule);

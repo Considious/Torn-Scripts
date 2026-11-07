@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-3c0769c5f60dc1085c310786b68d6d50ce364cdd229a813890cf41d4d0b4d9bc",
+  "revision": "sha256-b47955274c91a84186773c899482ffb30729e8f729fc3c402da4bd38b54cbf7a",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -48,6 +48,9 @@
     },
     {
       "source": "src/addons/oc-participants.addon.js"
+    },
+    {
+      "source": "src/addons/faction-csv.addon.js"
     },
     {
       "source": "src/addons/faction-officers.addon.js"
@@ -125,6 +128,6 @@
       "source": "src/addons/lease-compare.addon.js"
     }
   ],
-  "channel": "feature/qol-batch-5",
-  "clientVersion": "0.4.212"
+  "channel": "feature/qol-batch-6",
+  "clientVersion": "0.4.213"
 }
