@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-9079b2a502d2e6be960feb1524d5ac8607fc457012a8e4b44932c4559fd2d8ad",
+  "revision": "sha256-98408efe99884d01d3959c1f6864967bf288bcabd7cb6bbc0abafb28cc991348",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -99,8 +99,11 @@
     },
     {
       "source": "src/addons/native-list-filter.addon.js"
+    },
+    {
+      "source": "src/addons/armory-filter.addon.js"
     }
   ],
   "channel": "feature/qol-batch-4",
-  "clientVersion": "0.4.204"
+  "clientVersion": "0.4.205"
 }
