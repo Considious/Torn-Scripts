@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.184
+// @version      0.4.185
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -38,6 +38,9 @@
  if(!store||typeof store.get!=='function'||typeof store.set!=='function')return null;
  const key=value=>{if(typeof value!=='string'||!value)throw Error('SLINK storage requires a non-empty key.');return value};
  const castError=error=>/type ['"]Null['"] is not a subtype of type ['"]String['"]/i.test(String(error?.code||error?.message||error));
+ const rowTooBig=error=>/Row too big to fit into CursorWindow|SQLiteBlobTooBigException/i.test([error?.code,error?.message,String(error)].join(' '));
+ const recoverableRead=error=>rowTooBig(error)||(castError(error)&&error.code===error.message);
+ const canSegment=()=>!!globalThis.navigator?.locks?.request&&!!globalThis.crypto?.subtle?.digest&&typeof store.getMany==='function'&&typeof store.setMany==='function'&&typeof store.list==='function';
  // Recovery is opt-in and stays in the same native namespace. The original
  // settings record is never overwritten, deleted or automatically replaced.
  const selector=n+':manual-recovery:v2',legacySelector=n+':manual-recovery:v1',prefix=n+':manual-recovery:v2:record:',legacyPrefix=n+':manual-recovery:v1:record:';
@@ -98,7 +101,7 @@
   const names=await store.list();if(!names.includes(previous))throw Error('The original settings record is not listed. Recovery was not started.');
   for(const read of [async()=>{const result=(await store.getMany([previous]))?.[previous];return segmented(result)?readParts(previous,result):result;},async()=>{const result=await store.get(previous,null);return segmented(result)?readParts(previous,result):result;}]){
    let failure;try{await read();}catch(error){failure=error;}
-   if(!failure||!castError(failure)||failure.code!==failure.message)throw Error('Recovery is only available for the confirmed native Null/String settings-read failure. No selection was changed.');
+   if(!failure||!castError(failure)||failure.code!==failure.message)throw Error('Recovery is only available for the confirmed native Null/String settings-read failure. No selection was changed. For an oversized row use Delete unreadable records and rebuild.');
   }
   return installRecoveredSettings(value);
  }
@@ -119,8 +122,8 @@
   return lock(async()=>{
    nativeStorage.selection=null;const selected=await selectedRecord();nativeStorage.partsCache?.delete(selected);
    const read=async(record,batch)=>{const value=batch?(await store.getMany([record]))?.[record]:await store.get(record,null);return segmented(value)?readParts(record,value):value;};
-   const unreadable=async record=>{for(const batch of [true,false]){try{await read(record,batch);return false;}catch(error){if(!castError(error)||error.code!==error.message)return false;}}return true;};
-   if(!await unreadable(selected))throw Error('The selected settings record does not have the confirmed native Null/String read failure. Nothing was deleted.');
+   const unreadable=async record=>{for(const batch of [true,false]){try{await read(record,batch);return false;}catch(error){if(!recoverableRead(error))return false;}}return true;};
+   if(!await unreadable(selected))throw Error('The selected settings record does not have a confirmed native Null/String or oversized-row read failure. Nothing was deleted.');
    const names=await store.list(),roots=names.filter(name=>name===n||[prefix,legacyPrefix].some(start=>name.startsWith(start)&&!/:[p]art:/.test(name.slice(start.length))&&/^[a-zA-Z0-9:_-]+$/.test(name.slice(start.length))));
    const broken=[];for(const record of roots){nativeStorage.partsCache?.delete(record);if(await unreadable(record))broken.push(record);}
    if(!broken.includes(selected))throw Error('The selected settings failure changed during the check. Nothing was deleted.');
@@ -143,6 +146,11 @@
    if(!isRecord(values))throw Error('PDA returned an unreadable storage result.');
    return values;
   }catch(error){
+   if(rowTooBig(error)){
+    const kind=keys.every(k=>k===n)?'settings':keys.every(k=>k.startsWith(prefix)||k.startsWith(legacyPrefix))?'recovered settings':'requested records';
+    const failure=failed('read',Error("Android cannot read one oversized SLINK record. This is not the phone's free space. Keep this page open, review your settings, then use Access → Storage troubleshooting → Delete unreadable records and rebuild. This deletes confirmed unreadable settings and saves the settings on this page in smaller records. [SLINK_STORAGE_ROW_TOO_LARGE]"));
+    failure.message+=' [SLINK_NATIVE_READ: record='+kind+'; batch=RowTooBig; single=not retried; all=not attempted]';throw failure;
+   }
    // On this exact bridge cast, read a single requested record through
    // the documented single-key API. A full-store read must not be the only
    // recovery path: one unreadable unrelated record can make loadAll fail.
@@ -197,7 +205,7 @@
   const physical=keys.map(k=>k===n?selected:k),values=await getManyLegacy(physical);
   const out={};for(let index=0;index<keys.length;index++){
    const value=values[physical[index]];
-   if(keys[index]===n&&selected!==n&&segmented(value)){
+   if(keys[index]===n&&segmented(value)){
     try{out[keys[index]]=await lock(async()=>readParts(selected,await store.get(selected,null)));nativeStorage.segmentFailure=null;}
     catch(error){nativeStorage.segmentFailure=castError(error)&&error.code===error.message?{record:selected,kind:'Null/String',stage:'native-response'}:null;const wrapped=failed('recovered settings segment read',error);wrapped.message+=' [SLINK_NATIVE_READ: record=recovered settings; batch='+(castError(error)?'Null/String':'other failure')+'; single=segment read; all=not attempted]';throw wrapped;}
    }else out[keys[index]]=value;
@@ -205,13 +213,26 @@
  }
  async function setMany(values){
   const logicalKeys=Object.keys(values),selected=logicalKeys.includes(n)?await selectedRecord():n;
-  if(selected!==n&&selected.startsWith(prefix)){
+  if(logicalKeys.includes(n)&&canSegment()){
    await lock(async()=>{
-    const pointer=await store.get(selector,null);if(pointer?.record!==selected){nativeStorage.selection=null;throw Error('Recovered storage changed on another page. Reload before saving; no old record was overwritten.');}
-    await writeParts(selected,values[n]);
+    // Another page may have completed migration while this page waited for the
+    // lock. Re-resolve the pointer before selecting an inactive bank.
+    nativeStorage.selection=null;const active=await selectedRecord();
+    if(active!==selected)throw Error('SLINK storage was migrated on another page. Retry saving so SLINK can merge the latest settings; no saved record was overwritten. [SLINK_STORAGE_SELECTION_CHANGED]');
+    if(active.startsWith(prefix))await writeParts(active,values[n]);
+    else {
+     // A readable legacy record can migrate on a normal save. An unreadable
+     // legacy record requires the explicit recovery action, never a blind reset.
+     if(active===n)await getManyLegacy([active]);else await store.get(active,null);
+     await installRecoveredSettings(values[n]);
+    }
    });
    values=Object.fromEntries(logicalKeys.filter(k=>k!==n).map(k=>[k,values[k]]));
    if(!Object.keys(values).length)return;
+  }else if(logicalKeys.includes(n)&&selected!==n&&selected.startsWith(prefix)){
+   throw Error('This WebView cannot coordinate segmented native saving safely. Update PDA; earlier saved records were not replaced. [SLINK_STORAGE_COORDINATION_UNAVAILABLE]');
+  }else if(logicalKeys.includes(n)&&JSON.stringify(values[n]).length>48000){
+   throw Error('SLINK needs coordinated small-record saving for these settings, but this WebView does not provide it. Update PDA before retrying. No oversized record was written. [SLINK_STORAGE_COORDINATION_UNAVAILABLE]');
   }else if(selected!==n)values=Object.fromEntries(logicalKeys.map(k=>[k===n?selected:k,values[k]]));
   if(!isRecord(values))throw Error('SLINK storage requires a record.');
   const keys=Object.keys(values);keys.forEach(key);
@@ -238,7 +259,7 @@
   getMany,setMany,recoverSettings,resetSettings,
   async diagnose(){
    const active=await selectedRecord().catch(()=>n);
-   const report={nativeAvailable:true,manualRecoveryVersion:2,manualResetVersion:1,coordinationAvailable:!!globalThis.navigator?.locks?.request,selectedRecord:active===n?'original':'recovered',reads:{}};
+   const report={nativeAvailable:true,manualRecoveryVersion:3,manualResetVersion:2,coordinationAvailable:canSegment(),selectedRecord:active===n?'original':'recovered',reads:{}};
    const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
    for(const [name,run,summarize]of [
     ['settingsBatch',async()=>({[n]:(await store.getMany([active]))?.[active]}),value=>({resultType:type(value),recordPresent:value?.[n]!=null,segmented:segmented(value?.[n]),...(segmented(value?.[n])?{segmentCount:value[n].count,serializedCharacters:value[n].length}:{})})],
@@ -248,13 +269,15 @@
    ]){
     const method={settingsBatch:'getMany',settingsSingle:'get'}[name]||name;if(typeof store[method]!=='function'){report.reads[name]={status:'unavailable'};continue;}
     let timer;try{const value=await Promise.race([Promise.resolve().then(run),new Promise((_,reject)=>{timer=globalThis.setTimeout(()=>reject(Object.assign(Error('diagnostic timeout'),{diagnosticTimeout:true})),2000);})]);report.reads[name]={status:'ok',...summarize(value)};}
-    catch(error){report.reads[name]={status:error.diagnosticTimeout?'timeout':'failed',kind:castError(error)?'Null/String':/QuotaExceeded/i.test(String(error.code||''))?'quota':'other',stage:typeof error.code==='string'&&error.code===error.message?'native-response':'bridge-or-helper-rejection'};if(error.diagnosticTimeout)break;}
+    catch(error){report.reads[name]={status:error.diagnosticTimeout?'timeout':'failed',kind:rowTooBig(error)?'RowTooBig':castError(error)?'Null/String':/QuotaExceeded/i.test(String(error.code||''))?'quota':'other',stage:rowTooBig(error)||typeof error.code==='string'&&error.code===error.message?'native-response':'bridge-or-helper-rejection'};if(error.diagnosticTimeout)break;}
     finally{globalThis.clearTimeout(timer);}
    }
    report.recoveryActive=await selectedRecord().then(record=>record!==n,()=>false);
    report.segmentReadFailure=nativeStorage.segmentFailure?.record===active?{kind:nativeStorage.segmentFailure.kind,stage:nativeStorage.segmentFailure.stage}:null;
-   report.canRecoverSettings=report.coordinationAvailable&&report.reads.list?.settingsListed===true&&((report.reads.settingsBatch?.stage==='native-response'&&report.reads.settingsBatch?.kind==='Null/String'&&report.reads.settingsSingle?.stage==='native-response'&&report.reads.settingsSingle?.kind==='Null/String')||report.segmentReadFailure?.stage==='native-response');
-   report.canResetSettings=report.canRecoverSettings&&typeof store.delete==='function';
+   const failures=['Null/String','RowTooBig'];
+   const repairable=report.coordinationAvailable&&report.reads.list?.settingsListed===true&&((report.reads.settingsBatch?.stage==='native-response'&&failures.includes(report.reads.settingsBatch?.kind)&&report.reads.settingsSingle?.stage==='native-response'&&failures.includes(report.reads.settingsSingle?.kind))||report.segmentReadFailure?.stage==='native-response');
+   report.canRecoverSettings=repairable&&((report.reads.settingsBatch?.kind==='Null/String'&&report.reads.settingsSingle?.kind==='Null/String')||report.segmentReadFailure?.kind==='Null/String');
+   report.canResetSettings=repairable&&typeof store.delete==='function';
    return report;
   },
   ...(typeof store.list==='function'?{list:()=>store.list()}:{}),
