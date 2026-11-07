@@ -92,7 +92,7 @@
       if (category !== 'All') throw new Error('Only the complete All-category catalog can be shared.');
       const cached = (await adapter.read())?.catalog;
       const freshAt = needPrices ? cached?.pricesAt : cached?.metadataAt;
-      if (!force && !pending.get('catalog:All')?.force && cached?.coverage === 'All' && cached.items?.length && freshAt > 0 && now() - freshAt < maxAgeMs) return copy(cached);
+      if (!force && !pending.get('catalog:All')?.force && cached?.schema === 2 && cached.coverage === 'All' && cached.items?.length && freshAt > 0 && now() - freshAt < maxAgeMs) return copy(cached);
       // Public catalog identity/price data is compatible across callers; credentials remain in the transport only.
       const result = await requestOnce('catalog:All', force, async startedAt => {
         const body = await adapter.request('catalog', key);
@@ -104,7 +104,7 @@
         return mutate(state => {
           const previous = state.catalog;
           const old = new Map((previous?.items || []).map(item => [item.id, item]));
-          const newestMetadata = !(previous?.metadataAt > startedAt);
+          const newestMetadata = previous?.schema !== 2 || !(previous.metadataAt > startedAt);
           const normalized = (newestMetadata ? items : previous.items).map(item => {
             const price = prices.get(item.id);
             const prior = old.get(item.id);
@@ -114,7 +114,7 @@
               priceAvailable:usePrice || prior?.priceAvailable === true };
           });
           const metadataAt = newestMetadata ? startedAt : previous.metadataAt;
-          const next = { schema:1, coverage:'All', items:normalized, fetchedAt:newestMetadata ? now() : previous.fetchedAt, metadataAt,
+          const next = { schema:2, coverage:'All', items:normalized, fetchedAt:newestMetadata ? now() : previous.fetchedAt, metadataAt,
             pricesAt:normalized.every(item => item.priceAvailable) ? Math.min(...normalized.map(item => item.priceCheckedAt)) : 0,
             partialPrices:normalized.some(item => !item.priceAvailable || item.priceCheckedAt < metadataAt), source:'torn-v2-items-all' };
           state.catalog = next;

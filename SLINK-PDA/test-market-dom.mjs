@@ -4,6 +4,27 @@ import vm from 'node:vm';
 
 import { runtime as source, extractFunction } from './test-support/runtime.mjs';
 
+const normalizeShopCases = vm.runInNewContext('('+extractFunction('catalogItems', 'src/10-market-runtime.part')+')');
+const shopCases = { items:[
+  {id:220,name:'Grenade',value:{shops:[{country:'Torn',shop:'Big Al',sell_price:8000},{country:'United Kingdom',shop:'Abroad',sell_price:10000}]}},
+  {id:221,name:'Foreign only',value:{shops:[{country:'Mexico',shop:'Market',sell_price:10000}]}},
+  {id:222,name:'Empty',value:{shops:[],sell_price:9000,vendor:{country:'Torn',name:'Legacy'}}},
+  {id:223,name:'Buy only',value:{shops:[{country:'Torn',shop:'Shop',buy_price:9000,sell_price:null}]}},
+  {id:224,name:'Mixed',value:{shops:[{country:'Torn',shop:'Shop',sell_price:6000},{country:'Japan',shop:'Abroad',sell_price:10000}]}}
+] };
+const buybacks = Object.fromEntries(normalizeShopCases(shopCases).map(item => [item.id,item.shopSellPrice]));
+for (const [id,price] of [[220,7000],[221,0],[222,0],[223,0],[224,6000]]) if (buybacks[id] !== price) throw Error('Incorrect city-shop buyback for '+id);
+assert.equal(normalizeShopCases(shopCases).find(item => item.id === 220).overseasSellPrice, 10000);
+const classifyShop = vm.runInNewContext('('+extractFunction('bazaarPurchaseOpportunity', 'src/50-market-dom.part')+')', {
+  marketPurchaseState:{itemCatalog:{schema:2}}, itemCatalogFresh:()=>true,
+  bazaarCardPrice:card=>card.price, bazaarCardUnavailable:()=>false,
+  catalogItemForBazaarCard:card=>({sellPrice:7000, overseasSellPrice:card.overseas})
+});
+assert.equal(classifyShop({price:7500}).shopProfit,false);
+assert.equal(classifyShop({price:7500,overseas:9000}).overseasProfit,true);
+assert.equal(classifyShop({price:9000,overseas:9000}).overseasProfit,false);
+assert.equal(classifyShop({price:1,overseas:9000}).overseasProfit,false);
+
 for (const functionName of [
   'formatBazaarOneDollarListings',
   'formatItemMarketPurchaseOpportunities',

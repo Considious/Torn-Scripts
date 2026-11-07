@@ -46,10 +46,16 @@ function catalogItems(body = {}) {
 const rows = Array.isArray(body.items) ? body.items : Object.values(body.items || {});
 return rows.filter(item => Number(item?.id) > 0 && item?.name && item?.is_tradable !== false && item?.is_masked !== true).map(item => {
 const shops = Array.isArray(item?.value?.shops) ? item.value.shops : [];
-const sell = shops.map(shop => ({ price:Number(shop?.sell_price) || 0, shop:String(shop?.shop || ''), country:String(shop?.country || '') }))
+const domestic = country => /^(?:torn|torn city)$/i.test(String(country || '').trim());
+const vendor = item?.value?.vendor;
+const overseas = shops.filter(shop => String(shop?.country || '').trim() && !domestic(shop.country) && String(shop?.shop || '').trim() && Number.isFinite(Number(shop?.sell_price)) && Number(shop.sell_price) > 0).sort((a,b) => Number(b.sell_price) - Number(a.sell_price))[0];
+const sell = shops.filter(shop => domestic(shop?.country) && String(shop?.shop || '').trim()).map(shop => ({ price:Number(shop?.sell_price) || 0, shop:String(shop?.shop || '').trim(), country:String(shop?.country || '').trim() }))
 .filter(row => row.price > 0).sort((left, right) => right.price - left.price)[0]
-|| { price:Number(item?.value?.sell_price) || 0, shop:String(item?.value?.vendor?.name || ''), country:String(item?.value?.vendor?.country || '') };
-return { id:Math.trunc(Number(item.id)), name:String(item.name), type:String(item.type || 'Other'), image:String(item.image || ''), marketPrice:Math.max(0, Math.trunc(Number(item?.value?.market_price) || 0)), shopSellPrice:Math.max(0, Math.trunc(sell.price || 0)), shopSellName:sell.shop, shopSellCountry:sell.country };
+|| (!Array.isArray(item?.value?.shops) && domestic(vendor?.country) && String(vendor?.name || '').trim()
+? { price:Number(item?.value?.sell_price) || 0, shop:String(vendor.name), country:String(vendor.country) } : { price:0, shop:'', country:'' });
+// Big Al's documented Grenade buyback is $7,000.
+if (Number(item.id) === 220) sell.price = Math.min(sell.price, 7000);
+return { id:Math.trunc(Number(item.id)), name:String(item.name), type:String(item.type || 'Other'), image:String(item.image || ''), marketPrice:Math.max(0, Math.trunc(Number(item?.value?.market_price) || 0)), shopSellPrice:Math.max(0, Math.trunc(sell.price || 0)), shopSellName:sell.shop, shopSellCountry:sell.country, overseasSellPrice:Math.trunc(Number(overseas?.sell_price) || 0), overseasSellCountry:String(overseas?.country || '') };
 }).sort((left, right) => left.name.localeCompare(right.name));
 }
 function marketListings(body = {}) {
