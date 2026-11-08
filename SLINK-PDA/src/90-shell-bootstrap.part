@@ -2055,7 +2055,11 @@ function syncPdaPickpocketHelper(){
 function syncPdaCrackingHelper(){
   if(dataState.settings.alerts.crackingHelperEnabled!==true||!hasScope('slink.adhd.alerts')){pdaCrackingHelper?.dispose();pdaCrackingHelper=null;return;}
   pdaCrackingHelper ||= global.SLINK_CRACKING?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts'),
-    loadShard:({length,bucket,page})=>requestJson(URLS.permission+'/api/cracking-dictionary/v1/'+length+'/'+bucket+'/'+page,{credentials:'omit',retries:0})});
+    loadShard:({length,bucket,page})=>requestJson(URLS.permission+'/api/cracking-dictionary/v1/'+length+'/'+bucket+'/'+page,{credentials:'omit',retries:0}),
+    contribution:{owner:()=>pdaRecipeOwner(),send:batch=>{
+      const session=validSession('permission');if(!session?.token||!pdaDomActive())throw Error('Verify Access to share confirmed answers.');
+      return requestJson(URLS.permission+'/api/cracking-dictionary/contribute',{method:'POST',headers:{Authorization:'Bearer '+session.token,'Content-Type':'application/json'},body:JSON.stringify(batch),retries:0});
+    }}});
   pdaCrackingHelper?.setEnabled(true);
 }
 function syncPdaArsonHelper(){

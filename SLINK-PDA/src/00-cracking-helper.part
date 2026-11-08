@@ -51,11 +51,12 @@
     if(/^Crack,\s*\d+\s+nerve$/i.test(label||'')&&button.getAttribute('aria-disabled')==='false'&&!button.disabled)return 'ready';
     return '';
   }
-  function connect({eligible,loadShard,onConfirmed}){
+  function connect({eligible,loadShard,contribution}){
     const doc=global.document;
     let enabled=false,disposed=false,root=null,watch=null,discoverWatch=null,frame=null,matcher=null,style=null;
     const panels=new Map();
     const pending=new Map(),confirmed=new Set();
+    const queues=new Map();let uploading=false,retryAt=0;
     const rowSelector='[class*="crimeOptionWrapper___"],[class^="crimeOptionWrapper"]';
     const shards=new Map();
     const active=()=>enabled&&!disposed&&!doc.hidden&&route()&&eligible();
@@ -71,16 +72,41 @@
       if(!row||!root?.contains(row)||crackState(button)!=='ready')return;
       const answer=readPattern(row);if(!valid.test(answer))return;
       if(pending.size>=24)pending.delete(pending.keys().next().value);
-      pending.set(row,{answer,at:Date.now()});
+      pending.set(row,{answer,owner:contribution?.owner?.(),at:Date.now()});
+      void flushConfirmed();
+    }
+    function queueFor(owner){
+      const key='slink.cracking.confirmed.v1.'+owner;
+      if(!queues.has(key)){
+        let saved;try{saved=JSON.parse(global.localStorage.getItem(key));}catch{}
+        queues.set(key,{key,last:Number(saved?.last)||0,words:new Set(Array.isArray(saved?.words)?saved.words.filter(word=>valid.test(word)).slice(0,100):[])});
+      }
+      return queues.get(key);
+    }
+    function saveQueue(queue){try{global.localStorage.setItem(queue.key,JSON.stringify({last:queue.last,words:[...queue.words]}));}catch{}}
+    async function flushConfirmed(){
+      const owner=contribution?.owner?.();if(!active()||!owner||uploading||Date.now()<retryAt)return;
+      const queue=queueFor(owner),answers=[...queue.words].slice(0,20);
+      if(!answers.length||Date.now()-queue.last<43200000)return;
+      uploading=true;retryAt=Date.now()+60000;
+      try{
+        const result=await contribution.send({schema:1,answers});
+        if(result?.ok!==true||!Array.isArray(result.accepted))return;
+        for(const answer of result.accepted)if(answers.includes(answer))queue.words.delete(answer);
+        if(result.accepted.length)queue.last=Date.now();
+        saveQueue(queue);
+      }catch{}finally{uploading=false;}
     }
     function checkConfirmed(){
-      for(const [row,{answer,at}] of pending){
+      for(const [row,{answer,owner:attemptOwner,at}] of pending){
         if(!root.contains(row)||Date.now()-at>15000||readPattern(row)!==answer){pending.delete(row);continue;}
         if(![...row.querySelectorAll('button.commit-button')].some(button=>crackState(button)==='confirmed'))continue;
         pending.delete(row);
         if(confirmed.has(answer))continue;
         if(confirmed.size>=128)confirmed.delete(confirmed.keys().next().value);
-        confirmed.add(answer);onConfirmed?.(answer);
+        confirmed.add(answer);
+        const owner=contribution?.owner?.();
+        if(owner&&owner===attemptOwner){const queue=queueFor(owner);if(queue.words.size<100)queue.words.add(answer);saveQueue(queue);void flushConfirmed();}
       }
     }
     const el=(tag,text)=>{const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
@@ -99,6 +125,7 @@
         const data=await loadShard({length:entry.length,bucket:entry.bucket,page});
         if(data?.schema!==1||!Array.isArray(data.words)||data.words.length>4096||!(data.next===null||data.next===page+1&&data.next<16))throw Error('Invalid dictionary page.');
         for(const word of data.words)if(typeof word==='string'&&word.length===entry.length&&valid.test(word))entry.words.add(word);
+        if(Array.isArray(data.learned)&&data.learned.length<=512)for(const word of data.learned)if(typeof word==='string'&&word.length===entry.length&&valid.test(word))entry.words.add(word);
         entry.next=data.next;
       }catch{entry.error=true;}
       finally{entry.pending=false;entry.revision++;schedule();}
@@ -169,14 +196,16 @@
   const S=global.SLINK_EXTENSION;
   if(!S?.core?.pageActivity||!global.document||new URLSearchParams(global.location.search).get('sid')?.toLowerCase()!=='crimes')return;
   const activity=S.core.pageActivity,toggle='crimes.cracking.enabled',session='access.session.v1';
-  let allowed=false,expires=0,revision=0;
-  const helper=connect({eligible:()=>allowed&&expires>Date.now()&&activity.eligible(),loadShard:input=>S.core.messaging.send('crimes.cracking.dictionary',input)});
+  let allowed=false,expires=0,revision=0,owner=null;
+  const helper=connect({eligible:()=>allowed&&expires>Date.now()&&activity.eligible(),loadShard:input=>S.core.messaging.send('crimes.cracking.dictionary',input),
+    contribution:{owner:()=>owner,send:input=>S.core.messaging.send('crimes.cracking.contribute',input)}});
   async function refresh(){
     const rev=++revision;
     try{
       const [enabled,access]=await Promise.all([S.core.storage.get(toggle,false),S.core.storage.get(session,null)]);
       if(rev!==revision)return;
       allowed=enabled===true&&S.core.permissions.hasScope(access||{},'slink.adhd.alerts');expires=Number(access?.expiresAt)||0;
+      owner=allowed&&access?.userId?String(access.userId):null;
       helper.setEnabled(allowed);
     }catch{if(rev===revision){allowed=false;helper.setEnabled(false);}}
   }
