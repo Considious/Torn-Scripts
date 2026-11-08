@@ -1,5 +1,5 @@
 adoptPdaLegacyIntelligence();
-let pdaArsonHelper=null,pdaPickpocketHelper=null,pdaCrimeRecipeJournal=null,pdaCrimeRecipeSync=null;
+let pdaArsonHelper=null,pdaPickpocketHelper=null,pdaCrackingHelper=null,pdaCrimeRecipeJournal=null,pdaCrimeRecipeSync=null;
 function shouldRenderPdaModule(name) {
 const dirty=shouldRenderPdaModule.dirty ||= new Set();
 if (!dashboardOpen || !pdaDomActive() || activeModuleName() !== name) { dirty.add(name); return false; }
@@ -1589,6 +1589,11 @@ queuePdaSettingsSave();
 scheduleRacingScan(0);
 });
 listenPdaAction(overlay,'change', async event => {
+if(event.target.matches('[data-cracking-helper-enabled]')){
+dataState.settings.alerts.crackingHelperEnabled=event.target.checked===true;
+syncPdaCrackingHelper();
+await savePdaChanges();return;
+}
 if(event.target.matches('[data-pickpocket-helper-enabled]')){
 dataState.settings.alerts.pickpocketHelperEnabled=event.target.checked===true;
 syncPdaPickpocketHelper();
@@ -1807,6 +1812,7 @@ targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targe
 function syncPdaForeground(active=pdaDomActive()) {
 if(pdaArsonHelper)pdaArsonHelper.sync();
 if(pdaPickpocketHelper)pdaPickpocketHelper.sync();
+if(pdaCrackingHelper)pdaCrackingHelper.sync();
 if (active===pdaForegroundActive) return;
 pdaForegroundActive=active;
 marketObserver.disconnect();guardian.disconnect();racingStateObserver?.disconnect();
@@ -2046,7 +2052,13 @@ function syncPdaPickpocketHelper(){
   pdaPickpocketHelper ||= global.SLINK_PICKPOCKET?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
   pdaPickpocketHelper?.setEnabled(true);
 }
+function syncPdaCrackingHelper(){
+  if(dataState.settings.alerts.crackingHelperEnabled!==true||!hasScope('slink.adhd.alerts')){pdaCrackingHelper?.dispose();pdaCrackingHelper=null;return;}
+  pdaCrackingHelper ||= global.SLINK_CRACKING?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
+  pdaCrackingHelper?.setEnabled(true);
+}
 function syncPdaArsonHelper(){
+  syncPdaCrackingHelper();
   syncPdaPickpocketHelper();
   if(dataState.settings.alerts.arsonHelperEnabled!==true){pdaArsonHelper?.dispose();pdaArsonHelper=null;return;}
   const arsonPage=global.SLINK_ARSON_PAGE;

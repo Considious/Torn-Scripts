@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-3c2c107f2254ed632109ff2a664f112f35a1903cb08d51382724a99482535944",
+  "revision": "sha256-03ed630ce3ecb0034942d738efb5241d8d45990aa711ab992332ea72961dea32",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -22,6 +22,7 @@
     "src/00-arson-advice.part",
     "src/00-arson-page.part",
     "src/00-pickpocket-helper.part",
+    "src/00-cracking-helper.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
     "src/20-quality-of-life.part",
@@ -130,5 +131,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.219"
+  "clientVersion": "0.4.220"
 }
