@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.214
+// @version      0.4.215
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/feature/qol-batch-6/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -409,7 +409,94 @@ async function executeBrowserSource(source){
   try{Promise.resolve(add('script',{textContent:code})).then(element=>{node=element;if(!node)finish(Error('The userscript manager could not insert the SLINK runtime. [SLINK_BROWSER_EXECUTION_UNAVAILABLE]'));else node.remove?.();},finish);}catch(error){finish(error);}
  });
 }
-async function executeBundle(e){const t=document.getElementById(a),o='true'===t?.dataset?.slinkReady;if(o&&'true'===t?.dataset?.slinkAddonsReady)return;t&&(t.dataset.slinkAddonsReady='false');const sources=['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];if(!o){const t='globalThis.__SLINK_PDA_BOOTSTRAP__='+JSON.stringify({...await collectBootstrap(),sourceRevision:e.revision,clientVersion:e.clientVersion})+';';sources.push(t+'\n'+e.runtimeSource.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Runtime.js\n')}e.addonSources.forEach((source,e)=>{sources.push(source.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Addon_'+(e+1)+'.js\n')}),sources.push(`globalThis.__SLINK_PDA_ADDONS_READY__=true;\n(() => {\nconst slinkReadyHost=document.getElementById(${JSON.stringify(a)});\nif(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';\n})();`),await async function(source){'function'==typeof globalThis.PDA_evaluateJavascript?await globalThis.PDA_evaluateJavascript(source):await executeBrowserSource(source)}(sources.join('\n;\n')),await waitUntilReady()}function loadRuntime(force=!1){return w||(w=(async function(force=!1){const cached=await gmRead(f,null).catch(()=>null),retry='1'===globalThis.sessionStorage?.getItem(g);if(retry){if(globalThis.sessionStorage?.removeItem(g),!validBundle(cached))return showFailure(new Error('No known-working SLINK runtime is cached yet.'));try{return void await executeBundle(cached)}catch(error){return showFailure(error)}}let bundle=null;if(!force&&validBundle(cached)){try{const manifest=await readSourceManifest(2500);if(cached.revision===String(manifest.revision||'unversioned')&&cached.storageProtocol===manifest.storageProtocol){await executeBundle(cached);return}bundle=await fetchBundle(manifest)}catch(error){console.warn('[SLINK PDA] Live source check failed; using the last-known-working runtime.',error);try{await executeBundle(cached);return}catch(cachedError){return showFailure(cachedError)}}}if(!bundle)try{bundle=await fetchBundle()}catch(error){if(!validBundle(cached))return showFailure(error);console.warn('[SLINK PDA] Source download failed; using the last-known-working runtime.',error);try{return void await executeBundle(cached)}catch(cachedError){return showFailure(cachedError)}}try{await executeBundle(bundle);try{await gmWrite(f,bundle)}catch{console.warn('[SLINK PDA] Runtime cache not saved; running source remains active.')}}catch(error){if(validBundle(cached)&&cached.signature!==bundle.signature)try{return globalThis.sessionStorage?.setItem(g,'1'),void globalThis.location.reload()}catch{}showFailure(error)}})(force).finally(()=>{w=null}),w)}!function(){let e=Promise.resolve();const resident=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;if(resident?.protocol===1&&resident.document===document&&resident.channel===m)return;
+async function executeBundle(e){const t=document.getElementById(a),o='true'===t?.dataset?.slinkReady;if(o&&'true'===t?.dataset?.slinkAddonsReady)return;t&&(t.dataset.slinkAddonsReady='false');const sources=['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];if(!o){startupMark('storage-start');const bootstrap=await collectBootstrap();startupMark('storage-end');const t='globalThis.__SLINK_PDA_BOOTSTRAP__='+JSON.stringify({...bootstrap,sourceRevision:e.revision,clientVersion:e.clientVersion})+';';sources.push(t+'\n'+e.runtimeSource.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Runtime.js\n')}e.addonSources.forEach((source,e)=>{sources.push(source.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Addon_'+(e+1)+'.js\n')}),sources.push(`globalThis.__SLINK_PDA_ADDONS_READY__=true;\n(() => {\nconst slinkReadyHost=document.getElementById(${JSON.stringify(a)});\nif(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';\n})();`),await async function(source){'function'==typeof globalThis.PDA_evaluateJavascript?await globalThis.PDA_evaluateJavascript(source):await executeBrowserSource(source)}(sources.join('\n;\n')),await waitUntilReady();startupMark('ready');}
+function startupMark(phase){try{globalThis.performance?.mark?.('slink-pda:'+phase);}catch{}}
+const updateHint=f+':pending',updateCheck=f+':checked',rejectedRevision=f+':rejected',stageMeta=f+':stage';
+const stageCacheName='slink-pda-public-runtime',stageUrl=t+'?slink-staged=1';
+const sessionGet=k=>{try{return globalThis.sessionStorage?.getItem(k)||'';}catch{return '';}};
+const sessionSet=(k,v)=>{try{if(v)globalThis.sessionStorage?.setItem(k,v);else globalThis.sessionStorage?.removeItem(k);}catch{}};
+function boundStartup(task,ms){let timer;return Promise.race([task,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Optional startup cache timed out.')),ms);})]).finally(()=>clearTimeout(timer));}
+async function stageDigest(text){
+ const bytes=await globalThis.crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
+ return Array.from(new Uint8Array(bytes),v=>v.toString(16).padStart(2,'0')).join('');
+}
+async function saveStaged(bundle){
+ if(!globalThis.caches||!globalThis.crypto?.subtle||typeof Response!=='function')return false;
+ const text=JSON.stringify(bundle),digest=await stageDigest(text),cache=await globalThis.caches.open(stageCacheName);
+ await cache.put(stageUrl,new Response(text));
+ // This digest is held in privileged storage: Torn-origin storage alone cannot authorize code.
+ await gmWrite(stageMeta,{revision:bundle.revision,digest});
+ return true;
+}
+async function readStaged(revision){
+ if(!globalThis.caches||!globalThis.crypto?.subtle)return null;
+ const [meta,cache]=await Promise.all([gmRead(stageMeta,null),globalThis.caches.open(stageCacheName)]);
+ if(meta?.revision!==revision||!meta.digest)return null;
+ const result=await cache.match(stageUrl),text=await result?.text();
+ if(!text||await stageDigest(text)!==meta.digest)return null;
+ const bundle=JSON.parse(text);
+ return validBundle(bundle)&&bundle.revision===revision?bundle:null;
+}
+async function stageUpdate(current){
+ const now=Date.now(),last=Number(sessionGet(updateCheck))||0;
+ if(now-last<5*60_000)return;
+ sessionSet(updateCheck,String(now));
+ try{
+  const manifest=await readSourceManifest(4000),revision=String(manifest.revision||'unversioned');
+  if(revision===current.revision&&manifest.storageProtocol===current.storageProtocol||revision===sessionGet(rejectedRevision))return;
+  if(!globalThis.caches||!globalThis.crypto?.subtle){sessionSet(updateHint,'fetch:'+revision);return;}
+  const bundle=await fetchBundle(manifest);
+  try{if(await saveStaged(bundle)){sessionSet(updateHint,'staged:'+revision);return;}}catch{}
+  sessionSet(updateHint,'fetch:'+revision);
+ }catch{}
+}
+function loadRuntime(force=false){
+ if(w)return w;
+ w=(async()=>{
+  startupMark('cache-start');
+  const cached=await gmRead(f,null).catch(()=>null);
+  startupMark(validBundle(cached)?'cache-hit':'cache-miss');
+  const retry=sessionGet(g);
+  if(retry){
+   sessionSet(g,'');
+   if(!validBundle(cached))return showFailure(Error('No known-working SLINK runtime is cached yet.'));
+   try{return await executeBundle(cached);}catch(error){return showFailure(error);}
+  }
+  let next=null;
+  if(!force&&validBundle(cached)){
+   const hint=sessionGet(updateHint);
+   if(hint.startsWith('staged:')&&hint.slice(7)!==cached.revision){
+    next=await boundStartup(readStaged(hint.slice(7)),200).catch(()=>null);
+    if(!next){sessionSet(updateHint,'');sessionSet(updateCheck,'');}
+   }else if(hint.startsWith('fetch:')&&hint.slice(6)!==cached.revision){
+    sessionSet(updateHint,'');
+    try{const manifest=await readSourceManifest(2500);if(manifest.revision===hint.slice(6)&&manifest.revision!==sessionGet(rejectedRevision))next=await fetchBundle(manifest);}catch{}
+   }
+   if(!next){
+    try{await executeBundle(cached);void stageUpdate(cached);return;}catch(error){return showFailure(error);}
+   }
+  }
+  if(!next)try{next=await fetchBundle();}catch(error){
+   if(!validBundle(cached))return showFailure(error);
+   try{return await executeBundle(cached);}catch(fallback){return showFailure(fallback);}
+  }
+  try{
+   await executeBundle(next);
+   try{
+    await gmWrite(f,next);sessionSet(updateHint,'');sessionSet(updateCheck,String(Date.now()));
+    if(globalThis.caches)void globalThis.caches.open(stageCacheName).then(cache=>cache.delete(stageUrl)).catch(()=>{});
+   }catch{console.warn('[SLINK PDA] Runtime cache not saved; running source remains active.');}
+  }catch(error){
+   if(validBundle(cached)&&cached.signature!==next.signature)try{
+    sessionSet(updateHint,'');sessionSet(rejectedRevision,next.revision);sessionSet(g,'1');
+    if(sessionGet(g)==='1'){globalThis.location.reload();return;}
+   }catch{}
+   showFailure(error);
+  }
+ })().finally(()=>{w=null;});
+ return w;
+}
+!function(){let e=Promise.resolve();const resident=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;if(resident?.protocol===1&&resident.document===document&&resident.channel===m)return;
 let storagePaused=false,nativeOutstanding=false,storageReadFailure='';
 const storageLabel=()=>nativeStorage()?"PDA's native storage":"The userscript's storage";
 const pausedStorageError=()=>new Error(storageLabel()+(nativeOutstanding

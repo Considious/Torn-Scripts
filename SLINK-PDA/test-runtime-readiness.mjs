@@ -14,7 +14,8 @@ assert(loader.includes('slinkReady') && loader.includes('slinkAddonsReady'), 'Re
 assert(loader.includes("dataset.slinkAddonsReady='true'"), 'Downloaded add-ons do not signal readiness through the shared dashboard host.');
 assert(loader.includes("dataset.slinkAddonsReady='false'"), 'A new add-on attempt does not clear stale readiness.');
 assert(!loader.includes('globalThis.__SLINK_PDA_ADDONS_READY__ === true'), 'Loader still depends on a cross-context readiness variable.');
-assert(loader.includes('readSourceManifest(2500)'), 'Cached startup must check the live manifest with a bounded wait.');
-assert(loader.includes('main/SLINK-PDA/'), 'Launcher must follow the stable main branch.');
+assert(loader.includes('await executeBundle(cached);void stageUpdate(cached)'), 'Cached startup must not wait for the live manifest.');
+const updateUrl = loader.match(/^\/\/\s+@updateURL\s+(\S+)/m)?.[1];
+assert(updateUrl && loader.includes("const e='" + updateUrl.replace(/[^/]+$/, '') + "',t=e+'source-manifest.json'"), 'Launcher must check the manifest from its own release channel.');
 
 console.log('PDA runtime readiness validation passed.');

@@ -1834,7 +1834,9 @@ GM_API.menu('Open SLINK PDA Dashboard', openDashboard);
 GM_API.menu('Reset SLINK PDA layout', resetLayout);
 }
 renderThemeChoices();
+try{global.performance?.mark?.('slink-pda:theme-start');}catch{}
 setTheme(state.theme, false);
+try{global.performance?.mark?.('slink-pda:theme-applied');}catch{}
 applyMinimizedMode(state.minimizedMode, false);
 selectPage(state.page, false);
 selectSubpage('combat', state.combatTab, false);

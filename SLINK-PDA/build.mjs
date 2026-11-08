@@ -40,7 +40,7 @@ if (process.argv.includes('--write')) {
     throw new Error('PDA source manifest digest is stale. Run node build.mjs --write after editing runtime/add-on source.');
   }
 }
-if (!loaderSource.includes('JSON.stringify({...await collectBootstrap(),sourceRevision:e.revision,clientVersion:e.clientVersion})')) {
+if (!loaderSource.includes('JSON.stringify({...bootstrap,sourceRevision:e.revision,clientVersion:e.clientVersion})')||!loaderSource.includes('const bootstrap=await collectBootstrap()')) {
   throw new Error('PDA loader must pass the manifest content revision into the runtime bootstrap.');
 }
 new Script(loaderSource, { filename:loaderPath });
