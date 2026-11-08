@@ -33,8 +33,12 @@
     const groupSelector=prefix('requestIcons');
     const groups=[...container.querySelectorAll(groupSelector)];
     if(container.matches?.(groupSelector))groups.unshift(container);
-    const labels=[...new Set(groups.flatMap(group=>[...group.querySelectorAll('[role="img"][aria-label]')]
-      .map(icon=>clean(icon.getAttribute('aria-label')))).filter(Boolean))];
+    const icons=new Map();
+    for(const group of groups)for(const icon of group.querySelectorAll('[role="img"][aria-label]')){
+      const label=clean(icon.getAttribute('aria-label'));
+      if(label)icons.set(label,(icons.get(label)??true)&&icon.matches(prefix('requestIcon')));
+    }
+    const labels=[...icons.keys()];
     const context=[],requirements=[];
     for(const label of labels){
       const damage=parseDamageRequirement(label);
@@ -46,6 +50,7 @@
       if(/^accidental cause requested$/i.test(label)){requirements.push({kind:'accidental',label});continue;}
       if(/^insurance claim required$/i.test(label)){requirements.push({kind:'insurance',label});continue;}
       if(/^(fraud|business|criminal|cover-up|intimidation|ideological|vendetta)$/i.test(label)){context.push(label);continue;}
+      if(icons.get(label)&&!/\b(?:required|requested|requires|must|only|damage|visibility|accelerant|insurance|accidental)\b/i.test(label)){context.push(label);continue;}
       requirements.push({kind:'unknown',label});
     }
     return {labels,context,requirements};
@@ -131,7 +136,7 @@
     else if(!job.bounds)parts.push('Read the current job requirements before choosing a material. Compatible recipes are not confirmed yet.');
     return parts.join(' ');
   }
-  const signature=job=>JSON.stringify([job.name,job.scenario,[...job.requestLabels].sort()]);
+  const signature=(job,legacy=false)=>JSON.stringify([job.name,job.scenario,[...(legacy||!Array.isArray(job.requirements)?job.requestLabels:job.requirements.map(requirement=>requirement.label))].sort()]);
   const RECIPE_SLOT_MS=12*60*60*1000;
   function recipeJournal({load,save}){
     let queue=Promise.resolve();
@@ -243,14 +248,15 @@
     if(capture)root.addEventListener('click',onAction,true);
     const active=()=>!disposed&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus());
     function close(entry){entry.pinned=false;entry.card.hidden=true;entry.button.setAttribute('aria-expanded','false');if(opened===entry)opened=null;if(ledger)entry.card.remove();}
-    function remove(entry){entry.cancelPress?.();entry.detach?.();close(entry);entry.wrap.remove();}
+    function remove(entry){entry.cancelPress?.();entry.detach?.();close(entry);entry.wrap.remove();entry.restoreHost?.();}
     function clear(){global.clearTimeout(leaveTimer);for(const entry of controls.values())remove(entry);controls.clear();capture?.clear();portal?.remove();portal=null;portalRoot=null;watchedPicker=null;pickerObserver?.disconnect();pickerObserver=null;}
     function movePopup(){
       if(!opened||!ledger)return;
       if(!opened.button.isConnected||!active()){close(opened);return;}
-      const {card,anchor}=opened,rect=anchor.getBoundingClientRect();
+      const {card,anchor,button}=opened,rect=anchor.getBoundingClientRect(),badge=button.getBoundingClientRect();
       const viewport=global.visualViewport,offsetX=viewport?.offsetLeft||0,offsetY=viewport?.offsetTop||0;
-      const target={left:rect.left-offsetX,right:rect.right-offsetX,top:rect.top-offsetY,bottom:rect.bottom-offsetY,width:rect.width,height:rect.height};
+      const top=Math.min(rect.top,badge.top),bottom=Math.max(rect.bottom,badge.bottom);
+      const target={left:rect.left-offsetX,right:rect.right-offsetX,top:top-offsetY,bottom:bottom-offsetY,width:rect.width,height:bottom-top};
       const point=ledger.computeAnchorPosition(target,card.offsetWidth,card.offsetHeight,'top',{viewportWidth:viewport?.width||global.innerWidth,viewportHeight:viewport?.height||global.innerHeight});
       card.style.left=(point.left+offsetX)+'px';card.style.top=(point.top+offsetY)+'px';
     }
@@ -270,7 +276,7 @@
     function updateInventory(){
       const triggers=root.querySelectorAll('button[aria-expanded="true"]:is('+prefix('itemButton')+')');
       const row=triggers.length===1?triggers[0].closest(rowSelector):null;
-      const picker=row?[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]')):null;
+      const picker=[...doc.querySelectorAll(prefix('itemSelector'))].find(node=>node.getClientRects().length&&!node.closest('[hidden]'))||null;
       if(portal){
         let z=null;
         for(let el=picker;el&&el!==doc.body;el=el.parentElement){
@@ -282,10 +288,11 @@
         if(opened)opened.card.style.pointerEvents=picker?'none':'auto';
       }
       if(picker!==watchedPicker){
+        for(const entry of controls.values())entry.wrap.style.pointerEvents=picker?'none':'';
         pickerObserver?.disconnect();watchedPicker=picker;
         if(picker){pickerObserver ||= new global.MutationObserver(()=>{if(active()&&frame===null)frame=global.requestAnimationFrame(refresh);});pickerObserver.observe(picker,{subtree:true,childList:true,attributes:true,attributeFilter:['aria-label','aria-disabled','disabled']});}
       }
-      if(picker){
+      if(picker&&row){
         const items=readPicker(picker).filter(item=>item.name);
         const action=readJob(row)?.action;
         let changed=false;
@@ -335,19 +342,28 @@
       for(const row of root.querySelectorAll(rowSelector)){
         if(!row.getClientRects().length||row.closest('[hidden]'))continue;
         const job=readJob(row);capture?.inspect(row,job)?.catch(()=>{});if(!job)continue;rows.add(row);
-        const host=ledger?(row.querySelector(prefix('fireMeter'))||row.querySelector(prefix('itemButton'))?.parentElement):row.querySelector(prefix('titleSection'));
+        const host=ledger?row.querySelector(prefix('fireMeter')):row.querySelector(prefix('titleSection'));
         if(!host)continue;
         let entry=controls.get(row);
         if(entry?.wrap.parentNode!==host){if(entry)remove(entry);controls.delete(row);entry=null;}
         if(!entry){
           const wrap=doc.createElement('span');wrap.dataset.slinkArson='';wrap.style.cssText='position:relative;display:inline-block';
+          let restoreHost;
+          if(ledger){
+            wrap.style.cssText='position:absolute;inset:2px auto auto 2px;display:inline-flex';
+            if(watchedPicker)wrap.style.pointerEvents='none';
+            if(global.getComputedStyle(host).position==='static'){
+              const old=host.style.position;host.style.position='relative';
+              restoreHost=()=>{if(host.style.position==='relative')host.style.position=old;};
+            }
+          }
           const button=doc.createElement('button');button.type='button';button.textContent='Arson help';button.setAttribute('aria-expanded','false');
           if(ledger){button.innerHTML=ledger.flame;button.setAttribute('aria-label','Arson help');button.style.cssText='display:inline-flex;align-items:center;gap:3px;cursor:help;border:1px solid currentColor;border-radius:10px;color:#ffb44e;background:#171b22;padding:2px 5px';}
           const card=doc.createElement('span');card.hidden=true;card.setAttribute('role','status');
           card.style.cssText='position:absolute;z-index:10000;width:min(300px,calc(100vw - 16px));max-height:40vh;overflow:auto;background:#171b22;color:#fff;padding:10px;border:1px solid #8a96aa;border-radius:6px;box-sizing:border-box;white-space:normal';
           if(ledger)card.style.cssText='position:fixed;pointer-events:auto;width:max-content;max-width:min(440px,calc(100vw - 16px));max-height:65dvh;overflow:auto;background:var(--slink-arson-popup-bg,var(--tooltip-bg-color,#171b22));color:var(--crimes-baseText-color,#fff);border:1px solid var(--crimes-outcomeDivider-color,#8a96aa);border-radius:8px;box-shadow:0 2px 12px #0008;box-sizing:border-box';
           const anchor=ledger?host:wrap;
-          entry={wrap,button,card,anchor};controls.set(row,entry);
+          entry={wrap,button,card,anchor,restoreHost};controls.set(row,entry);
           if(ledger){card.addEventListener('pointerenter',cancelLeave);card.addEventListener('pointerleave',()=>delayClose(entry));}
           const open=()=>{
             if(!active())return;const latest=readJob(row);if(!latest)return;
@@ -355,7 +371,9 @@
             if(ledger)updateInventory();
             observe(entry,latest);entry.recipe=null;entry.recipes=[];paint(entry,latest);card.hidden=false;button.setAttribute('aria-expanded','true');
             const key=signature(latest);
-            const found=journal?.candidates?journal.candidates('arson',key):journal?.find('arson',key).then(value=>value?[value]:[]);
+            const lookup=k=>journal?.candidates?journal.candidates('arson',k):journal?.find('arson',k).then(value=>value?[value]:[]);
+            const legacyKey=signature(latest,true);
+            const found=lookup(key)?.then(recipes=>recipes?.length||legacyKey===key?recipes:lookup(legacyKey));
             found?.then(recipes=>{if(!active()||card.hidden||!entry.wrap.isConnected||entry.recipeKey!==key)return;const current=readJob(row);if(current&&signature(current)===key){entry.recipes=recipes||[];entry.recipe=entry.recipes[0];paint(entry,current);}}).catch(()=>{});
             entry.recipeKey=key;
             if(ledger){movePopup();return;}
@@ -400,7 +418,7 @@
       });
       observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['aria-label','aria-disabled','aria-expanded','aria-valuenow','disabled','class']});refresh();
     }
-    const events=[[global,'focus'],[global,'blur'],[global,'hashchange'],[global,'pagehide'],[doc,'visibilitychange']];
+    const events=[[global,'focus'],[global,'blur'],[global,'pagehide'],[doc,'visibilitychange']];
     const handlers=events.map(([target,event])=>[target,event,(event==='blur'&&!focused)||event==='pagehide'?()=>{observer?.disconnect();observer=null;if(frame!==null)global.cancelAnimationFrame(frame);frame=null;clear();}:sync]);
     for(const [target,event,handler] of handlers)target.addEventListener(event,handler);
     if(ledger){doc.addEventListener('click',outside,true);doc.addEventListener('keydown',escape);global.addEventListener('scroll',movePopup,true);global.addEventListener('resize',movePopup);}
@@ -421,25 +439,31 @@
     }
     function discover(){
       frame=null;if(!active()||stopCards)return;
-      const row=[...doc.querySelectorAll(rowSelector)].find(element=>element.getClientRects().length&&readJob(element));
-      const root=doc.querySelector('.arson-root')||row?.parentElement;
+      const root=findRoot();
       if(!root||root===doc.body)return;
       mountedRoot=root;
       stopCards=mount({root,enabled:true,eligible:active,focused,journal,stockCache});
     }
+    function findRoot(){
+      const canonical=doc.querySelector('.arson-root');
+      if(canonical?.getClientRects().length&&!canonical.closest('[hidden]'))return canonical;
+      const row=[...doc.querySelectorAll(rowSelector)].find(element=>element.getClientRects().length&&!element.closest('[hidden]')&&readJob(element));
+      return row?.parentElement;
+    }
     function sync(){
       if(!active()){clear();return;}
-      if(stopCards||observer)return;
+      if(mountedRoot&&(!mountedRoot.isConnected||mountedRoot.closest('[hidden]')||!mountedRoot.getClientRects().length)){stopCards?.();stopCards=null;mountedRoot=null;}
+      if(observer){if(!stopCards&&frame===null)frame=global.requestAnimationFrame(discover);else stopCards?.refresh();return;}
       discover();
       if(doc.body){
         observer=new global.MutationObserver(records=>{
           if(!active()){clear();return;}
           if(mountedRoot&&!mountedRoot.matches('.arson-root')&&!mountedRoot.querySelector(rowSelector)){stopCards?.();stopCards=null;mountedRoot=null;}
           if(stopCards&&records.some(record=>[...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1&&(node.matches(prefix('itemSelector'))||node.querySelector(prefix('itemSelector'))))))stopCards.refresh();
-          if(mountedRoot&&!mountedRoot.isConnected){stopCards?.();stopCards=null;mountedRoot=null;}
+          if(mountedRoot&&(!mountedRoot.isConnected||records.some(record=>record.attributeName==='hidden'&&record.target.contains(mountedRoot))&&mountedRoot.closest('[hidden]'))){stopCards?.();stopCards=null;mountedRoot=null;}
           if(!mountedRoot&&frame===null&&active())frame=global.requestAnimationFrame(discover);
         });
-        observer.observe(doc.body,{childList:true,subtree:true});
+        observer.observe(doc.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
       }
     }
     const events=[[global,'focus',sync],[global,'blur',focused?sync:clear],[global,'hashchange',sync],[global,'popstate',sync],[global,'pageshow',sync],[global,'pagehide',clear],[doc,'visibilitychange',sync]];
