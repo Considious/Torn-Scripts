@@ -33,6 +33,8 @@
   }
   function mountList(root){
     const spec=listConfig(root),box=make('details'),fields=make('div'),status=make('span');
+    const key='slink-native-extra-filter:v1:'+kind;
+    let saved={};try{saved=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch{}
     fields.style.cssText='display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:5px 0';
     status.setAttribute('role','status');
     const inputs=spec.fields.map(([type,label,filter,options,captions])=>{
@@ -43,9 +45,13 @@
       n.setAttribute('aria-label',label);
       n.addEventListener(type==='check'||type==='select'?'change':'input',apply);
       if(type==='check'){n.type='checkbox';const wrap=make('label',label+' ');wrap.append(n);fields.append(wrap);}else fields.append(n);
-      return {type,n,filter};
+      if(type==='check')n.checked=saved[label]===true;
+      else if(typeof saved[label]==='string')n.value=saved[label].slice(0,80);
+      if(type==='search')n.maxLength=80;
+      return {type,n,filter,label};
     });
-    fields.append(button('Reset',()=>{for(const {type,n} of inputs){if(type==='check')n.checked=false;else n.value='';}apply();}),status);
+    fields.append(button('Reset',()=>{for(const {type,n} of inputs){if(type==='check')n.checked=false;else n.value='';}try{localStorage.removeItem(key);}catch{}apply();}),
+      button('Save preset',()=>{try{localStorage.setItem(key,JSON.stringify(Object.fromEntries(inputs.map(({type,n,label})=>[label,type==='check'?n.checked:n.value]))));status.textContent='Preset saved.';}catch{status.textContent='Could not save the preset on this device.';}}),status);
     box.append(make('summary',spec.title),fields);root.before(box);
     if(kind==='war')g.SLINK_FACTION_CSV?.attach(box,{name:'Export visible war roster',file:'slink-ranked-war-roster.csv',produce:()=>root.isConnected?g.SLINK_FACTION_CSV.native(root,true):''});
     if(!sheet.isConnected)document.head.append(sheet);
@@ -64,6 +70,7 @@
       if(status.textContent!==message)status.textContent=message;
     }
     box.ontoggle=()=>{if(box.open){observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['class','title']});apply();}else{observer.disconnect();clear();}};
+    if(Object.keys(saved).length)box.open=true;
     return {root,box,update:apply,dispose(){observer.disconnect();clear();box.remove();}};
   }
   function mountCompany(root){

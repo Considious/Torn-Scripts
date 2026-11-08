@@ -91,6 +91,8 @@
       const l=make('label',flag+' ');l.style.display='block';l.append(choose(flag,flag,[['','Either'],['yes','Yes'],['no','No']]));return l;
     }));
     const toggle=button('',()=>{active=!active;configure();});
+    const back=button('Back to filters',()=>{toggle.scrollIntoView({block:'center'});toggle.focus({preventScroll:true});});
+    back.hidden=true;
     const reset=button('Reset',()=>{search.value='';selected='';Object.values(fields).forEach(f=>f.value='');schedule();});
     const preset=button('Save preset',()=>{
       try{localStorage.setItem(key,JSON.stringify({active,query:search.value,role:selected,...Object.fromEntries(Object.entries(fields).map(([k,f])=>[k,f.value]))}));status.textContent='Preset saved. '+status.textContent.replace(/^Preset saved\. /,'');}
@@ -99,7 +101,7 @@
     search.addEventListener('input',schedule);
     role.addEventListener('change',()=>{selected=role.value;schedule();});
     if(!faction)selected='';
-    controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);
+    controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);host.after(back);
     if(faction)globalThis.SLINK_FACTION_CSV?.attach(box,{name:'Export visible members',file:'slink-faction-members.csv',produce:()=>host.isConnected?globalThis.SLINK_FACTION_CSV.native(host,false):''});
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
     function clearSort(){
@@ -160,11 +162,12 @@
         sortedRows=nextSorted;sortedBody=body;body.setAttribute(sortMarker,'');
       }
       const shown=matches.length;
+      back.hidden=shown<15||!body||body.getBoundingClientRect().height<450;
       const message=(!rows.length?`No loaded ${noun} to filter.`:shown===0?`No matches among ${rows.length} loaded ${noun}.`:`${shown} of ${rows.length} loaded ${noun}`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Stats from SLINK cache only.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this list layout.':'');
       if(status.textContent!==message)status.textContent=message;
     }
     function schedule(){if(active&&!frame)frame=requestAnimationFrame(render);}
-    function stop(){listObserver?.disconnect();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};clearSort();clear();}
+    function stop(){listObserver?.disconnect();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};back.hidden=true;clearSort();clear();}
     function configure(){
       stop();
       controls.hidden=!active;controls.style.display=active?'flex':'none';
@@ -175,7 +178,7 @@
       schedule();
     }
     configure();
-    return {host,box,kind,dispose(){stop();box.remove();}};
+    return {host,box,kind,dispose(){stop();box.remove();back.remove();}};
   }
   function mountShop(host,travel){
     const box=make('div'), fields=make('div'), status=make('span');
@@ -183,10 +186,17 @@
     status.setAttribute('role','status');
     const input=(type,label)=>{const el=make('input');el.type=type;el.placeholder=label;el.setAttribute('aria-label',label);if(type==='number'){el.min='0';el.style.width='7em';}el.addEventListener('input',schedule);return el;};
     const name=input('search','Item name'),price=input('number','Max price'),stock=input('number','Minimum stock');
+    name.maxLength=80;
     const category=make('select');category.setAttribute('aria-label','Item type');category.addEventListener('change',schedule);
-    let active=false,observer,frame=0,marked=new Set(),type='';
-    const toggle=button('Filter items',()=>{active=!active;configure();});
-    fields.append(name,...(travel?[category]:[]),price,stock,button('Reset',()=>{name.value=price.value=stock.value=type='';schedule();}),status);
+    const key='slink-native-shop-filter:v1:'+(travel?'travel':location.pathname+':'+(new URLSearchParams(location.search).get('step')||''));
+    let saved={};try{saved=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch{}
+    for(const [el,id] of [[name,'name'],[price,'price'],[stock,'stock']])if(typeof saved[id]==='string')el.value=saved[id].slice(0,80);
+    let active=saved.active===true,observer,frame=0,marked=new Set(),type=travel&&typeof saved.type==='string'?saved.type.slice(0,80):'';
+    const toggle=button('Filter items',()=>{active=!active;if(!active)try{const old=JSON.parse(localStorage.getItem(key)||'null');if(old)localStorage.setItem(key,JSON.stringify({...old,active:false}));}catch{}configure();});
+    fields.append(name,...(travel?[category]:[]),price,stock,button('Reset',()=>{name.value=price.value=stock.value=type='';try{localStorage.removeItem(key);}catch{}schedule();}),button('Save preset',()=>{
+      try{localStorage.setItem(key,JSON.stringify({active:true,name:name.value,price:price.value,stock:stock.value,type}));status.textContent='Preset saved.';}
+      catch{status.textContent='Could not save the preset on this device.';}
+    }),status);
     box.append(toggle,fields);host.before(box);
     function clear(){for(const row of marked)row.removeAttribute(marker);marked.clear();}
     function configure(){
@@ -214,9 +224,9 @@
       if(travel&&(types.length!==category.options.length||types.some((v,i)=>category.options[i].value!==v))){
         category.replaceChildren(...types.map(v=>{const o=make('option',v||'All types');o.value=v;return o;}));
       }
-      if(travel){if(category.value!==type&&types.includes(type))category.value=type;else if(!types.includes(type))type='';}
+      if(travel)category.value=types.includes(type)?type:'';
       const q=normalize(name.value),max=numeric(price.value),min=numeric(stock.value),next=new Set();
-      for(const i of items)if((q&&!normalize(i.name).includes(q))||(type&&i.type!==type)||(max!==null&&(i.price===null||i.price>max))||(min!==null&&(i.stock===null||i.stock<min))){i.row.setAttribute(marker,'hide');next.add(i.row);}
+      for(const i of items)if((q&&!normalize(i.name).includes(q))||(category.value&&i.type!==category.value)||(max!==null&&(i.price===null||i.price>max))||(min!==null&&(i.stock===null||i.stock<min))){i.row.setAttribute(marker,'hide');next.add(i.row);}
       for(const row of marked)if(!next.has(row))row.removeAttribute(marker);
       marked=next;
       const message=items.length?`${items.length-next.size} of ${items.length} loaded items`:'No loaded items to filter.';

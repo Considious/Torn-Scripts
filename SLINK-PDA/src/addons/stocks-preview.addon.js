@@ -133,7 +133,12 @@
     picker=button('Load / refresh stocks',()=>void load());
     search=element('input');search.type='search';search.placeholder='Stock name or symbol';search.setAttribute('aria-label','Stock name or symbol');search.addEventListener('input',schedule);
     ownership=element('select');ownership.setAttribute('aria-label','Stock ownership');for(const [value,label] of [['','All stocks'],['owned','Owned'],['unowned','Not owned']]){const option=element('option',label);option.value=value;ownership.append(option);}ownership.addEventListener('change',schedule);
-    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,search,ownership,status,style);root.prepend(panel);
+    const filterKey='slink-native-extra-filter:v1:stocks';
+    search.maxLength=80;
+    try{const saved=JSON.parse(localStorage.getItem(filterKey)||'{}');if(typeof saved?.query==='string')search.value=saved.query.slice(0,80);if(['owned','unowned'].includes(saved?.ownership))ownership.value=saved.ownership;}catch{}
+    const savePreset=button('Save filter preset',()=>{try{localStorage.setItem(filterKey,JSON.stringify({query:search.value,ownership:ownership.value}));status.textContent='Stock filter preset saved.';}catch{status.textContent='Could not save the preset on this device.';}});
+    const resetFilters=button('Reset filters',()=>{search.value=ownership.value='';try{localStorage.removeItem(filterKey);}catch{}schedule();});
+    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,search,ownership,savePreset,resetFilters,status,style);root.prepend(panel);
     observer=new MutationObserver(schedule);observer.observe(root,{childList:true,subtree:true});
     refreshDisplay();schedule();
   }
