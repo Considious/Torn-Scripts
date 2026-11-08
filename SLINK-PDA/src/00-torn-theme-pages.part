@@ -5,7 +5,7 @@
   // button positions, user IDs, or game-state classes.
   const scope='html[data-slink-torn-theme][data-slink-torn-theme]';
   const groups=Object.freeze([
-    {id:'crimes',selector:'.crimes-app :is(.crimes-hub-root,.crime-root,[class*="crimeOptionWrapper___"],[class*="statsPanel___"],[class*="virtualItemsBackdrop___"])',role:'panel'},
+    {id:'crimes',selector:'.crimes-app :is(.crimes-hub-root,.crime-root,[class*="crimeOptionWrapper___"],[class*="statsPanel___"])',role:'panel'},
     {id:'crime-hub-cards',selector:'.crimes-app .crimes-hub-crime:not(.max-level)',role:'panel'},
     {id:'crime-header',selector:'.crimes-app .crimes-app-header',role:'header'},
     {id:'travel',selector:'#travel-root :is([class*="departPanel___"],[class*="inventoryPanel___"],[class*="searchResults___"],[class*="flightTypeList___"]):not([class*="selected___"]):not([class*="disabled___"])',role:'panel'},
@@ -16,7 +16,8 @@
     {id:'chat-buttons',selector:'#chatRoot :is([id^="chat_panel_button:"],#notes_panel_button,#notes_settings_button,[title="Settings"],[title="Your private chats"])',role:'control',chat:true}
   ]);
   const css=groups.map(group=>scope+(group.chat?'[data-slink-torn-chat]':'')+' '+group.selector.split(', ').join(', '+scope+(group.chat?'[data-slink-torn-chat]':'')+' ')+
-    '{background-color:var(--slt-'+group.role+')!important;color:var(--slt-text)!important;}').join('\n');
+    '{background-color:var(--slt-'+group.role+')!important;color:var(--slt-text)!important;}').join('\n')+
+    '\n'+scope+' body:not(.dark-mode) .crimes-app .crime-root :is([class*="titleBar___"],[class*="crimeOptionWrapper___"]){background:linear-gradient(145deg,var(--slt-control),var(--slt-surface))!important;color:var(--slt-text)!important;}';
   // Do not rewrite background-image, dimensions, overflow, positions, filters,
   // pseudo-elements or descendants' semantic colors. Native layout/state stays.
   global.SLINK_TORN_PAGE_RULES=Object.freeze({groups,css});
