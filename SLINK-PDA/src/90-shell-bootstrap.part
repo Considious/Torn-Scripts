@@ -1,5 +1,5 @@
 adoptPdaLegacyIntelligence();
-let pdaArsonHelper=null,pdaPickpocketHelper=null,pdaCrackingHelper=null,pdaDisposalHelper=null,pdaForgeryHelper=null,pdaCrimeRecipeJournal=null,pdaCrimeRecipeSync=null;
+let pdaArsonHelper=null,pdaPickpocketHelper=null,pdaCrackingHelper=null,pdaDisposalHelper=null,pdaForgeryHelper=null,pdaHustlingHelper=null,pdaCrimeRecipeJournal=null,pdaCrimeRecipeSync=null;
 function shouldRenderPdaModule(name) {
 const dirty=shouldRenderPdaModule.dirty ||= new Set();
 if (!dashboardOpen || !pdaDomActive() || activeModuleName() !== name) { dirty.add(name); return false; }
@@ -1593,6 +1593,10 @@ if(event.target.matches('[data-forgery-helper-enabled]')){
 dataState.settings.alerts.forgeryHelperEnabled=event.target.checked===true;
 syncPdaForgeryHelper();await savePdaChanges();return;
 }
+if(event.target.matches('[data-hustling-helper-enabled]')){
+dataState.settings.alerts.hustlingHelperEnabled=event.target.checked===true;
+syncPdaHustlingHelper();await savePdaChanges();return;
+}
 if(event.target.matches('[data-disposal-helper-enabled]')){
 dataState.settings.alerts.disposalHelperEnabled=event.target.checked===true;
 syncPdaDisposalHelper();await savePdaChanges();return;
@@ -1823,6 +1827,7 @@ if(pdaPickpocketHelper)pdaPickpocketHelper.sync();
 if(pdaCrackingHelper)pdaCrackingHelper.sync();
 if(pdaDisposalHelper)pdaDisposalHelper.sync();
 pdaForgeryHelper?.sync();
+pdaHustlingHelper?.sync();
 if (active===pdaForegroundActive) return;
 pdaForegroundActive=active;
 marketObserver.disconnect();guardian.disconnect();racingStateObserver?.disconnect();
@@ -2077,6 +2082,11 @@ function syncPdaForgeryHelper(){
   pdaForgeryHelper ||= global.SLINK_FORGERY?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
   pdaForgeryHelper?.setEnabled(true);
 }
+function syncPdaHustlingHelper(){
+  if(dataState.settings.alerts.hustlingHelperEnabled!==true||!hasScope('slink.adhd.alerts')){pdaHustlingHelper?.dispose();pdaHustlingHelper=null;return;}
+  pdaHustlingHelper ||= global.SLINK_HUSTLING?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
+  pdaHustlingHelper?.setEnabled(true);
+}
 function syncPdaDisposalHelper(){
   if(dataState.settings.alerts.disposalHelperEnabled!==true||!hasScope('slink.adhd.alerts')){pdaDisposalHelper?.dispose();pdaDisposalHelper=null;return;}
   pdaDisposalHelper ||= global.SLINK_DISPOSAL?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
@@ -2085,6 +2095,7 @@ function syncPdaDisposalHelper(){
 function syncPdaArsonHelper(){
   syncPdaDisposalHelper();
   syncPdaForgeryHelper();
+  syncPdaHustlingHelper();
   syncPdaCrackingHelper();
   syncPdaPickpocketHelper();
   if(dataState.settings.alerts.arsonHelperEnabled!==true){pdaArsonHelper?.dispose();pdaArsonHelper=null;return;}
