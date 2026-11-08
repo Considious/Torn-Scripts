@@ -58,27 +58,33 @@
   const parse=text=>text.trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
   let mounted,queued=false;
   const key='slink.casino.hidden-games.v1',mark='data-slink-hidden-casino-game';
+  const games={highlow:'High-Low',blackjack:'Blackjack',poker:'Poker',bookie:'Bookie',russianroulette:'Russian Roulette',slots:'Slots',spinwheel:'Spin the Wheel',roulette:'Roulette',lottery:'Lottery',keno:'Keno',craps:'Craps'};
+  const gameId=value=>{
+    const id=String(value??'').toLowerCase().replace(/\.php$/,'').replace(/[^a-z0-9]/g,'');
+    const canonical=({bookies:'bookie',bookmaker:'bookie',spinthewheel:'spinwheel',wheel:'spinwheel',slotmachine:'slots',russian:'russianroulette'})[id]||id;
+    return Object.hasOwn(games,canonical)?canonical:null;
+  };
   function lobby(root,box){
     const list=make('div'),restore=make('button','Show all games'),status=make('span');
     restore.type='button';status.setAttribute('role','status');
     const style=make('style');style.textContent=`[${mark}]{display:none!important}`;
     box.append(list,restore,status,style);
     let hidden;
-    try{const items=JSON.parse(localStorage.getItem(key)||'[]');hidden=new Set(Array.isArray(items)?items:[]);}catch{hidden=new Set();}
+    try{const items=JSON.parse(localStorage.getItem(key)||'[]');hidden=new Set(Array.isArray(items)?items.map(gameId).filter(Boolean):[]);}catch{hidden=new Set();}
     let signature='',marked=new Set();
     const save=()=>{try{localStorage.setItem(key,JSON.stringify([...hidden]));status.textContent='';}catch{status.textContent='Changes could not be saved on this device.';}};
     const update=()=>{
       const entries=new Map(),next=new Set();
       for(const a of root.querySelectorAll('a[href]')){
         const url=new URL(a.href,location.href);if(url.origin!==location.origin||url.pathname==='/casino.php')continue;
-        const game=url.searchParams.get('sid')||url.pathname,slug=game.toLowerCase();
-        if(!/^[a-z0-9_\/-]+(?:\.php)?$/.test(slug)||['/page.php','casino'].includes(slug))continue;
-        const label=(a.getAttribute('aria-label')||a.querySelector('h2,h3,.name,.title')?.textContent||a.getAttribute('title')||a.textContent||game).trim().replace(/\s+/g,' ').slice(0,65)||game;
-        entries.set(slug,label);
-        const li=a.closest('li'),target=li&&root.contains(li)&&li.querySelectorAll('a[href]').length===1?li:a;
+        const slug=gameId(url.pathname==='/page.php'?url.searchParams.get('sid'):url.pathname.match(/^\/([\w-]+\.php)$/)?.[1]);
+        if(!slug)continue;
+        entries.set(slug,games[slug]);
+        const li=a.closest('li'),target=li&&li!==root&&root.contains(li)&&li.querySelectorAll('a[href],button,input,select').length===1?li:a;
         if(hidden.has(slug)){target.setAttribute(mark,'');next.add(target);}
       }
       for(const node of marked)if(!next.has(node))node.removeAttribute(mark);marked=next;
+      for(const slug of hidden)if(!entries.has(slug))entries.set(slug,games[slug]);
       const current=JSON.stringify([[...entries],...[...hidden].sort()]);
       if(current===signature)return;signature=current;
       list.replaceChildren(...Array.from(entries,([slug,label])=>{
@@ -87,6 +93,7 @@
         return field(label,input);
       }));
       restore.disabled=!hidden.size;
+      box.querySelector('summary').textContent='Show or hide casino games'+(hidden.size?' ('+hidden.size+' hidden)':'');
     };
     restore.onclick=()=>{hidden.clear();save();update();};
     return {update,clear(){for(const n of marked)n.removeAttribute(mark);}};
