@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-91661d72af68479f78efbf3ec79afba7bc49c4fc1a2117e848af88e49a38781f",
+  "revision": "sha256-30fe2f73552a5f3b9c4de7546607d6e93557f626710c81adbf4854bb70946888",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -24,6 +24,7 @@
     "src/00-pickpocket-helper.part",
     "src/00-cracking-helper.part",
     "src/00-disposal-helper.part",
+    "src/00-forgery-helper.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
     "src/20-quality-of-life.part",
@@ -132,5 +133,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.225"
+  "clientVersion": "0.4.226"
 }
