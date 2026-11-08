@@ -56,10 +56,16 @@
     let enabled=false,disposed=false,root=null,watch=null,discoverWatch=null,frame=null,matcher=null,style=null;
     const panels=new Map();
     const pending=new Map(),confirmed=new Set();
-    const queues=new Map();let uploading=false,retryAt=0;
+    const queues=new Map();let uploading=false;
     const rowSelector='[class*="crimeOptionWrapper___"],[class^="crimeOptionWrapper"]';
     const shards=new Map();
     const active=()=>enabled&&!disposed&&!doc.hidden&&route()&&eligible();
+    const canShare=()=>active()&&doc.hasFocus();
+    async function bounded(operation){
+      let timer;
+      try{return await Promise.race([Promise.resolve().then(operation),new Promise((_,reject)=>{timer=global.setTimeout(()=>reject(Error('Cracking service timed out.')),10000);})]);}
+      finally{global.clearTimeout(timer);}
+    }
     function clear(){
       if(frame!==null)global.cancelAnimationFrame(frame);frame=null;
       watch?.disconnect();watch=null;discoverWatch?.disconnect();discoverWatch=null;root=null;
@@ -67,7 +73,7 @@
       pending.clear();
     }
     function recordAttempt(event){
-      if(!event.isTrusted||!active())return;
+      if(!event.isTrusted||!canShare())return;
       const button=event.target.closest?.('button.commit-button'),row=button?.closest(rowSelector);
       if(!row||!root?.contains(row)||crackState(button)!=='ready')return;
       const answer=readPattern(row);if(!valid.test(answer))return;
@@ -79,25 +85,33 @@
       const key='slink.cracking.confirmed.v1.'+owner;
       if(!queues.has(key)){
         let saved;try{saved=JSON.parse(global.localStorage.getItem(key));}catch{}
-        queues.set(key,{key,last:Number(saved?.last)||0,words:new Set(Array.isArray(saved?.words)?saved.words.filter(word=>valid.test(word)).slice(0,100):[])});
+        queues.set(key,{key,retryAt:Math.min(Date.now()+1800000,Number(saved?.retryAt)||0),failures:Math.max(0,Math.min(6,Number(saved?.failures)||0)),words:new Set(Array.isArray(saved?.words)?saved.words.filter(word=>typeof word==='string'&&valid.test(word)).slice(0,256):[])});
       }
       return queues.get(key);
     }
-    function saveQueue(queue){try{global.localStorage.setItem(queue.key,JSON.stringify({last:queue.last,words:[...queue.words]}));}catch{}}
+    function saveQueue(queue){try{global.localStorage.setItem(queue.key,JSON.stringify({retryAt:queue.retryAt,failures:queue.failures,words:[...queue.words]}));}catch{}}
     async function flushConfirmed(){
-      const owner=contribution?.owner?.();if(!active()||!owner||uploading||Date.now()<retryAt)return;
-      const queue=queueFor(owner),answers=[...queue.words].slice(0,20);
-      if(!answers.length||Date.now()-queue.last<43200000)return;
-      uploading=true;retryAt=Date.now()+60000;
+      const owner=contribution?.owner?.();if(!canShare()||!owner||uploading)return;
+      const queue=queueFor(owner);if(!queue.words.size||Date.now()<queue.retryAt)return;
+      uploading=true;
       try{
-        const result=await contribution.send({schema:1,answers});
-        if(result?.ok!==true||!Array.isArray(result.accepted))return;
-        for(const answer of result.accepted)if(answers.includes(answer))queue.words.delete(answer);
-        if(result.accepted.length)queue.last=Date.now();
-        saveQueue(queue);
-      }catch{}finally{uploading=false;}
+        for(let batch=0;batch<5&&queue.words.size&&canShare()&&contribution.owner()===owner;batch++){
+          const answers=[...queue.words].slice(0,20);
+          const result=await bounded(()=>contribution.send({schema:1,answers}));
+          if(result?.ok!==true||!Array.isArray(result.accepted))throw Error('Cracking upload was not acknowledged.');
+          const accepted=new Set(result.accepted.filter(answer=>answers.includes(answer)));
+          for(const answer of answers){queue.words.delete(answer);if(!accepted.has(answer))queue.words.add(answer);}
+          if(!accepted.size)throw Error('No Cracking answers were acknowledged.');
+          queue.failures=0;queue.retryAt=0;saveQueue(queue);
+          if(queue.words.size)await new Promise(resolve=>global.setTimeout(resolve,750));
+        }
+      }catch{
+        queue.failures=Math.min(6,queue.failures+1);
+        queue.retryAt=Date.now()+Math.min(1800000,60000*2**(queue.failures-1));saveQueue(queue);
+      }finally{uploading=false;}
     }
     function checkConfirmed(){
+      if(!canShare()){pending.clear();return;}
       for(const [row,{answer,owner:attemptOwner,at}] of pending){
         if(!root.contains(row)||Date.now()-at>15000||readPattern(row)!==answer){pending.delete(row);continue;}
         if(![...row.querySelectorAll('button.commit-button')].some(button=>crackState(button)==='confirmed'))continue;
@@ -106,7 +120,7 @@
         if(confirmed.size>=128)confirmed.delete(confirmed.keys().next().value);
         confirmed.add(answer);
         const owner=contribution?.owner?.();
-        if(owner&&owner===attemptOwner){const queue=queueFor(owner);if(queue.words.size<100)queue.words.add(answer);saveQueue(queue);void flushConfirmed();}
+        if(owner&&owner===attemptOwner){const queue=queueFor(owner);if(queue.words.size<256)queue.words.add(answer);saveQueue(queue);void flushConfirmed();}
       }
     }
     const el=(tag,text)=>{const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
@@ -122,7 +136,7 @@
       if(!loadShard||!active()||!entry||entry.pending||entry.next===null)return;
       entry.pending=true;entry.error=false;const page=entry.next;entry.revision++;schedule();
       try{
-        const data=await loadShard({length:entry.length,bucket:entry.bucket,page});
+        const data=await bounded(()=>loadShard({length:entry.length,bucket:entry.bucket,page}));
         if(data?.schema!==1||!Array.isArray(data.words)||data.words.length>4096||!(data.next===null||data.next===page+1&&data.next<16))throw Error('Invalid dictionary page.');
         for(const word of data.words)if(typeof word==='string'&&word.length===entry.length&&valid.test(word))entry.words.add(word);
         if(Array.isArray(data.learned)&&data.learned.length<=512)for(const word of data.learned)if(typeof word==='string'&&word.length===entry.length&&valid.test(word))entry.words.add(word);
