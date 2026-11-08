@@ -44,16 +44,44 @@
     if(slots.length<MIN||slots.length>MAX)return '';
     return [...slots].map(slot=>{const char=normalize(slot.textContent);return /^[A-Z0-9_.]$/.test(char)?char:'?';}).join('');
   }
-  function connect({eligible,loadShard}){
+  function crackState(button){
+    if(!button?.matches?.('button.commit-button'))return '';
+    const label=button.getAttribute('aria-label')?.trim();
+    if(label==='You have already cracked this password'&&button.getAttribute('aria-disabled')==='true')return 'confirmed';
+    if(/^Crack,\s*\d+\s+nerve$/i.test(label||'')&&button.getAttribute('aria-disabled')==='false'&&!button.disabled)return 'ready';
+    return '';
+  }
+  function connect({eligible,loadShard,onConfirmed}){
     const doc=global.document;
     let enabled=false,disposed=false,root=null,watch=null,discoverWatch=null,frame=null,matcher=null,style=null;
     const panels=new Map();
+    const pending=new Map(),confirmed=new Set();
+    const rowSelector='[class*="crimeOptionWrapper___"],[class^="crimeOptionWrapper"]';
     const shards=new Map();
     const active=()=>enabled&&!disposed&&!doc.hidden&&route()&&eligible();
     function clear(){
       if(frame!==null)global.cancelAnimationFrame(frame);frame=null;
       watch?.disconnect();watch=null;discoverWatch?.disconnect();discoverWatch=null;root=null;
       for(const panel of panels.values())panel.remove();panels.clear();style?.remove();style=null;
+      pending.clear();
+    }
+    function recordAttempt(event){
+      if(!event.isTrusted||!active())return;
+      const button=event.target.closest?.('button.commit-button'),row=button?.closest(rowSelector);
+      if(!row||!root?.contains(row)||crackState(button)!=='ready')return;
+      const answer=readPattern(row);if(!valid.test(answer))return;
+      if(pending.size>=24)pending.delete(pending.keys().next().value);
+      pending.set(row,{answer,at:Date.now()});
+    }
+    function checkConfirmed(){
+      for(const [row,{answer,at}] of pending){
+        if(!root.contains(row)||Date.now()-at>15000||readPattern(row)!==answer){pending.delete(row);continue;}
+        if(![...row.querySelectorAll('button.commit-button')].some(button=>crackState(button)==='confirmed'))continue;
+        pending.delete(row);
+        if(confirmed.has(answer))continue;
+        if(confirmed.size>=128)confirmed.delete(confirmed.keys().next().value);
+        confirmed.add(answer);onConfirmed?.(answer);
+      }
     }
     const el=(tag,text)=>{const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
     function shard(pattern){
@@ -77,6 +105,7 @@
     }
     function scan(){
       frame=null;if(!active()||!root?.isConnected)return;
+      checkConfirmed();
       const seen=new Set();
       for(const row of root.querySelectorAll('[class*="crimeOptionWrapper___"],[class^="crimeOptionWrapper"]')){
         const pattern=readPattern(row),known=pattern.replaceAll('?','').length;
@@ -114,13 +143,13 @@
     function discover(){
       const next=doc.querySelector(crimeSelector);
       if(next===root)return;
-      watch?.disconnect();for(const panel of panels.values())panel.remove();panels.clear();root=next;
+      watch?.disconnect();pending.clear();for(const panel of panels.values())panel.remove();panels.clear();root=next;
       if(!root)return;
       watch=new global.MutationObserver(records=>{
         if(records.some(record=>!(record.target.nodeType===1?record.target:record.target.parentElement)?.closest('[data-slink-cracking-advice]')&&
           !(record.type==='childList'&&[...record.addedNodes,...record.removedNodes].every(node=>node.matches?.('[data-slink-cracking-advice]')))))schedule();
       });
-      watch.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','aria-label']});schedule();
+      watch.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','aria-label','aria-disabled','disabled']});schedule();
     }
     function sync(){
       if(!active()){clear();return;}
@@ -133,9 +162,10 @@
     }
     const events=[[global,'hashchange',sync],[global,'popstate',sync],[global,'pageshow',sync],[global,'pagehide',clear],[global,'focus',sync],[global,'blur',sync],[doc,'visibilitychange',sync]];
     for(const [node,event,handler] of events)node.addEventListener(event,handler);
-    return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){disposed=true;clear();for(const [node,event,handler] of events)node.removeEventListener(event,handler);}};
+    doc.addEventListener('click',recordAttempt,true);
+    return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){disposed=true;clear();confirmed.clear();doc.removeEventListener('click',recordAttempt,true);for(const [node,event,handler] of events)node.removeEventListener(event,handler);}};
   }
-  global.SLINK_CRACKING=Object.freeze({createMatcher,readPattern,connect});
+  global.SLINK_CRACKING=Object.freeze({createMatcher,readPattern,crackState,connect});
   const S=global.SLINK_EXTENSION;
   if(!S?.core?.pageActivity||!global.document||new URLSearchParams(global.location.search).get('sid')?.toLowerCase()!=='crimes')return;
   const activity=S.core.pageActivity,toggle='crimes.cracking.enabled',session='access.session.v1';
