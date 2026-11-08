@@ -59,19 +59,23 @@
     const node=el('details');node.className='slink-inline-status';
     node.style.cssText='padding:.4rem;margin:.35rem 0;border:1px solid currentColor;border-radius:.35rem;overflow-wrap:anywhere';
     const heading=el('summary',title), content=el('div');node.append(heading,content);target.prepend(node);
+    node.addEventListener('toggle',()=>{if(node.open)schedule();});
     return {node,heading,content,signature:''};
   }
   function paint(){
     if(!visible())return;
     const now=Date.now(), current=data?.expiresAt>now?data:null;
-    const out=timers(current?{...current,virus:virus?.owner===current.owner?virus:null}:null,now);
     const side=document.querySelector('#sidebar');
     const keys=pageKeys(), target=keys.length?(document.querySelector('#mainContainer')||document.querySelector('.content-wrapper[role="main"]')||document.querySelector('#mainwrap')):null;
-    sidebar=panel(sidebar,current&&(current.canVirus||out.medical||out.drug||out.booster)?side:null,'SLINK timers');
+    const alerts=current?.alerts,checked=alerts?.fetchedAt??alerts?.at,cooldowns=(alerts?.data??alerts?.body)?.cooldowns;
+    const hasCooldown=recent(checked,now,15*60000)&&['medical','drug','booster'].some(key=>positive(cooldowns?.[key])&&checked+cooldowns[key]*1000>now);
+    sidebar=panel(sidebar,current&&(current.canVirus||hasCooldown)?side:null,'SLINK timers');
     const allowed=keys[0]==='company'?current?.canCompany:current?.canVirus||(keys.includes('war')&&current?.canWar);
     main=panel(main,allowed?target:null,keys[0]==='company'?'SLINK · Your company':'SLINK · Timers');
+    if(!sidebar?.node.open&&!main?.node.open)return;
+    const out=timers(current?{...current,virus:virus?.owner===current.owner?virus:null}:null,now);
     function update(box,list,sidePanel){
-      if(!box)return;
+      if(!box?.node.open)return;
       const rows=[];
       for(const key of list){
         if(out[key])rows.push(`${names[key]}: ${elapsed(out[key].end-now)} left · ${fmt(out[key].end)} (checked ${fmt(out[key].at)})`);
@@ -128,7 +132,11 @@
   function schedule(){if(queued||!visible())return;queued=true;requestAnimationFrame(()=>{queued=false;paint();});}
   function watch(){
     if(!document.body)return;
-    new MutationObserver(schedule).observe(document.body,{childList:true,subtree:true});
+    const hosts='#sidebar,#mainContainer,.content-wrapper[role="main"],#mainwrap';
+    new MutationObserver(records=>{
+      if(sidebar&&!sidebar.node.isConnected||main&&!main.node.isConnected||records.some(record=>
+        [...record.addedNodes].some(n=>n.nodeType===1&&(n.matches(hosts)||n.querySelector(hosts)))))schedule();
+    }).observe(document.body,{childList:true,subtree:true});
     void refresh();
   }
   if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{

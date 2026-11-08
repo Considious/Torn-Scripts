@@ -60,6 +60,11 @@
     const read=()=>{try{return JSON.parse(localStorage.getItem(key))||{};}catch{return {};}};
     const saved=read();
     let active=saved.active===true, listObserver, frame=0, previous=new Set(), requested='', intel={}, generation=0, sortedBody=null, sortedRows=new Set();
+    let rowCache=new WeakMap(), sizeBody=null, shownCount=0, tall=false;
+    const resize=typeof ResizeObserver==='function'?new ResizeObserver(entries=>{
+      const entry=entries.find(item=>item.target===sizeBody);
+      if(entry){tall=(entry.borderBoxSize?.[0]?.blockSize??entry.contentRect.height)>=450;back.hidden=shownCount<15||!tall;}
+    }):null;
     const box=make('div');box.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 0';
     const controls=make('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px';
     const search=make('input');search.type='search';search.placeholder='Name or player ID';search.maxLength=60;search.setAttribute('aria-label','Filter '+noun+' by name or ID');
@@ -112,14 +117,18 @@
     function render(){
       frame=0;if(!active)return;
       const body=host.querySelector(faction?'.table-body':timed||abroad?'.users-list':directory?'.user-info-list-wrap':':scope > ul');
-      const rows=Array.from(body?.children||[]).filter(row=>row.matches('li')&&!row.querySelector('.ajax-preloader,.ajax-placeholder')&&row.querySelector('a[href*="profiles.php?XID="]'));
-      const entries=rows.map(row=>{
+      function readEntry(row){
+        if(rowCache.has(row))return rowCache.get(row);
         const a=row.querySelector('a[href*="profiles.php?XID="]');
+        if(!a||row.querySelector('.ajax-preloader,.ajax-placeholder')){rowCache.set(row,null);return null;}
         const id=new URL(a.href,location.href).searchParams.get('XID')||'';
         const name=Array.from(row.querySelectorAll('a[href*="profiles.php?XID="]')).find(link=>link.textContent.trim())?.textContent||a.title;
         const position=row.querySelector('.position .ellipsis,.position')?.textContent.trim()||'';
-        return {row,id,name,position,...rowData(row),ff:numeric(intel[id]?.ff),stats:numeric(intel[id]?.stats)};
-      });
+        const value={row,id,name,position,...rowData(row)};rowCache.set(row,value);return value;
+      }
+      const entries=Array.from(body?.children||[]).filter(row=>row.matches('li')).map(readEntry).filter(Boolean)
+        .map(entry=>({...entry,ff:numeric(intel[entry.id]?.ff),stats:numeric(intel[entry.id]?.stats)}));
+      const rows=entries.map(entry=>entry.row);
       const [metric,dir]=sort.value.split('-');
       const range=Object.fromEntries(Object.keys(listMetrics).map(id=>[id,['min','max'].map(bound=>numeric(fields[id+bound].value))]));
       if(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)){
@@ -162,19 +171,28 @@
         sortedRows=nextSorted;sortedBody=body;body.setAttribute(sortMarker,'');
       }
       const shown=matches.length;
-      back.hidden=shown<15||!body||body.getBoundingClientRect().height<450;
+      shownCount=shown;
+      if(sizeBody!==body){resize?.disconnect();sizeBody=body;tall=false;if(body)resize?.observe(body);}
+      back.hidden=shown<15||!body||(resize?!tall:body.getBoundingClientRect().height<450);
       const message=(!rows.length?`No loaded ${noun} to filter.`:shown===0?`No matches among ${rows.length} loaded ${noun}.`:`${shown} of ${rows.length} loaded ${noun}`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Stats from SLINK cache only.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this list layout.':'');
       if(status.textContent!==message)status.textContent=message;
     }
     function schedule(){if(active&&!frame)frame=requestAnimationFrame(render);}
-    function stop(){listObserver?.disconnect();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};back.hidden=true;clearSort();clear();}
+    function stop(){listObserver?.disconnect();resize?.disconnect();sizeBody=null;rowCache=new WeakMap();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};back.hidden=true;clearSort();clear();}
     function configure(){
       stop();
       controls.hidden=!active;controls.style.display=active?'flex':'none';
       toggle.textContent=active?(faction?'Hide member filter':'Hide '+noun+' filter'):'Filter '+noun;toggle.setAttribute('aria-expanded',String(active));
       if(!active){try{localStorage.setItem(key,JSON.stringify({...read(),active:false}));}catch{}return;}
       if(!sheet.isConnected)document.head.append(sheet);
-      listObserver=new MutationObserver(schedule);listObserver.observe(host,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','class','title','alt','aria-label','data-activity','disabled','aria-disabled']});
+      listObserver=new MutationObserver(records=>{
+        for(const {target} of records)for(let node=target.nodeType===1?target:target.parentElement;node&&node!==host;node=node.parentElement)rowCache.delete(node);
+        // A detached/reinserted row may have changed while it was outside the observer.
+        for(const {addedNodes} of records)for(const node of addedNodes)if(node.nodeType===1){
+          rowCache.delete(node);if(!node.matches('li'))for(const row of node.querySelectorAll('li'))rowCache.delete(row);
+        }
+        schedule();
+      });listObserver.observe(host,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','class','title','alt','aria-label','data-activity','data-label','data-icon','id','disabled','aria-disabled']});
       schedule();
     }
     configure();

@@ -105,7 +105,7 @@
     function scan(){
       timer=null;observer?.disconnect();if(!active()||!config.enabled||!['quickItems','effects','values','customLinks'].some(k=>config[k])){cleanNative();return;}
       installStyle();const source=route();if(source!==lastRoute){items.clear();seenAt=0;lastRoute=source;}
-      if(config.customLinks&&config.links.length){const target=doc.querySelector('#sidebar')||doc.querySelector('.content-wrapper[role="main"]');if(target){if(!links||!links.isConnected){links=node('nav',undefined,{class:'slink-qol slink-qol-links','aria-label':'SLINK custom links'});target.prepend(links);}links.replaceChildren();for(const l of config.links)links.append(node('a',l.name,{href:l.href,...(l.newTab?{target:'_blank',rel:'noopener noreferrer'}:{})}));}}
+      if(config.customLinks&&config.links.length){const target=doc.querySelector('#sidebar')||doc.querySelector('.content-wrapper[role="main"]');if(target){if(!links||links.parentNode!==target){links?.remove();links=node('nav',undefined,{class:'slink-qol slink-qol-links','aria-label':'SLINK custom links'});target.prepend(links);}const key=JSON.stringify(config.links);if(links.dataset.renderKey!==key){links.dataset.renderKey=key;links.replaceChildren();for(const l of config.links)links.append(node('a',l.name,{href:l.href,...(l.newTab?{target:'_blank',rel:'noopener noreferrer'}:{})}));}}}
       else{links?.remove();links=null;}
       if(!config.quickItems&&!config.effects&&!config.values){tray?.remove();tray=null;scope?.querySelectorAll('.slink-qol-add,.slink-qol-info').forEach(n=>n.remove());return;}
       if(!source){tray?.remove();tray=null;tradeValues();return;}
@@ -114,8 +114,16 @@
       const rows=readRows(source);items=new Map(rows.map(x=>[x.id,x]));seenAt=Date.now();decorate(source,rows);
       // Learn only a displayed own-player blood-type label, never another player's profile.
       if(!config.bloodType){const label=doc.querySelector('#sidebar [title*="Blood type" i],#sidebar [aria-label*="Blood type" i]');const match=(label?.getAttribute('title')||label?.getAttribute('aria-label')||'').match(/blood type\s*:?\s*(AB|A|B|O)\s*([+-])/i);if(match)void mutate(s=>({...s,bloodType:Q.blood(match[1]+match[2])})).catch(e=>notice(e.message));}
-      if(config.quickItems){if(!tray||!tray.isConnected){tray=node('section',undefined,{class:'slink-qol','aria-label':'SLINK quick use'});scope.prepend(tray);}tray.replaceChildren(node('strong','Quick use'),node('small',' · One item per click'));
-        const wrap=node('div',undefined,{class:'slink-qol-favorites'});for(const f of config.favorites.filter(x=>x.source===source)){const item=items.get(f.id),special=Q.SPECIAL.includes(f.id);const b=makeUse(source,f.id,f.name+(item?.quantity!==null&&item?.quantity!==undefined?' ×'+item.quantity:''));const img=item?.row.querySelector('img');if(img){const icon=img.cloneNode(false);icon.width=24;icon.height=24;icon.alt='';icon.style.verticalAlign='middle';b.prepend(icon);}if(!special&&(!item||!item.usable||!(item.quantity>0)))b.disabled=true;b.title=special?'Uses one selected item per click':item?'Use one '+item.name:'Open the item category to verify availability';wrap.append(b);}tray.append(wrap,node('div',status,{role:'status','aria-live':'polite'}));
+      if(config.quickItems){
+        if(!tray||tray.parentNode!==scope){tray?.remove();tray=node('section',undefined,{class:'slink-qol','aria-label':'SLINK quick use'});scope.prepend(tray);}
+        const favorites=config.favorites.filter(x=>x.source===source).map(f=>({f,item:items.get(f.id),img:items.get(f.id)?.row.querySelector('img')}));
+        const key=JSON.stringify([source,favorites.map(({f,item,img})=>[f.id,f.name,item?.name,item?.quantity,item?.usable,img?.getAttribute('src'),img?.getAttribute('srcset')])]);
+        if(tray.dataset.renderKey!==key){
+          tray.dataset.renderKey=key;tray.replaceChildren(node('strong','Quick use'),node('small',' · One item per click'));
+          const wrap=node('div',undefined,{class:'slink-qol-favorites'});for(const {f,item,img} of favorites){const special=Q.SPECIAL.includes(f.id);const b=makeUse(source,f.id,f.name+(item?.quantity!=null?' ×'+item.quantity:''));if(img){const icon=img.cloneNode(false);icon.width=24;icon.height=24;icon.alt='';icon.style.verticalAlign='middle';b.prepend(icon);}b.dataset.unavailable=String(!special&&(!item||!item.usable||!(item.quantity>0)));b.title=special?'Uses one selected item per click':item?'Use one '+item.name:'Open the item category to verify availability';wrap.append(b);}tray.append(wrap,node('div',status,{role:'status','aria-live':'polite'}));
+        }
+        for(const button of tray.querySelectorAll('[data-qol-use]'))button.disabled=busy||preparing||button.dataset.unavailable==='true';
+        const noticeNode=tray.querySelector('[role="status"]');if(noticeNode.textContent!==status)noticeNode.textContent=status;
       }else{tray?.remove();tray=null;}
       observer ||= new MutationObserver(records=>{if(records.some(r=>!r.target.closest?.('.slink-qol')&&!r.target.closest?.('.slink-qol-info')&&(r.type==='characterData'||[...r.addedNodes,...r.removedNodes].some(n=>n.nodeType!==1||!n.matches?.('.slink-qol-add,.slink-qol-info')))))schedule();});
       observer.observe(scope,{childList:true,subtree:true,characterData:true});

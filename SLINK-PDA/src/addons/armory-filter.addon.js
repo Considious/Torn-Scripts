@@ -86,8 +86,8 @@
         const current=await read();
         if(current?.owner!==prefs.owner||!focused()||tab()!==root||!box.open||current.mode!==mode.value)return;
         const currentProtected=new Set((Array.isArray(current.protectedIds)?current.protectedIds:[]).map(String));
-        const candidate=choices.find(({row,id})=>row.isConnected&&root.contains(row)&&row.getClientRects().length&&
-          eligibility(row,current.mode,currentProtected)===id&&submitted.get(row)!==id);
+        const candidate=choices.find(({row,id,loan})=>row.isConnected&&root.contains(row)&&row.getClientRects().length&&
+          loan&&loanIdentity(row)===loan&&eligibility(row,current.mode,currentProtected)===id&&submitted.get(row)!==loan);
         if(!candidate){status.textContent='No eligible visible items. Check the filters or load the faction roster.';return;}
         if(Array.from(root.querySelectorAll('.retrieve-cont .retrieve-yes')).some(n=>n.getClientRects().length)){
           status.textContent='Finish or cancel the open Torn recall first.';return;
@@ -99,25 +99,33 @@
         candidate.row.scrollIntoView({block:'nearest'});
         for(let attempt=0;attempt<20;attempt++){
           await new Promise(resolve=>setTimeout(resolve,50));
-          if(!focused()||tab()!==root||!box.isConnected||!box.open||!candidate.row.isConnected||!root.contains(candidate.row)||borrowerId(candidate.row)!==candidate.id)
+          if(!focused()||tab()!==root||!box.isConnected||!box.open||!candidate.row.isConnected||!root.contains(candidate.row)||borrowerId(candidate.row)!==candidate.id||loanIdentity(candidate.row)!==candidate.loan)
             throw Error('The page or loan changed before confirmation.');
-          const confirm=candidate.row.querySelector('.retrieve-cont .retrieve-yes');
+          const confirm=candidate.row.querySelector('.retrieve-cont')?.querySelector('.retrieve-yes');
           if(!confirm?.getClientRects().length||confirm.disabled||confirm.getAttribute('aria-disabled')==='true')continue;
           const latest=await read();
           if(latest?.owner!==prefs.owner||latest.mode!==current.mode||(latest.protectedIds||[]).map(String).includes(candidate.id)||
-            !focused()||tab()!==root||!box.isConnected||!box.open||!root.contains(candidate.row)||borrowerId(candidate.row)!==candidate.id||
-            !candidate.row.contains(confirm)||!confirm.getClientRects().length||confirm.disabled||confirm.getAttribute('aria-disabled')==='true')
+            !focused()||tab()!==root||!box.isConnected||!box.open||mode.value!==current.mode||!root.contains(candidate.row)||borrowerId(candidate.row)!==candidate.id||
+            loanIdentity(candidate.row)!==candidate.loan||candidate.row.querySelector('.retrieve-cont')?.querySelector('.retrieve-yes')!==confirm||
+            !confirm.getClientRects().length||confirm.disabled||confirm.getAttribute('aria-disabled')==='true')
             throw Error('Access, filters, or the loan changed before confirmation.');
-          submitted.set(candidate.row,candidate.id);
+          submitted.set(candidate.row,candidate.loan);
           confirm.click();
           status.textContent='One recall submitted to Torn.';
           return;
         }
         throw Error('Torn did not show the recall confirmation.');
       }catch(error){status.textContent=error.message+(opened?' SLINK did not confirm the recall.':'');}
-      finally{working=false;recall.disabled=!choices.some(({row,id})=>row.isConnected&&submitted.get(row)!==id);schedule();}
+      finally{working=false;recall.disabled=!choices.some(({row,loan})=>loan&&row.isConnected&&submitted.get(row)!==loan);schedule();}
     });
     const borrowerId=row=>row.querySelector('.loaned a[href*="XID="]')?.getAttribute('href')?.match(/[?&]XID=(\d+)/i)?.[1];
+    function loanIdentity(row){
+      const item=row.querySelector('.img-wrap'),confirmation=row.querySelector('.retrieve-cont');
+      const armory=item?.dataset.armoryid,type=item?.dataset.itemid;
+      // Item type is not unique: bind to the armory instance Torn identifies on both controls.
+      return /^[1-9]\d*$/.test(armory||'')&&/^[1-9]\d*$/.test(type||'')&&
+        confirmation?.dataset.armoryid===armory&&confirmation?.dataset.itemid===type?armory+':'+type:null;
+    }
     function eligibility(row,selection,excluded){
       const id=borrowerId(row);
       const ranked=row.querySelector('.img-wrap img.torn-item:is(.glow-yellow,.glow-orange,.glow-red)');
@@ -135,11 +143,11 @@
         const borrower=row.querySelector('.loaned a[href*="XID="]');
         const id=eligibility(row,mode.value,protectedIds);
         const match=(!q||[item.textContent,borrower?.textContent,borrower?.getAttribute('href')?.match(/[?&]XID=(\d+)/i)?.[1]].join(' ').toLowerCase().includes(q));
-        if(match&&id)choices.push({row,id});
+        if(match&&id)choices.push({row,id,loan:loanIdentity(row)});
         if((!match||(only.checked&&!id))&&row!==chosen){row.setAttribute(marker,'');next.add(row);}
       }
       for(const row of marked)if(!next.has(row))row.removeAttribute(marker);
-      marked=next;recall.disabled=working||!choices.some(({row,id})=>submitted.get(row)!==id);
+      marked=next;recall.disabled=working||!choices.some(({row,loan})=>loan&&submitted.get(row)!==loan);
     }
     function schedule(){if(box.open&&!frame&&focused())frame=requestAnimationFrame(update);}
     const observer=new MutationObserver(schedule);
@@ -149,7 +157,7 @@
     };
     search.oninput=only.onchange=update;
     const clear=()=>{observer.disconnect();cancelAnimationFrame(frame);frame=0;for(const row of marked)row.removeAttribute(marker);marked.clear();chosen?.removeAttribute(pick);chosen=null;};
-    box.ontoggle=()=>{if(box.open){observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['class','href','aria-disabled']});schedule();}else clear();};
+    box.ontoggle=()=>{if(box.open){observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['class','href','aria-disabled','data-armoryid','data-itemid']});schedule();}else clear();};
     bar.append(search,onlyLabel,mode,recall,btn('Reset filter',()=>{search.value='';only.checked=false;update();}));
     box.append(make('summary','Armory filter & recaller'),bar,status,manager);
     if(!style.isConnected)document.head.append(style);
