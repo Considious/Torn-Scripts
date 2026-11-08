@@ -2054,7 +2054,8 @@ function syncPdaPickpocketHelper(){
 }
 function syncPdaCrackingHelper(){
   if(dataState.settings.alerts.crackingHelperEnabled!==true||!hasScope('slink.adhd.alerts')){pdaCrackingHelper?.dispose();pdaCrackingHelper=null;return;}
-  pdaCrackingHelper ||= global.SLINK_CRACKING?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts')});
+  pdaCrackingHelper ||= global.SLINK_CRACKING?.connect({eligible:()=>pdaDomActive()&&hasScope('slink.adhd.alerts'),
+    loadShard:({length,bucket,page})=>requestJson(URLS.permission+'/api/cracking-dictionary/v1/'+length+'/'+bucket+'/'+page,{credentials:'omit',retries:0})});
   pdaCrackingHelper?.setEnabled(true);
 }
 function syncPdaArsonHelper(){

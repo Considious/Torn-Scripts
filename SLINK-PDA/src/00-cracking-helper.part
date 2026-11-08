@@ -44,10 +44,11 @@
     if(slots.length<MIN||slots.length>MAX)return '';
     return [...slots].map(slot=>{const char=normalize(slot.textContent);return /^[A-Z0-9_.]$/.test(char)?char:'?';}).join('');
   }
-  function connect({eligible}){
+  function connect({eligible,loadShard}){
     const doc=global.document;
     let enabled=false,disposed=false,root=null,watch=null,discoverWatch=null,frame=null,matcher=null,style=null;
     const panels=new Map();
+    const shards=new Map();
     const active=()=>enabled&&!disposed&&!doc.hidden&&route()&&eligible();
     function clear(){
       if(frame!==null)global.cancelAnimationFrame(frame);frame=null;
@@ -55,6 +56,25 @@
       for(const panel of panels.values())panel.remove();panels.clear();style?.remove();style=null;
     }
     const el=(tag,text)=>{const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
+    function shard(pattern){
+      const bucket=pattern[0]==='?'?'common':pattern[0]==='.'?'dot':pattern[0],key=pattern.length+'/'+bucket;
+      if(!shards.has(key)){
+        if(shards.size>=12){const old=[...shards].find(([,item])=>!item.pending);if(old)shards.delete(old[0]);else return null;}
+        shards.set(key,{key,length:pattern.length,bucket,words:new Set(),next:0,revision:0,pending:false,error:false});
+      }
+      return shards.get(key);
+    }
+    async function fetchShard(entry){
+      if(!loadShard||!active()||!entry||entry.pending||entry.next===null)return;
+      entry.pending=true;entry.error=false;const page=entry.next;entry.revision++;schedule();
+      try{
+        const data=await loadShard({length:entry.length,bucket:entry.bucket,page});
+        if(data?.schema!==1||!Array.isArray(data.words)||data.words.length>4096||!(data.next===null||data.next===page+1&&data.next<16))throw Error('Invalid dictionary page.');
+        for(const word of data.words)if(typeof word==='string'&&word.length===entry.length&&valid.test(word))entry.words.add(word);
+        entry.next=data.next;
+      }catch{entry.error=true;}
+      finally{entry.pending=false;entry.revision++;schedule();}
+    }
     function scan(){
       frame=null;if(!active()||!root?.isConnected)return;
       const seen=new Set();
@@ -62,14 +82,27 @@
         const pattern=readPattern(row),known=pattern.replaceAll('?','').length;
         if(!pattern||!pattern.includes('?')||known<2)continue;
         seen.add(row);
-        const prior=panels.get(row);
-        if(prior?.isConnected&&prior.dataset.pattern===pattern)continue;
-        const {exact,variants}=(matcher||=createMatcher())(pattern);
-        const panel=prior||el('div');panel.dataset.slinkCrackingAdvice='';panel.dataset.pattern=pattern;
+        const entry=loadShard?shard(pattern):null;
+        if(entry?.revision===0)void fetchShard(entry);
+        const version=pattern+'/'+(entry?.revision??0),prior=panels.get(row);
+        if(prior?.isConnected&&prior.dataset.pattern===version)continue;
+        const local=(matcher||=createMatcher())(pattern),exact=[...local.exact],matched=new Set(exact);
+        if(entry&&exact.length<EXACT_LIMIT)for(const word of entry.words){
+          if(matched.has(word)||![...pattern].every((slot,i)=>slot==='?'||slot===word[i]))continue;
+          exact.push(word);matched.add(word);if(exact.length===EXACT_LIMIT)break;
+        }
+        const variants=local.variants.filter(word=>!entry?.words.has(word));
+        const panel=prior||el('div');panel.dataset.slinkCrackingAdvice='';panel.dataset.pattern=version;
         const results=[];
         if(exact.length)results.push(el('div','Dictionary matches: '+exact.join(' · ')));
         if(variants.length)results.push(el('div','Variant guesses: '+variants.join(' · ')));
-        if(!results.length)results.push(el('div','No match in the starter dictionary.'));
+        if(!results.length)results.push(el('div',entry?.words.size?'No match in the loaded dictionary.':'No match in the starter dictionary.'));
+        if(entry?.pending)results.push(el('div','Loading more dictionary entries…'));
+        else if(entry&&entry.next!==null){
+          if(entry.error)results.push(el('div','Shared dictionary unavailable; offline matches still work.'));
+          const more=el('button',entry.error?'Retry dictionary':'Load more dictionary');more.type='button';
+          more.addEventListener('click',event=>{event.stopPropagation();void fetchShard(entry);});results.push(more);
+        }
         panel.replaceChildren(...results);
         if(!panel.isConnected)row.append(panel);
         panels.set(row,panel);
@@ -91,7 +124,7 @@
     }
     function sync(){
       if(!active()){clear();return;}
-      if(!style){style=el('style','[data-slink-cracking-advice]{flex:0 0 100%;min-width:0;position:static;padding:.3em .55em;border-inline-start:2px solid var(--slt-accent,#779ac2);background:var(--slt-surface,#242a34);color:var(--slt-text,#f2f5ff);overflow-wrap:anywhere;font-size:.85em;pointer-events:none}');doc.head.append(style);}
+      if(!style){style=el('style','[data-slink-cracking-advice]{flex:0 0 100%;min-width:0;position:static;padding:.3em .55em;border-inline-start:2px solid var(--slt-accent,#779ac2);background:var(--slt-surface,#242a34);color:var(--slt-text,#f2f5ff);overflow-wrap:anywhere;font-size:.85em;pointer-events:none}[data-slink-cracking-advice] button{pointer-events:auto;display:inline-block;color:inherit;background:var(--slt-control,#313b4a);border:1px solid currentColor;border-radius:4px;padding:.2em .45em}');doc.head.append(style);}
       if(!discoverWatch&&doc.body){
         discoverWatch=new global.MutationObserver(records=>{if(!root?.isConnected||records.some(r=>[...r.addedNodes].some(n=>n.matches?.(crimeSelector)||n.querySelector?.(crimeSelector))))discover();});
         discoverWatch.observe(doc.querySelector('#mainContainer')||doc.body,{subtree:true,childList:true});
@@ -107,7 +140,7 @@
   if(!S?.core?.pageActivity||!global.document||new URLSearchParams(global.location.search).get('sid')?.toLowerCase()!=='crimes')return;
   const activity=S.core.pageActivity,toggle='crimes.cracking.enabled',session='access.session.v1';
   let allowed=false,expires=0,revision=0;
-  const helper=connect({eligible:()=>allowed&&expires>Date.now()&&activity.eligible()});
+  const helper=connect({eligible:()=>allowed&&expires>Date.now()&&activity.eligible(),loadShard:input=>S.core.messaging.send('crimes.cracking.dictionary',input)});
   async function refresh(){
     const rev=++revision;
     try{
