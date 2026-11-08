@@ -1068,7 +1068,7 @@ if (action === 'close') closeDashboard();
 if (action === 'toggle-minimized-mode') applyMinimizedMode(state.minimizedMode === 'bar' ? 'bubble' : state.minimizedMode === 'bubble' ? 'chat' : 'bar');
 if (action === 'reset-layout') resetLayout();
 if (action === 'refresh-active') void loadActiveModule(true);
-if (action === 'refresh-mugging') void refreshMugging(true);
+if (action === 'refresh-mugging') void refreshMugging(true, { excludeCurrent:true });
 if (action === 'refresh-travel-safety') void refreshTravelSafety(true).catch(() => undefined);
 if (action === 'refresh-company') void refreshCompany(true).catch(() => undefined);
 if (action === 'refresh-museums') void refreshMuseums(true).catch(() => undefined);
