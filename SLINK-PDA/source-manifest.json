@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-8180c81dc12ffc018c265b068b3878724319fae6f803f5011835bbab22911166",
+  "revision": "sha256-7c8c19da7359fe2bd15e7f5b019a7bdd7172c893fcb1cc3ffca5fc44d42560b3",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -34,6 +34,7 @@
     "src/00-ff-bounties.part",
     "src/30-dashboard-combat.part",
     "src/40-war.part",
+    "src/00-ranked-gear-panel.part",
     "src/50-market-dom.part",
     "src/60-xanax-safety.part",
     "src/90-shell-bootstrap.part"
@@ -140,5 +141,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.233"
+  "clientVersion": "0.4.234"
 }
