@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-4595c7e7f9a343795528df259687ed5ccfbe74d27118be0fffb8e70156d54117",
+  "revision": "sha256-fe6fca2af79f2eabd0edfced897ce81f518d3f989b58aa73bbbd8145a21afd2e",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -26,6 +26,7 @@
     "src/00-disposal-helper.part",
     "src/00-forgery-helper.part",
     "src/00-hustling-helper.part",
+    "src/00-scamming-helper.part",
     "src/00-runtime-core.part",
     "src/10-market-runtime.part",
     "src/20-quality-of-life.part",
@@ -134,5 +135,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.228"
+  "clientVersion": "0.4.229"
 }
