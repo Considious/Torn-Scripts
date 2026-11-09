@@ -2723,6 +2723,13 @@ renderThemeChoices(); return cached?.catalog || null;
 function renderThemeChoices() {
 if (!shouldRenderPdaModule('access')) return;
 const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
+let contrastInput=shadow.querySelector('[data-theme-higher-contrast]');
+if(!contrastInput){
+ const label=document.createElement('label');label.className='check-row';
+ contrastInput=document.createElement('input');contrastInput.type='checkbox';contrastInput.setAttribute('data-theme-higher-contrast','');
+ label.append(contrastInput,document.createTextNode(' Higher theme contrast'));row.after(label);
+}
+globalThis.SLINK_THEME_APPEARANCE?.attach(host,shadow)?.bind(contrastInput);
 row.innerHTML = themeCatalog().map(theme => {
 const unlocked = !theme.scope || hasThemeScope(theme.scope);
 const colors = Array.isArray(theme.swatch) && theme.swatch.length === 3 ? theme.swatch : ['#111827','#3b82f6','#dbeafe'];

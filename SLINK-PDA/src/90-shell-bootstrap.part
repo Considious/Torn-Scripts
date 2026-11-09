@@ -774,6 +774,7 @@ await savePdaChanges();syncTornPageTheme();return dataState.settings.tornTheme;
 });}
 }
 function setTheme(theme, persist = true) {
+globalThis.SLINK_THEME_APPEARANCE?.attach(host,shadow);
 const requestedTheme = String(theme || defaults.theme);
 const requestedDefinition = themeCatalog().find(item => item.id === requestedTheme) || null;
 const requestedUnlocked = Boolean(requestedDefinition && (!requestedDefinition.scope || hasThemeScope(requestedDefinition.scope)));
