@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-1750de9100f10c28a5e7c17bcd3bf20014fee7a8099723b41e65a0ca9049c780",
+  "revision": "sha256-daeb0a2bfdb9517e00c35ee3500391cbc1d9c0eb98926b872da5b66754ad9222",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -84,6 +84,9 @@
       "source": "src/addons/page-tools.addon.js"
     },
     {
+      "source": "src/addons/travel-run.js"
+    },
+    {
       "source": "src/addons/stocks-model.js"
     },
     {
@@ -136,5 +139,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.230"
+  "clientVersion": "0.4.231"
 }
