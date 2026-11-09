@@ -1,4 +1,4 @@
-/* Shared by the browser extension and PDA. This helper never clicks Torn controls or calls Torn endpoints. */
+/* Shared by the extension and PDA. Only opens verified native panels on a trusted press; never submits confirmations or calls endpoints. */
 (function (g) {
   'use strict';
   const key = 'slink.travel-run.plan.v1', runKey = key + '.progress';
@@ -65,11 +65,11 @@
       <div class="actions"><button type="submit">Save and start run</button></div></form>
       <p id="help">Use Torn’s controls for each action. Advance only after you verify the result.</p>
       <p id="status" role="status"></p>
-      <div class="actions"><button type="button" id="next"></button><button type="button" id="skip">Unavailable</button><button type="button" id="edit">Edit plan</button></div>
+      <div class="actions"><button type="button" id="open" hidden></button><button type="button" id="next"></button><button type="button" id="skip">Unavailable</button><button type="button" id="edit">Edit plan</button></div>
       </details>`;
     const get = id => shadow.getElementById(id);
     const details = shadow.querySelector('details'), form = shadow.querySelector('form');
-    const next = get('next'), skip = get('skip'), edit = get('edit'), status = get('status');
+    const next = get('next'), skip = get('skip'), edit = get('edit'), status = get('status'), open = get('open');
     let editing = index === null;
     const fields = form.elements;
     function fill() { fields.sell.value = value.sell; fields.buys.value = value.buys.join('\n'); fields.fallback.value = value.fallback; }
@@ -77,6 +77,8 @@
       const current = index === null ? null : steps(value)[index];
       form.hidden = editing;
       next.hidden = editing || !current;
+      open.hidden = editing || !['buy', 'home'].includes(current?.type);
+      open.textContent = current?.type === 'home' ? 'Open Travel Home' : 'Open ' + (current?.label || '') + ' panel';
       skip.hidden = editing || !current || !['sell','buy'].includes(current.type);
       edit.hidden = editing;
       status.textContent = message || (editing ? '' : current ? 'Next: ' + current.label : 'Run complete.');
@@ -102,6 +104,34 @@
       render(saved && progress ? '' : 'Storage is unavailable; this run may reset on navigation.');
     });
     next.addEventListener('click', event => act('done', event));
+    open.addEventListener('click', event => {
+      if (!event.isTrusted || !details.open || editing || d.visibilityState !== 'visible' || !d.hasFocus()) return;
+      const current = steps(value)[index];
+      if (!current || !['buy', 'home'].includes(current.type)) return;
+      const activeRoot = host.parentElement;
+      const usable = node => node.getClientRects().length > 0 && !node.disabled &&
+        node.getAttribute('aria-disabled') !== 'true' && !node.closest('[hidden],[inert],[aria-hidden="true"]');
+      let matches;
+      if (current.type === 'home') {
+        matches = Array.from(activeRoot.querySelectorAll('a.travel-home-header-button[aria-controls="travel-home-panel"][aria-expanded="false"]')).filter(usable);
+      } else {
+        const wanted = value.buys[index - (value.sell ? 1 : 0)]?.toLowerCase();
+        matches = Array.from(activeRoot.querySelectorAll('button[form][aria-controls][aria-expanded="false"]')).filter(button => {
+          const id = /^item-(\d+)-buyPanel$/.exec(button.getAttribute('aria-controls'))?.[1];
+          if (!id || button.getAttribute('form') !== 'item-' + id + '-form' || button.textContent.trim() !== 'Buy' || !usable(button)) return false;
+          const row = button.closest('[class^="row___"],[class*=" row___"]');
+          if (!row || row.querySelector('button[aria-controls="item-' + id + '-itemInfoWrapper"]')?.textContent.trim().toLowerCase() !== wanted) return false;
+          const quantity = row.querySelector('form[id="item-' + id + '-form"] input[data-input-money-visible="true"]:not([type="hidden"])');
+          return quantity && usable(quantity) && /^[1-9]\d*$/.test(quantity.value.trim().replaceAll(',', ''));
+        });
+      }
+      if (matches.length !== 1) {
+        render(current.type === 'buy' ? 'Could not verify one Buy control. Make sure the item is visible and enter a quantity in Torn first.' : 'Could not verify one Travel Home control. Open it in Torn if available.');
+        return;
+      }
+      matches[0].click();
+      render('Use Torn’s panel to review and confirm. The run has not advanced.');
+    });
     skip.addEventListener('click', event => act('unavailable', event));
     edit.addEventListener('click', event => { if (event.isTrusted) { editing = true; fill(); render(); } });
     fill(); render();
