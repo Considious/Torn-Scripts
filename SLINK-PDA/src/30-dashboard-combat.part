@@ -730,14 +730,17 @@ method:'POST',
 body:{
 user_battle_stats:userBattleStats,
 exclude_target_ids:excludeTargetIds,
+verify_fair_fight:true,
 min_fair_fight:Number(settings.minFairFight) || 1,
 max_fair_fight:Number(settings.maxFairFight) || 3,
-limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
+limit:100
 }
 });
-let response=await loadAssignments();
-const checked=await muggingFairFightChecks.check(response?.targets||[]).catch(()=>({queued:0}));
-if(checked.queued>0){const synced=await syncMuggingContributorReports(true);if(Number(synced.accepted)>0)response=await loadAssignments();}
+const response=await loadAssignments();
+const candidates=Array.isArray(response?.targets)?response.targets:[];
+const checked=await muggingFairFightChecks.check(candidates,true).catch(()=>({queued:0}));
+if(checked.queued>0)await syncMuggingContributorReports(true).catch(()=>null);
+response.targets=global.SLINK_MUGGING_FF.applyRange(candidates,checked.scores,pdaStoredOwnBattleStats()?.score,Number(settings.minFairFight)||1,Number(settings.maxFairFight)||3,Math.max(1,Math.min(100,Math.trunc(Number(settings.limit)||50))));
 dataState.caches.mugging = {
 ...response,
 userBattleStats,
@@ -788,8 +791,8 @@ const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
 const levelBadge = muggingLevelBadge(target.level, cache.userLevel);
 return `<article class="target-card"><div>
 <strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
-<small>${levelBadge} · ${escapeHtml(statusLabel)} · ${target.estimateKind==='unchecked'?'FF check pending':`Rough FF ${fairFight === null ? '?' : number(fairFight, 2)}`} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
-</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${target.estimateKind==='unchecked'?'':actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
+<small>${levelBadge} · ${escapeHtml(statusLabel)} · ${!['ffscouter','bss'].includes(target.estimateKind)?'FF check pending':`Estimated FF ${fairFight === null ? '?' : number(fairFight, 2)}`} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
+</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${!['ffscouter','bss'].includes(target.estimateKind)?'':actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
 }).join('');
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
 <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div><div class="stat"><strong>${escapeHtml(contribution.mode || 'disabled')}</strong><span>${Number(contribution.fetched) || 0}/${Number(contribution.apiBudgetPerMinute) || 0} contributor checks</span></div></div>
