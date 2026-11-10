@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-7c8c19da7359fe2bd15e7f5b019a7bdd7172c893fcb1cc3ffca5fc44d42560b3",
+  "revision": "sha256-0a646dcf5e3f7be5045c2a9992666c51be56f325d8c00634b16a719f9098ed33",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -37,6 +37,8 @@
     "src/00-ranked-gear-panel.part",
     "src/50-market-dom.part",
     "src/60-xanax-safety.part",
+    "src/80-companion-art.part",
+    "src/80-companion.part",
     "src/90-shell-bootstrap.part"
   ],
   "startupAddons": [

@@ -685,9 +685,12 @@ add('disposalUnique', dailyCrimeUniqueDuePda(crimeById.disposalUnique), 'Check t
 add('arsonUnique', dailyCrimeUniqueDuePda(crimeById.arsonUnique), 'Check today’s Arson targets for missing uniques', `${crimeById.arsonUnique?.completed || 0}/${crimeById.arsonUnique?.total || 0} completed at skill ${Math.floor(crimeById.arsonUnique?.skill || 0)}. Only skill-eligible missing targets trigger this reminder.`, [['Check Arson','https://www.torn.com/page.php?sid=crimes#/arson']]);
 return [...warRetalAlertRows(), ...stakeoutAlertRows(), ...PDA_ABROAD.alerts(), ...companyAlertRows(), ...pdaPluginAlerts(), ...rows].filter(alert => Number(snoozed[alert.id] || 0) <= Date.now());
 }
-function updateAlertIndicator(count, rows = []) {
+function updateAlertIndicator(count, rows) {
+if(Array.isArray(rows)&&pdaCompanion)pdaCompanion.observe('efficiency',global.SLINK_COMPANIONS.efficiencyRows(rows));
 const alertTotal = Math.max(0, Number(count) || 0);
-const marketTotal = marketWatchLimit() > 0 ? marketOpportunities(moduleState.market.data || marketRuntime()).length : 0;
+const marketDeals = marketWatchLimit() > 0 ? marketOpportunities(moduleState.market.data || marketRuntime()) : [];
+const marketTotal = marketDeals.length;
+pdaCompanion?.observe('market',marketDeals.map(row=>({id:row.watchId||row.itemId,category:'market_alert',important:true})));
 const total = alertTotal + marketTotal;
 pdaChatButtonAlertCount = total;
 syncPdaChatButtonAlert();

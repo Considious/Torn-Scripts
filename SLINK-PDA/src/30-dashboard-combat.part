@@ -104,6 +104,7 @@ const required = MODULE_SCOPES[name];
 return !required || hasScope(required);
 }
 function applyPermissionGates() {
+pdaCompanion?.sync();
 const gates = [
 ['combat','leveling'],['combat','bounties'],['combat','mugging'],['combat','targetList'],['combat','war'],['combat','stats'],
 ['efficiency','alerts'],['efficiency','crimes'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],

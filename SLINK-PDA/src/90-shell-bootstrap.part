@@ -544,6 +544,13 @@ overlay.innerHTML = `<div class="gothic-nav-structure" aria-hidden="true"><i></i
 shadow.append(style, overlay, launcher);
 document.documentElement.appendChild(host);
 document.getElementById('slink_pda_chat_button')?.remove();
+var pdaCompanion;
+try{pdaCompanion=global.SLINK_COMPANIONS?.create({
+allowed:scope=>hasThemeScope(scope),open:openDashboard,isObscured:()=>!overlay.hidden,
+settingsParent:overlay.querySelector('[data-page-panel="access"]'),
+asset:item=>global.SLINK_COMPANION_ART[item.asset],
+storage:{getItem:()=>state.companionPrefs,setItem:(_key,value)=>{state.companionPrefs=value;return writeState();}}
+});}catch(error){console.warn('[SLINK PDA] Companion unavailable:',error);}
 let pdaChatButton = null;
 let pdaChatButtonAlertCount = 0;
 
@@ -892,6 +899,7 @@ function openDashboard() {
 if(typeof refreshPdaTargetRecords==='function')void refreshPdaTargetRecords();
 dashboardOpen = true;
 overlay.hidden = false;
+pdaCompanion?.onVisibility();
 launcher.hidden = true;
 syncPdaChatButtonVisibility();
 lockTornScroll();
@@ -904,6 +912,7 @@ function closeDashboard() {
 dashboardOpen = false;
 host.removeAttribute('data-keyboard-open');
 overlay.hidden = true;
+pdaCompanion?.onVisibility();
 launcher.hidden = state.minimizedMode === 'chat';
 syncPdaChatButtonVisibility();
 launcher.setAttribute('aria-label', 'Open SLINK dashboard');
