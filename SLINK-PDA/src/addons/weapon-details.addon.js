@@ -21,8 +21,10 @@
   };
   const attackSlot=':is([id="weapon_main"],[id="weapon_second"],[id="weapon_melee"],[id="weapon_temp"])[aria-describedby*="attacker_"]';
   const make=(tag,text)=>{const n=document.createElement(tag);if(text)n.textContent=text;return n;};
-  const itemId=row=>row.querySelector('img[src*="/images/items/"]')?.getAttribute('src')?.match(/\/images\/items\/(\d+)\//)?.[1]||row.dataset.item||row.dataset.itemid||'';
-  const regularRows='ul.item-list > li,li[data-item],li[data-itemid],[data-testid="item"],li[id]:has(.item-plate)';
+  const itemId=row=>[row.dataset.item,row.dataset.itemid,row.dataset.id,
+    ...Array.from(row.querySelectorAll('img'),img=>[img.getAttribute('src'),img.getAttribute('srcset'),img.currentSrc].join(' ').match(/\/images\/items\/(\d+)\//)?.[1])
+  ].map(Number).find(id=>Number.isSafeInteger(id)&&id>0)||'';
+  const regularRows='ul.item-list > li,li[data-item],li[data-itemid],li[data-id][data-category],[data-testid="item"],li[id]:has(.item-plate)';
   const nativeBonus=':is(.bonuses .bonus,.iconBonuses___sb7SH,[class*="iconBonuses___"],.iconsbonuses) [class*="bonus-attachment-"][title]';
   let mounted,queued=false;
   function mount(root){
@@ -30,12 +32,13 @@
     load.type=toggle.type='button';status.setAttribute('role','status');status.style.marginInlineStart='.4em';
     globalThis.SLINK_TORN_COMPONENTS?.card(box);box.classList.add('slink-page-toolbar');
     box.append(make('strong','Weapon experience'),status,...(attack?[]:[toggle]),load);root.prepend(box);
+    const itemsRoot=path==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
     let cache=null,show=false,seq=0,seen=new Map();
     function clear(){for(const n of seen.values())n.remove();seen.clear();}
     function update(){
       if(document.hidden||!cache&&!show)return;
       const current=new Set();
-      const rows=root.querySelectorAll(attack?attackSlot:regularRows);
+      const rows=itemsRoot.querySelectorAll(attack?attackSlot:regularRows);
       for(const row of rows){
         const id=itemId(row);
         if(!id||!attack&&row.querySelector(regularRows))continue;
@@ -47,7 +50,8 @@
         if(!note?.isConnected){
           note=make('div');note.dataset.slinkWeaponDetails='';if(!attack)globalThis.SLINK_TORN_COMPONENTS?.mark(note,'slink-page-note');note.style.cssText='font-size:.8em;line-height:1.2;white-space:normal;overflow-wrap:anywhere';
           if(attack)note.style.pointerEvents='none';
-          row.append(note);seen.set(row,note);
+          const itemName=path==='/item.php'?row.querySelector('.name-wrap .name,.name-wrap,.name'):null;
+          (itemName||row).append(note);seen.set(row,note);
         }
         const signature=JSON.stringify([xp,bonuses]);
         if(note.dataset.signature===signature)continue;note.dataset.signature=signature;
@@ -55,6 +59,7 @@
         note.replaceChildren(...(xp?[make('div',attack?'XP '+cache.values[id]+'%':xp)]:[]),...bonuses.map(text=>make('div',text)));
       }
       for(const [row,note] of seen)if(!current.has(row)){note.remove();seen.delete(row);}
+      if(cache&&Object.keys(cache.values).length)status.textContent=seen.size?'':'No matching weapons in this view. Open a weapon category.';
     }
     function reset(){seq++;cache=null;load.disabled=false;load.hidden=true;load.textContent='Retry weapon XP';status.textContent='';clear();update();}
     async function loadExperience(e){
@@ -71,7 +76,7 @@
         if(id!==still){reset();return;}
         if(pdaCache&&pdaCache.values!==result){Object.assign(pdaCache,{owner:id,at:Date.now(),values:result});pda.persist?.();}
         cache={owner:id,values:result,at:Date.now()};load.textContent='Retry weapon XP';
-        status.textContent=Object.keys(result).length?'Experience shown beside equipped weapons.':'Torn didn’t return any weapon experience. It unlocks with Combat Training education.';
+        status.textContent=Object.keys(result).length?'':'Torn didn’t return any weapon experience. It unlocks with Combat Training education.';
         update();
       }catch(error){if(run===seq){cache=null;clear();update();load.hidden=false;load.textContent='Retry weapon XP';status.textContent=error.message||'Could not load weapon experience.';}}
       finally{if(run===seq)load.disabled=false;}
@@ -80,7 +85,7 @@
     toggle.setAttribute('aria-pressed','false');
     toggle.onclick=()=>{show=!show;toggle.setAttribute('aria-pressed',String(show));toggle.textContent=show?'Hide bonus explanations':'Explain special bonuses';if(!show&&!cache)clear();else update();};
     const obs=new MutationObserver(records=>{if((cache||show)&&records.some(r=>!box.contains(r.target)&&!r.target.closest?.('[data-slink-weapon-details]')))schedule();});
-    obs.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['src','title','aria-describedby','data-item','data-itemid']});
+    obs.observe(itemsRoot,{subtree:true,childList:true,attributes:true,attributeFilter:['src','srcset','title','aria-describedby','data-item','data-itemid','data-id']});
     void loadExperience();
     return {root,box,update,reset,auto(){if((!cache&&!status.textContent)||(cache&&Date.now()-cache.at>=21600000))void loadExperience();},check(){if(cache)void owner().then(id=>{if(cache&&cache.owner!==id){reset();void loadExperience();}}).catch(reset);},dispose(){seq++;obs.disconnect();clear();box.remove();}};
   }

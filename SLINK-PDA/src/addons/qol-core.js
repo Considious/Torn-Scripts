@@ -42,15 +42,15 @@
     return Object.values(value).flatMap(perkText);
   }
   function bonuses(response){
-    const source=response?.perks;const known=Array.isArray(source?.faction)&&Array.isArray(source?.education);
-    const out={medical:known?0:null,candy:known?0:null,alcohol:known?0:null,energy:known?0:null,energyMultiplier:1,verified:known,unresolved:[]};
+    const source=response?.perks??response;const known=Array.isArray(source?.faction)&&Array.isArray(source?.education);
+    const out={medical:known?0:null,candy:known?0:null,alcohol:known?0:null,energy:known?0:null,energyMultiplier:1,alcoholMultiplier:1,candyMultiplier:1,verified:known,unresolved:[]};
     for(const text of perkText(source)){
       const s=text.toLowerCase(),n=s.match(/(\d+(?:\.\d+)?)\s*%/);
       let kind=/medical(?: item)? effectiveness/.test(s)?'medical':/happy.*candy|candy.*(?:effect|happy)/.test(s)?'candy':/nerve.*alcohol|alcohol.*(?:effect|nerve)/.test(s)?'alcohol':/energy.*(?:can|drink)|(?:can|drink).*energy/.test(s)?'energy':null;
       if(!kind)continue;
-      if(kind==='energy'&&/doubl/.test(s)){out.energyMultiplier*=2;continue;}
+      if(kind!=='medical'&&/doubl/.test(s)){out[kind+'Multiplier']=2;continue;}
       if(n&&/increase|gain|extra|effect|boost|bonus/.test(s)&&out[kind]!==null)out[kind]+=Number(n[1]);
-      else{out[kind]=null;out.unresolved.push(text);}
+      else if(!n && /(?:medical(?: item)? effectiveness|(?:energy drink|candy|alcohol) effects?)\s*$/i.test(s)&&/gain|increase|boost|bonus/i.test(s)){out[kind]=null;out.unresolved.push(text);}
     }
     return out;
   }
@@ -60,10 +60,10 @@
     const med=text.match(/Reduces hospital time by\s*(\d+(?:\.\d+)?)\s*(?:mins?|minutes?)\s*and restores\s*(\d+(?:\.\d+)?)%\s*life[\s\S]*?Increases medical cooldown by\s*(\d+(?:\.\d+)?)\s*(?:mins?|minutes?)/i);
     // Official Torn Medical/Hospital wiki base values. All require the verified effectiveness bonus.
     const base=med?[Number(med[1]),Number(med[2]),Number(med[3])]:b?[120,30,30]:/^Small First Aid Kit$/i.test(name)?[20,5,10]:/^First Aid Kit$/i.test(name)?[40,10,15]:/^Morphine$/i.test(name)?[70,15,20]:null;
-    if(base){const known=finite(bonus.medical)!==null,m=1+(bonus.medical||0)/100;return {kind:'medical',blood:b,verified:known,minutes:base[0]*m,lifePercent:base[1]*m,cooldown:base[2],label:known?`${+(base[1]*m).toFixed(2)}% life · ${+(base[0]*m).toFixed(2)}m hospital · ${base[2]}m cooldown`:'Medical bonus not loaded'};}
-    const normalized=text.replace(/(increases?|restores?|gives?|provides?)\s+(energy|nerve|happiness|happy)\s+by\s+(\d+(?:\.\d+)?)/gi,'$1 $3 $2');
-    const specs=[['energy',/(?:increases?|restores?|gives?|provides?|gain)\s*(\d+(?:\.\d+)?)\s*energy/i,'energy',/energy.?drink/i.test(category)||/^Can of /i.test(name)],['alcohol',/(?:increases?|restores?|gives?|provides?|gain)\s*(\d+(?:\.\d+)?)\s*nerve/i,'nerve',/alcohol/i.test(category)],['candy',/(?:increases?|restores?|gives?|provides?|gain)\s*(\d+(?:\.\d+)?)\s*(?:happiness|happy)/i,'happy',/candy/i.test(category)]];
-    for(const [kind,re,unit,applicable]of specs){const match=normalized.match(re);if(match&&applicable){const known=finite(bonus[kind])!==null,value=Number(match[1])*(1+(bonus[kind]||0)/100)*(kind==='energy'?bonus.energyMultiplier||1:1);return {kind,verified:known,value:known?value:null,label:known?`${+value.toFixed(2)} ${unit}`:`${match[1]} ${unit} base · bonuses not loaded`};}}
+    if(base){const known=finite(bonus.medical)!==null,m=1+(bonus.medical||0)/100;return {kind:'medical',blood:b,verified:known,minutes:base[0]*m,lifePercent:base[1]*m,cooldown:base[2],label:known?`${+(base[1]*m).toFixed(2)}% life · ${+(base[0]*m).toFixed(2)}m hospital · ${base[2]}m cooldown`:`${base[1]}% life · ${base[0]}m hospital (base)`};}
+    const normalized=text.replace(/\u00a0/g,' ').replace(/(?:^|[.;])\s*\+\s*(?=\d)/g,' gives ').replace(/(increases?|restores?|gives?|provides?)\s+(energy|nerve|happiness|happy)\s+by\s+(\d+(?:\.\d+)?)/gi,'$1 $3 $2');
+    const specs=[['energy',/(?:increases?|restores?|gives?|provides?|gains?)\s*(\d+(?:\.\d+)?)\s*energy/i,'energy',/energy.?drink/i.test(category)||/^Can of /i.test(name)],['alcohol',/(?:increases?|restores?|gives?|provides?|gains?)\s*(\d+(?:\.\d+)?)\s*nerve/i,'nerve',/alcohol/i.test(category)],['candy',/(?:increases?|restores?|gives?|provides?|gains?)\s*(\d+(?:\.\d+)?)\s*(?:happiness|happy)/i,'happy',/candy/i.test(category)]];
+    for(const [kind,re,unit,applicable]of specs){const match=normalized.match(re);if(match&&applicable){const known=finite(bonus[kind])!==null,value=Number(match[1])*(1+(bonus[kind]||0)/100)*(bonus[kind+'Multiplier']||1);return {kind,verified:known,value:known?value:null,label:known?`${+value.toFixed(2)} ${unit}${value>Number(match[1])?' (incl. bonus)':''}`:`${match[1]} ${unit} (base)`};}}
     return text?{kind:'description',verified:false,label:text.slice(0,220)}:null;
   }
   function chooseBlood(items,type,hospitalize=false,source='inventory'){
@@ -103,7 +103,7 @@
     if(!solutions.length)return {error:'Available items/cooldown cannot meet this target.'};
     const [sum,plan]=solutions[0];return {item:list.find(x=>x.id===plan.ids[0]),...plan,totalGain:sum/scale};
   }
-  function catalog(body){const raw=body?.items;const rows=Array.isArray(raw)?raw:Object.entries(raw||{}).map(([id,row])=>({...row,id:row.id||id}));return rows.filter(x=>x&&Number(x.id)>0).map(x=>({id:String(x.id),name:String(x.name||''),type:String(x.type||''),effect:String(x.effect||x.description||'').slice(0,1400),price:finite(x.value?.market_price??x.market_value??x.marketPrice??x.price),shopSellPrice:finite(x.shopSellPrice)}));}
+  function catalog(body){const raw=body?.items;const rows=Array.isArray(raw)?raw:Object.entries(raw||{}).map(([id,row])=>({...row,id:row.id||id}));return rows.filter(x=>x&&Number(x.id)>0).map(x=>({id:String(x.id),name:String(x.name||''),type:String(x.type||''),effect:(Array.isArray(x.effect)?perkText(x.effect).join(' '):String(x.effect||x.description||'')).slice(0,1400),price:finite(x.value?.market_price??x.market_value??x.marketPrice??x.price),shopSellPrice:finite(x.shopSellPrice)}));}
   function versionCompare(a,b){const parse=v=>/^\d+(?:\.\d+){1,3}$/.test(String(v||''))?String(v).split('.').map(Number):null;const x=parse(a),y=parse(b);if(!x||!y)return null;for(let i=0;i<4;i++){const n=(x[i]||0)-(y[i]||0);if(n)return Math.sign(n);}return 0;}
   global.SLINK_QOL=Object.freeze({BLOOD,SPECIAL,finite,blood,compatible,safeUrl,normalize,favoriteKey,addFavorite,move,bonuses,effect,chooseBlood,healPlan,catalog,versionCompare});
 })(globalThis);

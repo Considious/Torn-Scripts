@@ -69,8 +69,9 @@
       const message=(rows.length-next.size)+' of '+rows.length+' loaded';
       if(status.textContent!==message)status.textContent=message;
     }
-    box.ontoggle=()=>{if(box.open){observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['class','title']});apply();}else{observer.disconnect();clear();}};
-    if(Object.keys(saved).length)box.open=true;
+    const expansionKey=key+':expanded';let previousOpen;try{previousOpen=localStorage.getItem(expansionKey);}catch{}
+    box.ontoggle=()=>{try{localStorage.setItem(expansionKey,box.open?'1':'0');}catch{}if(box.open){observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['class','title']});apply();}else{observer.disconnect();clear();}};
+    if(previousOpen==='1'||(previousOpen===null&&Object.keys(saved).length))box.open=true;
     return {root,box,update:apply,dispose(){observer.disconnect();clear();box.remove();}};
   }
   function mountCompany(root){

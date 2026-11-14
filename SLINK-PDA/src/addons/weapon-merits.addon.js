@@ -56,16 +56,18 @@
       let value;
       if(pda){
         const cache=pda.cache('weaponMeritCatalogue',{}),fresh=cache.at>Date.now()-86400000&&cache.classes;
-        if(fresh&&cache.merits?.owner===owner&&cache.merits.at>Date.now()-21600000)value={levels:cache.merits.levels,classes:fresh};
+        if(fresh&&cache.merits?.schema===2&&cache.merits.owner===owner&&cache.merits.at>Date.now()-21600000)value={levels:cache.merits.levels,classes:fresh};
         else {
-        const [perks,catalogue]=await Promise.all([pda.tornJson('/v2/user/perks','SLINK weapon merits'),fresh?null:pda.tornJson('/v2/torn/items?cat=Weapon','SLINK weapon catalogue')]);
+        const meritDefs=cache.definitionsAt>Date.now()-86400000&&cache.definitions;
+        const [user,defs,catalogue]=await Promise.all([pda.tornJson('/v2/user/merits','SLINK Mastery'),meritDefs||pda.tornJson('/v2/torn/merits','SLINK Merits'),fresh?null:pda.tornJson('/v2/torn/items?cat=Weapon','SLINK weapon catalogue')]);
+        if(!meritDefs){cache.definitions=defs;cache.definitionsAt=Date.now();}
         const classes=fresh||model.catalogue(catalogue);if(!Object.keys(classes).length)throw Error('Torn did not return weapon classes.');if(!fresh){cache.classes=classes;cache.at=Date.now();}
-        value={levels:model.perks(perks),classes};cache.merits={owner,at:Date.now(),levels:value.levels};pda.persist?.();
+        value={levels:model.upgrades(user,defs),classes};cache.merits={schema:2,owner,at:Date.now(),levels:value.levels};pda.persist?.();
         }
       }else value=await ext.core.messaging.send('qol.weaponMerits');
       if(revision!==generation||owner!==await own()||revision!==generation||!allowed())return;
       snapshot={...value,owner,at:Date.now()};button.textContent='Retry weapon mastery';
-      notice.textContent=Object.keys(value.levels).length?'Bonuses shown beside the base stats.':'No weapon mastery bonuses found.';schedule();
+      notice.textContent=Object.keys(value.levels).length?Object.keys(value.levels).map(kind=>kind==='smg'?'SMG':kind[0].toUpperCase()+kind.slice(1)).join(', ')+' mastery detected.':'No weapon mastery bonuses found.';schedule();
     }catch(e){if(revision===generation){snapshot=null;clear();button.hidden=false;button.textContent='Retry weapon mastery';notice.textContent=e.message||'Could not load weapon merits.';}}
     finally{if(revision===generation&&button)button.disabled=false;}
   }

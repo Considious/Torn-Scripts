@@ -8,8 +8,9 @@
     const q=new URLSearchParams(location.search),type=q.get('type');
     if(location.pathname==='/index.php'&&q.get('page')==='people')return 'abroad';
     if(['/shops.php','/bigalgunshop.php'].includes(location.pathname))return 'city-shop';
+    if(location.pathname==='/travelagency.php')return 'travel-stock';
     if(location.pathname!=='/page.php')return '';
-    if(q.get('sid')==='travel')return 'travel-stock';
+    if(['travel','travelagency'].includes(q.get('sid')?.toLowerCase()))return 'travel-stock';
     if(q.get('sid')?.toLowerCase()==='userlist')return 'userlist';
     return q.get('sid')==='list'&&['friends','enemies','targets'].includes(type)?type:'';
   };
@@ -54,6 +55,7 @@
   }
   function mount(host,kind){
     const faction=kind==='faction-members',noun=faction?'members':routes[kind];
+    const nativeControls=['friends','enemies','targets'].includes(kind);
     const timed=kind==='hospital'||kind==='jail',abroad=kind==='abroad',directory=timed||abroad||kind==='userlist';
     const listMetrics={...metrics,...(timed?{minutes:'Time left (min)'}:{})};
     const key='slink-native-list-filter:'+kind+':v1';
@@ -95,7 +97,7 @@
     special.append(summary,...specials.map(flag=>{
       const l=make('label',flag+' ');l.style.display='block';l.append(choose(flag,flag,[['','Either'],['yes','Yes'],['no','No']]));return l;
     }));
-    const toggle=button('',()=>{active=!active;configure();});
+    const toggle=button('',()=>{active=!active;try{localStorage.setItem(key,JSON.stringify({...read(),active}));}catch{}configure();});
     const back=button('Back to filters',()=>{toggle.scrollIntoView({block:'center'});toggle.focus({preventScroll:true});});
     back.hidden=true;
     const reset=button('Reset',()=>{search.value='';selected='';Object.values(fields).forEach(f=>f.value='');schedule();});
@@ -106,7 +108,7 @@
     search.addEventListener('input',schedule);
     role.addEventListener('change',()=>{selected=role.value;schedule();});
     if(!faction)selected='';
-    controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);const header=make('div');header.className='slink-page-toolbar';header.append(make('strong',faction?'Faction member filters':'Player filters'),toggle);box.append(header,controls);controls.style.marginTop='6px';host.before(box);host.after(back);
+    controls.append(...(nativeControls?[]:[search,activity]),...(faction?[role]:[]),...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);const header=make('div');header.className='slink-page-toolbar';header.append(make('strong',faction?'Faction member filters':'Player filters'),toggle);box.append(header,controls);controls.style.marginTop='6px';host.before(box);host.after(back);
     if(faction)globalThis.SLINK_FACTION_CSV?.attach(box,{name:'Export visible members',file:'slink-faction-members.csv',produce:()=>host.isConnected?globalThis.SLINK_FACTION_CSV.native(host,false):''});
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
     function clearSort(){
@@ -116,7 +118,9 @@
     }
     function render(){
       frame=0;if(!active)return;
-      const body=host.querySelector(faction?'.table-body':timed||abroad?'.users-list':directory?'.user-info-list-wrap':':scope > ul');
+      const listSelector=faction?'.table-body, ul':timed||abroad?'.users-list':directory?'.user-info-list-wrap':'ul';
+      const candidates=[...(host.matches(listSelector)?[host]:[]),...host.querySelectorAll(listSelector)];
+      const body=candidates.find(list=>Array.from(list.children).some(row=>row.matches('li')&&row.querySelector('a[href*="profiles.php?XID="]')))||candidates[0];
       function readEntry(row){
         if(rowCache.has(row))return rowCache.get(row);
         const a=row.querySelector('a[href*="profiles.php?XID="]');
@@ -145,13 +149,13 @@
         role.replaceChildren(...options.map(value=>{const o=make('option',value||'All roles');o.value=value;return o;}));
       }
       role.value=selected;
-      const query=normalize(search.value), idQuery=query.replace(/^\[|\]$/g,'');
+      const query=nativeControls?'':normalize(search.value), idQuery=query.replace(/^\[|\]$/g,'');
       const virtual=body?.matches('[class*="virtual"],[data-virtualized="true"]');
       const next=new Set();
       const matches=[];
       for(const e of entries){
         const match=(!query||(/^\d+$/.test(idQuery)?e.id===idQuery:normalize(e.name).includes(query)))&&(!selected||selected===e.position)
-          &&(!activity.value||e.activity===activity.value)&&(!(faction||abroad)||!state.value||e.state===state.value)
+          &&(nativeControls||!activity.value||e.activity===activity.value)&&(!(faction||abroad)||!state.value||e.state===state.value)
           &&(kind!=='hospital'||!revive.value||e.revive===revive.value)
           &&(!(faction||abroad||kind==='userlist')||specials.every(flag=>!fields[flag].value||(fields[flag].value==='yes')===e.flags.has(flag)))
           &&Object.entries(range).every(([k,[min,max]])=>[min,max].every(v=>v===null)||(e[k]!==null&&(min===null||e[k]>=min)&&(max===null||e[k]<=max)));
@@ -183,7 +187,7 @@
       stop();
       controls.hidden=!active;controls.style.display=active?'flex':'none';
       toggle.textContent=active?(faction?'Hide member filter':'Hide '+noun+' filter'):'Filter '+noun;toggle.setAttribute('aria-expanded',String(active));
-      if(!active){try{localStorage.setItem(key,JSON.stringify({...read(),active:false}));}catch{}return;}
+      if(!active)return;
       if(!sheet.isConnected)document.head.append(sheet);
       listObserver=new MutationObserver(records=>{
         for(const {target} of records)for(let node=target.nodeType===1?target:target.parentElement;node&&node!==host;node=node.parentElement)rowCache.delete(node);
@@ -210,8 +214,8 @@
     let saved={};try{saved=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch{}
     for(const [el,id] of [[name,'name'],[price,'price'],[stock,'stock']])if(typeof saved[id]==='string')el.value=saved[id].slice(0,80);
     let active=saved.active===true,observer,frame=0,marked=new Set(),type=travel&&typeof saved.type==='string'?saved.type.slice(0,80):'';
-    const toggle=button('Filter items',()=>{active=!active;if(!active)try{const old=JSON.parse(localStorage.getItem(key)||'null');if(old)localStorage.setItem(key,JSON.stringify({...old,active:false}));}catch{}configure();});
-    fields.append(name,...(travel?[category]:[]),price,stock,button('Reset',()=>{name.value=price.value=stock.value=type='';try{localStorage.removeItem(key);}catch{}schedule();}),button('Save preset',()=>{
+    const toggle=button('Filter items',()=>{active=!active;try{const old=JSON.parse(localStorage.getItem(key)||'{}')||{};localStorage.setItem(key,JSON.stringify({...old,active}));}catch{}configure();});
+    fields.append(name,...(travel?[category]:[]),price,stock,button('Reset',()=>{name.value=price.value=stock.value=type='';try{localStorage.setItem(key,JSON.stringify({active}));}catch{}schedule();}),button('Save preset',()=>{
       try{localStorage.setItem(key,JSON.stringify({active:true,name:name.value,price:price.value,stock:stock.value,type}));status.textContent='Preset saved.';}
       catch{status.textContent='Could not save the preset on this device.';}
     }),status);
@@ -252,7 +256,7 @@
     }
     category.addEventListener('change',()=>{type=category.value;});
     configure();
-    return {box,dispose(){active=false;configure();box.remove();}};
+    return {box,dispose(){active=false;cancelAnimationFrame(frame);observer?.disconnect();for(const row of marked)row.removeAttribute(marker);box.remove();}};
   }
   function sync(){
     queued=false;
@@ -261,15 +265,15 @@
     const lists=new Set(shopSelector?document.querySelectorAll(shopSelector):[]);
     for(const [node,ui] of shops)if(!lists.has(node)||!ui.box.isConnected){ui.dispose();shops.delete(node);}
     for(const node of lists)if(!shops.has(node))shops.set(node,mountShop(node,kind==='travel-stock'));
-    const host=kind&&!shopSelector?document.querySelector(kind==='faction-members'?'.faction-info-wrap .members-list':kind==='userlist'?'.userlist-wrapper:has(.user-info-list-wrap)':['hospital','jail','abroad'].includes(kind)?'.userlist-wrapper:has(.users-list)':'.tableWrapper:has(> ul)'):null;
-    if(mounted?.host===host&&mounted.kind===kind&&mounted.box.isConnected)return;
+    const host=kind&&!shopSelector?document.querySelector(kind==='faction-members'?'.faction-info-wrap .members-list':kind==='userlist'?'.userlist-wrapper:has(.user-info-list-wrap)':['hospital','jail','abroad'].includes(kind)?'.userlist-wrapper:has(.users-list)':'.tableWrapper:has(a[href*="profiles.php?XID="])'):null;
+    if(mounted&&mounted.host===host&&mounted.kind===kind&&mounted.box.isConnected)return;
     mounted?.dispose();mounted=host?mount(host,kind):null;
   }
   function scheduleMount(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(sync);}}
   const start=()=>{
     const root=document.querySelector('#mainContainer')||document.querySelector('#mainwrap')||document.body;
     new MutationObserver(()=>{if(!mounted?.host.isConnected||!mounted.box.isConnected||mounted.kind!==route())scheduleMount();}).observe(root,{childList:true,subtree:true});
-    window.addEventListener('popstate',scheduleMount);
+    window.addEventListener('popstate',scheduleMount);window.addEventListener('hashchange',scheduleMount);
     document.addEventListener('visibilitychange',scheduleMount);sync();
   };
   if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
