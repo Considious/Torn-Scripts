@@ -5,7 +5,7 @@
   const smooth = v => { v=clamp(v,0,1); return v*v*(3-2*v); };
   const critical = 'a,button,input,textarea,select,label,summary,[contenteditable],[tabindex]:not([tabindex="-1"]),[role="button"],[role="link"],[role="dialog"],[aria-modal="true"],header,nav,#chatRoot,#sidebar';
   function register(entry) { catalogue.set(entry.id,Object.freeze(entry)); }
-  function create({allowed,open,asset,settingsParent,isObscured=()=>false,storage}) {
+  function create({allowed,open,asset,settingsParent,setSettingsAvailable,avoidElements=()=>[],dockTarget=()=>null,storage}) {
     const doc=global.document, motion=global.matchMedia('(prefers-reduced-motion: reduce)'), key='slink.companions.v1';
     let settings={};
     try { storage??=global.localStorage;settings=JSON.parse(storage.getItem(key))||{}; } catch {}
@@ -13,7 +13,9 @@
     let entry=null, art=null, x=0,y=0, facing=1, state='idle', started=0, frame=0, timer=0, speechTimer=0, resumeSpeech=null, dragging=null, mouseOver=false, initialized=false, lastLine='', lastTalk=0, pending=null, latest=null, focused=true, safetyFrame=0;
     const samples=new Map(), controller=new AbortController(), {signal}=controller;
     const host=doc.createElement('div');
-    host.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:9500;overflow:hidden';
+    const overlayStyle='position:fixed;inset:0;pointer-events:none;z-index:9500;overflow:hidden';
+    host.style.cssText=overlayStyle;
+    let dock=null, preferred=null;
     host.hidden=true;
     const shadow=host.attachShadow({mode:'open'});
     shadow.innerHTML='<style>:host([hidden]){display:none!important}#position{position:absolute;left:0;top:0;width:105px;height:96px}#jack{display:block;position:absolute;inset:0;padding:0;border:0;background:none;cursor:grab;touch-action:none;pointer-events:auto;color:white}#jack[hidden],#speech[hidden]{display:none}canvas{width:100%;height:100%;pointer-events:none}#speech{position:absolute;width:min(165px,43vw);border:1px solid #ec974b;background:#211620;color:#fff2e1;border-radius:10px;padding:8px;font:13px/1.3 system-ui;pointer-events:auto;cursor:pointer;box-shadow:0 3px 12px #0009}</style><div id="position"><button type="button" id="jack"><canvas width="220" height="200"></canvas></button><button type="button" id="speech" hidden></button></div>';
@@ -22,13 +24,19 @@
     const panel=doc.createElement('details');
     panel.style.cssText='padding:5px 9px;color:inherit;font:13px/1.5 system-ui;max-width:100%';
     panel.innerHTML='<summary>Companion settings</summary><div style="display:grid;gap:5px;padding:5px 0"><label>Companion <select data-pref="id"></select></label><label>Movement <select data-pref="movement"><option value="wander">Wander</option><option value="stay">Stay where I put him</option></select></label><label>Companion alerts <select data-pref="alerts"><option value="all">All</option><option value="important">Important only</option><option value="minimal">Minimal</option><option value="silent">Silent</option></select></label><label><input type="checkbox" data-pref="chatter"> Idle chatter</label><label><input type="checkbox" data-pref="reduced"> Reduced motion</label></div>';
+    if(setSettingsAvailable)panel.open=true;
     settingsParent.append(panel);
     const field=name=>panel.querySelector('[data-pref="'+name+'"]');
     const reduced=()=>Boolean(settings.reduced)||motion.matches;
-    const visible=()=>!doc.hidden&&focused&&!isObscured();
+    const visible=()=>!doc.hidden&&focused;
     const bounds=()=>{const v=global.visualViewport;const l=v?.offsetLeft||0,t=v?.offsetTop||0,w=v?.width||global.innerWidth,h=v?.height||global.innerHeight;return {l,t,w,h};};
     function fit(a,b) {const {l,t,w,h}=bounds();return [clamp(a,l,l+Math.max(0,w-105)),clamp(b,t,t+Math.max(0,h-96))];}
     function safeRect(a,b,w,h){
+      for(const element of avoidElements()){
+        if(!element?.isConnected||element.hidden)continue;
+        const r=element.getBoundingClientRect();
+        if(r.width&&r.height&&a<r.right+4&&a+w>r.left-4&&b<r.bottom+4&&b+h>r.top-4)return false;
+      }
       // Hit-test only at interaction boundaries and before an occasional move.
       for(const i of [.12,.5,.88])for(const j of [.13,.5,.87]){
         const nodes=doc.elementsFromPoint(a+i*w,b+j*h);
@@ -44,10 +52,35 @@
       const {l,t,w,h}=bounds();
       return [.2,.39,.61,.77].flatMap(height=>[l+4,l+w-109].map(side=>fit(side,t+(h-96)*height))).filter(([a,b])=>safeRect(a,b,105,96));
     }
+    function keepClear(){
+      if(preferred){
+        const position=fit(...preferred);
+        if(safeRect(...position,105,96)){place(...position,false);preferred=null;return;}
+      }
+      if(safeRect(x,y,105,96)){jack.hidden=false;return;}
+      preferred??=[x,y];
+      const [px,py]=preferred;
+      const spot=spots().sort((a,b)=>Math.hypot(a[0]-px,a[1]-py)-Math.hypot(b[0]-px,b[1]-py))[0];
+      if(spot)place(...spot,false);else jack.hidden=true;
+    }
+    function moveToDock(target){
+      if(dock===target)return;
+      if(dock)dock.hidden=true;
+      dock=target;mouseOver=false;
+      if(dock){
+        dock.hidden=false;dock.append(host);
+        host.style.cssText='position:relative;width:100%;height:100%;pointer-events:none;overflow:hidden';
+        box.style.transformOrigin='top left';
+        jack.style.pointerEvents='none';jack.tabIndex=-1;jack.setAttribute('aria-hidden','true');jack.hidden=false;
+      }else{
+        doc.body.append(host);host.style.cssText=overlayStyle;
+        box.style.transformOrigin='';jack.style.pointerEvents='';jack.removeAttribute('tabindex');jack.removeAttribute('aria-hidden');
+      }
+    }
     function restorePosition(){
       const p=settings.positions?.[entry?.id],{l,t,w,h}=bounds();
       if(p?.manual&&Number.isFinite(p.x)&&Number.isFinite(p.y)){
-        place(l+p.x*Math.max(0,w-105),t+p.y*Math.max(0,h-96));return;
+        place(l+p.x*Math.max(0,w-105),t+p.y*Math.max(0,h-96));keepClear();return;
       }
       const spot=spots().at(-1);if(spot)place(...spot);else place(l,t);
     }
@@ -68,8 +101,10 @@
     }
     function idle(){
       global.clearTimeout(timer);
-      if(!entry||!visible())return;
+      timer=0;
+      if(!entry||!visible()||dock||preferred||jack.hidden)return;
       timer=global.setTimeout(()=>{
+        timer=0;
         if(!entry||!visible()||dragging||mouseOver||!speech.hidden||jack.hidden){idle();return;}
         if(settings.chatter&&Date.now()-lastTalk>180000){say('idle');return;}
         if(reduced()){paint(0,0,18);idle();return;}
@@ -84,7 +119,7 @@
         }else animate('sleep');
       },18000+Math.random()*24000);
     }
-    function stop(){global.cancelAnimationFrame(frame);frame=0;state='idle';box.style.transform='translate3d('+x+'px,'+y+'px,0)';}
+    function stop(){global.cancelAnimationFrame(frame);frame=0;state='idle';box.style.transform=dock?'scale(.46)':'translate3d('+x+'px,'+y+'px,0)';}
     function animate(kind,destination=x){
       stop();state=kind;started=global.performance.now();
       const from=x,steps=Math.max(1,Math.ceil(Math.abs(destination-from)/20));
@@ -112,7 +147,7 @@
     }
     function clearSpeech(){global.clearTimeout(speechTimer);resumeSpeech=null;speech.hidden=true;idle();}
     function say(category){
-      if(!entry||!visible()||host.hidden||jack.hidden||dragging||mouseOver)return false;
+      if(!entry||!visible()||host.hidden||jack.hidden||dock||dragging||mouseOver)return false;
       const pool=(entry.phrases[category]||entry.phrases.general||[]).filter(line=>line!==lastLine);
       if(!pool.length)return false;
       const {l,t,w,h}=bounds(), bw=Math.min(165,w*.43), bh=64;
@@ -131,6 +166,7 @@
       const requested=settings.id??eligible.find(item=>item.defaultEnabled)?.id;
       const next=eligible.find(item=>item.id===requested)||null;
       panel.hidden=!eligible.length;
+      setSettingsAvailable?.(eligible.length>0);
       const signature=eligible.map(item=>item.id).join(',');
       if(field('id').dataset.items!==signature){
         field('id').dataset.items=signature;
@@ -140,11 +176,11 @@
       field('movement').value=settings.movement||(settings.positions?.[next?.id]?.manual?'stay':'wander');field('alerts').value=settings.alerts||'important';
       field('chatter').checked=Boolean(settings.chatter);field('reduced').checked=Boolean(settings.reduced)||motion.matches;
       if(entry===next&&initialized)return;
-      stop();clearSpeech();pending=null;initialized=true;entry=next;host.hidden=true;
+      stop();clearSpeech();global.clearTimeout(timer);timer=0;pending=null;preferred=null;initialized=true;entry=next;host.hidden=true;moveToDock(null);
       if(!entry)return;
       jack.setAttribute('aria-label',entry.name+' — Open SLINK. Drag to move.');
       const image=new Image();art=image;
-      image.onload=()=>{if(art!==image||signal.aborted)return;restorePosition();host.hidden=isObscured();paint();idle();};
+      image.onload=()=>{if(art!==image||signal.aborted)return;restorePosition();host.hidden=false;paint();onVisibility();};
       image.src=asset(entry);
     }
     function observe(source,rows){
@@ -165,9 +201,14 @@
     }
     function onVisibility(){
       if(!entry||!art?.naturalWidth)return;
-      host.hidden=isObscured();
-      if(!visible()){stop();clearSpeech();global.clearTimeout(timer);}
-      else{place(x,y);if(jack.hidden&&!settings.positions?.[entry.id]?.manual)restorePosition();paint();idle();}
+      if(!visible()){stop();clearSpeech();global.clearTimeout(timer);timer=0;return;}
+      const target=dockTarget()||null;
+      if(target!==dock){
+        stop();moveToDock(target);clearSpeech();stop();
+        if(!dock)place(x,y,false);
+        paint(0,0,dock?12:0);
+      }
+      if(!dock)recheck();
     }
     panel.addEventListener('change',event=>{
       const name=event.target.dataset.pref;if(!name)return;
@@ -177,7 +218,7 @@
       write();sync();if(name==='reduced'){stop();paint();}idle();
     },{signal});
     jack.addEventListener('pointerdown',event=>{
-      if(event.button!==0||!entry)return;
+      if(event.button!==0||!entry||dock)return;
       stop();clearSpeech();dragging={id:event.pointerId,a:event.clientX,b:event.clientY,x,y,moved:false};jack.setPointerCapture(event.pointerId);
     },{signal});
     jack.addEventListener('pointermove',event=>{
@@ -188,12 +229,14 @@
     },{signal});
     function finish(event){
       if(dragging?.id!==event.pointerId)return;
-      const moved=dragging.moved;dragging=null;
+      const dragStart=dragging,{moved}=dragStart;dragging=null;
       if(moved&&entry){
+        preferred=null;
         const {l,t,w,h}=bounds();
         if(!safeRect(x,y,105,96)){
           const fallback=spots().sort((a,b)=>Math.hypot(a[0]-x,a[1]-y)-Math.hypot(b[0]-x,b[1]-y))[0];
           if(fallback)place(...fallback);
+          else place(dragStart.x,dragStart.y);
         }
         settings.movement='stay';field('movement').value='stay';
         settings.positions??={};
@@ -212,23 +255,30 @@
     speech.addEventListener('click',clearSpeech,{signal});
     global.addEventListener('focus',()=>{focused=true;onVisibility();},{signal});
     global.addEventListener('blur',()=>{focused=false;onVisibility();},{signal});
-    global.addEventListener('resize',onVisibility,{signal});
+    const onResize=()=>{
+      if(!entry||host.hidden||!visible())return;
+      if(!dock){stop();clearSpeech();place(x,y,false);}
+      onVisibility();
+    };
+    global.addEventListener('resize',onResize,{signal});
     function recheck(){
-      if(!entry||!visible()||dragging||safetyFrame)return;
+      if(!entry||host.hidden||!visible()||dragging||dock||safetyFrame)return;
       safetyFrame=global.requestAnimationFrame(()=>{
-        safetyFrame=0;if(!entry||!visible()||dragging)return;
-        if(!safeRect(x,y,105,96)){stop();clearSpeech();place(x,y);if(!settings.positions?.[entry.id]?.manual)restorePosition();}
-        else if(jack.hidden)place(x,y);
+        safetyFrame=0;if(!entry||host.hidden||!visible()||dragging||dock)return;
+        if(preferred||jack.hidden||!safeRect(x,y,105,96)){stop();clearSpeech();keepClear();paint();}
         if(!speech.hidden&&!safeRect(x+parseFloat(speech.style.left),y+parseFloat(speech.style.top),speech.offsetWidth,speech.offsetHeight))clearSpeech();
+        if(!timer&&!frame)idle();
       });
     }
     global.addEventListener('scroll',recheck,{capture:true,passive:true,signal});
     doc.addEventListener('click',recheck,{capture:true,signal});
-    global.visualViewport?.addEventListener('resize',onVisibility,{signal});
+    doc.addEventListener('pointerup',recheck,{capture:true,signal});
+    global.visualViewport?.addEventListener('resize',onResize,{signal});
+    global.visualViewport?.addEventListener('scroll',onResize,{signal});
     doc.addEventListener('visibilitychange',onVisibility,{signal});
     motion.addEventListener('change',()=>{sync();stop();paint();idle();},{signal});
     sync();
-    return Object.freeze({sync,observe,onVisibility,destroy(){controller.abort();stop();global.cancelAnimationFrame(safetyFrame);global.clearTimeout(timer);global.clearTimeout(speechTimer);host.remove();panel.remove();}});
+    return Object.freeze({sync,observe,onVisibility,destroy(){controller.abort();stop();global.cancelAnimationFrame(safetyFrame);global.clearTimeout(timer);global.clearTimeout(speechTimer);if(dock)dock.hidden=true;host.remove();panel.remove();}});
   }
   function efficiencyRows(rows) {
     const categories={energyFull:'energy_full',nerveFull:'nerve_high',energyRefill:'energy_high',nerveRefill:'nerve_high',drugCooldown:'cooldown_ready',medicalCooldown:'cooldown_ready',boosterCooldown:'cooldown_ready'};
