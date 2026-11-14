@@ -58,8 +58,11 @@
 .slink-page-ui label{overflow-wrap:anywhere}
 .slink-page-note{padding:1px 4px;border:1px solid var(--sp-border);border-radius:4px;font-size:.9em}
 .slink-page-positive{color:var(--sp-success)!important;font-weight:700}
+.slink-weapon-stat-cell.slink-weapon-stat-cell{display:inline-grid!important;grid-template-columns:max-content minmax(0,1fr);grid-template-rows:auto auto;align-content:center;align-items:center;justify-items:center;white-space:nowrap;box-sizing:border-box;line-height:1}
+.slink-weapon-stat-cell>.slink-weapon-stat{display:contents!important;font-size:.88em;line-height:1;font-variant-numeric:tabular-nums}
+.slink-weapon-stat-cell .slink-weapon-modifiers{grid-column:1/-1;max-inline-size:100%;flex-wrap:wrap;gap:0 1px;font-size:min(.68em,8px)}
 .slink-weapon-stat{display:inline-block;max-inline-size:100%;min-inline-size:0;text-align:center;line-height:1.05;vertical-align:middle}
-.slink-weapon-modifiers{display:flex;justify-content:center;flex-wrap:wrap;gap:0 3px;font-size:.76em;font-weight:700;line-height:1.05;white-space:normal}
+.slink-weapon-modifiers{display:flex;justify-content:center;flex-wrap:nowrap;gap:0 2px;font-size:.68em;font-weight:700;line-height:1.05;white-space:normal}
 .slink-weapon-modifiers>span{white-space:nowrap}
 .slink-weapon-modifiers>[data-slink-weapon-merit]{color:var(--sp-success)}
 .slink-weapon-modifiers>[data-slink-weapon-xp]{color:color-mix(in srgb,var(--sp-text) 56%,#267de2)}
@@ -86,7 +89,10 @@
     const raw=Array.from(base.childNodes).filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
     if(!/^\d+(?:\.\d+)?$/.test(raw)||!value)return null;
     let group=base.querySelector(':scope > .slink-weapon-modifiers');
-    if(!group){group=base.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';base.append(group);base.classList.add('slink-weapon-stat');}
+    if(!group){group=base.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';base.append(group);base.classList.add('slink-weapon-stat');
+      const cell=base.parentElement;
+      if(cell?.children.length===2&&cell.firstElementChild===icon)cell.classList.add('slink-weapon-stat-cell');
+    }
     const marker=kind==='merit'?'data-slink-weapon-merit':'data-slink-weapon-xp';
     let piece=group.querySelector('['+marker+']');
     if(!piece){piece=base.ownerDocument.createElement('span');piece.setAttribute(marker,'');if(kind==='merit')group.prepend(piece);else group.append(piece);}
@@ -97,7 +103,7 @@
   function clearWeaponStat(piece){
     const group=piece.parentElement,base=group?.parentElement;
     piece.remove();
-    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat');}
+    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat');base?.parentElement?.classList.remove('slink-weapon-stat-cell');}
   }
   global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat});
   if(global.document)install();

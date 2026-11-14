@@ -45,6 +45,7 @@
     };
     const score=value=>{const n=numeric(value);return n>=1?n:null;};
     let ff=score(row.dataset.ffValue),stats=estimate(row.dataset.estValue);
+    const exact=stats>0?stats:null;
     for(const n of row.querySelectorAll('.ffscouter-bubble,.ffscouter-cell,.tt-stats-estimate,[data-slink-chat-ff],[data-slink-combat-ff],[data-battle-stats-estimate]')){
       const raw=n.textContent.trim();
       const mode=n.closest('[data-ffscouter-col-display]')?.dataset.ffscouterColDisplay;
@@ -56,7 +57,39 @@
       else if(cell&&mode==='battle_stats'||n.classList.contains('tt-stats-estimate'))stats=estimate(raw.replace(/^(?:est(?:imated)?\.?\s*)?(?:battle\s*)?stats(?:\s+estimate)?\s*:?\s*/i,''))??stats;
       stats=estimate(n.dataset.battleStatsEstimate)??stats;
     }
-    return {ff,stats};
+    return {ff,stats,exact};
+  }
+  // FFScouter sometimes shows only FF in the DOM. Reuse the exact estimate
+  // it already loaded for these players, without opening any API connection.
+  async function scouterStats(ids){
+    const idb=globalThis.indexedDB,name='FFSV3-cache';
+    if(!ids.length||!idb)return {};
+    try{
+      if(idb.databases&&!(await idb.databases()).some(db=>db.name===name))return {};
+      return await new Promise(resolve=>{
+        const open=idb.open(name);
+        open.onupgradeneeded=()=>open.transaction.abort();
+        open.onerror=open.onblocked=()=>resolve({});
+        open.onsuccess=()=>{
+          const db=open.result,found={};
+          try{
+            const tx=db.transaction('cache','readonly'),store=tx.objectStore('cache');
+            tx.oncomplete=()=>{db.close();resolve(found);};
+            tx.onabort=()=>{db.close();resolve({});};
+            for(const id of ids){
+              const request=store.get(Number(id));
+              request.onsuccess=()=>{
+                const row=request.result;
+                if(!row||String(row.player_id)!==id||row.no_data||!(row.expiry>Date.now()))return;
+                const selected=Object.hasOwn(row.available_estimates||{},row.source)?row.available_estimates[row.source]:null;
+                const n=numeric(selected?.bs_estimate??row.bs_estimate);
+                if(n>0)found[id]=n;
+              };
+            }
+          }catch{db.close();resolve({});}
+        };
+      });
+    }catch{return {};}
   }
   function rowData(row){
     const level=numeric(row.querySelector('.level .value,.lvl:not(.ffscouter-cell),.level:not(.ffscouter-cell),[class*="level__"],[data-label="level"]')?.textContent.trim().match(/^(?:level\s*)?(\d+)$/i)?.[1]);
@@ -83,7 +116,7 @@
     const key='slink-native-list-filter:'+kind+':v1';
     const read=()=>{try{return JSON.parse(localStorage.getItem(key))||{};}catch{return {};}};
     const saved=read();
-    let active=saved.active===true, listObserver, frame=0, previous=new Set(), requested='', intel={}, generation=0, sortedBody=null, sortedRows=new Set();
+    let active=saved.active===true, listObserver, frame=0, previous=new Set(), requested='', intel={}, exactStats={}, generation=0, sortedBody=null, sortedRows=new Set();
     let rowCache=new WeakMap(), sizeBody=null, shownCount=0, tall=false;
     const resize=typeof ResizeObserver==='function'?new ResizeObserver(entries=>{
       const entry=entries.find(item=>item.target===sizeBody);
@@ -155,19 +188,27 @@
       const [metric,dir]=sort.value.split('-');
       const range=Object.fromEntries(Object.keys(listMetrics).map(id=>[id,['min','max'].map(bound=>numeric(fields[id+bound].value))]));
       const needFF=metric==='ff'||range.ff.some(v=>v!==null),needStats=metric==='stats'||range.stats.some(v=>v!==null);
-      const missing=new Set();
+      const missing=new Set(),missingEstimates=new Set(),scouterRows=[];
       const entries=Array.from(body?.children||[]).filter(row=>row.matches('li')).map(readEntry).filter(Boolean).map(entry=>{
         const live=needFF||needStats?visibleIntel(entry.row):{};
-        if(((needFF&&live.ff==null)||(needStats&&live.stats==null))&&/^[1-9]\d{0,9}$/.test(entry.id))missing.add(entry.id);
-        return {...entry,ff:live.ff??numeric(intel[entry.id]?.ff),stats:live.stats??numeric(intel[entry.id]?.stats)};
+        if(/^[1-9]\d{0,9}$/.test(entry.id)){
+          if(needFF&&live.ff==null)missing.add(entry.id);
+          if(needStats&&live.exact==null){
+            missingEstimates.add(entry.id);
+            if(live.ff!=null||entry.row.querySelector('.ffscouter-marker-wrapper,.ffscouter-gauge'))scouterRows.push(entry.id);
+          }
+        }
+        return {...entry,ff:live.ff??numeric(intel[entry.id]?.ff),stats:live.exact??exactStats[entry.id]??live.stats??null};
       });
       const rows=entries.map(entry=>entry.row);
       if(needFF||needStats){
-        const ids=[...missing].slice(0,200), signature=ids.slice().sort().join(',');
+        const ids=[...missing].slice(0,200), estimates=[...missingEstimates].slice(0,200);
+        const signature=[ids.slice().sort(),estimates.slice().sort(),scouterRows.sort()].map(x=>x.join(',')).join('|');
         if(signature!==requested){
           requested=signature;
           const request=++generation;
           if(ids.length)Promise.resolve().then(()=>lookup(ids)).then(data=>{if(active&&request===generation){intel=data||{};schedule();}},()=>{});
+          if(estimates.length)scouterStats(estimates).then(data=>{if(active&&request===generation){exactStats=data;schedule();}});
         }
       }
       const roles=[...new Set(entries.map(e=>e.position).filter(Boolean).concat(selected||[]))].sort((a,b)=>a.localeCompare(b));
@@ -205,11 +246,11 @@
       shownCount=shown;
       if(sizeBody!==body){resize?.disconnect();sizeBody=body;tall=false;if(body)resize?.observe(body);}
       back.hidden=shown<15||!body||(resize?!tall:body.getBoundingClientRect().height<450);
-      const message=(!rows.length?`No loaded ${noun} to filter.`:shown===0?`No matches among ${rows.length} loaded ${noun}.`:`${shown} of ${rows.length} loaded ${noun}`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Uses shown values and SLINK cache; missing values remain unknown.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this list layout.':'');
+      const message=(!rows.length?`No loaded ${noun} to filter.`:shown===0?`No matches among ${rows.length} loaded ${noun}.`:`${shown} of ${rows.length} loaded ${noun}`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Uses shown values and FFScouter estimates; missing values remain unknown.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this list layout.':'');
       if(status.textContent!==message)status.textContent=message;
     }
     function schedule(){if(active&&!frame)frame=requestAnimationFrame(render);}
-    function stop(){listObserver?.disconnect();resize?.disconnect();sizeBody=null;rowCache=new WeakMap();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};back.hidden=true;clearSort();clear();}
+    function stop(){listObserver?.disconnect();resize?.disconnect();sizeBody=null;rowCache=new WeakMap();cancelAnimationFrame(frame);frame=0;generation++;requested='';intel={};exactStats={};back.hidden=true;clearSort();clear();}
     function configure(){
       stop();
       controls.hidden=!active;controls.style.display=active?'flex':'none';
