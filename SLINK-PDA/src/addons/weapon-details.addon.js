@@ -28,8 +28,8 @@
   function mount(root){
     const box=make('div'),load=make('button','Show weapon XP'),toggle=make('button','Explain special bonuses'),status=make('span');
     load.type=toggle.type='button';status.setAttribute('role','status');status.style.marginInlineStart='.4em';
-    box.style.cssText='display:flex;align-items:center;gap:.35em;flex-wrap:wrap;margin:.35em 0';
-    box.append(load,...(attack?[]:[toggle]),status);root.prepend(box);
+    globalThis.SLINK_TORN_COMPONENTS?.card(box);box.classList.add('slink-page-toolbar');
+    box.append(make('strong','Weapon experience'),status,...(attack?[]:[toggle]),load);root.prepend(box);
     let cache=null,show=false,seq=0,seen=new Map();
     function clear(){for(const n of seen.values())n.remove();seen.clear();}
     function update(){
@@ -45,7 +45,7 @@
         current.add(row);
         let note=seen.get(row);
         if(!note?.isConnected){
-          note=make('div');note.dataset.slinkWeaponDetails='';note.style.cssText='font-size:.8em;line-height:1.2;white-space:normal;overflow-wrap:anywhere';
+          note=make('div');note.dataset.slinkWeaponDetails='';if(!attack)globalThis.SLINK_TORN_COMPONENTS?.mark(note,'slink-page-note');note.style.cssText='font-size:.8em;line-height:1.2;white-space:normal;overflow-wrap:anywhere';
           if(attack)note.style.pointerEvents='none';
           row.append(note);seen.set(row,note);
         }
@@ -56,31 +56,38 @@
       }
       for(const [row,note] of seen)if(!current.has(row)){note.remove();seen.delete(row);}
     }
-    function reset(){seq++;cache=null;load.disabled=false;load.textContent='Show weapon XP';status.textContent='';clear();update();}
-    load.onclick=async e=>{
-      if(!e.isTrusted||load.disabled)return;
+    function reset(){seq++;cache=null;load.disabled=false;load.hidden=true;load.textContent='Retry weapon XP';status.textContent='';clear();update();}
+    async function loadExperience(e){
+      if((e&&!e.isTrusted)||load.disabled||document.hidden||!document.hasFocus())return;
+      load.hidden=true;
       load.disabled=true;status.textContent='Loading weapon XP…';const run=++seq;
       try{
         const id=await owner();if(!id)throw Error('Verify Access in SLINK first.');
-        const result=pda?experience(await pda.tornJson('/v2/user/weaponexp','SLINK weapon XP')):await ext.core.messaging.send('qol.weaponExperience');
+        const pdaCache=pda?.cache('weaponXpSnapshot',{});
+        const result=pda ? (pdaCache.owner===id&&pdaCache.at>Date.now()-21600000&&pdaCache.values
+          ? pdaCache.values : experience(await pda.tornJson('/v2/user/weaponexp','SLINK weapon XP')))
+          : await ext.core.messaging.send('qol.weaponExperience');
         const still=await owner();if(run!==seq||!box.isConnected)return;
         if(id!==still){reset();return;}
-        cache={owner:id,values:result};load.textContent='Refresh weapon XP';
-        status.textContent=Object.keys(result).length?'':'Torn didn’t return any weapon experience. It unlocks with Combat Training education.';
+        if(pdaCache&&pdaCache.values!==result){Object.assign(pdaCache,{owner:id,at:Date.now(),values:result});pda.persist?.();}
+        cache={owner:id,values:result,at:Date.now()};load.textContent='Retry weapon XP';
+        status.textContent=Object.keys(result).length?'Experience shown beside equipped weapons.':'Torn didn’t return any weapon experience. It unlocks with Combat Training education.';
         update();
-      }catch(error){if(run===seq){cache=null;clear();update();status.textContent=error.message||'Could not load weapon experience.';}}
+      }catch(error){if(run===seq){cache=null;clear();update();load.hidden=false;load.textContent='Retry weapon XP';status.textContent=error.message||'Could not load weapon experience.';}}
       finally{if(run===seq)load.disabled=false;}
-    };
+    }
+    load.hidden=true;load.onclick=loadExperience;
     toggle.setAttribute('aria-pressed','false');
     toggle.onclick=()=>{show=!show;toggle.setAttribute('aria-pressed',String(show));toggle.textContent=show?'Hide bonus explanations':'Explain special bonuses';if(!show&&!cache)clear();else update();};
     const obs=new MutationObserver(records=>{if((cache||show)&&records.some(r=>!box.contains(r.target)&&!r.target.closest?.('[data-slink-weapon-details]')))schedule();});
     obs.observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['src','title','aria-describedby','data-item','data-itemid']});
-    return {root,box,update,reset,check(){if(cache)void owner().then(id=>{if(cache&&cache.owner!==id)reset();}).catch(reset);},dispose(){seq++;obs.disconnect();clear();box.remove();}};
+    void loadExperience();
+    return {root,box,update,reset,auto(){if((!cache&&!status.textContent)||(cache&&Date.now()-cache.at>=21600000))void loadExperience();},check(){if(cache)void owner().then(id=>{if(cache&&cache.owner!==id){reset();void loadExperience();}}).catch(reset);},dispose(){seq++;obs.disconnect();clear();box.remove();}};
   }
   function sync(){
     queued=false;if(document.hidden)return;
     const root=attack?document.querySelector('#attack-root'):path==='/factions.php'?(location.hash.includes('tab=armoury')?document.querySelector('#faction-armoury'):null):document.querySelector('#mainContainer')||document.querySelector('.content-wrapper[role="main"]');
-    if(root&&mounted?.root===root&&mounted.box.isConnected){mounted.update();return;}
+    if(root&&mounted?.root===root&&mounted.box.isConnected){mounted.update();mounted.auto();return;}
     mounted?.dispose();mounted=root?mount(root):null;
   }
   function schedule(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(sync);}}
@@ -88,7 +95,7 @@
     new MutationObserver(()=>{if(!mounted?.box.isConnected&&(path!=='/factions.php'||location.hash.includes('tab=armoury')))schedule();}).observe(document.body,{subtree:true,childList:true});
     window.addEventListener('hashchange',schedule);window.addEventListener('focus',()=>{mounted?.check();schedule();});
     document.addEventListener('visibilitychange',schedule);
-    if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(key)))mounted?.reset();});
+    if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(key))){mounted?.reset();mounted?.auto();}});
     sync();
   }
   if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});

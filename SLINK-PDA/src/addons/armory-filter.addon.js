@@ -34,7 +34,7 @@
   const style=make('style');style.textContent=`[${marker}]{display:none!important}[${pick}]{outline:2px solid #e7ac48;outline-offset:-2px}`;
   let mounted,lastRoot,queued=false,syncId=0;
   function mount(root,prefs){
-    const box=make('details');box.style.cssText='padding:6px;margin:6px 0;border:1px solid currentColor;border-radius:5px';
+    const box=make('details');globalThis.SLINK_TORN_COMPONENTS?.card(box);
     const bar=make('div'),status=make('p');bar.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px';status.setAttribute('role','status');
     const search=input('Item or borrower'),only=input('Show recall candidates only','checkbox'),onlyLabel=make('label','Recall candidates only ');
     onlyLabel.append(only);

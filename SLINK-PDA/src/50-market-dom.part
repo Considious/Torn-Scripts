@@ -250,18 +250,14 @@ margin: 0;
 padding: 0 3px;
 border: 1px solid rgba(255,255,255,.32);
 border-radius: 4px;
-color: #111;
-background: linear-gradient(#b9ff68, #68c51d);
-box-shadow: inset 0 1px rgba(255,255,255,.48), 0 0 7px rgba(112,255,40,.55);
+color:var(--sp-text);background:color-mix(in srgb,var(--sp-accent) 22%,var(--sp-control));border-color:var(--sp-accent);min-block-size:0;
 font: 700 10px/1.1 Arial, sans-serif;
 text-transform: uppercase;
 cursor: pointer;
 pointer-events: auto;
 }
 button[data-tdd-quick-buy][data-tdd-quick-buy-stage="confirm"] {
-color: #fff;
-background: linear-gradient(#ff4fbd, #be197d);
-box-shadow: inset 0 1px rgba(255,255,255,.35), 0 0 8px rgba(255,79,189,.62);
+color:var(--sp-text);background:color-mix(in srgb,var(--sp-danger) 25%,var(--sp-control));border-color:var(--sp-danger);
 }
 button[data-tdd-quick-buy]:disabled {
 opacity: .6;
@@ -1002,6 +998,7 @@ if (!button?.isConnected) {
 button = document.createElement('button');
 button.type = 'button';
 button.setAttribute('data-tdd-quick-buy', 'true');
+        button.classList.add('slink-page-action');
 layer.appendChild(button);
 marketPurchaseState.quickPurchaseOverlays.set(controlKey, button);
 }

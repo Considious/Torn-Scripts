@@ -22,7 +22,7 @@ function connect({eligible}){
    if(!title)continue;
    const [method,caution]=advise(title.textContent);seen.add(row);
    let badge=badges.get(row);
-   if(!badge||badge.previousElementSibling!==title){badge?.remove();badge=d.createElement('small');badge.dataset.slinkDisposalAdvice='';badge.style.cssText='display:block;position:static;pointer-events:none;overflow-wrap:anywhere;color:inherit;font-weight:600';title.after(badge);badges.set(row,badge);}
+   if(!badge||badge.previousElementSibling!==title){badge?.remove();badge=d.createElement('small');badge.dataset.slinkDisposalAdvice='';globalThis.SLINK_TORN_COMPONENTS?.mark(badge,'slink-page-note');badge.style.cssText='display:block;position:static;pointer-events:none;overflow-wrap:anywhere;color:inherit;font-weight:600';title.after(badge);badges.set(row,badge);}
    const label=caution?method+' · '+caution:'Safest documented: '+method;
    if(badge.textContent!==label)badge.textContent=label;
   }

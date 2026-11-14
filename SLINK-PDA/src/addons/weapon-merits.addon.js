@@ -39,7 +39,7 @@
       const value=model.suffix(snapshot.levels[snapshot.classes[id]],stat);
       if(!value)continue;
       let label=base.querySelector('['+mark+']');
-      if(!label){label=document.createElement('span');label.setAttribute(mark,'');base.append(label);}
+      if(!label){label=document.createElement('span');label.setAttribute(mark,'');label.classList.add('slink-page-positive');label.style.whiteSpace='nowrap';base.append(label);}
       if(label.textContent!==' '+value)label.textContent=' '+value;
       label.title=stat==='damage'?'Weapon mastery merit damage modifier':'Weapon mastery merit accuracy bonus';
       next.add(label);
@@ -49,39 +49,44 @@
   }
   function schedule(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(draw);}}
   async function load(){
-    const revision=++generation;button.disabled=true;notice.textContent='Loading weapon merits…';
+    if(document.hidden||!document.hasFocus()||button.disabled)return;
+    const revision=++generation;button.hidden=true;button.disabled=true;notice.textContent='Loading weapon merits…';
     try{
       const owner=await own();if(!owner)throw Error('Verify Access in SLINK first.');
       let value;
       if(pda){
         const cache=pda.cache('weaponMeritCatalogue',{}),fresh=cache.at>Date.now()-86400000&&cache.classes;
+        if(fresh&&cache.merits?.owner===owner&&cache.merits.at>Date.now()-21600000)value={levels:cache.merits.levels,classes:fresh};
+        else {
         const [perks,catalogue]=await Promise.all([pda.tornJson('/v2/user/perks','SLINK weapon merits'),fresh?null:pda.tornJson('/v2/torn/items?cat=Weapon','SLINK weapon catalogue')]);
         const classes=fresh||model.catalogue(catalogue);if(!Object.keys(classes).length)throw Error('Torn did not return weapon classes.');if(!fresh){cache.classes=classes;cache.at=Date.now();}
-        value={levels:model.perks(perks),classes};
+        value={levels:model.perks(perks),classes};cache.merits={owner,at:Date.now(),levels:value.levels};pda.persist?.();
+        }
       }else value=await ext.core.messaging.send('qol.weaponMerits');
       if(revision!==generation||owner!==await own()||revision!==generation||!allowed())return;
-      snapshot={...value,owner};button.textContent='Refresh weapon merits';
-      notice.textContent=Object.keys(value.levels).length?'':'No weapon mastery bonuses found.';schedule();
-    }catch(e){if(revision===generation){snapshot=null;clear();notice.textContent=e.message||'Could not load weapon merits.';}}
+      snapshot={...value,owner,at:Date.now()};button.textContent='Retry weapon mastery';
+      notice.textContent=Object.keys(value.levels).length?'Bonuses shown beside the base stats.':'No weapon mastery bonuses found.';schedule();
+    }catch(e){if(revision===generation){snapshot=null;clear();button.hidden=false;button.textContent='Retry weapon mastery';notice.textContent=e.message||'Could not load weapon merits.';}}
     finally{if(revision===generation&&button)button.disabled=false;}
   }
-  function reset(){generation++;snapshot=null;clear();if(button){button.disabled=false;button.textContent='Show weapon merits';notice.textContent='';}}
+  function reset(){generation++;snapshot=null;clear();if(button){button.disabled=false;button.hidden=true;button.textContent='Retry weapon mastery';notice.textContent='';}}
   function sync(){
     const target=allowed()?(p==='/factions.php'?document.querySelector('#faction-armoury'):document.querySelector('#mainContainer')||document.querySelector('.content-wrapper[role="main"]')):null;
-    if(root===target&&button?.isConnected)return;
+    if(root===target&&button?.isConnected){if((!snapshot&&!notice?.textContent)||(snapshot&&Date.now()-snapshot.at>=21600000))void load();return;}
     observer?.disconnect();const old=button?.parentNode;reset();old?.remove();root=target;button=null;
     if(!root)return;
-    const bar=document.createElement('div'),style=document.createElement('style');style.textContent=`[${mark}]{font-size:.76em;font-weight:700;color:#176726;white-space:nowrap} .dark-mode [${mark}]{color:#89e893}`;
-    button=document.createElement('button');button.type='button';button.textContent='Show weapon merits';button.onclick=e=>{if(e.isTrusted)void load();};
+    const bar=document.createElement('div');globalThis.SLINK_TORN_COMPONENTS?.card(bar);bar.classList.add('slink-page-toolbar');
+    button=document.createElement('button');button.type='button';button.hidden=true;button.textContent='Retry weapon mastery';button.onclick=e=>{if(e.isTrusted)void load();};
     notice=document.createElement('span');notice.setAttribute('role','status');notice.style.marginInlineStart='.5em';
-    bar.append(button,notice,style);root.prepend(bar);
+    const title=document.createElement('strong');title.textContent='Weapon mastery';bar.append(title,notice,button);root.prepend(bar);
     observer=new MutationObserver(schedule);observer.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','data-item','data-itemid']});
+    void load();
   }
   function start(){
     new MutationObserver(()=>{if(!button?.isConnected&&allowed())sync();}).observe(document.body,{childList:true,subtree:true});
-    window.addEventListener('hashchange',sync);
-    window.addEventListener('focus',()=>{if(snapshot)void own().then(owner=>{if(snapshot&&owner!==snapshot.owner)reset();}).catch(reset);});
-    if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(storageKey)))reset();});
+    window.addEventListener('hashchange',sync);document.addEventListener('visibilitychange',sync);window.addEventListener('focus',sync);
+    window.addEventListener('focus',()=>{if(snapshot)void own().then(owner=>{if(snapshot&&owner!==snapshot.owner){reset();sync();}}).catch(reset);});
+    if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(storageKey))){reset();sync();}});
     sync();
   }
   if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});

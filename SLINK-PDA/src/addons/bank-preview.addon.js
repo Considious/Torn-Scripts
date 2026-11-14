@@ -12,8 +12,8 @@
   function mount(target){
     if(panel?.parentNode===target)return;
     panel?.remove();
-    const section=create('section');panel=section;section.setAttribute('aria-label','SLINK Bank comparison');
-    section.style.cssText='margin:.5rem 0;padding:.65rem;border:1px solid currentColor;border-radius:.4rem;line-height:1.5';
+    const section=create('section');panel=section;section.setAttribute('aria-label','SLINK Bank comparison');globalThis.SLINK_TORN_COMPONENTS?.card(section);
+    
     const label=create('label','Amount to compare ($) ');
     const input=create('input');input.inputMode='numeric';input.value='1000000';input.style.cssText='max-width:100%;width:10rem';
     label.append(input);

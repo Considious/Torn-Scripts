@@ -51,7 +51,7 @@
     if(block.querySelector('.slink-stock-amount'))return;
     const native=block.querySelector('input.input-money:not([type="hidden"])');
     if(!native)return;
-    const wrap=element('div');wrap.className='slink-stock-amount';
+    const wrap=element('div');wrap.className='slink-stock-amount';globalThis.SLINK_TORN_COMPONENTS?.card(wrap);
     const label=element('label',sell?'Sell up to ($ net) ':'Buy budget ($) ');
     const input=element('input');input.inputMode='decimal';input.placeholder='e.g. 25,000';label.append(input);
     const result=element('div');result.setAttribute('role','status');
@@ -95,7 +95,7 @@
       if(!id)continue;
       let label=row.querySelector('.slink-stock-detail');
       if(!label){
-        label=element('div');label.className='slink-stock-detail';
+        label=element('div');label.className='slink-stock-detail';globalThis.SLINK_TORN_COMPONENTS?.mark(label,'slink-page-note');
         label.append(element('span'),button('Hide stock',e=>{e.stopPropagation();void toggle(id);}));
         row.append(label);
       }
@@ -126,8 +126,8 @@
     const next=document.querySelector('#stockmarketroot');
     if(!next||next===root)return;
     observer?.disconnect();root=next;
-    const style=element('style','.slink-stock-filtered{display:none!important}.slink-stocks-panel,.slink-stock-amount,.slink-stock-detail{padding:.45rem;line-height:1.5}.slink-stocks-panel button,.slink-stock-amount button,.slink-stock-detail button{padding:.2rem .45rem;margin:.2rem;color:inherit;background:transparent;border:1px solid currentColor;border-radius:.3rem}.slink-stock-amount input{max-width:8rem}.slink-stocks-panel{border:1px solid currentColor;border-radius:.4rem;margin:.5rem 0}');
-    const panel=element('section');panel.className='slink-stocks-panel';panel.setAttribute('aria-label','SLINK Stocks tools');
+    const style=element('style','.slink-stock-filtered{display:none!important}');
+    const panel=element('section');panel.className='slink-stocks-panel';panel.setAttribute('aria-label','SLINK Stocks tools');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
     summary=element('div');status=element('div');status.setAttribute('role','status');
     controls=button('',()=>{showHidden=!showHidden;refreshDisplay();schedule();});
     picker=button('Load / refresh stocks',()=>void load());

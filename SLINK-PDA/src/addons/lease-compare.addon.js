@@ -27,8 +27,8 @@
   const currency=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n);
   let mounted,queued=false;
   function mount(root){
-    const panel=el('details'),bar=el('div'),status=el('p'),results=el('div');
-    panel.style.cssText='padding:.5rem;margin:.5rem 0;border:1px solid currentColor;border-radius:.35rem';
+    const panel=el('details'),bar=el('div'),status=el('p'),results=el('div');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
+    
     bar.style.cssText='display:flex;gap:6px;flex-wrap:wrap;align-items:center';
     status.setAttribute('role','status');
     const type=el('select'),days=el('input'),happy=el('input');

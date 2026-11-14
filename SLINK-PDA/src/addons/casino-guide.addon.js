@@ -65,7 +65,7 @@
     return Object.hasOwn(games,canonical)?canonical:null;
   };
   function lobby(root,box){
-    const list=make('div'),restore=make('button','Show all games'),status=make('span');
+    const list=make('div'),restore=make('button','Show all games'),status=make('span');globalThis.SLINK_TORN_COMPONENTS?.mark(list,'slink-page-grid');
     restore.type='button';status.setAttribute('role','status');
     const style=make('style');style.textContent=`[${mark}]{display:none!important}`;
     box.append(list,restore,status,style);
@@ -90,7 +90,7 @@
       list.replaceChildren(...Array.from(entries,([slug,label])=>{
         const input=make('input');input.type='checkbox';input.checked=!hidden.has(slug);
         input.onchange=()=>{if(input.checked)hidden.delete(slug);else hidden.add(slug);save();update();};
-        return field(label,input);
+        const row=field(label,input);return globalThis.SLINK_TORN_COMPONENTS?.switchRow(row,input)||row;
       }));
       restore.disabled=!hidden.size;
       box.querySelector('summary').textContent='Show or hide casino games'+(hidden.size?' ('+hidden.size+' hidden)':'');
@@ -128,7 +128,7 @@
     const root=document.querySelector(mode==='lobby'?'.games-list':mode==='highlow'?'.actions-wrap':'.player-cards');
     if(mounted&&mounted.root===root&&mounted.box.isConnected){mounted.update?.();return;}
     mounted?.dispose();mounted=null;if(!root)return;
-    const box=make('details');box.style.cssText='padding:.5rem;margin:.5rem 0;border:1px solid currentColor;border-radius:.35rem';
+    const box=make('details');globalThis.SLINK_TORN_COMPONENTS?.card(box);
     box.append(make('summary',mode==='lobby'?'Show or hide casino games':mode==='highlow'?'SLINK High-Low odds':'SLINK Blackjack advice'));
     root.before(box);
     const ui=mode==='lobby'?lobby(root,box):null;

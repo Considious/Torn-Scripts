@@ -58,7 +58,7 @@
       const value=input?.value??'0';
       panel?.remove();anchor=next;
       panel=el('section');panel.setAttribute('aria-label','SLINK Rehab guide');
-      panel.style.cssText='margin:.5rem 0;padding:.65rem;border:1px solid currentColor;border-radius:.4rem;line-height:1.5';
+      globalThis.SLINK_TORN_COMPONENTS?.card(panel);
       const label=el('label','Target remaining (%) ');
       input=el('input');input.inputMode='decimal';input.value=value;input.style.width='5rem';
       input.addEventListener('input',render);

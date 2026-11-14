@@ -112,21 +112,16 @@
     host.id = 'slink-travel-run';
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>
-      :host{display:block;min-width:0;max-width:100%;box-sizing:border-box;margin:6px 0;font:13px system-ui;color:var(--default-color,inherit)}
-      details{border:1px solid var(--default-color,#888);border-radius:6px;padding:8px 10px;background:var(--default-bg-panel-color,transparent);color:inherit}
-      summary{cursor:pointer;font-weight:650} form,label{display:grid;gap:5px} form{margin-top:8px;max-width:440px;gap:8px}
-      input,textarea,select,button{box-sizing:border-box;font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:4px;padding:5px}
-      option{color:#151515;background:white} button{cursor:pointer} .actions{display:flex;flex-wrap:wrap;gap:6px} [hidden]{display:none!important}
-      p{margin:6px 0} textarea{resize:vertical}
-      </style><details><summary>SLINK Travel Run · Plan</summary>
+      :host{display:block;min-width:0;max-width:100%} form,label{display:grid;gap:5px} form{margin-top:8px;max-width:440px} textarea{resize:vertical}
+      </style><section class="slink-page-ui slink-page-card"><details><summary>SLINK Travel Run · Plan</summary>
       <form><label>Sell first (optional)<input name="sell" maxlength="80" placeholder="Item name"></label>
       <label>Buy in priority order (one item per line)<textarea name="buys" rows="3" maxlength="972" placeholder="Xanax&#10;Shark Fin"></textarea></label>
       <label>If nothing can be bought<select name="fallback"><option value="home">Return to Torn</option><option value="hospital">Self-hospitalize, then return</option><option value="heal">Heal out, then return</option></select></label>
-      <div class="actions"><button type="submit">Save and start run</button></div></form>
+      <div class="slink-page-toolbar"><button type="submit">Save and start run</button></div></form>
       </details>
       <p id="status" role="status"></p>
-      <div class="actions"><button type="button" id="open" hidden></button><button type="button" id="next"></button><button type="button" id="skip">Skip this step</button><button type="button" id="edit">Set up Travel Run</button></div>`;
-    const get = id => shadow.getElementById(id);
+      <div class="slink-page-toolbar"><button type="button" id="open" hidden></button><button type="button" id="next"></button><button type="button" id="skip">Skip this step</button><button type="button" id="edit">Set up Travel Run</button></div></section>`;
+    const get = id => shadow.getElementById(id);globalThis.SLINK_TORN_COMPONENTS?.install(shadow);
     const details = shadow.querySelector('details'), form = shadow.querySelector('form');
     const next = get('next'), skip = get('skip'), edit = get('edit'), status = get('status'), open = get('open');
     let editing = index === null;

@@ -32,7 +32,7 @@
     if(panel?.target===target&&panel.node.parentNode===host)return;
     panel?.node.remove();panel=null;
     const seq=++revision;if(!target||!host)return;
-    const node=el('details');node.style.cssText='margin:.5rem 0;padding:.55rem;border:1px solid currentColor;border-radius:.4rem';
+    const node=el('details');globalThis.SLINK_TORN_COMPONENTS?.card(node);
     const title=el('summary','SLINK · Private profile note');
     const label=el('label','Note for player #'+target);
     const field=el('textarea');field.rows=4;field.maxLength=LIMIT;field.disabled=true;field.style.cssText='display:block;width:100%;box-sizing:border-box;margin:.35rem 0;resize:vertical';

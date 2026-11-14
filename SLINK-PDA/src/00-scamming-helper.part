@@ -47,7 +47,7 @@ function connect({eligible}){
    seen.add(node);let panel=panels.get(node);
    if(!panel?.isConnected){
     panel=d.createElement('small');panel.setAttribute(mark,'');panel.setAttribute('role','status');
-    panel.style.cssText='display:block;margin:3px 0;line-height:1.35;overflow-wrap:anywhere';
+    panel.style.cssText='display:block;margin:3px 0;line-height:1.35;overflow-wrap:anywhere';globalThis.SLINK_TORN_COMPONENTS?.mark(panel,'slink-page-note');
     node.after(panel);panels.set(node,panel);
    }
    if(panel.textContent!==message)panel.textContent=message;

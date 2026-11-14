@@ -36,7 +36,7 @@ function connect({eligible}){
    return [{name,bet:Number(raw.replace(/[^\d]/g,'')),hype}];
   });
   if(!panel?.isConnected){
-   panel=d.createElement('aside');panel.setAttribute('data-slink-hustling','');panel.setAttribute('aria-label','Hustling helper');
+   panel=d.createElement('aside');panel.setAttribute('data-slink-hustling','');globalThis.SLINK_TORN_COMPONENTS?.card(panel);panel.setAttribute('aria-label','Hustling helper');
    panel.style.cssText='padding:6px 8px;margin:4px 0;font-size:12px;line-height:1.4;white-space:pre-line;overflow-wrap:anywhere';
    header.after(panel);
   }

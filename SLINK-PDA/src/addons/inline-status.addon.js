@@ -56,8 +56,8 @@
     if(current?.node.parentNode===target){if(current.heading.textContent!==title)current.heading.textContent=title;return current;}
     current?.node.remove();
     if(!target)return null;
-    const node=el('details');node.className='slink-inline-status';
-    node.style.cssText='padding:.4rem;margin:.35rem 0;border:1px solid currentColor;border-radius:.35rem;overflow-wrap:anywhere';
+    const node=el('details');node.className='slink-inline-status';globalThis.SLINK_TORN_COMPONENTS?.card(node);
+    
     const heading=el('summary',title), content=el('div');node.append(heading,content);target.prepend(node);
     node.addEventListener('toggle',()=>{if(node.open)schedule();});
     return {node,heading,content,signature:''};

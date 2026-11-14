@@ -12,7 +12,7 @@ const route=()=>g.location.pathname==='/page.php'&&new URLSearchParams(g.locatio
 const picker='.crime-option:has(.crime-image img[srcset*="/11-forgery/forgery_new_project"])';
 const option='[data-testid="dropdown-list"] [role="option"]';
 const mark='data-slink-forgery-risk';
-const css='['+mark+']::after{content:attr('+mark+');display:inline-block;margin-inline-start:.35em;font-size:10px;font-weight:600;white-space:nowrap;opacity:.85;pointer-events:none}';
+const css='['+mark+']::after{content:attr('+mark+');display:inline-block;margin-inline-start:.35em;font-size:10px;font-weight:600;white-space:normal;border-radius:4px;padding:1px 4px;color:var(--slt-text,CanvasText);background:var(--slt-surface,Canvas);border:1px solid var(--slt-border,currentColor);pointer-events:none}';
 function connect({eligible}){
  const d=g.document;let enabled=false,observer=null,frame=0,style=null,marked=new Set();
  const active=()=>enabled&&!d.hidden&&route()&&eligible();

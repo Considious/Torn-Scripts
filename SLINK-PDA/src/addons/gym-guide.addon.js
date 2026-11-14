@@ -26,8 +26,8 @@
   const normalize=v=>String(v??'').toLowerCase().replaceAll('’',"'").trim();
   let mounted,queued=false;
   function mount(root){
-    const box=make('details'),heading=make('summary','SLINK Gym progress'),progress=make('p'),gyms=make('ul');
-    box.style.cssText='border:1px solid currentColor;border-radius:.35rem;padding:.45rem;margin:.5rem 0';
+    const box=make('details'),heading=make('summary','SLINK Gym progress'),progress=make('p'),gyms=make('ul');globalThis.SLINK_TORN_COMPONENTS?.card(box);
+    
     box.append(heading,progress,gyms,make('small','Based on the stats and gym information Torn shows on this page. Torn makes the final eligibility decision.'));
     const anchor=root.querySelector('[class*="notificationText__"]')?.closest('[class*="notification__"]');
     if(anchor)anchor.after(box);else root.prepend(box);

@@ -345,6 +345,7 @@ return root;
 let host = document.createElement('div');
 host.id = HOST_ID;
 const shadow = host.attachShadow({ mode: 'open' });
+ globalThis.SLINK_TORN_COMPONENTS?.install(shadow);
 const editableState = protectEditableState(shadow);
 const style = document.createElement('style');
 style.textContent = `
@@ -2029,6 +2030,7 @@ request:(ids,key)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+enc
 intelligence:async id=>playerIntelligenceRecord(id),backup:ids=>fairFightBackup().fallback(ids)
 }),
 cache:pdaPluginCache,
+persist:schedulePdaCacheSave,
 save:savePdaChanges,
 listen:listenPdaAction,
 hasScope,

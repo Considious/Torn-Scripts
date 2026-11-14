@@ -52,7 +52,7 @@
     });
     fields.append(button('Reset',()=>{for(const {type,n} of inputs){if(type==='check')n.checked=false;else n.value='';}try{localStorage.removeItem(key);}catch{}apply();}),
       button('Save preset',()=>{try{localStorage.setItem(key,JSON.stringify(Object.fromEntries(inputs.map(({type,n,label})=>[label,type==='check'?n.checked:n.value]))));status.textContent='Preset saved.';}catch{status.textContent='Could not save the preset on this device.';}}),status);
-    box.append(make('summary',spec.title),fields);root.before(box);
+    box.append(make('summary',spec.title),fields);globalThis.SLINK_TORN_COMPONENTS?.card(box);root.before(box);
     if(kind==='war')g.SLINK_FACTION_CSV?.attach(box,{name:'Export visible war roster',file:'slink-ranked-war-roster.csv',produce:()=>root.isConnected?g.SLINK_FACTION_CSV.native(root,true):''});
     if(!sheet.isConnected)document.head.append(sheet);
     let marked=new Set();
@@ -74,7 +74,7 @@
     return {root,box,update:apply,dispose(){observer.disconnect();clear();box.remove();}};
   }
   function mountCompany(root){
-    const box=make('div'),status=make('span');status.setAttribute('role','status');
+    const box=make('div'),status=make('span');globalThis.SLINK_TORN_COMPONENTS?.card(box);status.setAttribute('role','status');
     const notes=new Map();
     const clear=()=>{for(const n of notes.values())n.remove();notes.clear();};
     box.append(button('Suggest stock order',()=>{
@@ -89,7 +89,7 @@
         if(sold===null)continue;
         const qty=Math.min(remaining,Math.floor((cap[1]-cap[0])*sold/total));
         remaining-=qty;used+=qty;
-        const note=make('small',' Suggested: '+qty.toLocaleString());note.dataset.slinkStockSuggestion='';row.querySelector('.sold-daily').append(note);notes.set(row,note);
+        const note=make('small',' Suggested: '+qty.toLocaleString());note.dataset.slinkStockSuggestion='';globalThis.SLINK_TORN_COMPONENTS?.mark(note,'slink-page-note');row.querySelector('.sold-daily').append(note);notes.set(row,note);
       }
       status.textContent=' '+used.toLocaleString()+' units suggested from displayed sales and free storage. Enter and review the order in Torn.';
     }),status);
@@ -103,7 +103,7 @@
     return {root,box,dispose(){observer.disconnect();clear();box.remove();}};
   }
   function mountProfile(root){
-    const box=make('details'),field=make('input'),status=make('strong');
+    const box=make('details'),field=make('input'),status=make('strong');globalThis.SLINK_TORN_COMPONENTS?.card(box);
     field.placeholder='Allied faction IDs, separated by commas';field.setAttribute('aria-label','Allied faction IDs');
     const key='slink-qol-allies.v1';
     try{field.value=localStorage.getItem(key)||'';}catch{}

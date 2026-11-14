@@ -162,7 +162,7 @@
           exact.push(word);matched.add(word);if(exact.length===EXACT_LIMIT)break;
         }
         const variants=local.variants.filter(word=>!entry?.words.has(word));
-        const panel=prior||el('div');panel.dataset.slinkCrackingAdvice='';panel.dataset.pattern=version;
+        const panel=prior||el('div');panel.dataset.slinkCrackingAdvice='';globalThis.SLINK_TORN_COMPONENTS?.mark(panel,'slink-page-note');panel.dataset.pattern=version;
         const results=[];
         if(exact.length)results.push(el('div','Dictionary matches: '+exact.join(' · ')));
         if(variants.length)results.push(el('div','Variant guesses: '+variants.join(' · ')));

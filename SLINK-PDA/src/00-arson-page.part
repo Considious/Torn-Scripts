@@ -358,10 +358,10 @@
             }
           }
           const button=doc.createElement('button');button.type='button';button.textContent='Arson help';button.setAttribute('aria-expanded','false');
-          if(ledger){button.innerHTML=ledger.flame;button.setAttribute('aria-label','Arson help');button.style.cssText='display:inline-flex;align-items:center;gap:3px;cursor:help;border:1px solid currentColor;border-radius:10px;color:#ffb44e;background:#171b22;padding:2px 5px';}
+          if(ledger){button.innerHTML=ledger.flame;button.setAttribute('aria-label','Arson help');button.style.cssText='display:inline-flex;align-items:center;gap:3px;cursor:help;border:1px solid currentColor;border-radius:10px;color:var(--slt-accent,#ffb44e);background:var(--slt-surface,#171b22);padding:2px 5px';}
           const card=doc.createElement('span');card.hidden=true;card.setAttribute('role','status');
-          card.style.cssText='position:absolute;z-index:10000;width:min(300px,calc(100vw - 16px));max-height:40vh;overflow:auto;background:#171b22;color:#fff;padding:10px;border:1px solid #8a96aa;border-radius:6px;box-sizing:border-box;white-space:normal';
-          if(ledger)card.style.cssText='position:fixed;pointer-events:auto;width:max-content;max-width:min(440px,calc(100vw - 16px));max-height:65dvh;overflow:auto;background:var(--slink-arson-popup-bg,var(--tooltip-bg-color,#171b22));color:var(--crimes-baseText-color,#fff);border:1px solid var(--crimes-outcomeDivider-color,#8a96aa);border-radius:8px;box-shadow:0 2px 12px #0008;box-sizing:border-box';
+          card.style.cssText='position:absolute;z-index:10000;width:min(300px,calc(100vw - 16px));max-height:40vh;overflow:auto;background:var(--slt-surface,#171b22);color:var(--slt-text,#fff);padding:10px;border:1px solid #8a96aa;border-radius:6px;box-sizing:border-box;white-space:normal';
+          if(ledger)card.style.cssText='position:fixed;pointer-events:auto;width:max-content;max-width:min(440px,calc(100vw - 16px));max-height:65dvh;overflow:auto;background:var(--slt-surface,var(--slink-arson-popup-bg,#171b22));color:var(--slt-text,#fff);border:1px solid var(--crimes-outcomeDivider-color,#8a96aa);border-radius:8px;box-shadow:0 2px 12px #0008;box-sizing:border-box';
           const anchor=ledger?host:wrap;
           entry={wrap,button,card,anchor,restoreHost};controls.set(row,entry);
           if(ledger){card.addEventListener('pointerenter',cancelLeave);card.addEventListener('pointerleave',()=>delayClose(entry));}

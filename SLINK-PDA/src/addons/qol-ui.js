@@ -19,14 +19,11 @@
       queue=task.catch(()=>{});return task;
     }
     function installStyle(){if(style)return;style=node('style');style.textContent=`
-      .slink-qol{box-sizing:border-box;color:var(--slt-text,var(--slink-text,#eee));font:inherit;background:var(--slt-panel,var(--slink-panel,#222));border:1px solid var(--slt-border,var(--slink-border,#666));border-radius:9px;padding:8px;margin:7px 0;line-height:1.4}
-      .slink-qol button,.slink-qol input,.slink-qol select,.slink-qol a{box-sizing:border-box;font:inherit;color:inherit}
-      .slink-qol button,.slink-qol select,.slink-qol input{background:var(--slt-control,var(--slink-control,#333));border:1px solid var(--slt-border,var(--slink-border,#888));border-radius:6px;padding:5px 7px;min-height:32px}
-      .slink-qol button{cursor:pointer}.slink-qol button:disabled{opacity:.55;cursor:not-allowed}.slink-qol button:focus-visible{outline:2px solid var(--slt-accent,#ad7cff);outline-offset:2px}
+
       .slink-qol-row,.slink-qol-favorites,.slink-qol-links{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.slink-qol-row{margin:5px 0}.slink-qol-row>span:first-child{flex:1;min-width:110px}.slink-qol-row input[type="text"],.slink-qol-row input[type="url"]{flex:1;min-width:100px;width:100%}
       .slink-qol [role="status"]{display:block;white-space:pre-wrap;margin-top:4px}.slink-qol small{opacity:.82}.slink-qol-add{font-size:11px;padding:2px 4px;cursor:pointer;margin-left:4px}
-      .slink-qol-info{display:block;font-size:11px;line-height:1.3;color:var(--slt-text,#ddd);white-space:normal}.slink-qol h3{margin:9px 0 4px}.slink-qol label{display:inline-flex;gap:5px;align-items:center;margin:4px 7px 4px 0}
-      .slink-qol [draggable="true"]{touch-action:pan-y}.slink-qol-links a{padding:4px 6px;color:var(--slt-link,#c9a5ff)}
+      .slink-qol-info{display:block;font-size:11px;line-height:1.3;white-space:normal}.slink-qol h3{margin:9px 0 4px}.slink-qol label:not(.slink-page-toggle){display:inline-flex;gap:5px;align-items:center;margin:4px 7px 4px 0}
+      .slink-qol [draggable="true"]{touch-action:pan-y}.slink-qol-links a{padding:4px 6px;}
     `;doc.head.append(style);}
     function moveControl(row,key,kind){
       const list=kind==='favorites'?config.favorites:config.links,keyFn=kind==='favorites'?Q.favoriteKey:x=>x.id,index=list.findIndex(x=>keyFn(x)===key);
@@ -36,7 +33,7 @@
       row.addEventListener('dragover',e=>e.preventDefault());row.addEventListener('drop',event=>{event.preventDefault();const [group,from]=event.dataTransfer.getData('text/plain').split('\n');if(group!==kind)return;void mutate(s=>{const i=s[kind].findIndex(x=>keyFn(x)===from),j=s[kind].findIndex(x=>keyFn(x)===key);return {...s,[kind]:Q.move(s[kind],from,j-i,keyFn)};}).catch(e=>notice(e.message));});
     }
     function drawManager(){
-      if(!manager||inputPending)return;manager.replaceChildren();manager.classList.add('slink-qol');const localStyle=node('style');localStyle.textContent=style?.textContent||'';manager.append(localStyle);
+      if(!manager||inputPending)return;manager.replaceChildren();manager.classList.add('slink-qol');globalThis.SLINK_TORN_COMPONENTS?.card(manager);globalThis.SLINK_TORN_COMPONENTS?.install(manager.getRootNode());const localStyle=node('style');localStyle.textContent=style?.textContent||'';manager.append(localStyle);
       manager.append(node('h3','Page tools'));
       for(const [key,label]of [['enabled','Enable page tools'],['quickItems','Quick-use favorites'],['customLinks','Custom links'],['effects','Item effects'],['values','Item values']]){
         const l=node('label'),input=node('input',undefined,{type:'checkbox'});input.checked=config[key];input.addEventListener('change',()=>void mutate(s=>({...s,[key]:input.checked})).catch(e=>notice(e.message)));l.append(input,doc.createTextNode(label));manager.append(l);
@@ -53,8 +50,8 @@
       manager.append(button('Add link',()=>editLink()),node('h3','Updates'),button('Check for updates',checkUpdate),node('div',status,{role:'status','aria-live':'polite'}));
     }
     function editLink(existing){
-      if(!manager)return;inputPending=true;const form=node('form',undefined,{class:'slink-qol'}),name=node('input',undefined,{type:'text',placeholder:'Name',required:'',maxlength:60,'aria-label':'Link name'}),href=node('input',undefined,{type:'url',placeholder:'https://…',required:'','aria-label':'Link URL'}),tab=node('input',undefined,{type:'checkbox'}),label=node('label','');
-      name.value=existing?.name||'';href.value=existing?.href||'';tab.checked=existing?.newTab===true;label.append(tab,doc.createTextNode('Open in new tab'));form.append(name,href,label);
+      if(!manager)return;inputPending=true;const form=node('form',undefined,{class:'slink-qol slink-page-ui slink-page-card'}),name=node('input',undefined,{type:'text',placeholder:'Name',required:'',maxlength:60,'aria-label':'Link name'}),href=node('input',undefined,{type:'url',placeholder:'https://…',required:'','aria-label':'Link URL'}),tab=node('input',undefined,{type:'checkbox'}),label=node('label','');
+      name.value=existing?.name||'';href.value=existing?.href||'';tab.checked=existing?.newTab===true;label.append(doc.createTextNode('Open in new tab'),tab);globalThis.SLINK_TORN_COMPONENTS?.switchRow(label,tab);form.append(name,href,label);
       const save=node('button','Save link',{type:'submit'});form.append(save,button('Cancel',()=>{inputPending=false;drawManager();}));
       form.addEventListener('submit',async e=>{e.preventDefault();const url=Q.safeUrl(href.value);if(!url||!name.value.trim())return;save.disabled=true;
         try{const updated={id:existing?.id||global.crypto.randomUUID(),name:name.value.trim(),href:url,newTab:tab.checked};await mutate(s=>({...s,links:existing?s.links.map(x=>x.id===existing.id?updated:x):[...s.links,updated]}));inputPending=false;drawManager();}catch(error){notice(error.message);save.disabled=false;}});
@@ -81,12 +78,12 @@
     function makeUse(source,id,name){const b=button(name,event=>use(source,id,event),{'data-qol-use':id});b.disabled=busy;return b;}
     function decorate(source,rows){
       for(const item of rows){const row=item.row;if(!config.quickItems)row.querySelector('.slink-qol-add')?.remove();if(config.quickItems&&item.usable&&!row.querySelector('.slink-qol-add')){
-        const b=button('☆',()=>mutate(s=>Q.addFavorite(s,{source,id:item.id,name:item.name})),{class:'slink-qol-add','aria-label':'Add '+item.name+' to SLINK quick use',title:'Add to SLINK quick use'});row.querySelector('.name,.name-wrap')?.append(b);
+        const b=button('☆',()=>mutate(s=>Q.addFavorite(s,{source,id:item.id,name:item.name})),{class:'slink-qol-add slink-page-action','aria-label':'Add '+item.name+' to SLINK quick use',title:'Add to SLINK quick use'});row.querySelector('.name,.name-wrap')?.append(b);
       }
       let info=row.querySelector(':scope > .slink-qol-info');const parts=[];
       if(config.effects&&item.effect)parts.push(item.effect.label);
       if(config.values&&Q.finite(item.price)!==null&&item.quantity!==null)parts.push(`Market estimate $${Math.round(item.price).toLocaleString()} each · $${Math.round(item.price*item.quantity).toLocaleString()} total`);
-      if(parts.length){if(!info){info=node('small',undefined,{class:'slink-qol-info'});row.append(info);}const value=parts.join(' · ');if(info.textContent!==value)info.textContent=value;}else info?.remove();
+      if(parts.length){if(!info){info=node('small',undefined,{class:'slink-qol-info slink-page-note'});row.append(info);}const value=parts.join(' · ');if(info.textContent!==value)info.textContent=value;}else info?.remove();
       }
     }
     function tradeValues(){
@@ -98,14 +95,14 @@
         const matches=id?[metadata.get(id)].filter(Boolean):[...metadata.values()].filter(x=>x.name===name);
         const item=matches.length===1?matches[0]:null,q=quantity(row);
         if(!item||q===null||Q.finite(item.price)===null){info?.remove();continue;}
-        if(!info){info=node('small',undefined,{class:'slink-qol-info'});row.append(info);}const text=`Market estimate: $${Math.round(item.price*q).toLocaleString()} · ${q.toLocaleString()} × $${Math.round(item.price).toLocaleString()}`;if(info.textContent!==text)info.textContent=text;
+        if(!info){info=node('small',undefined,{class:'slink-qol-info slink-page-note'});row.append(info);}const text=`Market estimate: $${Math.round(item.price*q).toLocaleString()} · ${q.toLocaleString()} × $${Math.round(item.price).toLocaleString()}`;if(info.textContent!==text)info.textContent=text;
       }
       observer ||= new MutationObserver(()=>schedule());observer.observe(scope,{childList:true,subtree:true,characterData:true});
     }
     function scan(){
       timer=null;observer?.disconnect();if(!active()||!config.enabled||!['quickItems','effects','values','customLinks'].some(k=>config[k])){cleanNative();return;}
       installStyle();const source=route();if(source!==lastRoute){items.clear();seenAt=0;lastRoute=source;}
-      if(config.customLinks&&config.links.length){const target=doc.querySelector('#sidebar')||doc.querySelector('.content-wrapper[role="main"]');if(target){if(!links||links.parentNode!==target){links?.remove();links=node('nav',undefined,{class:'slink-qol slink-qol-links','aria-label':'SLINK custom links'});target.prepend(links);}const key=JSON.stringify(config.links);if(links.dataset.renderKey!==key){links.dataset.renderKey=key;links.replaceChildren();for(const l of config.links)links.append(node('a',l.name,{href:l.href,...(l.newTab?{target:'_blank',rel:'noopener noreferrer'}:{})}));}}}
+      if(config.customLinks&&config.links.length){const target=doc.querySelector('#sidebar')||doc.querySelector('.content-wrapper[role="main"]');if(target){if(!links||links.parentNode!==target){links?.remove();links=node('nav',undefined,{class:'slink-qol slink-qol-links slink-page-ui slink-page-card','aria-label':'SLINK custom links'});target.prepend(links);}const key=JSON.stringify(config.links);if(links.dataset.renderKey!==key){links.dataset.renderKey=key;links.replaceChildren();for(const l of config.links)links.append(node('a',l.name,{href:l.href,...(l.newTab?{target:'_blank',rel:'noopener noreferrer'}:{})}));}}}
       else{links?.remove();links=null;}
       if(!config.quickItems&&!config.effects&&!config.values){tray?.remove();tray=null;scope?.querySelectorAll('.slink-qol-add,.slink-qol-info').forEach(n=>n.remove());return;}
       if(!source){tray?.remove();tray=null;tradeValues();return;}
@@ -115,7 +112,7 @@
       // Learn only a displayed own-player blood-type label, never another player's profile.
       if(!config.bloodType){const label=doc.querySelector('#sidebar [title*="Blood type" i],#sidebar [aria-label*="Blood type" i]');const match=(label?.getAttribute('title')||label?.getAttribute('aria-label')||'').match(/blood type\s*:?\s*(AB|A|B|O)\s*([+-])/i);if(match)void mutate(s=>({...s,bloodType:Q.blood(match[1]+match[2])})).catch(e=>notice(e.message));}
       if(config.quickItems){
-        if(!tray||tray.parentNode!==scope){tray?.remove();tray=node('section',undefined,{class:'slink-qol','aria-label':'SLINK quick use'});scope.prepend(tray);}
+        if(!tray||tray.parentNode!==scope){tray?.remove();tray=node('section',undefined,{class:'slink-qol slink-page-ui slink-page-card','aria-label':'SLINK quick use'});scope.prepend(tray);}
         const favorites=config.favorites.filter(x=>x.source===source).map(f=>({f,item:items.get(f.id),img:items.get(f.id)?.row.querySelector('img')}));
         const key=JSON.stringify([source,favorites.map(({f,item,img})=>[f.id,f.name,item?.name,item?.quantity,item?.usable,img?.getAttribute('src'),img?.getAttribute('srcset')])]);
         if(tray.dataset.renderKey!==key){
@@ -172,7 +169,7 @@
     }
     let updateChecked=false;
     async function sync(){try{const result=await host.load();allowed=result.allowed!==false;config=Q.normalize(result.settings);loaded=true;if(!allowed)cleanNative();else if(host.cached){const c=await host.cached();metadata=new Map(Q.catalog(c.catalog).map(x=>[x.id,x]));bonus=Q.bonuses(c.perks);catalogAt=Number(c.catalogAt)||0;profileAt=Number(c.profileAt)||0;bonusAt=Number(c.perksAt)||0;context=c.context||null;}drawManager();schedule();
-      if(allowed&&config.enabled&&!updateChecked){updateChecked=true;void host.updates().then(data=>{const release=data?.[host.product];if(Q.versionCompare(release?.version,host.version)>0){notice('SLINK '+release.version+' is available.');const href=Q.safeUrl(release.url);if(href){const update=node('aside',undefined,{class:'slink-qol','aria-label':'SLINK update available'});update.append(node('a','SLINK '+release.version+' available',{href,target:'_blank',rel:'noopener noreferrer'}),button('Dismiss',()=>update.remove()));doc.querySelector('#sidebar')?.prepend(update);}}}).catch(()=>{});}
+      if(allowed&&config.enabled&&!updateChecked){updateChecked=true;void host.updates().then(data=>{const release=data?.[host.product];if(Q.versionCompare(release?.version,host.version)>0){notice('SLINK '+release.version+' is available.');const href=Q.safeUrl(release.url);if(href){const update=node('aside',undefined,{class:'slink-qol slink-page-ui slink-page-card','aria-label':'SLINK update available'});update.append(node('a','SLINK '+release.version+' available',{href,target:'_blank',rel:'noopener noreferrer'}),button('Dismiss',()=>update.remove()));doc.querySelector('#sidebar')?.prepend(update);}}}).catch(()=>{});}
     }catch(error){allowed=false;cleanNative();if(manager){manager.replaceChildren(node('p','Page tools could not load. Verify access and reopen this tab.'));manager.append(node('div',undefined,{role:'status'}));}notice('Settings could not be loaded: '+error.message);}}
     const wake=()=>{if(!active()){observer?.disconnect();return;}schedule();};
     doc.addEventListener('visibilitychange',wake);global.addEventListener('focus',wake);global.addEventListener('blur',wake);global.addEventListener('hashchange',wake);global.addEventListener('popstate',wake);

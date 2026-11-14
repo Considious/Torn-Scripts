@@ -50,7 +50,7 @@
     const remove=()=>{if(frame!==null)global.cancelAnimationFrame(frame);frame=null;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;clean();tool?.remove();tool=null;style?.remove();style=null;root=null;};
     function controls(){
       if(tool?.isConnected)return;
-      tool=add('div');tool.dataset.slinkPickpocketTools='';tool.setAttribute('aria-label','SLINK Pickpocket filters');
+      tool=add('div');tool.dataset.slinkPickpocketTools='';globalThis.SLINK_TORN_COMPONENTS?.card(tool);tool.setAttribute('aria-label','SLINK Pickpocket filters');
       tool.append(add('strong','Pickpocket target rating'));
       const fields=['Min','Max'].map((name,i)=>{const label=add('label',name+' '),input=add('input');input.type='number';input.min='1';input.max='350';input.step='1';input.value=limits[i];label.append(input);tool.append(label);return input;});
       function set(a,b){limits=range(a,b);fields.forEach((field,i)=>field.value=limits[i]);try{global.localStorage.setItem(key,JSON.stringify(limits));}catch{}schedule();}
@@ -97,8 +97,7 @@
       if(!active()){remove();return;}
       if(!style){
         style=add('style');style.textContent=`
-[data-slink-pickpocket-tools]{position:static;display:flex;flex-wrap:wrap;align-items:center;gap:.5em;margin:.5em 0;padding:.5em;color:var(--slt-text,#eee);background:var(--slt-control,#272c34);border:1px solid var(--slt-border,#69717d);border-radius:6px}
-[data-slink-pickpocket-tools] :is(input,button){font:inherit;color:inherit;background:var(--slt-bg,#191d24);border:1px solid var(--slt-border,#69717d);border-radius:4px;padding:.35em}
+[data-slink-pickpocket-tools]{position:static;display:flex;flex-wrap:wrap;align-items:center;gap:.5em;margin:.5em 0;padding:.5em}
 [data-slink-pickpocket-tools] input{width:5em}
 [data-slink-pickpocket-badge]{display:inline-block;max-width:100%;font-size:.82em;font-weight:700;color:#f2f2f2;background:#363a46;padding:.12em .38em;border-radius:4px;pointer-events:none}
 [data-slink-pickpocket-badge][data-band=ideal]{background:#1b512c}[data-slink-pickpocket-badge][data-band=easy]{background:#31566b}[data-slink-pickpocket-badge][data-band=risk]{background:#812f3d}

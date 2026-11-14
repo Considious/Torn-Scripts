@@ -18,14 +18,14 @@
     let dock=null, preferred=null;
     host.hidden=true;
     const shadow=host.attachShadow({mode:'open'});
-    shadow.innerHTML='<style>:host([hidden]){display:none!important}#position{position:absolute;left:0;top:0;width:105px;height:96px}#jack{display:block;position:absolute;inset:0;padding:0;border:0;background:none;cursor:grab;touch-action:none;pointer-events:auto;color:white}#jack[hidden],#speech[hidden]{display:none}canvas{width:100%;height:100%;pointer-events:none}#speech{position:absolute;width:min(165px,43vw);border:1px solid #ec974b;background:#211620;color:#fff2e1;border-radius:10px;padding:8px;font:13px/1.3 system-ui;pointer-events:auto;cursor:pointer;box-shadow:0 3px 12px #0009}</style><div id="position"><button type="button" id="jack"><canvas width="220" height="200"></canvas></button><button type="button" id="speech" hidden></button></div>';
+    shadow.innerHTML='<style>:host([hidden]){display:none!important}#position{position:absolute;left:0;top:0;width:105px;height:96px}#jack{display:block;position:absolute;inset:0;padding:0;border:0;background:none;cursor:grab;touch-action:none;pointer-events:auto;color:white}#jack[hidden],#speech[hidden]{display:none}canvas{width:100%;height:100%;pointer-events:none}#speech{position:absolute;width:min(165px,43vw);border:1px solid var(--slt-border,#ec974b);background:var(--slt-surface,#211620);color:var(--slt-text,#fff2e1);border-radius:10px;padding:8px;font:13px/1.3 system-ui;pointer-events:auto;cursor:pointer;box-shadow:0 3px 12px #0009}</style><div id="position"><button type="button" id="jack"><canvas width="220" height="200"></canvas></button><button type="button" id="speech" hidden></button></div>';
     const box=shadow.querySelector('#position'), jack=shadow.querySelector('#jack'), speech=shadow.querySelector('#speech'), canvas=shadow.querySelector('canvas'), ctx=canvas.getContext('2d');
     doc.body.append(host);
-    const panel=doc.createElement('details');
-    panel.style.cssText='padding:5px 9px;color:inherit;font:13px/1.5 system-ui;max-width:100%';
+    const panel=doc.createElement('details');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
+    
     panel.innerHTML='<summary>Companion settings</summary><div style="display:grid;gap:5px;padding:5px 0"><label>Companion <select data-pref="id"></select></label><label>Movement <select data-pref="movement"><option value="wander">Wander</option><option value="stay">Stay where I put him</option></select></label><label>Companion alerts <select data-pref="alerts"><option value="all">All</option><option value="important">Important only</option><option value="minimal">Minimal</option><option value="silent">Silent</option></select></label><label><input type="checkbox" data-pref="chatter"> Idle chatter</label><label><input type="checkbox" data-pref="reduced"> Reduced motion</label></div>';
     if(setSettingsAvailable)panel.open=true;
-    settingsParent.append(panel);
+    settingsParent.append(panel);globalThis.SLINK_TORN_COMPONENTS?.install(panel.getRootNode());for(const label of panel.querySelectorAll('label')){const control=label.lastElementChild;const title=doc.createElement('span');for(const child of [...label.childNodes])if(child!==control){title.append(child);}label.prepend(title);if(control.type==='checkbox')globalThis.SLINK_TORN_COMPONENTS?.switchRow(label,control);else label.classList.add('slink-page-row');}
     const field=name=>panel.querySelector('[data-pref="'+name+'"]');
     const reduced=()=>Boolean(settings.reduced)||motion.matches;
     const visible=()=>!doc.hidden&&focused;

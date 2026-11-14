@@ -33,7 +33,7 @@
     let box=target.querySelector(':scope > [data-slink-mission-note="'+kind+'"]');
     if(!box){
       box=document.createElement('p');box.dataset.slinkMissionNote=kind;
-      box.style.cssText='padding:.35rem .5rem;margin:.3rem 0;border-inline-start:3px solid currentColor;overflow-wrap:anywhere';
+      globalThis.SLINK_TORN_COMPONENTS?.mark(box,'slink-page-note');
       target.append(box);
     }
     seen.add(box);

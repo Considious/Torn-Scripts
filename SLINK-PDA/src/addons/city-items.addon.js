@@ -38,8 +38,8 @@
     }
     if(node!==mapNode){
       detach();mapNode=node;
-      panel=el('section');panel.dataset.slinkCityItems='';panel.setAttribute('aria-label','SLINK City items');
-      panel.style.cssText='margin:.5rem 0;padding:.55rem;border:1px solid currentColor;border-radius:.4rem;line-height:1.5';
+      panel=el('section');panel.dataset.slinkCityItems='';panel.setAttribute('aria-label','SLINK City items');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
+      
       const label=el('label',' Highlight items on the map'),toggle=el('input');toggle.type='checkbox';toggle.checked=enabled;label.prepend(toggle);
       toggle.addEventListener('change',()=>{enabled=toggle.checked;schedule();});
       const details=el('details');details.append(el('summary','Item list'),list=el('ul'));

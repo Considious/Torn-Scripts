@@ -65,7 +65,7 @@
       const entry=entries.find(item=>item.target===sizeBody);
       if(entry){tall=(entry.borderBoxSize?.[0]?.blockSize??entry.contentRect.height)>=450;back.hidden=shownCount<15||!tall;}
     }):null;
-    const box=make('div');box.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 0';
+    const box=make('div');globalThis.SLINK_TORN_COMPONENTS?.card(box);
     const controls=make('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px';
     const search=make('input');search.type='search';search.placeholder='Name or player ID';search.maxLength=60;search.setAttribute('aria-label','Filter '+noun+' by name or ID');
     const role=make('select');role.setAttribute('aria-label','Faction role');
@@ -106,7 +106,7 @@
     search.addEventListener('input',schedule);
     role.addEventListener('change',()=>{selected=role.value;schedule();});
     if(!faction)selected='';
-    controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);box.append(toggle,controls);box.style.flexDirection='column';box.style.alignItems='start';host.before(box);host.after(back);
+    controls.append(search,...(faction?[role]:[]),activity,...(faction||abroad?[state]:[]),...(kind==='hospital'?[revive]:[]),sort,...ranges,...(faction||abroad||kind==='userlist'?[special]:[]),reset,preset,status);const header=make('div');header.className='slink-page-toolbar';header.append(make('strong',faction?'Faction member filters':'Player filters'),toggle);box.append(header,controls);controls.style.marginTop='6px';host.before(box);host.after(back);
     if(faction)globalThis.SLINK_FACTION_CSV?.attach(box,{name:'Export visible members',file:'slink-faction-members.csv',produce:()=>host.isConnected?globalThis.SLINK_FACTION_CSV.native(host,false):''});
     function clear(){for(const row of previous)row.removeAttribute(marker);previous.clear();}
     function clearSort(){
@@ -199,7 +199,7 @@
     return {host,box,kind,dispose(){stop();box.remove();back.remove();}};
   }
   function mountShop(host,travel){
-    const box=make('div'), fields=make('div'), status=make('span');
+    const box=make('div'), fields=make('div'), status=make('span');globalThis.SLINK_TORN_COMPONENTS?.card(box);
     fields.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:5px 0';
     status.setAttribute('role','status');
     const input=(type,label)=>{const el=make('input');el.type=type;el.placeholder=label;el.setAttribute('aria-label',label);if(type==='number'){el.min='0';el.style.width='7em';}el.addEventListener('input',schedule);return el;};
@@ -215,7 +215,7 @@
       try{localStorage.setItem(key,JSON.stringify({active:true,name:name.value,price:price.value,stock:stock.value,type}));status.textContent='Preset saved.';}
       catch{status.textContent='Could not save the preset on this device.';}
     }),status);
-    box.append(toggle,fields);host.before(box);
+    const header=make('div');header.className='slink-page-toolbar';header.append(make('strong',travel?'Travel stock filters':'Shop filters'),toggle);box.append(header,fields);host.before(box);
     function clear(){for(const row of marked)row.removeAttribute(marker);marked.clear();}
     function configure(){
       fields.hidden=!active;fields.style.display=active?'flex':'none';toggle.textContent=active?'Hide item filter':'Filter items';toggle.setAttribute('aria-expanded',String(active));
