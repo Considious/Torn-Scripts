@@ -75,6 +75,11 @@
   max-inline-size:none!important;overflow:visible!important;text-indent:0!important;
   line-height:1!important;text-align:center!important;font-variant-numeric:tabular-nums;
 }
+.slink-weapon-market-value{
+  display:inline-flex!important;flex-direction:column;justify-content:center;align-items:center;
+  gap:0;min-block-size:21px;padding-block:1px;vertical-align:middle;line-height:1!important;
+  font-variant-numeric:tabular-nums;
+}
 .slink-weapon-stat>[aria-hidden="true"]{
   display:block!important;float:none!important;margin:0!important;padding:0!important;
   block-size:auto!important;min-block-size:0!important;line-height:1!important;
@@ -92,7 +97,7 @@
 }
 .slink-weapon-stat-cell.slink-weapon-shop-stat{min-inline-size:0;min-block-size:20px}
 :is([class*="infoBonuses___"],[class*="properties___"]):has(> .slink-weapon-shop-stat){min-block-size:20px}
-.slink-weapon-shop-stat .slink-weapon-modifiers{gap:0 2px!important;font-size:9px!important}
+.slink-weapon-shop-stat .slink-weapon-modifiers,.slink-weapon-market-value>.slink-weapon-modifiers{gap:0 2px!important;font-size:9px!important}
 @media(max-width:480px){.slink-weapon-stat-cell.slink-weapon-stat-cell:not(.slink-weapon-shop-stat){min-inline-size:53px}}
 .slink-weapon-modifiers>[data-slink-weapon-merit]{color:var(--sp-success)}
 .slink-weapon-modifiers>[data-slink-weapon-xp]{color:color-mix(in srgb,var(--sp-text) 56%,#267de2)}
@@ -123,11 +128,13 @@
     const native=Array.from(base.childNodes).filter(n=>!n.matches?.('.slink-weapon-modifiers'));
     if(native.some(n=>n.nodeType===1&&!(shop&&n.matches('span[aria-hidden="true"]:not(:has(*))'))))return null;
     if(!/^\d+(?:\.\d+)?$/.test(native.map(n=>n.textContent).join('').trim()))return null;
+    const nativeMarket=shop&&cell.matches('[class*="property___"]');
     let group=base.querySelector(':scope > .slink-weapon-modifiers');
     if(!group){
       group=base.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';
       base.append(group);base.classList.add('slink-weapon-stat');
-      cell.classList.add('slink-weapon-stat-cell');if(shop)cell.classList.add('slink-weapon-shop-stat');
+      if(nativeMarket)base.classList.add('slink-weapon-market-value');
+      else {cell.classList.add('slink-weapon-stat-cell');if(shop)cell.classList.add('slink-weapon-shop-stat');}
     }
     const marker=kind==='merit'?'data-slink-weapon-merit':'data-slink-weapon-xp';
     let piece=group.querySelector('['+marker+']');
@@ -152,7 +159,7 @@
   function clearWeaponStat(piece){
     const group=piece.parentElement,base=group?.parentElement;
     piece.remove();
-    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat');base?.parentElement?.classList.remove('slink-weapon-stat-cell','slink-weapon-shop-stat');}
+    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat','slink-weapon-market-value');base?.parentElement?.classList.remove('slink-weapon-stat-cell','slink-weapon-shop-stat');}
   }
   global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat,marketWeaponRows,marketStats,marketWeaponId,marketWeaponStat});
   if(global.document)install();
