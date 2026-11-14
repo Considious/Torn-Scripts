@@ -36,8 +36,30 @@
   const shops=new Map();
   const sheet=make('style');
   sheet.textContent=`${hostSelector} [${marker}="hide"]{display:none!important}${hostSelector} [${marker}="mask"]{visibility:hidden!important;pointer-events:none!important}${hostSelector} ${rosterBody}[${sortMarker}]{display:flex!important;flex-direction:column;align-items:stretch}${hostSelector} ${rosterBody}[${sortMarker}] > li{order:var(--slink-roster-order,0)}`;
+  // FFScouter exposes exact values on faction rows, and formats list badges
+  // with two decimal places for FF or a compact magnitude for stat estimates.
+  function visibleIntel(row){
+    const estimate=(value)=>{
+      const m=/^([\d,]+(?:\.\d+)?)\s*([kmbtq]?)$/i.exec(String(value??'').trim());
+      return m?numeric(Number(m[1].replaceAll(',',''))*({k:1e3,m:1e6,b:1e9,t:1e12,q:1e15}[m[2].toLowerCase()]||1)):null;
+    };
+    const score=value=>{const n=numeric(value);return n>=1?n:null;};
+    let ff=score(row.dataset.ffValue),stats=estimate(row.dataset.estValue);
+    for(const n of row.querySelectorAll('.ffscouter-bubble,.ffscouter-cell,.tt-stats-estimate,[data-slink-chat-ff],[data-slink-combat-ff],[data-battle-stats-estimate]')){
+      const raw=n.textContent.trim();
+      const mode=n.closest('[data-ffscouter-col-display]')?.dataset.ffscouterColDisplay;
+      const cell=n.classList.contains('ffscouter-cell');
+      if(n.classList.contains('ffscouter-bubble')){
+        if(/^\d+\.\d{2}$/.test(raw))ff=score(raw)??ff;
+        else if(/[\d]\s*[kmbtq]$/i.test(raw)||/^\d{3,}$/.test(raw))stats=estimate(raw)??stats;
+      }else if(cell&&mode==='fair_fight'||n.matches('[data-slink-chat-ff],[data-slink-combat-ff]'))ff=score(raw)??ff;
+      else if(cell&&mode==='battle_stats'||n.classList.contains('tt-stats-estimate'))stats=estimate(raw.replace(/^(?:est(?:imated)?\.?\s*)?(?:battle\s*)?stats(?:\s+estimate)?\s*:?\s*/i,''))??stats;
+      stats=estimate(n.dataset.battleStatsEstimate)??stats;
+    }
+    return {ff,stats};
+  }
   function rowData(row){
-    const level=numeric(row.querySelector('.level .value,.lvl,.level,[class*="level__"],[data-label="level"]')?.textContent.trim().match(/^(?:level\s*)?(\d+)$/i)?.[1]);
+    const level=numeric(row.querySelector('.level .value,.lvl:not(.ffscouter-cell),.level:not(.ffscouter-cell),[class*="level__"],[data-label="level"]')?.textContent.trim().match(/^(?:level\s*)?(\d+)$/i)?.[1]);
     const state=normalize((row.querySelector('.status .ellipsis')||row.querySelector('.status > :last-child')||row.querySelector('.status'))?.textContent);
     const activity=row.querySelector('[class*="userOnlineStatusIcon___"],[data-activity],[class*="userStatus"],.online,.idle,.offline,[title="Online" i],[title="Idle" i],[title="Offline" i],[aria-label="Online" i],[aria-label="Idle" i],[aria-label="Offline" i]');
     const desc=[activity?.dataset.activity,activity?.getAttribute('alt'),activity?.title,activity?.closest('[aria-label]')?.getAttribute('aria-label'),activity?.getAttribute('class'),row.querySelector('#iconTray li')?.title].join(' ');
@@ -130,17 +152,22 @@
         const position=row.querySelector('.position .ellipsis,.position')?.textContent.trim()||'';
         const value={row,id,name,position,...rowData(row)};rowCache.set(row,value);return value;
       }
-      const entries=Array.from(body?.children||[]).filter(row=>row.matches('li')).map(readEntry).filter(Boolean)
-        .map(entry=>({...entry,ff:numeric(intel[entry.id]?.ff),stats:numeric(intel[entry.id]?.stats)}));
-      const rows=entries.map(entry=>entry.row);
       const [metric,dir]=sort.value.split('-');
       const range=Object.fromEntries(Object.keys(listMetrics).map(id=>[id,['min','max'].map(bound=>numeric(fields[id+bound].value))]));
-      if(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)){
-        const ids=[...new Set(entries.map(e=>e.id).filter(id=>/^[1-9]\d{0,9}$/.test(id)))].slice(0,200), signature=ids.slice().sort().join(',');
+      const needFF=metric==='ff'||range.ff.some(v=>v!==null),needStats=metric==='stats'||range.stats.some(v=>v!==null);
+      const missing=new Set();
+      const entries=Array.from(body?.children||[]).filter(row=>row.matches('li')).map(readEntry).filter(Boolean).map(entry=>{
+        const live=needFF||needStats?visibleIntel(entry.row):{};
+        if(((needFF&&live.ff==null)||(needStats&&live.stats==null))&&/^[1-9]\d{0,9}$/.test(entry.id))missing.add(entry.id);
+        return {...entry,ff:live.ff??numeric(intel[entry.id]?.ff),stats:live.stats??numeric(intel[entry.id]?.stats)};
+      });
+      const rows=entries.map(entry=>entry.row);
+      if(needFF||needStats){
+        const ids=[...missing].slice(0,200), signature=ids.slice().sort().join(',');
         if(signature!==requested){
           requested=signature;
           const request=++generation;
-          Promise.resolve().then(()=>lookup(ids)).then(data=>{if(active&&request===generation){intel=data||{};schedule();}},()=>{});
+          if(ids.length)Promise.resolve().then(()=>lookup(ids)).then(data=>{if(active&&request===generation){intel=data||{};schedule();}},()=>{});
         }
       }
       const roles=[...new Set(entries.map(e=>e.position).filter(Boolean).concat(selected||[]))].sort((a,b)=>a.localeCompare(b));
@@ -178,7 +205,7 @@
       shownCount=shown;
       if(sizeBody!==body){resize?.disconnect();sizeBody=body;tall=false;if(body)resize?.observe(body);}
       back.hidden=shown<15||!body||(resize?!tall:body.getBoundingClientRect().height<450);
-      const message=(!rows.length?`No loaded ${noun} to filter.`:shown===0?`No matches among ${rows.length} loaded ${noun}.`:`${shown} of ${rows.length} loaded ${noun}`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Stats from SLINK cache only.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this list layout.':'');
+      const message=(!rows.length?`No loaded ${noun} to filter.`:shown===0?`No matches among ${rows.length} loaded ${noun}.`:`${shown} of ${rows.length} loaded ${noun}`)+(metric==='ff'||metric==='stats'||range.ff.some(v=>v!==null)||range.stats.some(v=>v!==null)?' · Uses shown values and SLINK cache; missing values remain unknown.':'')+(metric&&rows.length&&!canSort?' · Sorting unavailable in this list layout.':'');
       if(status.textContent!==message)status.textContent=message;
     }
     function schedule(){if(active&&!frame)frame=requestAnimationFrame(render);}
@@ -196,7 +223,7 @@
           rowCache.delete(node);if(!node.matches('li'))for(const row of node.querySelectorAll('li'))rowCache.delete(row);
         }
         schedule();
-      });listObserver.observe(host,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','class','title','alt','aria-label','data-activity','data-label','data-icon','id','disabled','aria-disabled']});
+      });listObserver.observe(host,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['href','class','title','alt','aria-label','data-activity','data-label','data-icon','id','disabled','aria-disabled','data-ff-value','data-est-value','data-battle-stats-estimate','data-ffscouter-col-display']});
       schedule();
     }
     configure();

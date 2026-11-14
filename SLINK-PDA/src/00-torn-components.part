@@ -5,7 +5,7 @@
 :root:has(body.dark-mode),body.dark-mode{
   --sp-native-bg:#242831;--sp-native-text:#edf1f7;--sp-native-control:#343b48
 }
-:where(.slink-page-ui,.slink-page-note,.slink-page-action,.slink-page-positive){
+:where(.slink-page-ui,.slink-page-note,.slink-page-action,.slink-page-positive,.slink-weapon-modifiers){
   --sp-bg:var(--slt-surface,var(--slink-surface,var(--slink-bg,var(--sp-native-bg,#f2f4f7))));
   --sp-text:var(--slt-text,var(--slink-text,var(--sp-native-text,#202934)));
   --sp-control:var(--slt-control,var(--slink-bg-control,var(--sp-native-control,#fff)));
@@ -16,7 +16,7 @@
   --sp-success:color-mix(in srgb,var(--slt-success,var(--slink-success,#2e8a4e)) 48%,var(--sp-text));
   --sp-danger:color-mix(in srgb,var(--slt-danger,var(--slink-danger,#b43b43)) 48%,var(--sp-text));
 }
-:host([data-slink-appearance="dark"]) :where(.slink-page-ui,.slink-page-note,.slink-page-action,.slink-page-positive){
+:host([data-slink-appearance="dark"]) :where(.slink-page-ui,.slink-page-note,.slink-page-action,.slink-page-positive,.slink-weapon-modifiers){
   --sp-bg:var(--slt-surface,var(--slink-surface,var(--slink-bg,#242831)));
   --sp-text:var(--slt-text,var(--slink-text,#edf1f7));
   --sp-control:var(--slt-control,var(--slink-bg-control,#343b48));
@@ -58,6 +58,11 @@
 .slink-page-ui label{overflow-wrap:anywhere}
 .slink-page-note{padding:1px 4px;border:1px solid var(--sp-border);border-radius:4px;font-size:.9em}
 .slink-page-positive{color:var(--sp-success)!important;font-weight:700}
+.slink-weapon-stat{display:inline-block;max-inline-size:100%;min-inline-size:0;text-align:center;line-height:1.05;vertical-align:middle}
+.slink-weapon-modifiers{display:flex;justify-content:center;flex-wrap:wrap;gap:0 3px;font-size:.76em;font-weight:700;line-height:1.05;white-space:normal}
+.slink-weapon-modifiers>span{white-space:nowrap}
+.slink-weapon-modifiers>[data-slink-weapon-merit]{color:var(--sp-success)}
+.slink-weapon-modifiers>[data-slink-weapon-xp]{color:color-mix(in srgb,var(--sp-text) 56%,#267de2)}
 .slink-page-ui .slink-page-warning{color:var(--sp-danger)}
 @media(pointer:coarse){.slink-page-ui :is(button,select,summary),.slink-page-toggle,.slink-page-action{min-block-size:34px}}
 `;
@@ -75,6 +80,25 @@
     label.classList.add('slink-page-toggle');
     input.setAttribute('role','switch');return label;
   }
-  global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow});
+  function weaponStat(icon,kind,value,label){
+    const base=icon.nextElementSibling;
+    if(!base?.matches('span')||Array.from(base.children).some(n=>!n.matches('.slink-weapon-modifiers')))return null;
+    const raw=Array.from(base.childNodes).filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
+    if(!/^\d+(?:\.\d+)?$/.test(raw)||!value)return null;
+    let group=base.querySelector(':scope > .slink-weapon-modifiers');
+    if(!group){group=base.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';base.append(group);base.classList.add('slink-weapon-stat');}
+    const marker=kind==='merit'?'data-slink-weapon-merit':'data-slink-weapon-xp';
+    let piece=group.querySelector('['+marker+']');
+    if(!piece){piece=base.ownerDocument.createElement('span');piece.setAttribute(marker,'');if(kind==='merit')group.prepend(piece);else group.append(piece);}
+    if(piece.textContent!==value)piece.textContent=value;
+    if(piece.title!==label)piece.title=label;
+    return piece;
+  }
+  function clearWeaponStat(piece){
+    const group=piece.parentElement,base=group?.parentElement;
+    piece.remove();
+    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat');}
+  }
+  global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat});
   if(global.document)install();
 })(globalThis);
