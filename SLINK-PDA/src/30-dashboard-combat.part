@@ -618,6 +618,11 @@ muggingContributionBusy = true;
 beginPdaCacheBatch();
 try {
 const mode = muggingContributionMode(now);
+if (mode!=='active' || !pdaPlayerBasicActive() || !dashboardOpen || activeModuleName()!=='mugging') {
+await syncMuggingContributorReports(false);
+dataState.caches.muggingContribution={...previous,at:now,enabled:true,mode:'inactive',fetched:0,skipped:0};
+return dataState.caches.muggingContribution;
+}
 const capacity = contributionCapacity(readApiLedger(now));
 const response = capacity.available > 0 || currentFfKey()
 ? await muggingRequest('/api/contributor/tasks', {
@@ -628,11 +633,16 @@ body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(40,
 let fetched = 0, skipped = 0, errors = 0;
 const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
 await muggingFairFightChecks.check(tasks).catch(()=>null);
+const budget=Math.min(capacity.available,Math.max(0,Number(response?.api_budget_per_minute)||0));
+const seen=new Set();
 for (const task of tasks) {
-if (fetched >= capacity.available) break;
+if (fetched >= budget || !pdaPlayerBasicActive() || !dashboardOpen || activeModuleName()!=='mugging') break;
+const id=Number(task.player_id);
+if (!Number.isSafeInteger(id) || id<=0 || seen.has(id)) continue;
+seen.add(id);
 try {
 const result = await refreshPlayerIntelligence({
-playerId:task.player_id,
+playerId:id,owner:'mugging',adaptive:true,background:true,
 maxAgeMs:15 * 60_000,
 priority:'contribution',
 contribution:true,
@@ -657,7 +667,7 @@ assignmentsRefreshed = true;
 }
 const sync = await syncMuggingContributorReports(false);
 const status = {
-at:Date.now(), enabled:true, mode, apiBudgetPerMinute:capacity.available,
+at:Date.now(), enabled:true, mode, apiBudgetPerMinute:budget,
 contributionCeiling:CONTRIBUTION_CEILING,
 interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE,
 sharedUsageAtStart:capacity.count,

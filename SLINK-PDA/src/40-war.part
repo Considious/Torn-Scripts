@@ -1,3 +1,12 @@
+function sharePdaBulkIntel(rows) {
+const observedAt=Date.now();
+let changed=false;
+for(const row of rows) if(validPlayerIntelligenceId(row?.id ?? row?.user_id) && row?.status?.state) {
+observePlayerIntelligence({playerId:row.id ?? row.user_id,name:row.name,level:row.level,status:row.status,source:'bulk:faction-members',observedAt},false);
+changed=true;
+}
+if(changed)schedulePdaCacheSave();
+}
 function renderWar(force = false) {
 if (!shouldRenderPdaModule('war')) return;
 const root = moduleRoot('war');
@@ -75,6 +84,7 @@ if (heartbeat?.collectStatus && Date.now() - Number(dataState.settings.war.lastS
 const response = await tornJson(`/v2/faction/${encodeURIComponent(activeWar.opponentId)}/members`, 'SLINK PDA War opponent status');
 const source = response?.members ?? response?.faction?.members ?? [];
 const members = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+sharePdaBulkIntel(members);
 if (members.length) {
 await productRequest('war', `/api/wars/${encodeURIComponent(activeWar.warId)}/status`, { method:'POST', body:{ ...body, observedAt:Date.now(), members } });
 dataState.settings.war.lastStatusAt = Date.now();
@@ -97,6 +107,7 @@ if (activeWar.phase !== 'active' && !snapshot?.members?.length) {
 const response = await tornJson(`/v2/faction/${encodeURIComponent(activeWar.opponentId)}/members`, 'SLINK PDA scheduled War roster');
 const source = response?.members ?? response?.faction?.members ?? [];
 snapshot.members = Array.isArray(source) ? source : Object.entries(source || {}).map(([id, row]) => ({ id, ...(row || {}) }));
+sharePdaBulkIntel(snapshot.members);
 snapshot.retals = [];
 }
 if (Array.isArray(snapshot?.members)) snapshot.members = await refineWithFfScouter(snapshot.members);

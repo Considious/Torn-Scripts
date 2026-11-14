@@ -41,7 +41,7 @@ if (name === 'racing') { renderRacing(); scheduleRacingScan(0); return; }
 if (name === 'company') { renderCompany(); await refreshCompany(force).catch(() => undefined); return; }
 if (name === 'museums') { renderMuseums(); await refreshMuseums(force).catch(() => undefined); return; }
 if (name === 'abroadStocks') { PDA_ABROAD.touch(); PDA_ABROAD.render(); await PDA_ABROAD.refresh(force); return; }
-if (name === 'mugging') { if (dataState.settings.mugging.enabled) touchMuggingActivity(); renderMugging(); if (force) await refreshMugging(true); return; }
+if (name === 'mugging') { renderMugging(); if (force) await refreshMugging(true); return; }
 const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refreshWar, stats:refreshStats, alerts:refreshAlerts,crimes:refreshAlerts, market:refreshMarket, merits:refreshMerits, dollarBazaars:refreshDollarBazaars };
 if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 }
@@ -1478,7 +1478,7 @@ const state = moduleState.targetList;
 state.busyId = playerId; state.error = ''; state.notice = ''; renderTargetList();
 try {
 const dom = await observeActiveProfileDom({ playerId, source:'target-list', requireIntent:false });
-const result = await refreshPlayerIntelligence({ playerId, priority:'high' });
+const result = await refreshPlayerIntelligence({ playerId, priority:'high', owner:'target' });
 state.notice = dom.observed
 ? 'Fresh status read from the active Torn profile; no duplicate API call was needed.'
 : result.fetched

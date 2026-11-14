@@ -42,6 +42,13 @@ let pdaActivityGeneration = 0;
 const pdaActivitySubscribers = new Set();
 const pdaDomTimers = new Set();
 function pdaDomActive() { return pdaPagePresent && document.visibilityState !== 'hidden'; }
+let lastPdaBasicInput=0;
+function pdaPlayerBasicActive() {
+return pdaDomActive() && document.hasFocus() && lastPdaBasicInput>0 && Date.now()-lastPdaBasicInput<=120_000;
+}
+for(const event of ['pointerdown','keydown','wheel','touchstart']) document.addEventListener(event,e=>{
+if(e.isTrusted && pdaDomActive() && document.hasFocus()) lastPdaBasicInput=Date.now();
+},{capture:true,passive:true});
 let pdaLastActive=pdaDomActive();
 function pdaActivityChanged() {
 const active=pdaDomActive();
@@ -1880,6 +1887,7 @@ if (!key) throw new Error('Save a Torn API key under Access first.');
 const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
 await reserveTornApi(url.pathname, options);
+if(options.active && !options.active()) return null;
 const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
 return result;
@@ -2078,8 +2086,14 @@ const untilMs = playerIntelligenceUntilMilliseconds(normalized);
 if (PLAYER_INTELLIGENCE_TIMED_STATES.has(normalized.state) && untilMs > now + timerBufferMs) {
 return { required:false, reason:'known-timer', nextCheckAt:untilMs + timerBufferMs };
 }
-if (normalized.observedAt > 0 && now - normalized.observedAt < maxAgeMs) {
-return { required:false, reason:'fresh-cache', nextCheckAt:normalized.observedAt + maxAgeMs };
+const state=normalized.state;
+const floor = ['Federal','Fallen'].includes(state) ? 24*60*60_000 : state==='Okay' ? 5*60_000 : ['Abroad','Hiding Out'].includes(state) ? 3*60_000 : state==='Unknown' ? 60_000 : 0;
+const freshness=Math.max(maxAgeMs,options.adaptive?floor:0);
+if (PLAYER_INTELLIGENCE_TIMED_STATES.has(state) && untilMs && untilMs <= now && normalized.observedAt < untilMs) {
+return { required:true, reason:'timer-ended', nextCheckAt:now };
+}
+if (normalized.observedAt > 0 && now - normalized.observedAt < freshness) {
+return { required:false, reason:'fresh-cache', nextCheckAt:normalized.observedAt + freshness };
 }
 return { required:true, reason:'stale', nextCheckAt:now };
 }
@@ -2152,11 +2166,15 @@ nextCheckAt:decision.nextCheckAt
 }
 if (playerIntelligenceInFlight.has(playerId)) return playerIntelligenceInFlight.get(playerId);
 const pending = (async () => {
-const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence', {
+const comments={mugging:'SLINK Mug PDA',polling:'SLINK Poll PDA',stakeout:'SLINK Stake PDA',target:'SLINK Tgt PDA'};
+const comment=Object.hasOwn(comments,input.owner)?comments[input.owner]:'SLINK Intel PDA';
+const response = await tornJson(`/v2/user/${playerId}/basic`, comment, {
+active:input.background?()=>pdaPlayerBasicActive() && (input.owner!=='mugging' || (dashboardOpen && activeModuleName()==='mugging')):null,
 wait:input.contribution === true ? input.wait === true : input.wait !== false,
 priority:input.contribution === true ? 'contribution' : input.priority || 'normal',
 contribution:input.contribution === true
 });
+if (!response) return {record:current,fetched:false,reason:'inactive'};
 const record = observePlayerIntelligence(playerIntelligenceFromTornResponse(playerId, response, Date.now()));
 return {
 record:{ ...record, status:effectivePlayerIntelligenceStatus(record) },
@@ -2330,7 +2348,7 @@ targets.forEach((target,index)=>{const id=String(target.playerId);if(!Number.isF
 return runtime;
 }
 async function runTargetPolling(now = Date.now()) {
-if (!hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
+if (!pdaPlayerBasicActive() || !hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
 const settings=targetPollingSettings();
 if (!settings.enabled) return;
 targetPollingBusy=true;
@@ -2342,8 +2360,9 @@ const intervalMs=settings.intervalMinutes*60_000,perMinute=Math.max(1,Math.ceil(
 const due=targets.filter(target=>Number(runtime.schedule[String(target.playerId)])<=now).sort((a,b)=>Number(runtime.schedule[String(a.playerId)])-Number(runtime.schedule[String(b.playerId)])).slice(0,perMinute);
 if(!due.length){if(changes.value)schedulePdaCacheSave();return;}
 let processed=0,apiFetched=0,skipped=0,lastError='';
-for(const target of due){const id=String(target.playerId);try{
-const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs});
+for(const target of due){if(!pdaPlayerBasicActive())break;const id=String(target.playerId);try{
+const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,owner:'polling',adaptive:true,background:true});
+if(result.reason==='inactive')break;
 processed++;if(result.fetched)apiFetched++;else skipped++;
 runtime.schedule[id]=result.reason==='known-timer'||result.reason==='fresh-cache'?Math.max(now+30_000,Number(result.nextCheckAt)||now+intervalMs):now+intervalMs;
 }catch(error){processed++;lastError=errorMessage(error);runtime.schedule[id]=now+60_000;}}
@@ -2455,7 +2474,7 @@ runtime
 };
 }
 async function runTargetStakeouts(now = Date.now()) {
-if (!hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
+if (!pdaPlayerBasicActive() || !hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
 targetStakeoutBusy=true;
 beginPdaCacheBatch();
 try {
@@ -2480,7 +2499,9 @@ return;
 let processed=0,apiFetched=0,skipped=0,lastError='';const generated=[];
 for(const target of due){const id=String(target.playerId),intervalMs=target.stakeoutIntervalSeconds*1000;
 generated.push(...collectTargetStakeoutChanges(target,runtime,playerIntelligenceRecord(target.playerId),now));
-try{const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,timerBufferMs:1000});
+if(!pdaPlayerBasicActive())break;
+try{const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,timerBufferMs:1000,owner:'stakeout',background:true});
+if(result.reason==='inactive')break;
 processed++;if(result.fetched)apiFetched++;else skipped++;
 generated.push(...collectTargetStakeoutChanges(target,runtime,result.record,now));
 runtime.schedule[id]=result.reason==='known-timer'||result.reason==='fresh-cache'?Math.max(now+1000,Number(result.nextCheckAt)||now+intervalMs):now+intervalMs;
