@@ -1009,7 +1009,7 @@ async function performAllowlistedJob(job, apiKey) {
 
 async function performTornBasicRequest(targetId, apiKey) {
     const response = await fetch(
-        `https://api.torn.com/v2/user/${encodeURIComponent(targetId)}/basic`,
+        `https://api.torn.com/v2/user/${encodeURIComponent(targetId)}/basic?comment=SLINK%20Donor%20Job`,
         {
             method: 'GET',
             headers: {

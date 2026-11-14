@@ -891,13 +891,29 @@
     };
   }
 
-  async function checkTarget(input) {
+  const legacyBasicCache=new Map(), legacyBasicInFlight=new Map();
+  async function cachedBasic(targetId) {
+    const now=Date.now(), hit=legacyBasicCache.get(targetId);
+    if(hit&&(hit.until>now||(!hit.until&&now-hit.at<300_000)))return hit.data;
+    if(legacyBasicInFlight.has(targetId))return legacyBasicInFlight.get(targetId);
+    const task=tornJson(`https://api.torn.com/v2/user/${encodeURIComponent(targetId)}/basic?comment=SLINK%20Lvl%20Old`).then(data=>{
+      const source=data?.profile??data?.basic??data?.user??data;
+      if(legacyBasicCache.size>=1000&&!legacyBasicCache.has(targetId))legacyBasicCache.delete(legacyBasicCache.keys().next().value);
+      if(source?.status?.state)legacyBasicCache.set(targetId,{data,at:Date.now(),until:Number(source.status.until||0)*1000});
+      return data;
+    }).finally(()=>legacyBasicInFlight.delete(targetId));
+    legacyBasicInFlight.set(targetId,task);return task;
+  }
+  async function checkTarget(input, sender) {
+    if(!sender?.tab?.active||!Number.isInteger(sender.tab.windowId)||(await chrome.windows.get(sender.tab.windowId)).focused!==true)return {completed_locally:true,skipped:true};
+    const lastInteraction=Number(await SLINK.core.storage.get(KEYS.lastInteractionAt,0))||0;
+    if(Date.now()-lastInteraction>120_000)return {completed_locally:true,skipped:true};
     const targetId = Number(input?.id);
     const batchId = String(input?.check_batch_id || '');
     const pending = await pendingChecks();
     const target = pending.find(check => Number(check.id) === targetId && String(check.check_batch_id || '') === batchId);
     if (!target) throw new Error('This Torn check is not assigned to the extension.');
-    const data = await tornJson(`https://api.torn.com/v2/user/${encodeURIComponent(targetId)}/basic`);
+    const data = await cachedBasic(targetId);
     const source = data?.profile ?? data?.basic ?? data?.user ?? data;
     const status = source?.status ?? data?.status ?? {};
     const state = status?.state ?? status?.description ?? status?.details ?? source?.state ?? 'Unknown';
