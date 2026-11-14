@@ -1,6 +1,6 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.242",
+  "version": "0.4.243",
   "private": true,
   "type": "module",
   "scripts": {

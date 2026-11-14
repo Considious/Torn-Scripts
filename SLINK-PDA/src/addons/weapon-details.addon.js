@@ -26,11 +26,11 @@
     ...Array.from(row.querySelectorAll('img'),img=>[img.getAttribute('src'),img.getAttribute('srcset'),img.currentSrc].join(' ').match(/\/images\/items\/(\d+)\//)?.[1]),
     row.dataset.id
   ].map(Number).find(id=>Number.isSafeInteger(id)&&id>0)||'';
-  const marketRows='[data-testid="item"],[class^="itemTile___"],[class*=" itemTile___"]';
   const regularRows='ul.item-list > li,li[data-item]:not([data-action]),li[data-itemid]:not([data-action]),li[data-id][data-category],li[id]:has(.item-plate),[data-testid="item"]';
   const statIcons='.bonus-attachment-item-damage-bonus,.bonus-attachment-item-accuracy-bonus';
   const nativeBonus='[data-bonus-attachment-title],.bonuses .bonus:not([data-attachments-itemid])[title],.bonuses .bonus:not([data-attachments-itemid]) [title],.iconsbonuses [class*="bonus-attachment-"][title]';
   const ui=g.SLINK_TORN_COMPONENTS;
+  if(market&&!ui?.marketWeaponStat)return;
   function rankedBonus(icon){
     if(icon.matches('[class*="bonus-attachment-item-"]'))return null;
     const name=icon.getAttribute('data-bonus-attachment-title')?.trim();
@@ -59,20 +59,21 @@
     function update(){
       if(document.hidden)return;
       const current=new Set(),nextXP=new Set();
-      const selector=attack?attackSlot:market?marketRows:regularRows;
+      const selector=attack?attackSlot:market?ui.marketWeaponRows:regularRows;
       const rows=itemsRoot.querySelectorAll(selector);
       const displayed=new Map();
       for(const row of rows){
-        const id=itemId(row);
+        const id=market?ui.marketWeaponId(row):itemId(row);
         if(!attack&&row.querySelector(selector))continue;
         const xp=cache?.values[id]??0;
         if(Number.isInteger(xp)&&xp>0&&xp<=100){
-          const icons=row.querySelectorAll(statIcons);
+          const icons=market?['damage','accuracy']:row.querySelectorAll(statIcons);
           let found=false;
           for(const icon of icons){
-            const damage=icon.matches('.bonus-attachment-item-damage-bonus');
+            const damage=market?icon==='damage':icon.matches('.bonus-attachment-item-damage-bonus');
             const value=damage?'+'+Number((xp/10).toFixed(1))+'%':'+'+Number((xp/50).toFixed(2));
-            const label=ui?.weaponStat(icon,'xp',value,'Weapon experience '+xp+'%: '+value+' '+(damage?'damage':'accuracy'));
+            const title='Weapon experience '+xp+'%: '+value+' '+(damage?'damage':'accuracy');
+            const label=market?ui.marketWeaponStat(row,icon,'xp',value,title):ui?.weaponStat(icon,'xp',value,title);
             if(label){nextXP.add(label);found=true;}
           }
           if(found&&path==='/item.php'){
@@ -135,9 +136,9 @@
     toggle.setAttribute('aria-pressed','true');toggle.textContent='Hide ranked perks';
     toggle.onclick=()=>{show=!show;toggle.setAttribute('aria-pressed',String(show));toggle.textContent=show?'Hide ranked perks':'Show ranked perks';update();};
     const obs=new MutationObserver(records=>{if((cache||show)&&records.some(r=>!box.contains(r.target)&&!r.target.closest?.('[data-slink-weapon-details]')))schedule();});
-    obs.observe(itemsRoot,{subtree:true,childList:true,attributes:true,attributeFilter:['src','srcset','title','aria-describedby','data-item','data-itemid','data-id','data-bonus-attachment-title','data-bonus-attachment-description']});
+    obs.observe(itemsRoot,{subtree:true,childList:true,attributes:true,attributeFilter:['src','srcset','title','aria-describedby','data-item','data-itemid','data-id','data-bonus-attachment-title','data-bonus-attachment-description','aria-label']});
     function auto(){
-      if(market&&!root.querySelector(statIcons))return;
+      if(market&&!root.querySelector(ui.marketStats))return;
       if((!cache&&!status.textContent)||(cache&&Date.now()-cache.at>=21600000))void loadExperience();
     }
     if(market)update();auto();

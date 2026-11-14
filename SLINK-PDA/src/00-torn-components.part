@@ -58,9 +58,15 @@
 .slink-page-ui label{overflow-wrap:anywhere}
 .slink-page-note{padding:1px 4px;border:1px solid var(--sp-border);border-radius:4px;font-size:.9em}
 .slink-page-positive{color:var(--sp-success)!important;font-weight:700}
-.slink-weapon-stat-cell.slink-weapon-stat-cell{display:inline-grid!important;grid-template-columns:max-content minmax(0,1fr);grid-template-rows:auto auto;align-content:center;align-items:center;justify-items:center;white-space:nowrap;box-sizing:border-box;line-height:1}
-.slink-weapon-stat-cell>.slink-weapon-stat{display:contents!important;font-size:.88em;line-height:1;font-variant-numeric:tabular-nums}
-.slink-weapon-stat-cell .slink-weapon-modifiers{grid-column:1/-1;max-inline-size:100%;flex-wrap:wrap;gap:0 1px;font-size:min(.68em,8px)}
+.slink-weapon-stat-cell.slink-weapon-stat-cell{display:inline-grid!important;grid-template-columns:max-content minmax(0,1fr);grid-template-rows:max-content max-content;align-content:center;align-items:center;justify-items:center;min-inline-size:54px;row-gap:0;white-space:nowrap;box-sizing:border-box;line-height:1}
+@media(max-width:480px){.slink-weapon-stat-cell.slink-weapon-stat-cell{min-inline-size:49px}}
+.slink-weapon-stat-cell>.slink-weapon-stat{display:contents!important;font-size:1em;line-height:1;font-variant-numeric:tabular-nums}
+.slink-weapon-stat-cell .slink-weapon-modifiers{grid-column:1/-1;max-inline-size:100%;gap:0 3px;margin:0;padding:0;min-block-size:0;font-size:11px;line-height:11px}
+.slink-weapon-stat-cell .slink-weapon-modifiers>span{display:inline;margin:0;padding:0;min-block-size:0;font:inherit}
+.slink-market-weapon-preview{display:flex;flex-wrap:wrap;align-items:center;gap:2px 7px;margin-block:2px;padding:2px 4px;line-height:1.15}
+.slink-market-weapon-preview>.slink-weapon-modifiers{display:inline-flex;align-items:baseline;gap:3px;font-size:inherit;line-height:inherit;font-weight:600}
+.slink-market-weapon-preview>.slink-weapon-modifiers::before{content:attr(data-slink-stat-label);font-weight:400}
+
 .slink-weapon-stat{display:inline-block;max-inline-size:100%;min-inline-size:0;text-align:center;line-height:1.05;vertical-align:middle}
 .slink-weapon-modifiers{display:flex;justify-content:center;flex-wrap:nowrap;gap:0 2px;font-size:.68em;font-weight:700;line-height:1.05;white-space:normal}
 .slink-weapon-modifiers>span{white-space:nowrap}
@@ -100,11 +106,35 @@
     if(piece.title!==label)piece.title=label;
     return piece;
   }
+  const marketWeaponRows='[data-testid="item"],[class^="itemTile___"],[class*=" itemTile___"]';
+  const marketStatSelectors={
+    damage:'.bonus-attachment-item-damage-bonus + span,[class*="property___"] > span[aria-label$=" damage points"]',
+    accuracy:'.bonus-attachment-item-accuracy-bonus + span,[class*="property___"] > span[aria-label$=" accuracy points"]'
+  };
+  const marketStats=Object.values(marketStatSelectors).join(',');
+  function marketWeaponId(row){
+    const img=row.querySelector('[data-testid="img-container"] img,[class*="tileImage___"] img,img[src*="/images/items/"]');
+    return [img?.getAttribute('src'),img?.getAttribute('srcset')].join(' ').match(/\/images\/items\/(\d+)\//)?.[1]||'';
+  }
+  function marketWeaponStat(row,stat,kind,value,label){
+    if(!value||!row.querySelector(marketStatSelectors[stat]))return null;
+    const host=row.querySelector('[data-testid="description"]')||row;
+    let panel=host.querySelector(':scope > [data-slink-market-weapon-preview]');
+    if(!panel){panel=mark(row.ownerDocument.createElement('div'),'slink-page-note','slink-market-weapon-preview');panel.setAttribute('data-slink-market-weapon-preview','');panel.append('Your bonuses:');host.append(panel);}
+    let group=panel.querySelector('[data-slink-stat-label="'+stat+'"]');
+    if(!group){group=row.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';group.dataset.slinkStatLabel=stat;if(stat==='damage')panel.insertBefore(group,panel.children[0]||null);else panel.append(group);}
+    const marker=kind==='merit'?'data-slink-weapon-merit':'data-slink-weapon-xp';
+    let piece=group.querySelector('['+marker+']');
+    if(!piece){piece=row.ownerDocument.createElement('span');piece.setAttribute(marker,'');if(kind==='merit')group.prepend(piece);else group.append(piece);}
+    if(piece.textContent!==value)piece.textContent=value;
+    if(piece.title!==label)piece.title=label;
+    return piece;
+  }
   function clearWeaponStat(piece){
     const group=piece.parentElement,base=group?.parentElement;
     piece.remove();
-    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat');base?.parentElement?.classList.remove('slink-weapon-stat-cell');}
+    if(group&&!group.childElementCount){group.remove();if(base?.hasAttribute('data-slink-market-weapon-preview')){if(!base.childElementCount)base.remove();return;}base?.classList.remove('slink-weapon-stat');base?.parentElement?.classList.remove('slink-weapon-stat-cell');}
   }
-  global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat});
+  global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat,marketWeaponRows,marketStats,marketWeaponId,marketWeaponStat});
   if(global.document)install();
 })(globalThis);

@@ -34,7 +34,17 @@
     queued=false;if(!root?.isConnected||!allowed()||document.hidden||!snapshot)return;
     const next=new Set();
     const itemsRoot=location.pathname==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
-    for(const icon of itemsRoot.querySelectorAll(both)){
+    if(market){
+      for(const row of itemsRoot.querySelectorAll(ui.marketWeaponRows)){
+        const id=ui.marketWeaponId(row);
+        if(!id||row.querySelector(ui.marketWeaponRows))continue;
+        for(const stat of Object.keys(selectors)){
+          const value=model.suffix(snapshot.levels[snapshot.classes[id]],stat).replace(/[()]/g,'');
+          const label=ui.marketWeaponStat(row,stat,'merit',value,'Weapon mastery: '+value+' '+stat);
+          if(label)next.add(label);
+        }
+      }
+    }else for(const icon of itemsRoot.querySelectorAll(both)){
       const id=itemId(icon),stat=icon.matches(selectors.damage)?'damage':'accuracy';
       const value=model.suffix(snapshot.levels[snapshot.classes[id]],stat);
       const label=ui.weaponStat(icon,'merit',value.replace(/[()]/g,''),'Weapon mastery: '+value.replace(/[()]/g,'')+' '+stat);
@@ -45,7 +55,7 @@
   }
   function schedule(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(draw);}}
   async function load(){
-    if(document.hidden||!document.hasFocus()||button.disabled||market&&!root.querySelector(both))return;
+    if(document.hidden||!document.hasFocus()||button.disabled||market&&!root.querySelector(ui.marketStats))return;
     const revision=++generation;button.hidden=true;button.disabled=true;notice.textContent='Loading weapon merits…';
     try{
       const owner=await own();if(!owner)throw Error('Verify Access in SLINK first.');
@@ -81,7 +91,7 @@
     notice=document.createElement('span');notice.setAttribute('role','status');notice.style.marginInlineStart='.5em';
     const title=document.createElement('strong');title.textContent='Weapon mastery';bar.append(title,notice,button);if(anchor)anchor.before(bar);
     const itemsRoot=location.pathname==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
-    observer=new MutationObserver(()=>{if(market&&!snapshot&&!notice.textContent)void load();schedule();});observer.observe(itemsRoot,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','data-item','data-itemid']});
+    observer=new MutationObserver(()=>{if(market&&!snapshot&&!notice.textContent)void load();schedule();});observer.observe(itemsRoot,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','srcset','aria-label','data-item','data-itemid']});
     void load();
   }
   function start(){
