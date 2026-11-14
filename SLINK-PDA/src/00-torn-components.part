@@ -58,18 +58,42 @@
 .slink-page-ui label{overflow-wrap:anywhere}
 .slink-page-note{padding:1px 4px;border:1px solid var(--sp-border);border-radius:4px;font-size:.9em}
 .slink-page-positive{color:var(--sp-success)!important;font-weight:700}
-.slink-weapon-stat-cell.slink-weapon-stat-cell{display:inline-grid!important;grid-template-columns:max-content minmax(0,1fr);grid-template-rows:max-content max-content;align-content:center;align-items:center;justify-items:center;min-inline-size:54px;row-gap:0;white-space:nowrap;box-sizing:border-box;line-height:1}
-@media(max-width:480px){.slink-weapon-stat-cell.slink-weapon-stat-cell{min-inline-size:49px}}
-.slink-weapon-stat-cell>.slink-weapon-stat{display:contents!important;font-size:1em;line-height:1;font-variant-numeric:tabular-nums}
-.slink-weapon-stat-cell .slink-weapon-modifiers{grid-column:1/-1;max-inline-size:100%;gap:0 3px;margin:0;padding:0;min-block-size:0;font-size:11px;line-height:11px}
-.slink-weapon-stat-cell .slink-weapon-modifiers>span{display:inline;margin:0;padding:0;min-block-size:0;font:inherit}
-.slink-market-weapon-preview{display:flex;flex-wrap:wrap;align-items:center;gap:2px 7px;margin-block:2px;padding:2px 4px;line-height:1.15}
-.slink-market-weapon-preview>.slink-weapon-modifiers{display:inline-flex;align-items:baseline;gap:3px;font-size:inherit;line-height:inherit;font-weight:600}
-.slink-market-weapon-preview>.slink-weapon-modifiers::before{content:attr(data-slink-stat-label);font-weight:400}
-
-.slink-weapon-stat{display:inline-block;max-inline-size:100%;min-inline-size:0;text-align:center;line-height:1.05;vertical-align:middle}
-.slink-weapon-modifiers{display:flex;justify-content:center;flex-wrap:nowrap;gap:0 2px;font-size:.68em;font-weight:700;line-height:1.05;white-space:normal}
-.slink-weapon-modifiers>span{white-space:nowrap}
+.slink-weapon-stat-cell.slink-weapon-stat-cell{
+  display:inline-grid!important;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr);
+  align-items:center;justify-items:center;min-inline-size:58px;min-block-size:23px;
+  box-sizing:border-box;white-space:nowrap;vertical-align:middle;
+}
+.slink-weapon-stat-cell>:first-child{
+  grid-area:1/1;justify-self:start;align-self:center;margin-block-end:10px;
+  display:inline-flex!important;align-items:center;max-block-size:12px;line-height:1!important;
+}
+.slink-weapon-stat-cell>.slink-weapon-stat{grid-area:1/1}
+.slink-weapon-stat-cell>.slink-weapon-stat{
+  display:inline-flex!important;flex:0 0 auto;flex-direction:column;align-items:center;
+  justify-content:center;gap:0!important;margin:0!important;padding:0!important;
+  inline-size:auto!important;block-size:auto!important;min-block-size:0!important;
+  max-inline-size:none!important;overflow:visible!important;text-indent:0!important;
+  line-height:1!important;text-align:center!important;font-variant-numeric:tabular-nums;
+}
+.slink-weapon-stat>[aria-hidden="true"]{
+  display:block!important;float:none!important;margin:0!important;padding:0!important;
+  block-size:auto!important;min-block-size:0!important;line-height:1!important;
+}
+.slink-weapon-stat>.slink-weapon-modifiers{
+  display:flex!important;align-items:center;justify-content:center;gap:0 3px!important;
+  float:none!important;position:static!important;margin:0!important;padding:0!important;
+  inline-size:auto!important;block-size:auto!important;min-block-size:0!important;
+  color:inherit;font-size:10px!important;font-weight:700;line-height:1!important;white-space:nowrap;
+}
+.slink-weapon-modifiers>span{
+  display:block!important;float:none!important;position:static!important;
+  margin:0!important;padding:0!important;block-size:auto!important;min-block-size:0!important;
+  font:inherit!important;line-height:1!important;white-space:nowrap;
+}
+.slink-weapon-stat-cell.slink-weapon-shop-stat{min-inline-size:0;min-block-size:20px}
+:is([class*="infoBonuses___"],[class*="properties___"]):has(> .slink-weapon-shop-stat){min-block-size:20px}
+.slink-weapon-shop-stat .slink-weapon-modifiers{gap:0 2px!important;font-size:9px!important}
+@media(max-width:480px){.slink-weapon-stat-cell.slink-weapon-stat-cell:not(.slink-weapon-shop-stat){min-inline-size:53px}}
 .slink-weapon-modifiers>[data-slink-weapon-merit]{color:var(--sp-success)}
 .slink-weapon-modifiers>[data-slink-weapon-xp]{color:color-mix(in srgb,var(--sp-text) 56%,#267de2)}
 .slink-page-ui .slink-page-warning{color:var(--sp-danger)}
@@ -90,14 +114,20 @@
     input.setAttribute('role','switch');return label;
   }
   function weaponStat(icon,kind,value,label){
-    const base=icon.nextElementSibling;
-    if(!base?.matches('span')||Array.from(base.children).some(n=>!n.matches('.slink-weapon-modifiers')))return null;
-    const raw=Array.from(base.childNodes).filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
-    if(!/^\d+(?:\.\d+)?$/.test(raw)||!value)return null;
+    return decorateWeaponValue(icon?.nextElementSibling,kind,value,label,false);
+  }
+  function decorateWeaponValue(base,kind,value,label,shop){
+    if(!value||!base?.matches('span'))return null;
+    const cell=base.parentElement;
+    if(cell?.children.length!==2||cell.lastElementChild!==base)return null;
+    const native=Array.from(base.childNodes).filter(n=>!n.matches?.('.slink-weapon-modifiers'));
+    if(native.some(n=>n.nodeType===1&&!(shop&&n.matches('span[aria-hidden="true"]:not(:has(*))'))))return null;
+    if(!/^\d+(?:\.\d+)?$/.test(native.map(n=>n.textContent).join('').trim()))return null;
     let group=base.querySelector(':scope > .slink-weapon-modifiers');
-    if(!group){group=base.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';base.append(group);base.classList.add('slink-weapon-stat');
-      const cell=base.parentElement;
-      if(cell?.children.length===2&&cell.firstElementChild===icon)cell.classList.add('slink-weapon-stat-cell');
+    if(!group){
+      group=base.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';
+      base.append(group);base.classList.add('slink-weapon-stat');
+      cell.classList.add('slink-weapon-stat-cell');if(shop)cell.classList.add('slink-weapon-shop-stat');
     }
     const marker=kind==='merit'?'data-slink-weapon-merit':'data-slink-weapon-xp';
     let piece=group.querySelector('['+marker+']');
@@ -117,23 +147,12 @@
     return [img?.getAttribute('src'),img?.getAttribute('srcset')].join(' ').match(/\/images\/items\/(\d+)\//)?.[1]||'';
   }
   function marketWeaponStat(row,stat,kind,value,label){
-    if(!value||!row.querySelector(marketStatSelectors[stat]))return null;
-    const host=row.querySelector('[data-testid="description"]')||row;
-    let panel=host.querySelector(':scope > [data-slink-market-weapon-preview]');
-    if(!panel){panel=mark(row.ownerDocument.createElement('div'),'slink-page-note','slink-market-weapon-preview');panel.setAttribute('data-slink-market-weapon-preview','');panel.append('Your bonuses:');host.append(panel);}
-    let group=panel.querySelector('[data-slink-stat-label="'+stat+'"]');
-    if(!group){group=row.ownerDocument.createElement('span');group.className='slink-weapon-modifiers';group.dataset.slinkStatLabel=stat;if(stat==='damage')panel.insertBefore(group,panel.children[0]||null);else panel.append(group);}
-    const marker=kind==='merit'?'data-slink-weapon-merit':'data-slink-weapon-xp';
-    let piece=group.querySelector('['+marker+']');
-    if(!piece){piece=row.ownerDocument.createElement('span');piece.setAttribute(marker,'');if(kind==='merit')group.prepend(piece);else group.append(piece);}
-    if(piece.textContent!==value)piece.textContent=value;
-    if(piece.title!==label)piece.title=label;
-    return piece;
+    return decorateWeaponValue(row.querySelector(marketStatSelectors[stat]),kind,value,label,true);
   }
   function clearWeaponStat(piece){
     const group=piece.parentElement,base=group?.parentElement;
     piece.remove();
-    if(group&&!group.childElementCount){group.remove();if(base?.hasAttribute('data-slink-market-weapon-preview')){if(!base.childElementCount)base.remove();return;}base?.classList.remove('slink-weapon-stat');base?.parentElement?.classList.remove('slink-weapon-stat-cell');}
+    if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat');base?.parentElement?.classList.remove('slink-weapon-stat-cell','slink-weapon-shop-stat');}
   }
   global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat,marketWeaponRows,marketStats,marketWeaponId,marketWeaponStat});
   if(global.document)install();

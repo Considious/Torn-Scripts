@@ -16,6 +16,7 @@
   if(!attack&&!market&&!['/item.php','/factions.php'].includes(path))return;
   const pda=g.SLINK_PDA_PLUGIN_API,ext=g.SLINK_EXTENSION,key='access.session.v1';
   if(!pda&&!ext)return;
+  const inlineOnly=market||attack;
   const owner=async()=>{
     if(pda)return String(pda.accountId?.()||'');
     const s=await ext.core.storage.get(key,null);return s?.token&&s.expiresAt>Date.now()?String(s.userId||''):'';
@@ -48,7 +49,7 @@
     const box=make('div'),load=make('button','Show weapon XP'),toggle=make('button','Explain special bonuses'),status=make('span');
     load.type=toggle.type='button';status.setAttribute('role','status');status.style.marginInlineStart='.4em';
     globalThis.SLINK_TORN_COMPONENTS?.card(box);box.classList.add('slink-page-toolbar');
-    if(!market){
+    if(!inlineOnly){
       box.append(make('strong','Weapon experience'),status,...(attack?[]:[toggle]),load);
       if(anchor)anchor.before(box);else root.prepend(box);
     }
@@ -67,7 +68,7 @@
         if(!attack&&row.querySelector(selector))continue;
         const xp=cache?.values[id]??0;
         if(Number.isInteger(xp)&&xp>0&&xp<=100){
-          const icons=market?['damage','accuracy']:row.querySelectorAll(statIcons);
+          const icons=attack?[]:market?['damage','accuracy']:row.querySelectorAll(statIcons);
           let found=false;
           for(const icon of icons){
             const damage=market?icon==='damage':icon.matches('.bonus-attachment-item-damage-bonus');
@@ -90,7 +91,7 @@
         if(!note?.isConnected){
           note=make('div');note.dataset.slinkWeaponDetails='';if(!attack)ui?.mark(note,'slink-page-note');
           note.style.cssText='font-size:.82em;line-height:1.2;white-space:normal;overflow-wrap:anywhere;clear:both;max-inline-size:100%';
-          if(attack)note.style.pointerEvents='none';
+          if(attack){note.style.pointerEvents='none';note.style.fontSize='min(.82em,10px)';note.style.lineHeight='1.1';}
           const itemName=market?row.querySelector('[data-testid="description"]'):null;
           const detail=path==='/item.php'?row.querySelector(':scope > .view-item-info'):null;
           if(detail)detail.before(note);else (itemName||row).append(note);seen.set(row,note);
@@ -98,7 +99,7 @@
         const signature=JSON.stringify([xpFallback,bonuses]);
         if(note.dataset.signature===signature)continue;note.dataset.signature=signature;
         note.title=xpFallback;
-        note.replaceChildren(...(xpFallback?[make('span','XP '+xp+'%')]:[]),...bonuses.flatMap((bonus,i)=>{
+        note.replaceChildren(...(xpFallback?[make('span','XP '+xp+'% · Dmg +'+Number((xp/10).toFixed(1))+'% · Acc +'+Number((xp/50).toFixed(2)))]:[]),...bonuses.flatMap((bonus,i)=>{
           const badge=make('span',bonus.text);
           badge.title=bonus.info;badge.setAttribute('aria-label',bonus.text+': '+bonus.info);
           return i?[document.createTextNode(' · '),badge]:[badge];
@@ -123,7 +124,7 @@
         const result=pda ? (pdaCache.owner===id&&pdaCache.at>Date.now()-21600000&&pdaCache.values
           ? pdaCache.values : experience(await pda.tornJson('/v2/user/weaponexp','SLINK weapon XP')))
           : await ext.core.messaging.send('qol.weaponExperience');
-        const still=await owner();if(run!==seq||!root.isConnected||!market&&!box.isConnected)return;
+        const still=await owner();if(run!==seq||!root.isConnected||!inlineOnly&&!box.isConnected)return;
         if(id!==still){reset();return;}
         if(pdaCache&&pdaCache.values!==result){Object.assign(pdaCache,{owner:id,at:Date.now(),values:result});pda.persist?.();}
         cache={owner:id,values:result,at:Date.now()};load.textContent='Retry weapon XP';
@@ -149,12 +150,12 @@
     const anchor=attack?null:path==='/factions.php'?(location.hash.includes('tab=armoury')?document.querySelector('#faction-armoury > hr'):null):path==='/item.php'?document.querySelector('.equipped-items-wrap'):null;
     const candidate=market?(document.querySelector('#mainContainer,.content-wrapper[role="main"],#mainwrap')||document.body):attack?document.querySelector('#attack-root:has('+attackSlot+')'):anchor?.parentElement;
     const root=market?candidate:candidate?.getClientRects().length&&!candidate.matches('#mainContainer,#mainwrap')&&['block','flow-root'].includes(getComputedStyle(candidate).display)?candidate:null;
-    if(root&&mounted?.root===root&&(market||mounted.box.isConnected)){mounted.update();mounted.auto();return;}
+    if(root&&mounted?.root===root&&(inlineOnly||mounted.box.isConnected)){mounted.update();mounted.auto();return;}
     mounted?.dispose();mounted=root?mount(root,anchor):null;
   }
   function schedule(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(sync);}}
   function start(){
-    new MutationObserver(()=>{if((!mounted?.root.isConnected||!market&&!mounted.box.isConnected)&&(path!=='/factions.php'||location.hash.includes('tab=armoury')))schedule();}).observe(document.body,{subtree:true,childList:true});
+    new MutationObserver(()=>{if((!mounted?.root.isConnected||!inlineOnly&&!mounted.box.isConnected)&&(path!=='/factions.php'||location.hash.includes('tab=armoury')))schedule();}).observe(document.body,{subtree:true,childList:true});
     window.addEventListener('hashchange',schedule);window.addEventListener('focus',()=>{mounted?.check();schedule();});
     document.addEventListener('visibilitychange',schedule);
     if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(key))){mounted?.reset();mounted?.auto();}});
