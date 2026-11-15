@@ -126,7 +126,7 @@
     const next = get('next'), skip = get('skip'), edit = get('edit'), status = get('status'), open = get('open');
     let editing = index === null;
     let maxSet = new WeakSet();
-    const foreground = () => d.visibilityState === 'visible' && d.hasFocus();
+    const foreground = () => foregroundPage();
     const active = () => steps(value)[index];
     function actionFor(current) { return !editing && current && foreground() ? nativeAction(host.parentElement, current, maxSet) : null; }
     function paintAction() {
@@ -201,23 +201,40 @@
     root.prepend(host);
     fill(); render();
   }
-  if (foregroundPage()) mount();
-  let scheduled = false;
-  const schedule = () => {
-    if (!foregroundPage() || scheduled) return;
-    scheduled = true;
-    requestAnimationFrame(() => {
-      scheduled = false;
-      if (foregroundPage()) { if (host?.isConnected) refresh?.(); else mount(); }
+  let enabled=false, frame=null, observer=null, lifecycle=null, generation=0;
+  function foregroundPage(){return enabled&&d.visibilityState==='visible'&&d.hasFocus();}
+  function schedule(){
+    if(!foregroundPage()||frame!==null)return;
+    frame=g.requestAnimationFrame(()=>{
+      frame=null;
+      if(foregroundPage()){if(host?.isConnected)refresh?.();else mount();}
     });
-  };
-  function foregroundPage() { return d.visibilityState === 'visible' && d.hasFocus(); }
-  new MutationObserver(records => {
-    if (!host?.isConnected || records.some(record => host.parentElement.contains(record.target))) schedule();
-  }).observe(d.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-expanded','aria-disabled','aria-current','disabled','hidden','inert'] });
-  g.addEventListener('focus', schedule);
-  d.addEventListener('visibilitychange', schedule);
-  d.addEventListener('input', event => {
-    if (host?.parentElement?.contains(event.target)) schedule();
-  });
+  }
+  function setEnabled(value){
+    const next=value!==false;if(next===enabled)return;enabled=next;
+    if(!enabled){
+      lifecycle?.abort();lifecycle=null;observer?.disconnect();observer=null;
+      if(frame!==null)g.cancelAnimationFrame(frame);frame=null;
+      host?.remove();host=null;refresh=null;return;
+    }
+    lifecycle=new AbortController();const {signal}=lifecycle;
+    observer=new MutationObserver(records=>{
+      if(!host?.isConnected||records.some(record=>host.parentElement?.contains(record.target)))schedule();
+    });
+    observer.observe(d.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-expanded','aria-disabled','aria-current','disabled','hidden','inert']});
+    g.addEventListener('focus',schedule,{signal});
+    d.addEventListener('visibilitychange',schedule,{signal});
+    d.addEventListener('input',event=>{if(host?.parentElement?.contains(event.target))schedule();},{signal});
+    schedule();
+  }
+  const pda=g.SLINK_PDA_PLUGIN_API, storage=g.SLINK_EXTENSION?.core?.storage;
+  const setting='ui.monitoring.travel-run.enabled';
+  if(pda){
+    const sync=()=>setEnabled(pda.moduleMonitoringEnabled?.('travel-run')!==false);
+    g.addEventListener('slink:travel-run-monitoring',sync);sync();
+  }else if(storage){
+    const sync=async()=>{const run=++generation;try{const value=await storage.get(setting,true);if(run===generation)setEnabled(value);}catch{}};
+    g.chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&Object.hasOwn(changes,storage.fullKey(setting)))void sync();});
+    void sync();
+  }else setEnabled(true);
 })(globalThis);

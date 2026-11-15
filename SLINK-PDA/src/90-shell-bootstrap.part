@@ -7,7 +7,7 @@ dirty.delete(name);
 return true;
 }
 function moduleMonitoringEnabled(id) {
-return dataState.settings.monitoring[id==='moneyProperty'?'money-property':id]!==false;
+return dataState.settings.monitoring[id==='moneyProperty'?'money-property':id==='factionOfficers'?'faction-officers':id]!==false;
 }
 function renderActivePdaPanel() {
 if (!dashboardOpen || !pdaDomActive()) return;
@@ -1654,6 +1654,20 @@ return;
 }
 if(event.target.matches('[data-access-monitor]')){
 const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(['faction-officers','travel-run','chat'].includes(module)){
+dataState.settings.monitoring[module]=enabled;
+if(module==='travel-run')global.dispatchEvent(new CustomEvent('slink:travel-run-monitoring'));
+else{
+ const plugin=pdaPlugins.get(module==='faction-officers'?'factionOfficers':'chat');
+ if(plugin){if(enabled)plugin.start?.();else plugin.stop?.();plugin.render?.();}
+ if(module==='faction-officers'){
+   renderAlerts();
+   dataState.caches.alertNotificationIds=alertRows(moduleState.alerts.data||dataState.caches.alerts).map(alert=>alert.id);
+ }
+}
+await savePdaChanges();
+return;
+}
 if(['bounties','racing','company','museums','money-property','events'].includes(module)){
 dataState.settings.monitoring[module]=enabled;
 const plugin=pdaPlugins.get(module==='money-property'?'moneyProperty':module);

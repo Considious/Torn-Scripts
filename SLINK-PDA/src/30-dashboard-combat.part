@@ -56,6 +56,9 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="museums" ${dataState.settings.monitoring['museums']!==false?'checked':''}>Museums</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="money-property" ${dataState.settings.monitoring['money-property']!==false?'checked':''}>Money &amp; Property</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="events" ${dataState.settings.monitoring['events']!==false?'checked':''}>Events</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="faction-officers" ${dataState.settings.monitoring['faction-officers']!==false?'checked':''}>Faction Officers</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="travel-run" ${dataState.settings.monitoring['travel-run']!==false?'checked':''}>Travel Run</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="chat" ${dataState.settings.monitoring['chat']!==false?'checked':''}>Chat enhancements</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="merits" ${dataState.settings.monitoring.merits!==false?'checked':''}>Merit checks</label>
