@@ -6,6 +6,9 @@ if (!dashboardOpen || !pdaDomActive() || activeModuleName() !== name) { dirty.ad
 dirty.delete(name);
 return true;
 }
+function moduleMonitoringEnabled(id) {
+return dataState.settings.monitoring[id==='moneyProperty'?'money-property':id]!==false;
+}
 function renderActivePdaPanel() {
 if (!dashboardOpen || !pdaDomActive()) return;
 const name=activeModuleName(), plugin=pdaPlugins.get(name);
@@ -64,7 +67,7 @@ nextPermissionRecoveryAt = 0;
 renderAllModules();
 if (hasScope('slink.adhd.alerts') && !moduleState.alerts.busy) global.setTimeout(() => void refreshAlerts(false), 0);
 for (const plugin of pdaPlugins.values()) {
-try { if (!plugin.scope || hasScope(plugin.scope)) void plugin.refresh?.(false); } catch {}
+try { if (moduleMonitoringEnabled(plugin.id)&&(!plugin.scope || hasScope(plugin.scope))) void plugin.refresh?.(false); } catch {}
 }
 return session;
 } catch (error) {
@@ -105,7 +108,7 @@ if (dataState.settings.monitoring.leveling!==false && moduleIsActive('leveling')
 if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
 if (dataState.settings.monitoring['abroad-stocks']!==false && hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
-if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
+if (dataState.settings.monitoring.company!==false && hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
 if (dashboardOpen && pdaDomActive()) void loadActiveModule(false);
 }, 30_000);
 }
@@ -1651,6 +1654,21 @@ return;
 }
 if(event.target.matches('[data-access-monitor]')){
 const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(['bounties','racing','company','museums','money-property','events'].includes(module)){
+dataState.settings.monitoring[module]=enabled;
+const plugin=pdaPlugins.get(module==='money-property'?'moneyProperty':module);
+if(plugin){if(enabled)plugin.start?.();else plugin.stop?.();plugin.render?.();}
+if(module==='racing'){scheduleRacingScan(0);renderRacing();}
+if(module==='bounties')renderBounties();
+if(module==='company')renderCompany();
+if(module==='museums')renderMuseums();
+if(module==='company'||module==='money-property'){
+  renderAlerts();
+  dataState.caches.alertNotificationIds=alertRows(moduleState.alerts.data||dataState.caches.alerts).map(alert=>alert.id);
+}
+await savePdaChanges();
+return;
+}
 if(['target-list','player-stats','abroad-stocks'].includes(module)){
 dataState.settings.monitoring[module]=enabled;
 if(module==='target-list')renderTargetList();
@@ -1998,7 +2016,7 @@ root.dataset.moduleRoot = id;
 panel.appendChild(root);
 page.appendChild(panel);
 }
-try { plugin.start?.(); } catch (error) { console.warn('[SLINK PDA] Plugin start:', id, error); }
+try { if(moduleMonitoringEnabled(id))plugin.start?.(); } catch (error) { console.warn('[SLINK PDA] Plugin start:', id, error); }
 try { plugin.render?.(); } catch (error) { console.warn('[SLINK PDA] Plugin render:', id, error); }
 applyPermissionGates();
 if (state.qualityOfLifeTab === id) selectSubpage('qualityOfLife', id, false);
@@ -2068,6 +2086,7 @@ accountId:()=>validSession('permission')?.userId??validSession('permission')?.us
 clientVersion:global.__SLINK_PDA_BOOTSTRAP__?.clientVersion||'',
 releaseInfo:async()=>{const c=pdaPluginCache('releaseInfo',{});if(c.at&&Date.now()-c.at<(c.value?.error?300000:21600000))return c.value;let value;try{value=await requestJson(URLS.permission+'/api/releases');if(value?.schema!==1)throw Error('Release information unavailable.');}catch{value={schema:1,error:'Update information is temporarily unavailable.'};}c.value=value;c.at=Date.now();return value;},
 register:registerPdaPlugin,
+moduleMonitoringEnabled,
 shouldRender:shouldRenderPdaModule,
 root:moduleRoot,
 settings:pdaPluginSettings,

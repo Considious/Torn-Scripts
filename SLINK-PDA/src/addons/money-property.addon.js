@@ -3,6 +3,8 @@
 const api = global.SLINK_PDA_PLUGIN_API;
 if (!api) throw new Error('SLINK PDA plugin API is unavailable.');
 const ID = 'moneyProperty';
+const enabled=()=>api.moduleMonitoringEnabled?.(ID)!==false;
+let heartbeat=null;
 const SCOPE = 'slink.qol.money-property';
 const CACHE_MS = 15 * 60_000;
 const CATALOG_MS = 7 * 86_400_000;
@@ -289,6 +291,7 @@ function render() {
 if (api.shouldRender && !api.shouldRender(ID)) return;
 const root = api.root(ID);
 if (!root) return;
+if(!enabled()){root.textContent='Money & Property is paused. Resume it in Access.';return;}
 if (!api.hasScope(SCOPE)) { root.innerHTML = api.lockedModule(SCOPE,'Money & Property'); return; }
 const current = cache();
 const status = current.status;
@@ -342,12 +345,14 @@ if(results)results.innerHTML=bankResultsHtml(event.target.value);
 });
 }
 async function refresh(force = false) {
+if(!enabled())return cache().status;
 const current = cache();
 if (busy) return current.status;
 if (!force && current.status && current.bankPlanner && Date.now()-Number(current.fetchedAt||0)<CACHE_MS) { render(); return current.status; }
 busy = true; error = ''; render();
 try {
 await api.ensurePermission(false);
+if(!enabled())return cache().status;
 if (!api.hasScope(SCOPE)) throw new Error('Your SLINK account does not have '+SCOPE+' permission.');
 const [moneyData,propertiesData,currentPropertyData,stocksData,achievements,tornStocks,userMerits] = await Promise.all([
 api.tornJson('/v2/user/money','SLINK PDA Money and Property'),
@@ -401,15 +406,18 @@ global.SLINK_PDA_BANK_PREVIEW=Object.freeze({
   }
 });
 function alerts() {
+if(!enabled())return [];
 const status = cache().status;
 return status ? buildAlerts(status) : [];
 }
 function start() {
+if(!enabled()||heartbeat!==null)return;
 if (api.hasScope(SCOPE)) void refresh(false).catch(() => undefined);
-global.setInterval(() => {
-if (api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) void refresh(false).catch(() => undefined);
+heartbeat=global.setInterval(() => {
+if (enabled()&&api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) void refresh(false).catch(() => undefined);
 },60000);
 }
-api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
+function stop(){if(heartbeat!==null)global.clearInterval(heartbeat);heartbeat=null;}
+api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,stop,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
 })(globalThis);
 

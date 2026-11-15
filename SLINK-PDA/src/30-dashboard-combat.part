@@ -50,6 +50,12 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="target-list" ${dataState.settings.monitoring['target-list']!==false?'checked':''}>Target List</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="player-stats" ${dataState.settings.monitoring['player-stats']!==false?'checked':''}>Player Stats</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="abroad-stocks" ${dataState.settings.monitoring['abroad-stocks']!==false?'checked':''}>Abroad Stocks</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="bounties" ${dataState.settings.monitoring['bounties']!==false?'checked':''}>Bounties</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="racing" ${dataState.settings.monitoring['racing']!==false?'checked':''}>Racing</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="company" ${dataState.settings.monitoring['company']!==false?'checked':''}>Company</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="museums" ${dataState.settings.monitoring['museums']!==false?'checked':''}>Museums</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="money-property" ${dataState.settings.monitoring['money-property']!==false?'checked':''}>Money &amp; Property</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="events" ${dataState.settings.monitoring['events']!==false?'checked':''}>Events</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="merits" ${dataState.settings.monitoring.merits!==false?'checked':''}>Merit checks</label>
@@ -309,9 +315,11 @@ moduleState.bounties.data = runtime;
 return runtime;
 }
 function bountyActive(now = Date.now()) {
+if(dataState.settings.monitoring.bounties===false)return false;
 return bountySettings().enabled && now - Number(dataState.caches.bountyActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS;
 }
 function touchBounties() {
+if(dataState.settings.monitoring.bounties===false)return;
 dataState.caches.bountyActivityAt = Date.now();
 writeDataState();
 }
@@ -332,6 +340,7 @@ bountyBudgetQueue = result.catch(() => undefined);
 return result;
 }
 async function bountyTornJson(path) {
+if(dataState.settings.monitoring.bounties===false)throw Error('Bounties is paused in Access.');
 const settings = bountySettings();
 const key = currentApiKey();
 if (!key) throw new Error('Save a Torn public API key under Access first.');
@@ -375,6 +384,7 @@ const object = response?.results || response?.data || response;
 return object && typeof object === 'object' ? Object.entries(object).map(([id, row]) => ({ player_id:Number(row?.player_id ?? row?.id ?? id), ...(row || {}) })) : [];
 }
 async function enrichBountyFairFight(runtime, targets) {
+if(dataState.settings.monitoring.bounties===false)return;
 const key = currentFfKey();
 if (!key || !targets.length) return;
 const now = Date.now();
@@ -436,14 +446,15 @@ return true;
 }
 let pdaBountyTab='torn',pdaFfBoardRoot=null;
 const pdaFfBounties=global.SLINK_FF_BOUNTIES.service({
- getKey:()=>hasScope(BOUNTY_SCOPE)?currentFfKey():'',
- request:(url,body)=>requestJsonTransport(url,{method:body?'POST':'GET',body,timeout:12000})
+ getKey:()=>dataState.settings.monitoring.bounties!==false&&hasScope(BOUNTY_SCOPE)?currentFfKey():'',
+ request:(url,body)=>{if(dataState.settings.monitoring.bounties===false)throw Error('Bounties is paused in Access.');return requestJsonTransport(url,{method:body?'POST':'GET',body,timeout:12000});}
 });
 function selectPdaBountyTab(tab){if(pdaBountyTab!==tab){pdaBountyTab=tab;pdaFfBoardRoot=null;renderBounties();}}
 function renderBounties() {
 if (!shouldRenderPdaModule('bounties')) return;
 const root = moduleRoot('bounties');
 if (!root) return;
+if(dataState.settings.monitoring.bounties===false){pdaFfBoardRoot=null;root.innerHTML=moduleMessage('Bounties is paused. Resume it in Access.');return;}
 if(pdaBountyTab==='ff'){
  if(pdaFfBoardRoot?.parentNode===root)return;
  pdaFfBoardRoot=root.ownerDocument.createElement('section');
@@ -917,6 +928,7 @@ ${targets.length>pageSize?`<div class="module-toolbar" data-target-pages><button
 </article></div>`;
 }
 async function refreshBounties(force = false) {
+if(dataState.settings.monitoring.bounties===false)return;
 if(pdaBountyTab==='ff'){renderBounties();return;}
 const current = moduleState.bounties, settings = bountySettings();
 if (!hasScope(BOUNTY_SCOPE)) { renderBounties(); return; }

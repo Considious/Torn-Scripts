@@ -72,7 +72,7 @@ match.node.after(label);
 setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
 }
 function scheduleRacingScan(delay = 80) {
-if (!racingDomActive() || !hasScope(RACING_SCOPE)) { racingStateObserver?.disconnect(); clearRacingHighlight(); return; }
+if (!racingDomActive() || !hasScope(RACING_SCOPE)) { racingStateObserver?.disconnect(); global.SLINK_PDA_PAGE_ACTIVITY.cancel(racingScanTimer);racingScanTimer=null;clearRacingHighlight();return; }
 if (!racingStateObserver) racingStateObserver = new MutationObserver(mutations => {
 if (racingDomActive() && mutations.some(racingMutationRelevant)) scheduleRacingScan();
 });
@@ -86,6 +86,7 @@ scanOfficialRaceDom();
 }, delay);
 }
 function racingDomActive() {
+if(dataState.settings.monitoring.racing===false)return false;
 if (!pdaDomActive()) return false;
 const page = new URL(global.location.href);
 return /rac(?:e|ing)/i.test(page.pathname) || /rac(?:e|ing)/i.test(page.hash) || /rac(?:e|ing)/i.test(String(page.searchParams.get('sid') || ''));
@@ -107,6 +108,7 @@ function renderRacing() {
 if (!shouldRenderPdaModule('racing')) return;
 const root = moduleRoot('racing');
 if (!root) return;
+if(dataState.settings.monitoring.racing===false){root.innerHTML=moduleMessage('Racing is paused. Resume it in Access.');return;}
 const settings = racingSettings();
 const definitions = racingBuildsForView(settings.view, settings);
 const completed = RACING_RECOMMENDED_BUILDS.filter(definition => settings.builds[definition.id].completed).length;
@@ -149,6 +151,7 @@ function renderCompany() {
 if (!shouldRenderPdaModule('company')) return;
 const root = moduleRoot('company');
 if (!root) return;
+if(dataState.settings.monitoring.company===false){root.innerHTML=moduleMessage('Company is paused. Resume it in Access.');return;}
 if (!hasScope(COMPANY_SCOPE)) {
 root.innerHTML = lockedModule(COMPANY_SCOPE, 'Company & Job Points');
 return;
@@ -175,6 +178,7 @@ root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-
 '</div></article>' : '') + '</div>';
 }
 async function refreshCompany(force = false) {
+if(dataState.settings.monitoring.company===false)return moduleState.company.data;
 const current = moduleState.company;
 if (current.busy) return current.data;
 const cached = dataState.caches.company;
@@ -190,6 +194,7 @@ current.notice = '';
 renderCompany();
 try {
 await ensurePermissionSession(false);
+if(dataState.settings.monitoring.company===false)return current.data;
 if (!hasScope(COMPANY_SCOPE)) throw new Error('Your SLINK account does not have ' + COMPANY_SCOPE + ' permission.');
 const [job,jobpoints,profile,employees] = await Promise.all([
 tornJson('/v2/user/job', 'SLINK PDA company assistant'),
@@ -246,20 +251,23 @@ button.click();
 function renderMuseums(){
 if (!shouldRenderPdaModule('museums')) return;
 const root=moduleRoot('museums');if(!root)return;
+if(dataState.settings.monitoring.museums===false){root.innerHTML=moduleMessage('Museums is paused. Resume it in Access.');return;}
 if(!hasScope(MUSEUM_SCOPE)){root.innerHTML=lockedModule(MUSEUM_SCOPE,'Museums');return}
 const current=moduleState.museums,status=current.data;
 if(!status?.sets?.length){root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">Compare your inventory with every Museum exchange set.</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh inventory')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+'<p>Refresh to load your inventory and Torn item catalog.</p></article></div>';return}
 root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">'+status.summary.completed+'/'+status.summary.total+' complete · '+number(status.summary.redeemablePoints)+' redeemable points</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+(current.notice?moduleMessage(current.notice,'ready'):'')+'<p>Updated '+relativeTime(status.fetchedAt)+'. Torn inventory data is cached for one hour.</p></article>'+status.sets.map(set=>'<article class="card full museum-set"><details '+(set.complete?'':'open')+'><summary><strong>'+(set.complete?'Complete':'Needs items')+' · '+escapeHtml(set.name)+'</strong><span>'+number(set.points)+' points</span></summary><div class="museum-set-toolbar"><span class="muted">'+number(set.completeSets)+' complete set'+(set.completeSets===1?'':'s')+' in inventory</span>'+'</div><div class="museum-list">'+set.items.map(item=>'<article class="museum-item"><div class="museum-item-main"><strong>'+escapeHtml(item.name)+'</strong><div class="museum-item-stats"><span>Owned <b>'+number(item.owned)+'</b> / '+number(item.required)+'</span>'+(item.needed?'<span>Need <b>'+number(item.needed)+'</b></span>':'<span class="ready-text">Complete</span>')+(item.marketPrice?'<span>Market <b>$'+number(item.marketPrice)+'</b></span>':'')+'</div></div>'+(item.needed&&item.itemId?'<div class="museum-watch-controls"><label><span>Alert below price</span><input type="number" min="1" step="1" inputmode="numeric" aria-label="Alert price for '+escapeHtml(item.name)+'" data-museum-price="'+item.itemId+'" value="'+Math.max(1,item.marketPrice)+'"></label><button type="button" data-action="museum-add-market" '+(marketWatchLimit()>0?'':'disabled title="Market Watch permission required"')+' data-museum-item="'+item.itemId+'">Add to Market Watch</button></div>':'')+'</article>').join('')+'</div></details></article>').join('')+'</div>'
 }
 async function refreshMuseums(force=false){
+if(dataState.settings.monitoring.museums===false)return moduleState.museums.data;
 const current=moduleState.museums;if(current.busy)return current.data;
 const cached=dataState.caches.museums;
 if(!force&&cached?.fetchedAt&&Date.now()-Number(cached.fetchedAt)<MUSEUM_CACHE_MS){current.data=cached;renderMuseums();return cached}
 current.busy=true;current.error='';current.notice='';renderMuseums();
 try{
 await ensurePermissionSession(false);if(!hasScope(MUSEUM_SCOPE))throw new Error('Your SLINK account does not have '+MUSEUM_SCOPE+' permission.');
+if(dataState.settings.monitoring.museums===false)return current.data;
 const runtime=marketRuntime(),catalog=await marketEnsureCatalog(runtime,false),inventoryRows=[];const wanted=new Set(MUSEUM_SETS.flatMap(set=>set.items).map(item=>museumKey(museumName(item.name))));const categories=[...new Set((catalog.items||[]).filter(item=>wanted.has(museumKey(museumName(item.name)))).map(item=>String(item.type||'')).filter(Boolean))];if(!categories.length)throw new Error('The item catalog has no Museum inventory categories. Refresh the item catalog before retrying.');for(const category of categories){let offset=0;
-for(let page=0;page<20;page++){const body=await tornJson('/v2/user/inventory?cat='+encodeURIComponent(category)+'&limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&offset+rows.length>=total))break;offset+=rows.length}}
+for(let page=0;page<20;page++){const body=await runMonitoredPdaRequest('museums',tornJson,'/v2/user/inventory?cat='+encodeURIComponent(category)+'&limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&offset+rows.length>=total))break;offset+=rows.length}}
 const status=museumBuildStatus(inventoryRows,catalog.items||[]);current.data=dataState.caches.museums={fetchedAt:Date.now(),...status};dataState.caches.market=runtime;writeDataState();return current.data
 }catch(error){current.error=errorMessage(error);throw error}finally{current.busy=false;renderMuseums()}
 }
