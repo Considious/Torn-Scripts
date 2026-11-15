@@ -43,6 +43,9 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <span class="muted">${dataState.caches.dataBackup?.lastRemoteAt ? `Latest cloud backup: ${relativeTime(dataState.caches.dataBackup.lastRemoteAt)}` : 'Authenticate first, then SLINK will create an API-key-free backup automatically.'}</span>
 </article>
 <article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><details class="scope-details"><summary>${permission?.scopes?.length ? `${permission.scopes.length} granted permissions` : 'No permissions loaded'}</summary><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></details></article>
+<article class="card wide"><h2>Modules</h2><p class="muted">Pausing a module keeps its tab and saved settings.</p>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label></article>
 <article class="card wide" data-access-usage aria-label="Torn API usage"></article>
 </div>`;
 updateAccessUsage();
@@ -644,11 +647,12 @@ body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(40,
 : { tasks:[] };
 let fetched = 0, skipped = 0, errors = 0;
 const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
+if(!dataState.settings.mugging.enabled)return previous;
 await muggingFairFightChecks.check(tasks).catch(()=>null);
 const budget=Math.min(capacity.available,Math.max(0,Number(response?.api_budget_per_minute)||0));
 const seen=new Set();
 for (const task of tasks) {
-if (fetched >= budget || !pdaPlayerBasicActive() || !dashboardOpen || activeModuleName()!=='mugging') break;
+if (!dataState.settings.mugging.enabled || fetched >= budget || !pdaPlayerBasicActive() || !dashboardOpen || activeModuleName()!=='mugging') break;
 const id=Number(task.player_id);
 if (!Number.isSafeInteger(id) || id<=0 || seen.has(id)) continue;
 seen.add(id);
@@ -671,7 +675,7 @@ if (error?.code === 'SLINK_TORN_API_LIMIT') break;
 let assignmentsRefreshed = false;
 const assignmentCache = muggingCache();
 const ownStats = Number(pdaStoredOwnBattleStats()?.total) || 0;
-if (mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
+if (dataState.settings.mugging.enabled && mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
 try {
 await refreshMugging(false, { userBattleStats:ownStats, touch:false, background:true });
 assignmentsRefreshed = true;

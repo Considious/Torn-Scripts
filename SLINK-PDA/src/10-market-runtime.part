@@ -230,11 +230,13 @@ if (!unique.has(key)) unique.set(key, row);
 return [...unique.values()].map(row => ({ ...row, dismissKey:dealDismissKey(row) })).filter(row => !settings.dismissals[row.dismissKey]).sort((a, b) => a.price - b.price);
 }
 async function marketTornJson(url, endpoint, priority) {
+if(!marketSettings().enabled)throw new Error('Market Watch checks are paused.');
 if(marketWatchLimit()<=0)throw new Error('A current Market Watch permission is required.');
 const key = currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const normalized = normalizeMarketPriority(priority);
 await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:'market' });
+if(!marketSettings().enabled)throw new Error('Market Watch checks are paused.');
 if(marketWatchLimit()<=0)throw new Error('Market Watch permission expired before the price check.');
 const body = await requestJson(url, { headers:{ Authorization:`ApiKey ${key}` } });
 if (body?.error) throw new Error(body.error.message || body.error.error || 'Torn API request failed.');
@@ -257,7 +259,10 @@ if (retryAt > now && retryAt - now <= WEAVER_MIN_REQUEST_SPACING_MS + 100) {
 await new Promise(resolve => global.setTimeout(resolve, retryAt - now)); now = Date.now();
 runtime.weaver.events = runtime.weaver.events.filter(at => at > now - WEAVER_RATE_WINDOW_MS);
 } else if (retryAt > now) { const external=Number(prior.cooldownUntil)===retryAt; const kind=external?runtime.weaver.cooldownReason:'minute'; const error = new Error(kind==='daily'?'Weaver daily request allowance has been reached. Consider disabling lower-priority Bazaar watches.':kind==='minute'?'Weaver per-minute request budget is capped. Remaining items are queued for the next cycle.':'Weaver request allowance has been reached; the service did not identify the reset period. Checks will retry after the current backoff.'); error.code = kind==='daily'?'SLINK_WEAVER_DAILY_LIMIT':kind==='minute'?'SLINK_WEAVER_RATE_LIMIT':'SLINK_WEAVER_LIMIT_UNKNOWN'; error.retryAfterMs = retryAt - now; throw error; }
-if(!url.includes('/api/dollar-bazaars/')&&marketWatchLimit()<=0)throw new Error('A current Market Watch permission is required.');
+if(!url.includes('/api/dollar-bazaars/')){
+if(!marketSettings().enabled)throw new Error('Market Watch checks are paused.');
+if(marketWatchLimit()<=0)throw new Error('A current Market Watch permission is required.');
+}
 runtime.weaver.events.push(now);
 try { return await requestJson(url); }
 catch (error) {

@@ -1649,6 +1649,23 @@ renderAlerts();
 }
 return;
 }
+if(event.target.matches('[data-access-monitor]')){
+const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(module==='market'){
+marketSettings().enabled=enabled;
+if(!enabled)clearMarketPurchaseFormatting();
+scheduleMarketWake();
+renderMarket();
+}else if(module==='mugging'){
+dataState.settings.mugging.enabled=enabled;
+if(enabled&&hasScope('slink.mugging'))touchMuggingActivity();
+renderMugging();
+}
+await savePdaChanges();
+if(enabled&&module==='market'&&marketWatchLimit()>0)void refreshMarket(false);
+if(enabled&&module==='mugging'&&hasScope('slink.mugging'))void runMuggingContribution(false);
+return;
+}
 if (event.target.matches('[data-field="mugging-enabled"],[data-field="mugging-min-ff"],[data-field="mugging-max-ff"],[data-field="mugging-limit"]')) {
 if (!hasScope('slink.mugging')) return;
 const root = moduleRoot('mugging');
