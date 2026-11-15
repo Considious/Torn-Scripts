@@ -1,10 +1,11 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-f7eae771ea748eb2d3afe386d991543eda1bc6083f9deade1179e444530cb0cb",
+  "revision": "sha256-8e1f4bfce9cd76289b0bb339f3b1e6041d2e6d5818d49253c50c59d6f2bf277f",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
+    "src/00-access-usage.part",
     "src/00-torn-components.part",
     "src/00-halloween-theme.part",
     "src/00-christmas-theme.part",
@@ -144,5 +145,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.245"
+  "clientVersion": "0.4.246"
 }

@@ -1,9 +1,20 @@
+let accessUsageTimer;
+function updateAccessUsage(){
+ global.clearTimeout(accessUsageTimer);
+ if(!dashboardOpen||!pdaDomActive()||activeModuleName()!=='access')return;
+ const panel=moduleRoot('access')?.querySelector('[data-access-usage]');
+ if(!panel)return;
+ const expanded=panel.querySelector('details')?.open;
+ const summary=accessTelemetry.html(accessUsageSnapshot());
+ if(panel.accessSummary!==summary){panel.accessSummary=summary;panel.innerHTML=summary;if(expanded)panel.querySelector('details').open=true;}
+ accessUsageTimer=global.setTimeout(updateAccessUsage,10000);
+}
+document.addEventListener('visibilitychange',updateAccessUsage);
 function renderAccess() {
 if (!shouldRenderPdaModule('access')) return;
 const root = moduleRoot('access');
 if (!root) return;
 const permission = validSession('permission');
-const usage = apiUsage();
 const terms = dataState.terms || {};
 const accepted = ['permission', 'leveling', 'war'].every(termsAccepted);
 const termLinks = ['permission', 'leveling', 'war'].map(name => {
@@ -32,8 +43,9 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <span class="muted">${dataState.caches.dataBackup?.lastRemoteAt ? `Latest cloud backup: ${relativeTime(dataState.caches.dataBackup.lastRemoteAt)}` : 'Authenticate first, then SLINK will create an API-key-free backup automatically.'}</span>
 </article>
 <article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><details class="scope-details"><summary>${permission?.scopes?.length ? `${permission.scopes.length} granted permissions` : 'No permissions loaded'}</summary><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></details></article>
-<article class="card"><div class="card-head"><div><h2>Shared API limiter</h2><span class="muted">Shared with compatible Considious scripts in this Torn page.</span></div></div><div class="stats"><div class="stat"><strong>${usage.count}</strong><span>Last minute</span></div><div class="stat"><strong>${usage.remaining}</strong><span>Remaining</span></div><div class="stat"><strong>${usage.limit}</strong><span>Limit</span></div><div class="stat"><strong>1</strong><span>Queue</span></div></div></article>
+<article class="card wide" data-access-usage aria-label="Torn API usage"></article>
 </div>`;
+updateAccessUsage();
 applyPermissionGates();
 }
 async function loadTerms(force = false) {
