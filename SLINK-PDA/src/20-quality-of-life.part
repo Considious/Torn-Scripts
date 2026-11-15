@@ -409,6 +409,7 @@ function visible() {
 return dashboardOpen && state.page === 'quality-of-life' && state.qualityOfLifeTab === 'abroadStocks' && !document.hidden;
 }
 function touch() {
+if(dataState.settings.monitoring['abroad-stocks']===false)return;
 runtime().activeUntil = Date.now() + ACTIVITY_MS;
 writeDataState();
 }
@@ -471,6 +472,7 @@ throw failure;
 return payload || {};
 }
 async function requestProvider(providerId, currentSettings) {
+if(dataState.settings.monitoring['abroad-stocks']===false)throw Error('Abroad Stocks is paused.');
 const definition = ABROAD_STOCKS.PROVIDERS[providerId];
 if (providerId === 'tornIntel') {
 try {
@@ -555,6 +557,7 @@ return travelRecord(current,now);
 }
 }
 async function landingMarketPrices(now=Date.now()){
+if(dataState.settings.monitoring['abroad-stocks']===false)return {};
 const market=marketRuntime();
 const catalog=await pdaSharedData().catalog({key:currentApiKey(),maxAgeMs:MARKET_CACHE_MS,needPrices:true});
 market.catalog=catalog;
@@ -579,6 +582,7 @@ candidates.sort((left,right)=>right.roi-left.roi||right.profit-left.profit||righ
 return candidates[0]||null;
 }
 async function refresh(force = false) {
+if(dataState.settings.monitoring['abroad-stocks']===false)return status();
 const current = runtime();
 const now = Date.now();
 if (moduleState.abroadStocks.busy) return status();
@@ -592,6 +596,7 @@ moduleState.abroadStocks.error = '';
 render();
 try {
 const detectedSettings = await detectTravelDefault(current,currentSettings);
+if(dataState.settings.monitoring['abroad-stocks']===false)return status();
 const providerIds = ['yata','prometheus','tornIntel', ...(detectedSettings.useDroqs ? ['droqs'] : [])];
 const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, detectedSettings)));
 const snapshots = { ...current.snapshots };
@@ -636,6 +641,7 @@ render();
 }
 }
 function alerts(now = Date.now()) {
+if(dataState.settings.monitoring['abroad-stocks']===false)return [];
 const current = runtime();
 const currentSettings = settings();
 const rows=[];
@@ -683,6 +689,7 @@ function render() {
 if (!shouldRenderPdaModule('abroadStocks')) return;
 const root = moduleRoot('abroadStocks');
 if (!root) return;
+if(dataState.settings.monitoring['abroad-stocks']===false){root.innerHTML=moduleMessage('Abroad Stocks is paused. Resume it in Access.');return;}
 const current = status();
 const rows = filteredRows();
 const watchedCount = runtime().watches.length;

@@ -1306,7 +1306,7 @@ armoryMode:'ranked-all', armoryWhitelist:[],
 },
 alerts:{ snoozedUntil:{}, cityDoneDay:null, crimeUniqueDoneDay:{}, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), snoozedUntil:alertSnoozes, enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes), crimeUniqueDoneDay:{ ...(settingsSource?.alerts?.crimeUniqueDoneDay || {}) } },
 market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(settingsSource?.market || {}) },
-monitoring:{ war:settingsSource?.monitoring?.war!==false, leveling:settingsSource?.monitoring?.leveling!==false, alerts:settingsSource?.monitoring?.alerts!==false, merits:settingsSource?.monitoring?.merits!==false, dollarBazaars:settingsSource?.monitoring?.dollarBazaars!==false },
+monitoring:{ 'target-list':settingsSource?.monitoring?.['target-list']!==false, 'player-stats':settingsSource?.monitoring?.['player-stats']!==false, 'abroad-stocks':settingsSource?.monitoring?.['abroad-stocks']!==false, war:settingsSource?.monitoring?.war!==false, leveling:settingsSource?.monitoring?.leveling!==false, alerts:settingsSource?.monitoring?.alerts!==false, merits:settingsSource?.monitoring?.merits!==false, dollarBazaars:settingsSource?.monitoring?.dollarBazaars!==false },
 merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(settingsSource?.merits || {}) },
 racing:normalizeRacingState(settingsSource?.racing),
 abroadStocks:{ ...(settingsSource?.abroadStocks || {}) },
@@ -2370,6 +2370,7 @@ targets.forEach((target,index)=>{const id=String(target.playerId);if(!Number.isF
 return runtime;
 }
 async function runTargetPolling(now = Date.now()) {
+if(dataState.settings.monitoring['target-list']===false)return;
 if (!pdaPlayerBasicActive() || !hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
 const settings=targetPollingSettings();
 if (!settings.enabled) return;
@@ -2382,7 +2383,7 @@ const intervalMs=settings.intervalMinutes*60_000,perMinute=Math.max(1,Math.ceil(
 const due=targets.filter(target=>Number(runtime.schedule[String(target.playerId)])<=now).sort((a,b)=>Number(runtime.schedule[String(a.playerId)])-Number(runtime.schedule[String(b.playerId)])).slice(0,perMinute);
 if(!due.length){if(changes.value)schedulePdaCacheSave();return;}
 let processed=0,apiFetched=0,skipped=0,lastError='';
-for(const target of due){if(!pdaPlayerBasicActive())break;const id=String(target.playerId);try{
+for(const target of due){if(dataState.settings.monitoring['target-list']===false||!pdaPlayerBasicActive())break;const id=String(target.playerId);try{
 const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,owner:'polling',adaptive:true,background:true});
 if(result.reason==='inactive')break;
 processed++;if(result.fetched)apiFetched++;else skipped++;
@@ -2422,6 +2423,7 @@ dataState.caches.targetStakeoutAlerts = value;
 return value;
 }
 function stakeoutAlertRows(now = Date.now()) {
+if(dataState.settings.monitoring['target-list']===false)return [];
 const cache = targetStakeoutAlertCache();
 const snoozed = dataState.settings.alerts.snoozedUntil || {};
 const rows = [];
@@ -2496,6 +2498,7 @@ runtime
 };
 }
 async function runTargetStakeouts(now = Date.now()) {
+if(dataState.settings.monitoring['target-list']===false)return;
 if (!pdaPlayerBasicActive() || !hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
 targetStakeoutBusy=true;
 beginPdaCacheBatch();
@@ -2521,7 +2524,7 @@ return;
 let processed=0,apiFetched=0,skipped=0,lastError='';const generated=[];
 for(const target of due){const id=String(target.playerId),intervalMs=target.stakeoutIntervalSeconds*1000;
 generated.push(...collectTargetStakeoutChanges(target,runtime,playerIntelligenceRecord(target.playerId),now));
-if(!pdaPlayerBasicActive())break;
+if(dataState.settings.monitoring['target-list']===false||!pdaPlayerBasicActive())break;
 try{const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,timerBufferMs:1000,owner:'stakeout',background:true});
 if(result.reason==='inactive')break;
 processed++;if(result.fetched)apiFetched++;else skipped++;

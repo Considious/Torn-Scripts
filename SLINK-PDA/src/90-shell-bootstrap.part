@@ -104,7 +104,7 @@ else void refreshWarAlerts();
 if (dataState.settings.monitoring.leveling!==false && moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
 if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
-if (hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
+if (dataState.settings.monitoring['abroad-stocks']!==false && hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
 if (hasScope(COMPANY_SCOPE) && !moduleState.company.busy && (!dataState.caches.company?.fetchedAt || Date.now() - Number(dataState.caches.company.fetchedAt) >= companySettings().refreshMinutes * 60_000)) void refreshCompany(false).catch(() => undefined);
 if (dashboardOpen && pdaDomActive()) void loadActiveModule(false);
 }, 30_000);
@@ -1651,6 +1651,18 @@ return;
 }
 if(event.target.matches('[data-access-monitor]')){
 const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(['target-list','player-stats','abroad-stocks'].includes(module)){
+dataState.settings.monitoring[module]=enabled;
+if(module==='target-list')renderTargetList();
+if(module==='player-stats')renderStats();
+if(module==='abroad-stocks')PDA_ABROAD.render();
+if(module!=='player-stats'){
+  renderAlerts();
+  dataState.caches.alertNotificationIds=alertRows(moduleState.alerts.data||dataState.caches.alerts).map(alert=>alert.id);
+}
+await savePdaChanges();
+return;
+}
 if(['war','leveling','alerts'].includes(module)){
 dataState.settings.monitoring[module]=enabled;
 if(module==='war')renderWar(true);

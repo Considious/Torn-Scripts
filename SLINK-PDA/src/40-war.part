@@ -277,6 +277,7 @@ function renderStats() {
 if (!shouldRenderPdaModule('stats')) return;
 const root = moduleRoot('stats');
 if (!root) return;
+if(dataState.settings.monitoring['player-stats']===false){root.innerHTML=moduleMessage('Player Stats is paused. Resume it in Access.');return;}
 const current = moduleState.stats;
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading your daily Torn snapshot…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
@@ -293,6 +294,7 @@ ${table('Combat', [['Attacks','attacks'],['Respect','respect'],['Retals','retals
 </div>`;
 }
 async function refreshStats(force = false) {
+if(dataState.settings.monitoring['player-stats']===false||moduleState.stats.busy)return;
 const current = moduleState.stats;
 if (!hasScope(PLAYER_STATS_SCOPE)) { renderStats(); return; }
 const cached = dataState.caches.stats;
@@ -303,7 +305,7 @@ try {
 const baseline = today * 86_400_000;
 const statParam = PLAYER_STATS.join(',');
 const [now, one, two, seven, thirty] = await Promise.all([
-tornJson(`/v2/user?selections=personalstats,money,workstats&stat=${statParam}`, 'SLINK PDA daily player stats'),
+runMonitoredPdaRequest('player-stats',tornJson,`/v2/user?selections=personalstats,money,workstats&stat=${statParam}`, 'SLINK PDA daily player stats'),
 tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 86_400_000) / 1000)}`, 'SLINK PDA player history'),
 tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 2 * 86_400_000) / 1000)}`, 'SLINK PDA player history'),
 tornJson(`/v2/user/personalstats?stat=${statParam}&timestamp=${Math.floor((baseline - 7 * 86_400_000) / 1000)}`, 'SLINK PDA player history'),

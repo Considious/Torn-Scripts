@@ -47,6 +47,9 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="war" ${dataState.settings.monitoring.war!==false?'checked':''}>War</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="leveling" ${dataState.settings.monitoring.leveling!==false?'checked':''}>Leveling</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="alerts" ${dataState.settings.monitoring.alerts!==false?'checked':''}>Efficiency alerts</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="target-list" ${dataState.settings.monitoring['target-list']!==false?'checked':''}>Target List</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="player-stats" ${dataState.settings.monitoring['player-stats']!==false?'checked':''}>Player Stats</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="abroad-stocks" ${dataState.settings.monitoring['abroad-stocks']!==false?'checked':''}>Abroad Stocks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="merits" ${dataState.settings.monitoring.merits!==false?'checked':''}>Merit checks</label>
@@ -866,6 +869,7 @@ function renderTargetList() {
 if (!shouldRenderPdaModule('targetList')) return;
 const root = moduleRoot('targetList');
 if (!root) return;
+if(dataState.settings.monitoring['target-list']===false){root.innerHTML=moduleMessage('Target List is paused. Resume it in Access.');return;}
 root.dataset.uiExplicitCommit = 'true';
 const state = moduleState.targetList, targets = pdaTargetListEntries();
 const pageSize=50,pageCount=Math.max(1,Math.ceil(targets.length/pageSize));
