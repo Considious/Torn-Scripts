@@ -81,7 +81,7 @@ schedulerTimer = global.setInterval(() => {
 if (!pdaPagePresent) return;
 if(pdaDomActive())void syncPdaCrimeRecipes().catch(()=>{});
 if (currentApiKey() && termsAccepted('permission') && !validSession('permission')) void ensureAutomaticPermissionSession(false);
-const canRefreshAlerts = Boolean(currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
+const canRefreshAlerts = Boolean(dataState.settings.monitoring.alerts!==false && currentApiKey() && hasScope('slink.adhd.alerts') && validSession('permission'));
 if (canRefreshAlerts && pdaDomActive()) {
 const previousIds = JSON.stringify(dataState.caches.alertNotificationIds);
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
@@ -96,12 +96,12 @@ const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && 
 if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= WEAVER_SUMMARY_REFRESH_MS) void refreshMarket(false);
 const canRefreshDollarBazaars = Boolean(dataState.settings.monitoring.dollarBazaars!==false && currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE));
 if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
-const canRefreshWar = Boolean(currentApiKey() && hasScope('slink.war') && (validSession('war') || termsAccepted('war')));
+const canRefreshWar = Boolean(dataState.settings.monitoring.war!==false && currentApiKey() && hasScope('slink.war') && (validSession('war') || termsAccepted('war')));
 if (canRefreshWar && !moduleState.war.busy) {
 if (moduleIsActive('war') && (dataState.caches.war?.activeWar || Date.now() - Number(dataState.caches.war?.detectedAt || 0) >= 5 * 60_000)) void refreshWar(false);
 else void refreshWarAlerts();
 }
-if (moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
+if (dataState.settings.monitoring.leveling!==false && moduleIsActive('leveling') && !moduleState.leveling.busy) void refreshLeveling(false);
 if (bountyActive() && !moduleState.bounties.busy) void refreshBounties(false);
 if (dataState.settings.mugging.enabled && hasScope('slink.mugging')) void runMuggingContribution(false);
 if (hasScope(ABROAD_STOCKS_SCOPE)) void PDA_ABROAD.refresh(false);
@@ -1651,6 +1651,18 @@ return;
 }
 if(event.target.matches('[data-access-monitor]')){
 const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(['war','leveling','alerts'].includes(module)){
+dataState.settings.monitoring[module]=enabled;
+if(module==='war')renderWar(true);
+if(module==='leveling')renderLeveling();
+if(module!=='leveling'){
+  renderAlerts();
+  // Reset the rendered notification baseline without replaying cached alerts.
+  dataState.caches.alertNotificationIds=alertRows(moduleState.alerts.data||dataState.caches.alerts).map(alert=>alert.id);
+}
+await savePdaChanges();
+return;
+}
 if(module==='merits'||module==='dollarBazaars'){
 dataState.settings.monitoring[module]=enabled;
 await savePdaChanges();

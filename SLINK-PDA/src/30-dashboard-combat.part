@@ -44,6 +44,9 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 </article>
 <article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><details class="scope-details"><summary>${permission?.scopes?.length ? `${permission.scopes.length} granted permissions` : 'No permissions loaded'}</summary><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></details></article>
 <article class="card wide"><h2>Modules</h2><p class="muted">Pausing a module keeps its tab and saved settings.</p>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="war" ${dataState.settings.monitoring.war!==false?'checked':''}>War</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="leveling" ${dataState.settings.monitoring.leveling!==false?'checked':''}>Leveling</label>
+<label class="check-row"><input type="checkbox" role="switch" data-access-monitor="alerts" ${dataState.settings.monitoring.alerts!==false?'checked':''}>Efficiency alerts</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label>
 <label class="check-row"><input type="checkbox" role="switch" data-access-monitor="merits" ${dataState.settings.monitoring.merits!==false?'checked':''}>Merit checks</label>
@@ -213,6 +216,7 @@ function renderLeveling() {
 if (!shouldRenderPdaModule('leveling')) return;
 const root = moduleRoot('leveling');
 if (!root) return;
+if(dataState.settings.monitoring.leveling===false){root.innerHTML=moduleMessage('Leveling is paused. Resume it in Access.');return;}
 if (!hasScope('slink.level')) { root.innerHTML = lockedModule('slink.level', 'SLINK Leveling'); return; }
 const current = moduleState.leveling;
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading recommendations…'); return; }
@@ -232,13 +236,16 @@ return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</s
 </article></div>`;
 }
 async function refreshLeveling(force = false) {
+if(dataState.settings.monitoring.leveling===false||moduleState.leveling.busy)return;
 const current = moduleState.leveling;
 const cached = dataState.caches.leveling;
 if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.data = cached; renderLeveling(); return; }
 current.busy = true; current.error = ''; renderLeveling();
 try {
 await ensurePermissionSession(false);
+if(dataState.settings.monitoring.leveling===false)return;
 await ensureLevelingSession(false);
+if(dataState.settings.monitoring.leveling===false)return;
 const lastActivity = moduleLastActiveAt('leveling');
 const reportedActivity = Math.max(0, Number(dataState.caches.levelingActivityReportedAt) || 0);
 if (lastActivity > reportedActivity) {
@@ -247,7 +254,9 @@ dataState.caches.levelingActivityReportedAt = lastActivity;
 }
 const settings = dataState.settings.leveling;
 const query = new URLSearchParams({ limit:'20', poll_seconds:'300', min_ff:String(Math.min(settings.minFF, settings.maxFF)), max_ff:String(Math.max(settings.minFF, settings.maxFF)) });
+if(dataState.settings.monitoring.leveling===false)return;
 const payload = await productRequest('leveling', `/api/recommendations?${query}`);
+if(dataState.settings.monitoring.leveling===false)return;
 if (Array.isArray(payload?.targets)) payload.targets = await refineWithFfScouter(payload.targets);
 else if (Array.isArray(payload?.recommendations)) payload.recommendations = await refineWithFfScouter(payload.recommendations);
 current.data = dataState.caches.leveling = { at:Date.now(), payload };
@@ -1395,11 +1404,13 @@ const until = Number(settings.retalSnoozedUntil) || 0;
 return `<details class="alert-settings" data-ui-key="war.retal-controls"><summary>Retal alert controls</summary><label><input type="checkbox" data-war-retal-pref="retalAlerts" ${settings.retalAlerts !== false ? 'checked' : ''}> Enable retal alerts</label><label><input type="checkbox" data-war-retal-pref="retalSound" ${settings.retalSound === true ? 'checked' : ''}> Play retal sound</label><div class="target-actions"><label>Snooze hours <input type="number" data-field="war-retal-hours" min="0.1" max="168" step="0.1" value="12" style="width:5em"></label><button type="button" data-action="pause-war-retals" data-hours="custom">Snooze</button><button type="button" data-action="pause-war-retals" data-hours="12">Snooze 12h</button><button type="button" data-action="pause-war-retals" data-hours="0">Resume retal alerts</button></div>${until > Date.now() ? `<div>Snoozed until ${escapeHtml(new Date(until).toLocaleString())}</div>` : ''}</details>`;
 }
 function warRetalAlertRows() {
+if(dataState.settings.monitoring.war===false)return [];
 if (!hasScope('slink.war')) return [];
 const current = moduleState.war.data || dataState.caches.war || {};
 return warVisibleRetals(current.snapshot || {}, current.activeWar).map(retal => ({ id:`war-retal:${String(retal.attackId || retal.attackerId)}`, title:`Retaliation: ${retal.attackerName || 'Player ' + retal.attackerId}`, detail:`Attacked ${retal.defenderName || 'your faction'}`, links:[['【ATTACK】',`https://www.torn.com/page.php?sid=attack&user2ID=${Number(retal.attackerId)}`],['Profile',`https://www.torn.com/profiles.php?XID=${Number(retal.attackerId)}`]] }));
 }
 function syncPdaRetalSound() {
+if(dataState.settings.monitoring.war===false)return;
 const rows = warRetalAlertRows();
 const previous = dataState.caches.warRetalSoundIds;
 dataState.caches.warRetalSoundIds = rows.map(row => row.id);
