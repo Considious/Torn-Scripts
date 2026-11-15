@@ -94,7 +94,7 @@ if (canRefreshAlerts && !moduleState.alerts.busy && Date.now() - moduleState.ale
 if (canRefreshAlerts && Number(dataState.caches.crimeUniques?.nextLiveAt || 0) <= Date.now()) void refreshCrimeUniqueWindows(false);
 const canRefreshMarket = Boolean(moduleIsActive('market') && currentApiKey() && marketWatchLimit() > 0 && marketSettings().enabled);
 if (canRefreshMarket && !moduleState.market.busy && Date.now() - moduleState.market.lastAttemptAt >= WEAVER_SUMMARY_REFRESH_MS) void refreshMarket(false);
-const canRefreshDollarBazaars = Boolean(currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE));
+const canRefreshDollarBazaars = Boolean(dataState.settings.monitoring.dollarBazaars!==false && currentApiKey() && hasScope(DOLLAR_BAZAARS_SCOPE));
 if (canRefreshDollarBazaars && !moduleState.dollarBazaars.busy && Date.now() - moduleState.dollarBazaars.lastAttemptAt >= DOLLAR_BAZAAR_REFRESH_MS && Number(dataState.caches.dollarBazaars?.nextRefreshAt || 0) <= Date.now()) void refreshDollarBazaars(false);
 const canRefreshWar = Boolean(currentApiKey() && hasScope('slink.war') && (validSession('war') || termsAccepted('war')));
 if (canRefreshWar && !moduleState.war.busy) {
@@ -1651,6 +1651,12 @@ return;
 }
 if(event.target.matches('[data-access-monitor]')){
 const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(module==='merits'||module==='dollarBazaars'){
+dataState.settings.monitoring[module]=enabled;
+await savePdaChanges();
+if(module==='merits')renderMerits();else renderDollarBazaars();
+return;
+}
 if(module==='market'){
 marketSettings().enabled=enabled;
 if(!enabled)clearMarketPurchaseFormatting();

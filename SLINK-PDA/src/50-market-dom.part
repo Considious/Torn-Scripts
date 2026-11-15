@@ -1165,6 +1165,7 @@ const root = moduleRoot('dollarBazaars');
 if (!root) return;
 if (!hasScope(DOLLAR_BAZAARS_SCOPE)) { root.innerHTML = lockedModule(DOLLAR_BAZAARS_SCOPE, 'Weaver $1 Bazaars'); return; }
 const current = moduleState.dollarBazaars;
+if(dataState.settings.monitoring.dollarBazaars===false){root.innerHTML=moduleMessage('$1 Bazaar checks are paused. Resume them in Access.');return;}
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Weaver $1 Bazaar listings through its JSON API…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
 const items = weaverDollarBazaarItems(current.data?.bazaars ? { bazaars:current.data.bazaars } : current.data?.items ? { items:current.data.items } : current.data || {});
@@ -1177,6 +1178,7 @@ ${current.error ? moduleMessage(`${current.error}${current.data?.fetchedAt ? ` S
 </article></div>`;
 }
 async function refreshDollarBazaars(force = false) {
+if(dataState.settings.monitoring.dollarBazaars===false)return false;
 const current = moduleState.dollarBazaars;
 if (current.busy) return false;
 const cached = dataState.caches.dollarBazaars;
@@ -1188,6 +1190,7 @@ renderDollarBazaars();
 try {
 await ensurePermissionSession(false);
 if (!hasScope(DOLLAR_BAZAARS_SCOPE)) throw new Error(`Your SLINK account does not have ${DOLLAR_BAZAARS_SCOPE} permission.`);
+if(dataState.settings.monitoring.dollarBazaars===false)return false;
 const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
 const fetchedAt = Date.now();
 current.data = dataState.caches.dollarBazaars = {
@@ -1280,6 +1283,7 @@ const root = moduleRoot('merits');
 if (!root) return;
 if (!hasScope(MERITS_SCOPE)) { root.innerHTML = lockedModule(MERITS_SCOPE, 'Merit tracking'); return; }
 const current = moduleState.merits;
+if(dataState.settings.monitoring.merits===false){root.innerHTML=moduleMessage('Merit checks are paused. Resume them in Access.');return;}
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading award catalog and progress…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
 const allGoals = meritGoals(current.data?.data);
@@ -1297,6 +1301,7 @@ root.innerHTML = `<div class="grid"><article class="card full"><div class="card-
 </article></div>`;
 }
 async function refreshMerits(force = false) {
+if(dataState.settings.monitoring.merits===false||moduleState.merits.busy)return;
 const current = moduleState.merits;
 const cached = dataState.caches.merits;
 const ttl = Math.max(5, Number(dataState.settings.merits.refreshMinutes) || 15) * 60_000;
@@ -1305,6 +1310,7 @@ current.busy = true; current.error = ''; renderMerits();
 try {
 await ensurePermissionSession(false);
 if (!hasScope(MERITS_SCOPE)) throw new Error(`Your SLINK account does not have ${MERITS_SCOPE} permission.`);
+if(dataState.settings.monitoring.merits===false)return;
 const [player, personalStats, catalog] = await Promise.all([
 tornJson('/v2/user?selections=profile,faction,medals,honors,merits', 'SLINK PDA Merit farm'),
 tornJson('/v2/user/personalstats?cat=all', 'SLINK PDA Merit progress'),
