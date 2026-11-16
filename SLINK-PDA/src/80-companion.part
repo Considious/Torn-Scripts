@@ -24,6 +24,18 @@
     const panel=doc.createElement('details');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
     
     panel.innerHTML='<summary>Companion settings</summary><div style="display:grid;gap:5px;padding:5px 0"><label>Companion <select data-pref="id"></select></label><label>Movement <select data-pref="movement"><option value="wander">Wander</option><option value="stay">Stay where I put him</option></select></label><label>Companion alerts <select data-pref="alerts"><option value="all">All</option><option value="important">Important only</option><option value="minimal">Minimal</option><option value="silent">Silent</option></select></label><label><input type="checkbox" data-pref="chatter"> Idle chatter</label><label><input type="checkbox" data-pref="reduced"> Reduced motion</label></div>';
+    panel.classList.add('slink-companion-settings');
+    const layoutStyle=doc.createElement('style');
+    layoutStyle.textContent=`
+      .slink-companion-settings{container-type:inline-size;box-sizing:border-box;min-inline-size:0;max-inline-size:100%}
+      .slink-companion-settings .slink-page-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:5px 8px;align-items:center}
+      .slink-companion-settings label>span{min-inline-size:0;overflow-wrap:anywhere}
+      .slink-companion-settings select{box-sizing:border-box;inline-size:100%;min-inline-size:0;max-inline-size:100%}
+      @container (max-width:250px){
+        .slink-companion-settings .slink-page-row{grid-template-columns:minmax(0,1fr)}
+      }
+    `;
+    panel.append(layoutStyle);
     if(setSettingsAvailable)panel.open=true;
     settingsParent.append(panel);globalThis.SLINK_TORN_COMPONENTS?.install(panel.getRootNode());for(const label of panel.querySelectorAll('label')){const control=label.lastElementChild;const title=doc.createElement('span');for(const child of [...label.childNodes])if(child!==control){title.append(child);}label.prepend(title);if(control.type==='checkbox')globalThis.SLINK_TORN_COMPONENTS?.switchRow(label,control);else label.classList.add('slink-page-row');}
     const field=name=>panel.querySelector('[data-pref="'+name+'"]');
