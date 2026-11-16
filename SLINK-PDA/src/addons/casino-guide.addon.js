@@ -61,42 +61,104 @@
   const games={highlow:'High-Low',blackjack:'Blackjack',poker:'Poker',bookie:'Bookie',russianroulette:'Russian Roulette',slots:'Slots',spinwheel:'Spin the Wheel',roulette:'Roulette',lottery:'Lottery',keno:'Keno',craps:'Craps'};
   const gameId=value=>{
     const id=String(value??'').toLowerCase().replace(/\.php$/,'').replace(/[^a-z0-9]/g,'');
-    const canonical=({bookies:'bookie',bookmaker:'bookie',spinthewheel:'spinwheel',wheel:'spinwheel',slotmachine:'slots',russian:'russianroulette'})[id]||id;
+    const canonical=({holdem:'poker',bookies:'bookie',bookmaker:'bookie',spinthewheel:'spinwheel',wheel:'spinwheel',slotmachine:'slots',russian:'russianroulette'})[id]||id;
     return Object.hasOwn(games,canonical)?canonical:null;
   };
+  const compact='data-slink-casino-compact';
+  const interactive='a[href],button,input,select,textarea,[role=button],[role=link]';
+  const lobbyStyles=`
+    [data-slink-casino-controls]{background:var(--sp-bg,Canvas);color:var(--sp-text,CanvasText);border:1px solid var(--sp-border,currentColor);border-radius:7px;padding:8px}
+    [data-slink-casino-controls]>summary{color:inherit;cursor:pointer;padding:4px 0}
+    [data-slink-casino-controls] .slink-page-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:6px;margin:6px 0}
+    [data-slink-casino-controls] .slink-page-toggle{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;min-block-size:40px;padding:5px 8px;background:var(--sp-control,Canvas);color:var(--sp-text,CanvasText);border:1px solid var(--sp-border,currentColor);border-radius:5px;cursor:pointer}
+    [data-slink-casino-controls] .slink-page-toggle:hover{border-color:var(--sp-text,CanvasText)}
+    [data-slink-casino-controls] :is(summary,button,input):focus-visible{outline:2px solid var(--sp-text,CanvasText);outline-offset:2px}
+    [data-slink-casino-controls] button:disabled{opacity:.65}
+    [data-slink-hidden-casino-game]{display:none!important}
+    ul.games-list[data-slink-casino-compact]{display:flex!important;flex-wrap:wrap!important;align-items:flex-start;justify-content:flex-start!important;gap:8px!important;height:auto!important}
+    ul.games-list[data-slink-casino-compact]::before,ul.games-list[data-slink-casino-compact]::after{display:none!important}
+    ul.games-list[data-slink-casino-compact]>li{float:none!important;clear:none!important;margin:0!important;max-inline-size:100%;flex:0 0 auto}
+    ul.games-list[data-slink-casino-compact]>li.clear:empty{display:none!important}
+  `;
+  function linkGame(link){
+    const url=new URL(link.href,location.href);
+    if(url.origin!==location.origin||url.pathname==='/casino.php')return null;
+    const route=url.pathname==='/page.php'?url.searchParams.get('sid'):url.pathname.match(/^\/([\w-]+\.php)$/)?.[1];
+    return gameId(route);
+  }
   function lobby(root,box){
-    const list=make('div'),restore=make('button','Show all games'),status=make('span');globalThis.SLINK_TORN_COMPONENTS?.mark(list,'slink-page-grid');
-    restore.type='button';status.setAttribute('role','status');
-    const style=make('style');style.textContent=`[${mark}]{display:none!important}`;
+    const list=make('div'),restore=make('button','Show all games'),status=make('span');
+    const summary=box.querySelector('summary');
+    box.setAttribute('data-slink-casino-controls','');
+    list.classList.add('slink-page-grid');
+    restore.type='button';
+    status.setAttribute('role','status');
+    const style=make('style');
+    style.textContent=lobbyStyles;
     box.append(list,restore,status,style);
     let hidden;
-    try{const items=JSON.parse(localStorage.getItem(key)||'[]');hidden=new Set(Array.isArray(items)?items.map(gameId).filter(Boolean):[]);}catch{hidden=new Set();}
-    let signature='',marked=new Set();
-    const save=()=>{try{localStorage.setItem(key,JSON.stringify([...hidden]));status.textContent='';}catch{status.textContent='Changes could not be saved on this device.';}};
-    const update=()=>{
-      const entries=new Map(),next=new Set();
-      for(const a of root.querySelectorAll('a[href]')){
-        const url=new URL(a.href,location.href);if(url.origin!==location.origin||url.pathname==='/casino.php')continue;
-        const slug=gameId(url.pathname==='/page.php'?url.searchParams.get('sid'):url.pathname.match(/^\/([\w-]+\.php)$/)?.[1]);
+    try{
+      const items=JSON.parse(localStorage.getItem(key)||'[]');
+      hidden=new Set(Array.isArray(items)?items.map(gameId).filter(Boolean):[]);
+    }catch{hidden=new Set();}
+    let marked=new Set();
+    const switches=new Map();
+    function save(){
+      try{
+        localStorage.setItem(key,JSON.stringify([...hidden]));
+        status.textContent='';
+      }catch{status.textContent='Changes could not be saved on this device.';}
+    }
+    function update(){
+      const entries=new Set(),next=new Set(),tiles=new Set();
+      for(const link of root.querySelectorAll('a[href]')){
+        const slug=linkGame(link);
         if(!slug)continue;
-        entries.set(slug,games[slug]);
-        const li=a.closest('li'),target=li&&li!==root&&root.contains(li)&&li.querySelectorAll('a[href],button,input,select').length===1?li:a;
-        if(hidden.has(slug)){target.setAttribute(mark,'');next.add(target);}
+        entries.add(slug);
+        const li=link.closest('li');
+        const tile=li?.parentElement===root&&li.querySelectorAll(interactive).length===1?li:null;
+        if(tile)tiles.add(tile);
+        if(hidden.has(slug))next.add(tile||link);
       }
-      for(const node of marked)if(!next.has(node))node.removeAttribute(mark);marked=next;
-      for(const slug of hidden)if(!entries.has(slug))entries.set(slug,games[slug]);
-      const current=JSON.stringify([[...entries],...[...hidden].sort()]);
-      if(current===signature)return;signature=current;
-      list.replaceChildren(...Array.from(entries,([slug,label])=>{
-        const input=make('input');input.type='checkbox';input.checked=!hidden.has(slug);
-        input.onchange=()=>{if(input.checked)hidden.delete(slug);else hidden.add(slug);save();update();};
-        const row=field(label,input);return globalThis.SLINK_TORN_COMPONENTS?.switchRow(row,input)||row;
-      }));
+      for(const node of marked)if(!next.has(node))node.removeAttribute(mark);
+      for(const node of next)if(!node.hasAttribute(mark))node.setAttribute(mark,'');
+      marked=next;
+      // Use flex spacing only for a list containing native game tiles and the old float spacer.
+      const canCompact=root.matches('ul.games-list')&&Array.from(root.children).every(node=>tiles.has(node)||node.matches('li.clear:empty'));
+      root.toggleAttribute(compact,canCompact&&Array.from(next).some(node=>tiles.has(node)));
+      for(const slug of hidden)entries.add(slug);
+      for(const [slug,input] of switches)if(!entries.has(slug)){
+        input.closest('label').remove();
+        switches.delete(slug);
+      }
+      for(const slug of entries){
+        let input=switches.get(slug);
+        if(!input){
+          input=make('input');
+          input.type='checkbox';
+          input.setAttribute('role','switch');
+          input.addEventListener('change',()=>{
+            if(input.checked)hidden.delete(slug);
+            else hidden.add(slug);
+            save();
+            update();
+          });
+          const row=field(games[slug],input);
+          row.classList.add('slink-page-toggle');
+          list.append(row);
+          switches.set(slug,input);
+        }
+        input.checked=!hidden.has(slug);
+      }
       restore.disabled=!hidden.size;
-      box.querySelector('summary').textContent='Show or hide casino games'+(hidden.size?' ('+hidden.size+' hidden)':'');
-    };
-    restore.onclick=()=>{hidden.clear();save();update();};
-    return {update,clear(){for(const n of marked)n.removeAttribute(mark);}};
+      const caption='Show or hide casino games'+(hidden.size?' ('+hidden.size+' hidden)':'');
+      if(summary.textContent!==caption)summary.textContent=caption;
+    }
+    restore.onclick=()=>{hidden.clear();save();update();summary.focus();};
+    return {update,clear(){
+      for(const node of marked)node.removeAttribute(mark);
+      root.removeAttribute(compact);
+    }};
   }
   function advisor(box){
     const controls=make('div'),dealer=select(),cards=make('input'),result=make('p');
