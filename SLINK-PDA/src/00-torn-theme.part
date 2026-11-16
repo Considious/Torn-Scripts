@@ -40,7 +40,7 @@ ${S}[data-slink-torn-background] .backdrops-container{visibility:hidden!importan
 ${S}[data-slink-torn-background] :is(.content-wrapper,#mainContainer,.content){background-color:transparent!important;}
 ${S} :is(#topHeaderBanner,.header-wrapper-top,.header-wrapper-bottom,#sidebar){background-color:var(--slt-panel)!important;}
 ${S} :is(.content-title,.title-black,.title-gray){background-color:var(--slt-header)!important;color:var(--slt-text)!important;}
-${S}[data-slink-torn-theme] :is(.content-title,.title-black,.title-gray,.app-header,.appHeader,.crimes-app-header,[class^="appHeader___"],[class*=" appHeader___"],[class^="appHeaderWrapper___"],[class*=" appHeaderWrapper___"]),
+${S}[data-slink-torn-theme] :is(.content-title,.title-black,.title-gray,.app-header,.appHeader,[class^="appHeader___"],[class*=" appHeader___"],[class^="appHeaderWrapper___"],[class*=" appHeaderWrapper___"]):not([role="button"][aria-controls="crime-stats-panel"]):not(:has([role="button"][aria-controls="crime-stats-panel"])),
 ${S}[data-slink-torn-theme] #sidebar > :is([class^="header___"],[class*=" header___"]){background-color:var(--slt-header)!important;background-image:none!important;color:var(--slt-text)!important;}
 ${S} :is(.cont-gray,.cont-white){background-color:var(--slt-panel)!important;color:var(--slt-text)!important;}
 /* Border-image paints inside the native box without changing its border width,

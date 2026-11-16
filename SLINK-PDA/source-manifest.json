@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-45dd6b185a2c2342609ec572bb7e32d43413360851319a3e9927190ce3baaa1e",
+  "revision": "sha256-e1f9c2ab16370d97302f10c1714c49a604a295f11a644d9bfc0eac7239799bc8",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -146,5 +146,5 @@
     }
   ],
   "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.257"
+  "clientVersion": "0.4.258"
 }
