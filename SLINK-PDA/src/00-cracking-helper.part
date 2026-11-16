@@ -38,7 +38,6 @@
       const value={exact,variants};cache.set(pattern,value);return value;
     };
   }
-  const route=()=>global.location.pathname==='/page.php'&&new URLSearchParams(global.location.search).get('sid')?.toLowerCase()==='crimes'&&/^#\/?cracking(?:[/?]|$)/i.test(global.location.hash);
   function readPattern(row){
     const slots=row.querySelectorAll('[class*="charSlot___"]:not([class*="charSlotDummy"]),[class^="charSlot"]:not([class*="charSlotDummy"])');
     if(slots.length<MIN||slots.length>MAX)return '';
@@ -53,13 +52,13 @@
   }
   function connect({eligible,loadShard,contribution}){
     const doc=global.document;
-    let enabled=false,disposed=false,root=null,watch=null,discoverWatch=null,frame=null,matcher=null,style=null;
+    let enabled=false,disposed=false,root=null,watch=null,frame=null,matcher=null,style=null;
     const panels=new Map();
     const pending=new Map(),confirmed=new Set();
     const queues=new Map();let uploading=false;
     const rowSelector='[class*="crimeOptionWrapper___"],[class^="crimeOptionWrapper"]';
     const shards=new Map();
-    const active=()=>enabled&&!disposed&&!doc.hidden&&route()&&eligible();
+    const active=()=>enabled&&!disposed&&!doc.hidden&&global.SLINK_CRIME_LIFECYCLE.currentCrime()==='cracking'&&eligible();
     const canShare=()=>active()&&doc.hasFocus();
     async function bounded(operation){
       let timer;
@@ -68,7 +67,7 @@
     }
     function clear(){
       if(frame!==null)global.cancelAnimationFrame(frame);frame=null;
-      watch?.disconnect();watch=null;discoverWatch?.disconnect();discoverWatch=null;root=null;
+      watch?.disconnect();watch=null;root=null;
       for(const panel of panels.values())panel.remove();panels.clear();style?.remove();style=null;
       pending.clear();
     }
@@ -181,10 +180,9 @@
     }
     function schedule(){if(frame===null&&active())frame=global.requestAnimationFrame(scan);}
     const crimeSelector='[class*="currentCrime___"],[class^="currentCrime"]';
-    function discover(){
-      const next=doc.querySelector(crimeSelector);
+    function discover(next){
       if(next===root)return;
-      watch?.disconnect();pending.clear();for(const panel of panels.values())panel.remove();panels.clear();root=next;
+      watch?.disconnect();watch=null;pending.clear();for(const panel of panels.values())panel.remove();panels.clear();root=next;
       if(!root)return;
       watch=new global.MutationObserver(records=>{
         if(records.some(record=>!(record.target.nodeType===1?record.target:record.target.parentElement)?.closest('[data-slink-cracking-advice]')&&
@@ -192,19 +190,14 @@
       });
       watch.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','aria-label','aria-disabled','disabled']});schedule();
     }
-    function sync(){
+    function sync(next){
       if(!active()){clear();return;}
       if(!style){style=el('style','[data-slink-cracking-advice]{flex:0 0 100%;min-width:0;position:static;padding:.3em .55em;border-inline-start:2px solid var(--slt-accent,#779ac2);background:var(--slt-surface,#242a34);color:var(--slt-text,#f2f5ff);overflow-wrap:anywhere;font-size:.85em;pointer-events:none}[data-slink-cracking-advice] button{pointer-events:auto;display:inline-block;color:inherit;background:var(--slt-control,#313b4a);border:1px solid currentColor;border-radius:4px;padding:.2em .45em}');doc.head.append(style);}
-      if(!discoverWatch&&doc.body){
-        discoverWatch=new global.MutationObserver(records=>{if(!root?.isConnected||records.some(r=>[...r.addedNodes].some(n=>n.matches?.(crimeSelector)||n.querySelector?.(crimeSelector))))discover();});
-        discoverWatch.observe(doc.querySelector('#mainContainer')||doc.body,{subtree:true,childList:true});
-      }
-      discover();schedule();
+      discover(next);schedule();
     }
-    const events=[[global,'hashchange',sync],[global,'popstate',sync],[global,'pageshow',sync],[global,'pagehide',clear],[global,'focus',sync],[global,'blur',sync],[doc,'visibilitychange',sync]];
-    for(const [node,event,handler] of events)node.addEventListener(event,handler);
+    const lifecycle=global.SLINK_CRIME_LIFECYCLE.connect('cracking', { eligible:active, sync, stop:clear, selector:crimeSelector });
     doc.addEventListener('click',recordAttempt,true);
-    return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){disposed=true;clear();confirmed.clear();doc.removeEventListener('click',recordAttempt,true);for(const [node,event,handler] of events)node.removeEventListener(event,handler);}};
+    return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){disposed=true;confirmed.clear();doc.removeEventListener('click',recordAttempt,true);lifecycle.dispose();}};
   }
   global.SLINK_CRACKING=Object.freeze({createMatcher,readPattern,crackState,connect});
   const S=global.SLINK_EXTENSION;

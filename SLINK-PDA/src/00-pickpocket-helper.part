@@ -28,9 +28,8 @@
     const bound=(v,f)=>v===''||v==null||!Number.isFinite(Number(v))?f:Math.min(350,Math.max(1,Math.trunc(Number(v))));
     const a=bound(min,1),b=bound(max,350);return [Math.min(a,b),Math.max(a,b)];
   };
-  const rootSelector='.pickpocketing-root,.pickpocket-root,.crimes-app .crime-root';
+  const rootSelector=['.pickpocketing-root,.pickpocket-root','.crimes-app .crime-root'];
   const titles='[class*="titleAndProps"]',wrappers='[class*="crimeOptionWrapper___"],.crime-option';
-  const route=()=>global.location.pathname==='/page.php'&&new URLSearchParams(global.location.search).get('sid')?.toLowerCase()==='crimes'&&/^#\/?pickpocket(?:ing)?(?:[/?]|$)/i.test(global.location.hash);
   function readSkill(root){
     const panel=root.closest('.crimes-app')||root;
     for(const el of panel.querySelectorAll('#crime-stats-panel,[id*="crime-stats" i],[class*="crimeStats" i],[aria-label*="crime skill" i]')){
@@ -41,13 +40,13 @@
   }
   function connect({eligible}){
     const doc=global.document,key='slink.pickpocket.range.v1';
-    let root=null,tool=null,style=null,observer=null,discovery=null,frame=null,stopped=false,enabled=false;
+    let root=null,tool=null,style=null,observer=null,frame=null,stopped=false,enabled=false;
     let known=new Map(),limits=[1,350];
     try{const saved=JSON.parse(global.localStorage.getItem(key));if(Array.isArray(saved))limits=range(...saved);}catch{}
-    const active=()=>!stopped&&enabled&&!doc.hidden&&route()&&eligible();
+    const active=()=>!stopped&&enabled&&!doc.hidden&&global.SLINK_CRIME_LIFECYCLE.currentCrime()==='pickpocket'&&eligible();
     const add=(tag,txt)=>{const el=doc.createElement(tag);if(txt)el.textContent=txt;return el;};
     const clean=()=>{for(const [card,badge] of known){card.removeAttribute('data-slink-pickpocket-filter');badge.remove();}known.clear();};
-    const remove=()=>{if(frame!==null)global.cancelAnimationFrame(frame);frame=null;observer?.disconnect();observer=null;discovery?.disconnect();discovery=null;clean();tool?.remove();tool=null;style?.remove();style=null;root=null;};
+    const remove=()=>{if(frame!==null)global.cancelAnimationFrame(frame);frame=null;observer?.disconnect();observer=null;clean();tool?.remove();tool=null;style?.remove();style=null;root=null;};
     function controls(){
       if(tool?.isConnected)return;
       tool=add('div');tool.dataset.slinkPickpocketTools='';globalThis.SLINK_TORN_COMPONENTS?.card(tool);tool.setAttribute('aria-label','SLINK Pickpocket filters');
@@ -84,16 +83,15 @@
       const text=visible+' of '+known.size+' loaded targets';if(count.textContent!==text)count.textContent=text;
     }
     function schedule(){if(frame===null&&active())frame=global.requestAnimationFrame(render);}
-    function discover(){
-      const next=doc.querySelector(rootSelector);
+    function discover(next){
       if(next===root)return;
-      observer?.disconnect();clean();tool?.remove();tool=null;root=next;
+      observer?.disconnect();observer=null;clean();tool?.remove();tool=null;root=next;
       if(!root)return;
       observer=new global.MutationObserver(records=>{if(records.some(r=>!(r.target.nodeType===1?r.target:r.target.parentElement)?.closest('[data-slink-pickpocket-badge]')&&!(r.type==='childList'&&[...r.addedNodes,...r.removedNodes].every(n=>n.matches?.('[data-slink-pickpocket-badge]')))))schedule();});
       observer.observe(root.closest('.crimes-app')||root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['aria-label']});
       schedule();
     }
-    function sync(){
+    function sync(next){
       if(!active()){remove();return;}
       if(!style){
         style=add('style');style.textContent=`
@@ -104,15 +102,10 @@
 [data-slink-pickpocket-filter=hide]{display:none!important}[data-slink-pickpocket-filter=mask],[data-slink-pickpocket-filter=mask] *{visibility:hidden!important;pointer-events:none!important}
 `;doc.head.append(style);
       }
-      if(!discovery&&doc.body){
-        discovery=new global.MutationObserver(records=>{if(!root?.isConnected||records.some(r=>[...r.addedNodes].some(n=>n.matches?.(rootSelector)||n.querySelector?.(rootSelector))))discover();});
-        discovery.observe(doc.querySelector('#mainContainer')||doc.body,{subtree:true,childList:true});
-      }
-      discover();schedule();
+      discover(next);schedule();
     }
-    const events=[[global,'hashchange',sync],[global,'popstate',sync],[global,'pageshow',sync],[global,'pagehide',remove],[global,'focus',sync],[global,'blur',sync],[doc,'visibilitychange',sync]];
-    for(const [node,event,handler] of events)node.addEventListener(event,handler);
-    return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){stopped=true;remove();for(const [node,event,handler] of events)node.removeEventListener(event,handler);}};
+    const lifecycle=global.SLINK_CRIME_LIFECYCLE.connect('pickpocket', { eligible:active, sync, stop:remove, selector:rootSelector });
+    return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){stopped=true;lifecycle.dispose();}};
   }
   global.SLINK_PICKPOCKET=Object.freeze({advice,range,connect});
   const S=global.SLINK_EXTENSION;

@@ -6,7 +6,6 @@ const liveBar='[class*="persuasionBar___"]:not([aria-hidden="true"]):not([class*
 const rangeSelector='[class*="pipRange___"]';
 const mark='data-slink-scamming';
 const rowSelector='.virtual-item,[class*="virtualItem___"]';
-const route=()=>g.location.pathname==='/page.php'&&new URLSearchParams(g.location.search).get('sid')==='crimes'&&/^#\/?scamming(?:[/?]|$)/i.test(g.location.hash);
 function numberClass(node,prefix){
  const match=(node?.getAttribute('class')||'').match(new RegExp('(?:^|\\s)'+prefix+'-(\\d+)___'));
  return match?Number(match[1]):null;
@@ -35,7 +34,7 @@ function describe(bar,row){
 }
 function connect({eligible}){
  const d=g.document,panels=new Map();let enabled=false,observer=null,frame=0;
- const active=()=>enabled&&!d.hidden&&route()&&eligible();
+ const active=()=>enabled&&!d.hidden&&g.SLINK_CRIME_LIFECYCLE.currentCrime()==='scamming'&&eligible();
  function stop(){observer?.disconnect();observer=null;if(frame)g.cancelAnimationFrame(frame);frame=0;for(const panel of panels.values())panel.remove();panels.clear();}
  function render(){
   frame=0;if(!active()){stop();return;}
@@ -66,9 +65,8 @@ function connect({eligible}){
   }
   schedule();
  }
- const events=[[g,'hashchange',sync],[g,'popstate',sync],[g,'focus',sync],[g,'pageshow',sync],[g,'pagehide',stop],[d,'visibilitychange',sync]];
- for(const [node,event,fn] of events)node.addEventListener(event,fn);
- return {sync,setEnabled(value){enabled=value===true;sync();},dispose(){enabled=false;stop();for(const [node,event,fn] of events)node.removeEventListener(event,fn);}};
+ const lifecycle=g.SLINK_CRIME_LIFECYCLE.connect('scamming', { eligible:active, sync, stop });
+ return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){enabled=false;lifecycle.dispose();}};
 }
 if(typeof module==='object'&&module.exports){module.exports={describe,span};return;}
 g.SLINK_SCAMMING=Object.freeze({connect});

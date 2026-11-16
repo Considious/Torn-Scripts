@@ -431,8 +431,7 @@
     const doc=global.document;
     const stockCache={};
     let enabled=false,disposed=false,observer=null,stopCards=null,mountedRoot=null,frame=null;
-    const active=()=>!disposed&&enabled&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus())&&
-      new URL(global.location.href).searchParams.get('sid')==='crimes'&&/^#\/?arson(?:[/?]|$)/i.test(global.location.hash);
+    const active=()=>!disposed&&enabled&&eligible()&&!doc.hidden&&(focused?focused():doc.hasFocus())&&global.SLINK_CRIME_LIFECYCLE.currentCrime()==='arson';
     function clear(){
       observer?.disconnect();observer=null;stopCards?.();stopCards=null;mountedRoot=null;
       if(frame!==null)global.cancelAnimationFrame(frame);frame=null;
@@ -445,8 +444,8 @@
       stopCards=mount({root,enabled:true,eligible:active,focused,journal,stockCache});
     }
     function findRoot(){
-      const canonical=doc.querySelector('.arson-root');
-      if(canonical?.getClientRects().length&&!canonical.closest('[hidden]'))return canonical;
+      const canonical=global.SLINK_CRIME_LIFECYCLE.visibleRoot('.arson-root');
+      if(canonical)return canonical;
       const row=[...doc.querySelectorAll(rowSelector)].find(element=>element.getClientRects().length&&!element.closest('[hidden]')&&readJob(element));
       return row?.parentElement;
     }
@@ -466,9 +465,8 @@
         observer.observe(doc.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
       }
     }
-    const events=[[global,'focus',sync],[global,'blur',focused?sync:clear],[global,'hashchange',sync],[global,'popstate',sync],[global,'pageshow',sync],[global,'pagehide',clear],[doc,'visibilitychange',sync]];
-    for(const [target,event,handler] of events)target.addEventListener(event,handler);
-    return {setEnabled(value){enabled=value===true;sync();},sync,dispose(){disposed=true;clear();for(const [target,event,handler] of events)target.removeEventListener(event,handler);}};
+    const lifecycle=global.SLINK_CRIME_LIFECYCLE.connect('arson', { eligible:active, sync, stop:clear });
+    return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){disposed=true;lifecycle.dispose();}};
   }
   const api=Object.freeze({readJob,readPicker,readRequests,parseDamageRequirement,damagePosition,guidance,mount,connect,captureArson,recipeJournal});
   if(global.SLINK_EXTENSION?.define)global.SLINK_EXTENSION.define('core','arsonPage',api);

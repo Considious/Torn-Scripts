@@ -8,14 +8,13 @@ const ratings=new Map(Object.entries({
   'birth certificate':'High risk','travel visa':'High risk','id badge':'High risk','bank check':'High risk','passport':'High risk'
 }));
 const rate=name=>ratings.get(String(name??'').trim().toLowerCase())||'Unrated';
-const route=()=>g.location.pathname==='/page.php'&&new URLSearchParams(g.location.search).get('sid')==='crimes'&&/^#\/?forgery(?:[/?]|$)/i.test(g.location.hash);
 const picker='.crime-option:has(.crime-image img[srcset*="/11-forgery/forgery_new_project"])';
 const option='[data-testid="dropdown-list"] [role="option"]';
 const mark='data-slink-forgery-risk';
 const css='['+mark+']::after{content:attr('+mark+');display:inline-block;margin-inline-start:.35em;font-size:10px;font-weight:600;white-space:normal;border-radius:4px;padding:1px 4px;color:var(--slt-text,CanvasText);background:var(--slt-surface,Canvas);border:1px solid var(--slt-border,currentColor);pointer-events:none}';
 function connect({eligible}){
  const d=g.document;let enabled=false,observer=null,frame=0,style=null,marked=new Set();
- const active=()=>enabled&&!d.hidden&&route()&&eligible();
+ const active=()=>enabled&&!d.hidden&&g.SLINK_CRIME_LIFECYCLE.currentCrime()==='forgery'&&eligible();
  function stop(){
   observer?.disconnect();observer=null;
   if(frame)g.cancelAnimationFrame(frame);frame=0;
@@ -47,9 +46,8 @@ function connect({eligible}){
   }
   schedule();
  }
- const events=[[g,'hashchange',sync],[g,'popstate',sync],[g,'focus',sync],[g,'pageshow',sync],[g,'pagehide',stop],[d,'visibilitychange',sync]];
- for(const [node,event,fn] of events)node.addEventListener(event,fn);
- return {sync,setEnabled(value){enabled=value===true;sync();},dispose(){enabled=false;stop();for(const [node,event,fn] of events)node.removeEventListener(event,fn);}};
+ const lifecycle=g.SLINK_CRIME_LIFECYCLE.connect('forgery', { eligible:active, sync, stop });
+ return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){enabled=false;lifecycle.dispose();}};
 }
 if(typeof module==='object'&&module.exports){module.exports={rate};return;}
 g.SLINK_FORGERY=Object.freeze({rate,connect});

@@ -1,7 +1,6 @@
 // Read-only Hustling guidance. Only uses values Torn exposes in the current page.
 (function(g){
 'use strict';
-const route=()=>g.location.pathname==='/page.php'&&new URLSearchParams(g.location.search).get('sid')==='crimes'&&/^#\/?hustling(?:[/?]|$)/i.test(g.location.hash);
 const audienceSelector='[class*="audienceSection___"]';
 const gameSelector='.crime-option:has([class*="techniqueBar___"])';
 const panelSelector='[data-slink-hustling]';
@@ -20,7 +19,7 @@ function describe(members,games){
 }
 function connect({eligible}){
  const d=g.document;let enabled=false,observer=null,frame=0,panel=null;
- const active=()=>enabled&&!d.hidden&&route()&&eligible();
+ const active=()=>enabled&&!d.hidden&&g.SLINK_CRIME_LIFECYCLE.currentCrime()==='hustling'&&eligible();
  function stop(){observer?.disconnect();observer=null;if(frame)g.cancelAnimationFrame(frame);frame=0;panel?.remove();panel=null;}
  function render(){
   frame=0;if(!active()){stop();return;}
@@ -55,9 +54,8 @@ function connect({eligible}){
   }
   schedule();
  }
- const events=[[g,'hashchange',sync],[g,'popstate',sync],[g,'focus',sync],[g,'pageshow',sync],[g,'pagehide',stop],[d,'visibilitychange',sync]];
- for(const [node,event,fn] of events)node.addEventListener(event,fn);
- return {sync,setEnabled(value){enabled=value===true;sync();},dispose(){enabled=false;stop();for(const [node,event,fn] of events)node.removeEventListener(event,fn);}};
+ const lifecycle=g.SLINK_CRIME_LIFECYCLE.connect('hustling', { eligible:active, sync, stop });
+ return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){enabled=false;lifecycle.dispose();}};
 }
 if(typeof module==='object'&&module.exports){module.exports={describe,percent};return;}
 g.SLINK_HUSTLING=Object.freeze({connect});

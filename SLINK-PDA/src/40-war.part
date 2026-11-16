@@ -825,7 +825,36 @@ return !end ? '24-hour timer: not started' : remaining ? `24-hour timer: ${durat
 const PDA_CRIME_ALERT_IDS=new Set(PDA_ALERT_TYPES.filter(row=>row.group==='Crime uniques').map(row=>row.id));
 const PDA_CRIME_GUIDES=Object.freeze({"arson":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16510947\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Arson Guide</a>","pickpocket":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16358739\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Pickpocketing Guide</a>","cracking":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16373016\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Cracking Guide</a>","forgery":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16388086\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Forgery Guide</a>","hustling":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16363421\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Hustling Guide</a>","scamming":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16418415\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Scamming Guide</a>","disposal":"<a href=\"https://www.torn.com/forums.php?p=threads&amp;f=61&amp;t=16367936\" target=\"_blank\" rel=\"noopener noreferrer\">Ultimate Disposal Guide</a>"});
 const PDA_CRIME_TABS=Object.freeze({arson:'Arson',pickpocket:'Pickpocket',cracking:'Cracking',disposal:'Disposal',forgery:'Forgery',hustling:'Hustling',scamming:'Scamming',uniques:'Uniques'});
-let activePdaCrime='arson';
+function createCrimeTabState(tabs, browser) {
+  const key = 'slink.crimes.selected-tab.v1';
+  const valid = id => typeof id === 'string' && Object.hasOwn(tabs, id);
+  let selected;
+  try {
+    const saved = browser.sessionStorage?.getItem(key);
+    if (valid(saved)) selected = saved;
+  } catch {}
+
+  function current() {
+    if (selected) return selected;
+    const { pathname, search, hash } = browser.location || {};
+    if (pathname === '/page.php' && new URLSearchParams(search).get('sid') === 'crimes') {
+      const route = hash?.match(/^#\/?([^/?]+)/)?.[1]?.toLowerCase();
+      const id = route === 'pickpocketing' ? 'pickpocket' : route;
+      if (valid(id)) return id;
+    }
+    return 'arson';
+  }
+
+  function select(id) {
+    if (!valid(id)) return false;
+    selected = id;
+    try { browser.sessionStorage?.setItem(key, id); } catch {}
+    return true;
+  }
+
+  return Object.freeze({ current, select });
+}
+const pdaCrimeTab = createCrimeTabState(PDA_CRIME_TABS, global);
 function isPdaCrimeAlert(id){return PDA_CRIME_ALERT_IDS.has(id);}
 function alertSettingsHtml(crimes=false) {
 const definitions=PDA_ALERT_TYPES.filter(row=>crimes?isPdaCrimeAlert(row.id):!isPdaCrimeAlert(row.id));
@@ -857,6 +886,7 @@ const current = moduleState.alerts;
 const allAlerts = permitted ? alertRows(current.data) : [...stakeoutAlerts, ...abroadAlerts, ...companyAlerts, ...pluginAlerts];
 updateAlertIndicator(allAlerts.length,allAlerts);
 if (!shouldRenderPdaModule(panel)) return;
+const activePdaCrime = crimes ? pdaCrimeTab.current() : null;
 const alerts=allAlerts.flatMap(alert=>crimes?(activePdaCrime==='uniques'&&isPdaCrimeAlert(alert.id)?[alert]:[]):!isPdaCrimeAlert(alert.id)?[alert]:alert.id==='clusterRing'&&alert.clusterRingAvailable?[{...alert,title:'Cluster Ring opportunity',detail:'Current Jewelry Store security matches the Cluster Ring unique.'}]:[]);
 const cityBought = finite(current.data?.cityBought);
 const cityHidden = Number(dataState.settings.alerts.cityDoneDay) === utcDay();

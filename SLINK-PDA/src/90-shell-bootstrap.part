@@ -1143,7 +1143,7 @@ renderAllModules();
 }
 if(action==='select-crime-tab'){
 const id=event.target.closest('[data-crime-tab]')?.dataset.crimeTab;
-if(Object.hasOwn(PDA_CRIME_TABS,id)){activePdaCrime=id;renderAlerts();}
+if(pdaCrimeTab.select(id))renderAlerts();
 }
 if (action === 'alerts-enable-all' || action === 'alerts-disable-all') {
 const enabled = action === 'alerts-enable-all';
