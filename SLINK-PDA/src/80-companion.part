@@ -15,7 +15,7 @@
     const host=doc.createElement('div');
     const overlayStyle='position:fixed;inset:0;pointer-events:none;z-index:9500;overflow:hidden';
     host.style.cssText=overlayStyle;
-    let dock=null, preferred=null;
+    let dock=null, preferred=null, width=105, height=96, walkedLast=false;
     host.hidden=true;
     const shadow=host.attachShadow({mode:'open'});
     shadow.innerHTML='<style>:host([hidden]){display:none!important}#position{position:absolute;left:0;top:0;width:105px;height:96px}#jack{display:block;position:absolute;inset:0;padding:0;border:0;background:none;cursor:grab;touch-action:none;pointer-events:auto;color:white}#jack[hidden],#speech[hidden]{display:none}canvas{width:100%;height:100%;pointer-events:none}#speech{position:absolute;width:min(165px,43vw);border:1px solid var(--slt-border,#ec974b);background:var(--slt-surface,#211620);color:var(--slt-text,#fff2e1);border-radius:10px;padding:8px;font:13px/1.3 system-ui;pointer-events:auto;cursor:pointer;box-shadow:0 3px 12px #0009}</style><div id="position"><button type="button" id="jack"><canvas width="220" height="200"></canvas></button><button type="button" id="speech" hidden></button></div>';
@@ -23,7 +23,7 @@
     doc.body.append(host);
     const panel=doc.createElement('details');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
     
-    panel.innerHTML='<summary>Companion settings</summary><div style="display:grid;gap:5px;padding:5px 0"><label>Companion <select data-pref="id"></select></label><label>Movement <select data-pref="movement"><option value="wander">Wander</option><option value="stay">Stay where I put him</option></select></label><label>Companion alerts <select data-pref="alerts"><option value="all">All</option><option value="important">Important only</option><option value="minimal">Minimal</option><option value="silent">Silent</option></select></label><label><input type="checkbox" data-pref="chatter"> Idle chatter</label><label><input type="checkbox" data-pref="reduced"> Reduced motion</label></div>';
+    panel.innerHTML='<summary>Companion settings</summary><div style="display:grid;gap:5px;padding:5px 0"><label>Companion <select data-pref="id"></select></label><label>Movement <select data-pref="movement"><option value="wander">Wander</option><option value="stay">Stay where I put him</option></select></label><label>Size <select data-pref="size"><option value="small">Small</option><option value="normal">Normal</option><option value="large">Large</option></select></label><label>Companion alerts <select data-pref="alerts"><option value="all">All</option><option value="important">Important only</option><option value="minimal">Minimal</option><option value="silent">Silent</option></select></label><label><input type="checkbox" data-pref="chatter"> Idle chatter</label><label><input type="checkbox" data-pref="reduced"> Reduced motion</label></div>';
     panel.classList.add('slink-companion-settings');
     const layoutStyle=doc.createElement('style');
     layoutStyle.textContent=`
@@ -42,7 +42,17 @@
     const reduced=()=>Boolean(settings.reduced)||motion.matches;
     const visible=()=>!doc.hidden&&focused;
     const bounds=()=>{const v=global.visualViewport;const l=v?.offsetLeft||0,t=v?.offsetTop||0,w=v?.width||global.innerWidth,h=v?.height||global.innerHeight;return {l,t,w,h};};
-    function fit(a,b) {const {l,t,w,h}=bounds();return [clamp(a,l,l+Math.max(0,w-105)),clamp(b,t,t+Math.max(0,h-96))];}
+    function updateSize(){
+      const scale=settings.size==='small'?.8:settings.size==='large'?1.3:1;
+      const {w,h}=bounds();
+      const nextWidth=Math.min(Math.round(105*scale),Math.max(1,w),Math.max(1,Math.floor(h*105/96)));
+      if(nextWidth===width)return;
+      width=nextWidth;height=Math.round(width*96/105);
+      box.style.width=width+'px';box.style.height=height+'px';
+      stop();
+      if(!dock)place(x,y,false);
+    }
+    function fit(a,b) {const {l,t,w,h}=bounds();return [clamp(a,l,l+Math.max(0,w-width)),clamp(b,t,t+Math.max(0,h-height))];}
     function safeRect(a,b,w,h){
       for(const element of avoidElements()){
         if(!element?.isConnected||element.hidden)continue;
@@ -58,18 +68,18 @@
     }
     function place(a,b,allowHide=true){
       [x,y]=fit(a,b);box.style.transform='translate3d('+x+'px,'+y+'px,0)';
-      jack.hidden=allowHide&&!safeRect(x,y,105,96);
+      jack.hidden=allowHide&&!safeRect(x,y,width,height);
     }
     function spots(){
       const {l,t,w,h}=bounds();
-      return [.2,.39,.61,.77].flatMap(height=>[l+4,l+w-109].map(side=>fit(side,t+(h-96)*height))).filter(([a,b])=>safeRect(a,b,105,96));
+      return [.2,.39,.61,.77].flatMap(fraction=>[l+4,l+w-width-4].map(side=>fit(side,t+(h-height)*fraction))).filter(([a,b])=>safeRect(a,b,width,height));
     }
     function keepClear(){
       if(preferred){
         const position=fit(...preferred);
-        if(safeRect(...position,105,96)){place(...position,false);preferred=null;return;}
+        if(safeRect(...position,width,height)){place(...position,false);preferred=null;return;}
       }
-      if(safeRect(x,y,105,96)){jack.hidden=false;return;}
+      if(safeRect(x,y,width,height)){jack.hidden=false;return;}
       preferred??=[x,y];
       const [px,py]=preferred;
       const spot=spots().sort((a,b)=>Math.hypot(a[0]-px,a[1]-py)-Math.hypot(b[0]-px,b[1]-py))[0];
@@ -92,7 +102,7 @@
     function restorePosition(){
       const p=settings.positions?.[entry?.id],{l,t,w,h}=bounds();
       if(p?.manual&&Number.isFinite(p.x)&&Number.isFinite(p.y)){
-        place(l+p.x*Math.max(0,w-105),t+p.y*Math.max(0,h-96));keepClear();return;
+        place(l+p.x*Math.max(0,w-width),t+p.y*Math.max(0,h-height));keepClear();return;
       }
       const spot=spots().at(-1);if(spot)place(...spot);else place(l,t);
     }
@@ -114,28 +124,34 @@
     function idle(){
       global.clearTimeout(timer);
       timer=0;
-      if(!entry||!visible()||dock||preferred||jack.hidden)return;
+      if(!entry||!visible()||dock||jack.hidden||frame)return;
       timer=global.setTimeout(()=>{
         timer=0;
         if(!entry||!visible()||dragging||mouseOver||!speech.hidden||jack.hidden){idle();return;}
         if(settings.chatter&&Date.now()-lastTalk>180000){say('idle');return;}
         if(reduced()){paint(0,0,18);idle();return;}
-        if(settings.movement==='stay'||settings.positions?.[entry.id]?.manual){animate('sleep');return;}
-        if(Math.random()<.45){animate('sleep');return;}
-        const {l,w}=bounds(), left=x<l+w/2, edge=left?l:l+w-105;
-        if(Math.abs(x-edge)<12&&Math.random()<.5){facing=left?1:-1;animate('peek');return;}
-        const target=fit(x+(left?1:-1)*Math.min(150,w*.4),y);
-        const direction=target[0]>=x?1:-1;
-        if(Math.abs(target[0]-x)>15&&[.25,.5,.75,1].every(f=>safeRect(x+(target[0]-x)*f,y,105,96))){
-          facing=direction;animate('walk',target[0]);
-        }else animate('sleep');
-      },18000+Math.random()*24000);
+        const movement=settings.movement||(settings.positions?.[entry.id]?.manual?'stay':'wander');
+        if(movement==='stay'){animate('sleep');return;}
+        const {l,w}=bounds();
+        const inward=x<l+(w-width)/2?1:-1;
+        if(!walkedLast)for(const direction of [inward,-inward]){
+          for(const distance of [120,64,32]){
+            const [target]=fit(x+direction*distance,y);
+            if(Math.abs(target-x)<18||![.25,.5,.75,1].every(f=>safeRect(x+(target-x)*f,y,width,height)))continue;
+            facing=direction;walkedLast=true;animate('walk',target);return;
+          }
+        }
+        walkedLast=false;
+        const edge=inward===1?l:l+w-width;
+        if(Math.abs(x-edge)<12&&Math.random()<.5){facing=inward;animate('peek');return;}
+        animate('sleep');
+      },8000+Math.random()*6000);
     }
-    function stop(){global.cancelAnimationFrame(frame);frame=0;state='idle';box.style.transform=dock?'scale(.46)':'translate3d('+x+'px,'+y+'px,0)';}
+    function stop(){global.cancelAnimationFrame(frame);frame=0;state='idle';box.style.transform=dock?'scale('+(.46*105/width)+')':'translate3d('+x+'px,'+y+'px,0)';}
     function animate(kind,destination=x){
       stop();state=kind;started=global.performance.now();
       const from=x,steps=Math.max(1,Math.ceil(Math.abs(destination-from)/20));
-      const duration={walk:steps*410,peek:1950,sleep:2450,alert:730,ignored:2500}[kind]||700;
+      const duration={walk:steps*410,peek:1950,sleep:3000,alert:730,ignored:2500}[kind]||700;
       if(reduced()){paint(0,kind==='alert'?-8:0,kind==='ignored'||kind==='sleep'?28:0,kind==='alert');return;}
       const tick=now=>{
         if(!visible()||dragging||mouseOver||(kind==='walk'||kind==='peek')&&!speech.hidden){stop();paint();idle();return;}
@@ -143,17 +159,22 @@
         let reach=0,dy=0,squash=0,edge=0,tilt=0;
         if(kind==='walk'){
           const step=p*steps,k=step%1,front=smooth(k/.58),rear=smooth((k-.34)/.66);
-          x=from+(destination-from)*(Math.floor(step)+rear)/steps;
+          const nextX=from+(destination-from)*(Math.floor(step)+rear)/steps;
+          if(!safeRect(nextX,y,width,height)){stop();paint();idle();return;}
+          x=nextX;
           reach=(front-rear)*32;dy=-Math.sin(Math.PI*k)*5;
         }else if(kind==='alert'){dy=-13*Math.sin(p*Math.PI)*Math.exp(-p*.9);}
-        else if(kind==='sleep'){squash=45*smooth(p*4);tilt=.24*smooth(p*4);}
+        else if(kind==='sleep'){
+          const crouch=smooth(Math.min(p*2.5,(1-p)*3));
+          squash=45*crouch;tilt=.24*crouch;
+        }
         else if(kind==='ignored'){squash=t<1.4?36*smooth(t/.24):36*Math.cos((t-1.4)*17)*Math.exp(-(t-1.4)*6);}
         else if(kind==='peek'){
-          edge=-facing*(t<.42?91*smooth(t/.42):t<.91?91-39*smooth((t-.58)/.33):52*(1-smooth((t-1.6)/.35)));
+          edge=-facing*(width/105)*(t<.42?91*smooth(t/.42):t<.91?91-39*smooth((t-.58)/.33):52*(1-smooth((t-1.6)/.35)));
         }
         box.style.transform='translate3d('+(x+edge)+'px,'+y+'px,0)';
         paint(reach,dy,squash,kind==='alert'&&p<.85,tilt);
-        if(p<1)frame=global.requestAnimationFrame(tick);else{stop();if(kind!=='sleep')paint();idle();}
+        if(p<1)frame=global.requestAnimationFrame(tick);else{stop();paint();idle();}
       };
       frame=global.requestAnimationFrame(tick);
     }
@@ -163,7 +184,7 @@
       const pool=(entry.phrases[category]||entry.phrases.general||[]).filter(line=>line!==lastLine);
       if(!pool.length)return false;
       const {l,t,w,h}=bounds(), bw=Math.min(165,w*.43), bh=64;
-      const candidates=[[x+92,y-16],[x-bw+10,y-16],[x+3,y-bh],[x+3,y+94]];
+      const candidates=[[x+width-13,y-16],[x-bw+10,y-16],[x+3,y-bh],[x+3,y+height-2]];
       const spot=candidates.map(([a,b])=>[clamp(a,l,l+w-bw),clamp(b,t,t+h-bh)]).find(([a,b])=>safeRect(a,b,bw,bh));
       if(!spot)return false;
       lastLine=pool[Math.floor(Math.random()*pool.length)];lastTalk=Date.now();
@@ -187,6 +208,8 @@
       field('id').value=next?.id||'off';
       field('movement').value=settings.movement||(settings.positions?.[next?.id]?.manual?'stay':'wander');field('alerts').value=settings.alerts||'important';
       field('chatter').checked=Boolean(settings.chatter);field('reduced').checked=Boolean(settings.reduced)||motion.matches;
+      field('size').value=['small','normal','large'].includes(settings.size)?settings.size:'normal';
+      updateSize();
       if(entry===next&&initialized)return;
       stop();clearSpeech();global.clearTimeout(timer);timer=0;pending=null;preferred=null;initialized=true;entry=next;host.hidden=true;moveToDock(null);
       if(!entry)return;
@@ -227,7 +250,10 @@
       settings[name]=event.target.type==='checkbox'?event.target.checked:event.target.value;
       if(name==='movement'&&settings.movement==='wander'&&settings.positions?.[entry?.id])settings.positions[entry.id].manual=false;
       if(name==='alerts'&&settings.alerts==='silent'){clearSpeech();pending=null;}
-      write();sync();if(name==='reduced'){stop();paint();}idle();
+      write();sync();
+      if(['reduced','movement','size'].includes(name)){stop();paint();recheck();}
+      if(name==='movement')walkedLast=false;
+      idle();
     },{signal});
     jack.addEventListener('pointerdown',event=>{
       if(event.button!==0||!entry||dock)return;
@@ -245,14 +271,14 @@
       if(moved&&entry){
         preferred=null;
         const {l,t,w,h}=bounds();
-        if(!safeRect(x,y,105,96)){
+        if(!safeRect(x,y,width,height)){
           const fallback=spots().sort((a,b)=>Math.hypot(a[0]-x,a[1]-y)-Math.hypot(b[0]-x,b[1]-y))[0];
           if(fallback)place(...fallback);
           else place(dragStart.x,dragStart.y);
         }
         settings.movement='stay';field('movement').value='stay';
         settings.positions??={};
-        settings.positions[entry.id]={x:(x-l)/Math.max(1,w-105),y:(y-t)/Math.max(1,h-96),manual:true};
+        settings.positions[entry.id]={x:(x-l)/Math.max(1,w-width),y:(y-t)/Math.max(1,h-height),manual:true};
         write();place(x,y);paint();
       }
       else if(event.type==='pointerup'){clearSpeech();pending=null;open();onVisibility();}
@@ -269,6 +295,7 @@
     global.addEventListener('blur',()=>{focused=false;onVisibility();},{signal});
     const onResize=()=>{
       if(!entry||host.hidden||!visible())return;
+      updateSize();
       if(!dock){stop();clearSpeech();place(x,y,false);}
       onVisibility();
     };
@@ -277,7 +304,7 @@
       if(!entry||host.hidden||!visible()||dragging||dock||safetyFrame)return;
       safetyFrame=global.requestAnimationFrame(()=>{
         safetyFrame=0;if(!entry||host.hidden||!visible()||dragging||dock)return;
-        if(preferred||jack.hidden||!safeRect(x,y,105,96)){stop();clearSpeech();keepClear();paint();}
+        if((preferred&&!frame)||jack.hidden||!safeRect(x,y,width,height)){stop();clearSpeech();keepClear();paint();}
         if(!speech.hidden&&!safeRect(x+parseFloat(speech.style.left),y+parseFloat(speech.style.top),speech.offsetWidth,speech.offsetHeight))clearSpeech();
         if(!timer&&!frame)idle();
       });
