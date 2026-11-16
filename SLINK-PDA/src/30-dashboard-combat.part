@@ -654,7 +654,7 @@ async function runMuggingContribution(force = false) {
 const now = Date.now();
 const settings = dataState.settings.mugging;
 const previous = dataState.caches.muggingContribution || {};
-if (!settings.enabled || !hasScope('slink.mugging') || !currentApiKey()) return previous;
+if (!settings.enabled || !hasScope('slink.mugging') || hasScope('admin.*') || !currentApiKey()) return previous;
 if (!force && now - Number(previous.at || 0) < MUGGING_CONTRIBUTION_INTERVAL_MS) return previous;
 if (muggingContributionBusy) return previous;
 muggingContributionBusy = true;
@@ -777,6 +777,17 @@ confidence:String(target?.confidence || '')
 })).filter(target => target.id)
 };
 }
+function muggingDeadline(controller, work) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('Find Targets timed out. Try again.'));
+      controller.abort();
+    }, 25_000);
+  });
+  return Promise.race([Promise.resolve().then(work), timeout]).finally(() => clearTimeout(timer));
+}
+
 async function refreshMugging(force = false, options = {}) {
 const settings = dataState.settings.mugging;
 const current = moduleState.mugging;
@@ -786,17 +797,22 @@ if (force) current.error = 'Enable Mugging on this PDA installation before reque
 renderMugging();
 return;
 }
-if (current.busy) return;
+if (current.busy || (options.background && hasScope('admin.*'))) return;
 current.busy = true;
 current.error = '';
 current.notice = '';
 if (options.touch !== false) touchMuggingActivity();
 renderMugging();
 try {
+const deadline=new AbortController(),signal=deadline.signal;
+await muggingDeadline(deadline,async()=>{
 const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats(force === true && options.background !== true);
+signal.throwIfAborted();
 const loadAssignments=()=>muggingRequest('/api/assignments/rough', {
 method:'POST',
+timeout:20_000,
 body:{
+assignment_mode:options.background?'background':'manual',
 user_battle_stats:userBattleStats,
 min_fair_fight:Number(settings.minFairFight) || 1,
 max_fair_fight:Number(settings.maxFairFight) || 3,
@@ -804,8 +820,11 @@ limit:Math.max(1, Math.min(100, Math.trunc(Number(settings.limit) || 50)))
 }
 });
 let response=await loadAssignments();
-const checked=await muggingFairFightChecks.check(response?.targets||[]).catch(()=>({queued:0}));
-if(checked.queued>0){const synced=await syncMuggingContributorReports(true);if(Number(synced.accepted)>0)response=await loadAssignments();}
+signal.throwIfAborted();
+const checked=options.background?await muggingFairFightChecks.check(response?.targets||[]).catch(()=>({queued:0})):{queued:0};
+signal.throwIfAborted();
+if(checked.queued>0){const synced=await syncMuggingContributorReports(true);if(!signal.aborted&&Number(synced.accepted)>0)response=await loadAssignments();}
+signal.throwIfAborted();
 dataState.caches.mugging = {
 ...response,
 userBattleStats,
@@ -815,7 +834,10 @@ updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
 };
 schedulePdaCacheSave();
 const cache = muggingCache();
+if(!options.background)void muggingFairFightChecks.check(response?.targets||[])
+ .then(result=>result.queued>0?syncMuggingContributorReports(true):null).catch(()=>null);
 current.notice = checked.keyMissing?'Save your FFScouter key in Access to check unknown targets.':checked.error||`Loaded ${cache.targets.length} assignments; unchecked targets are labeled separately.`;
+});
 } catch (error) {
 current.error = errorMessage(error);
 } finally {
