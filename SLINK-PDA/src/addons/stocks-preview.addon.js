@@ -21,7 +21,11 @@
   const money=n=>n==null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n);
   const element=(tag,text)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;return el;};
   const button=(label,fn)=>{const b=element('button',label);b.type='button';b.addEventListener('click',fn);return b;};
-  let hidden=new Set(), saving=false, showHidden=false, data=null, root=null, observer=null, pending=false, loading=false, status, summary, controls, picker, search, ownership;
+  let hidden=new Set(), saving=false, showHidden=false, data=null, root=null, observer=null, pending=false, loading=false, status, summary, controls, picker, search, ownership, panel, tradeTools;
+  const tradeBlocks=new Map();
+  const tradeSelector='[class*="stockDropdown__"] :is([class*="buyBlock__"],[class*="sellBlock__"])';
+  const quantitySelector='input.input-money:not([type="hidden"])';
+  const shown=node=>node?.isConnected&&!node.closest('[hidden],[aria-hidden="true"]')&&node.getClientRects().length>0;
   const visible=()=>document.visibilityState!=='hidden';
   const market=()=>new Map((data?.market||[]).map(s=>[s.id,s]));
   const holding=id=>data?.holdings?.find(h=>h.id===id);
@@ -48,20 +52,23 @@
     finally{saving=false;}
   }
   function attachTrade(block,sell){
-    if(block.querySelector('.slink-stock-amount'))return;
-    const native=block.querySelector('input.input-money:not([type="hidden"])');
-    if(!native)return;
+    if(tradeBlocks.has(block))return;
     const wrap=element('div');wrap.className='slink-stock-amount';globalThis.SLINK_TORN_COMPONENTS?.card(wrap);
     const label=element('label',sell?'Sell up to ($ net) ':'Buy budget ($) ');
     const input=element('input');input.inputMode='decimal';input.placeholder='e.g. 25,000';label.append(input);
     const result=element('div');result.setAttribute('role','status');
     const check=fill=>{
-      const fields=block.querySelectorAll('input.input-money:not([type="hidden"])');
+      const fields=Array.from(block.querySelectorAll(quantitySelector)).filter(shown);
       const current=fields.length===1?fields[0]:null;
       const owned=root.querySelectorAll('[class*="stockOwned__"][class*="active__"]');
       const row=owned.length===1?owned[0].closest(rowSelector):null;
       const id=rowId(row);
-      const priceText=row?.querySelector('[class*="stockPrice__"] [class*="price__"]')?.textContent;
+      const nativeRow=block.closest(rowSelector);
+      if(!root?.contains(block)||!shown(block)||!row||(nativeRow&&nativeRow!==row)){
+        result.textContent='Open the stock and its Torn trade form before filling shares.';
+        return;
+      }
+      const priceText=row.querySelector('[class*="stockPrice__"] [class*="price__"]')?.textContent;
       const price=model.amount(priceText||'');
       const balance=sell?(holding(id)?.shares??(data?0:null)):data?.cash;
       const q=model.quote(model.amount(input.value),price,sell,sell?balance:null);
@@ -79,7 +86,8 @@
     input.addEventListener('input',()=>check(false));
     input.addEventListener('keydown',e=>{if(e.key==='Enter')e.preventDefault();});
     wrap.append(label,button('Fill Torn shares',()=>check(true)),result);
-    block.append(wrap);
+    tradeTools.append(wrap);
+    tradeBlocks.set(block,wrap);
   }
   function scan(){
     pending=false;if(!root?.isConnected||!visible()||!onPage())return;
@@ -91,7 +99,8 @@
       const count=row.querySelector('p[class*="count___"]')?.textContent.trim();
       const owned=data?Number(holding(id)?.shares)>0:count==='None'?false:count&&/\d/.test(count)?model.amount(count)>0:null;
       const wanted=ownership.value;
-      row.classList.toggle('slink-stock-filtered',(hidden.has(id)&&!showHidden)||!name.includes(search.value.trim().toLowerCase())||(wanted==='owned'&&owned!==true)||(wanted==='unowned'&&owned!==false));
+      const filtered=(hidden.has(id)&&!showHidden)||!name.includes(search.value.trim().toLowerCase())||(wanted==='owned'&&owned!==true)||(wanted==='unowned'&&owned!==false);
+      if(row.classList.contains('slink-stock-filtered')!==filtered)row.classList.toggle('slink-stock-filtered',filtered);
       if(!id)continue;
       let label=row.querySelector('.slink-stock-detail');
       if(!label){
@@ -107,7 +116,14 @@
       const caption=hidden.has(id)?'Restore stock':'Hide stock';
       if(label.lastChild.textContent!==caption)label.lastChild.textContent=caption;
     }
-    for(const block of root.querySelectorAll('[class*="stockDropdown__"] [class*="buyBlock__"],[class*="stockDropdown__"] [class*="sellBlock__"]'))attachTrade(block,block.className.includes('sellBlock__'));
+    const blocks=new Set(Array.from(root.querySelectorAll(tradeSelector)).filter(block=>
+      shown(block)&&Array.from(block.querySelectorAll(quantitySelector)).some(shown)));
+    for(const [block,tools] of tradeBlocks)if(!blocks.has(block)){
+      tools.remove();
+      tradeBlocks.delete(block);
+    }
+    for(const block of blocks)attachTrade(block,block.className.includes('sellBlock__'));
+    tradeTools.hidden=!tradeBlocks.size;
   }
   function schedule(){if(!pending&&visible()){pending=true;requestAnimationFrame(scan);}}
   async function load(){
@@ -124,10 +140,18 @@
   function mount(){
     if(!onPage()||!visible())return;
     const next=document.querySelector('#stockmarketroot');
-    if(!next||next===root)return;
+    if(!next||(next===root&&panel?.isConnected))return;
     observer?.disconnect();root=next;
+    if(panel){
+      for(const tools of tradeBlocks.values())tools.remove();
+      tradeBlocks.clear();
+      tradeTools.hidden=true;
+      root.before(panel);
+      observeRoot();
+      return;
+    }
     const style=element('style','.slink-stock-filtered{display:none!important}');
-    const panel=element('section');panel.className='slink-stocks-panel';panel.setAttribute('aria-label','SLINK Stocks tools');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
+    panel=element('section');panel.className='slink-stocks-panel';panel.setAttribute('aria-label','SLINK Stocks tools');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
     summary=element('div');status=element('div');status.setAttribute('role','status');
     controls=button('',()=>{showHidden=!showHidden;refreshDisplay();schedule();});
     picker=button('Load / refresh stocks',()=>void load());
@@ -138,12 +162,23 @@
     try{const saved=JSON.parse(localStorage.getItem(filterKey)||'{}');if(typeof saved?.query==='string')search.value=saved.query.slice(0,80);if(['owned','unowned'].includes(saved?.ownership))ownership.value=saved.ownership;}catch{}
     const savePreset=button('Save filter preset',()=>{try{localStorage.setItem(filterKey,JSON.stringify({query:search.value,ownership:ownership.value}));status.textContent='Stock filter preset saved.';}catch{status.textContent='Could not save the preset on this device.';}});
     const resetFilters=button('Reset filters',()=>{search.value=ownership.value='';try{localStorage.removeItem(filterKey);}catch{}schedule();});
-    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,search,ownership,savePreset,resetFilters,status,style);root.prepend(panel);
-    observer=new MutationObserver(schedule);observer.observe(root,{childList:true,subtree:true});
-    refreshDisplay();schedule();
+    tradeTools=element('div');
+    tradeTools.hidden=true;
+    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,search,ownership,savePreset,resetFilters,status,tradeTools,style);
+    root.before(panel);
+    refreshDisplay();
+    observeRoot();
+  }
+  function observeRoot(){
+    observer=new MutationObserver(schedule);
+    observer.observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['class','hidden','aria-hidden','disabled']});
+    schedule();
   }
   void host.get().then(ids=>{hidden=new Set(Array.isArray(ids)?ids.filter(Number.isSafeInteger):[]);if(summary)refreshDisplay();schedule();}).catch(()=>{});
-  const boot=new MutationObserver(()=>{mount();if(root)boot.disconnect();});
-  mount();if(!root)boot.observe(document.body,{childList:true,subtree:true});
+  const boot=new MutationObserver(()=>{
+    if(!root?.isConnected||!panel?.isConnected)mount();
+  });
+  mount();
+  boot.observe(document.body,{childList:true,subtree:true});
   document.addEventListener('visibilitychange',()=>{mount();schedule();});
 })(globalThis);
