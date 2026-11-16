@@ -6,39 +6,91 @@ const rows=new Map(Object.entries({
  'industrial waste':['Sink'],'biological waste':['Sink'],firearm:['Sink','No method rated Safe'], 'murder weapon':['Sink'],'body part':['Dissolve'],'dead body':['Dissolve','Limited data']
 }));
 const advise=label=>rows.get(String(label??'').trim().replace(/\s+/g,' ').toLowerCase())||null;
+const adviceSelector='[data-slink-disposal-advice]';
+const currentTitles='.crime-option-sections > [class*="crimeOptionSection___"][class*="flexGrow___"]';
+const legacyTitles=':is([class*="crimeOptionWrapper___"],.crime-option) :is([class*="title___"],[class*="name___"],[class*="titleAnd"])';
+
+function jobName(title){
+ return Array.from(title.childNodes)
+  .filter(node=>!node.matches?.(adviceSelector))
+  .map(node=>node.textContent).join('');
+}
+
 function connect({eligible}){
- const d=g.document,selector=['.disposal-root','[class*="currentCrime___"]'],rowSelector='[class*="crimeOptionWrapper___"],.crime-option';
- let enabled=false,root=null,watch=null,frame=0;
+ const d=g.document;
+ const selector=['.disposal-root','[class*="currentCrime___"]','.crimes-app'];
+ let enabled=false,root=null,watch=null,frame=null;
  const badges=new Map();
  const active=()=>enabled&&!d.hidden&&g.SLINK_CRIME_LIFECYCLE.currentCrime()==='disposal'&&eligible();
- const clean=()=>{for(const badge of badges.values())badge.remove();badges.clear();};
- function stop(){watch?.disconnect();watch=null;root=null;if(frame)g.cancelAnimationFrame(frame);frame=0;clean();}
+
+ function clean(){
+  for(const badge of badges.values())badge.remove();
+  badges.clear();
+ }
+
+ function stop(){
+  watch?.disconnect();
+  watch=null;
+  root=null;
+  if(frame!==null)g.cancelAnimationFrame(frame);
+  frame=null;
+  clean();
+ }
+
  function render(){
-  frame=0;if(!active()||!root?.isConnected)return;
+  frame=null;
+  if(!active()||!root?.isConnected)return;
   const seen=new Set();
-  for(const row of root.querySelectorAll(rowSelector)){
-   const title=[...row.querySelectorAll('[class*="title___"],[class*="name___"],[class*="titleAnd"]')].find(el=>advise(el.textContent));
-   if(!title)continue;
-   const [method,caution]=advise(title.textContent);seen.add(row);
-   let badge=badges.get(row);
-   if(!badge||badge.previousElementSibling!==title){badge?.remove();badge=d.createElement('small');badge.dataset.slinkDisposalAdvice='';globalThis.SLINK_TORN_COMPONENTS?.mark(badge,'slink-page-note');badge.style.cssText='display:block;position:static;pointer-events:none;overflow-wrap:anywhere;color:inherit;font-weight:600';title.after(badge);badges.set(row,badge);}
+  const jobs=new Set();
+  for(const title of root.querySelectorAll(currentTitles+','+legacyTitles)){
+   const result=advise(jobName(title));
+   if(!result||title.closest('[hidden],[aria-hidden="true"]')||!title.getClientRects().length)continue;
+   const job=title.closest('.crime-option-sections')||title.closest('.crime-option,[class*="crimeOptionWrapper___"]');
+   if(!job||jobs.has(job))continue;
+   jobs.add(job);
+   seen.add(title);
+   const [method,caution]=result;
+   let badge=badges.get(title);
+   if(badge?.parentElement!==title){
+    badge=d.createElement('small');
+    badge.dataset.slinkDisposalAdvice='';
+    globalThis.SLINK_TORN_COMPONENTS?.mark(badge,'slink-page-note');
+    badge.style.cssText='display:block;width:fit-content;max-width:100%;pointer-events:none;overflow-wrap:anywhere';
+    title.append(badge);
+    badges.set(title,badge);
+   }
    const label=caution?method+' · '+caution:'Safest documented: '+method;
    if(badge.textContent!==label)badge.textContent=label;
   }
-  for(const [row,badge] of badges)if(!seen.has(row)){badge.remove();badges.delete(row);}
+  for(const [title,badge] of badges)if(!seen.has(title)){
+   badge.remove();
+   badges.delete(title);
+  }
  }
- function schedule(){if(active()&&!frame)frame=g.requestAnimationFrame(render);}
- function mount(next){
-  if(next===root)return;
-  watch?.disconnect();watch=null;clean();root=next;if(!root)return;
-  watch=new g.MutationObserver(records=>{if(records.some(r=>!(r.target.nodeType===1?r.target:r.target.parentElement)?.closest('[data-slink-disposal-advice]')&&!(r.type==='childList'&&[...r.addedNodes,...r.removedNodes].every(n=>n.matches?.('[data-slink-disposal-advice]')))))schedule();});
-  watch.observe(root,{childList:true,subtree:true,characterData:true});schedule();
+
+ function schedule(){
+  if(active()&&frame===null)frame=g.requestAnimationFrame(render);
  }
+
  function sync(next){
-  if(!active()){stop();return;}
-  mount(next);schedule();
+  if(next!==root){
+   stop();
+   root=next;
+   if(root){
+    watch=new g.MutationObserver(records=>{
+     if(records.some(record=>{
+      const target=record.target.nodeType===1?record.target:record.target.parentElement;
+      return !target?.closest(adviceSelector)&&(record.type!=='childList'||
+       [...record.addedNodes,...record.removedNodes].some(node=>!node.matches?.(adviceSelector)));
+     }))schedule();
+    });
+    watch.observe(root,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['class','hidden','aria-hidden']});
+   }
+  }
+  schedule();
  }
- const lifecycle=g.SLINK_CRIME_LIFECYCLE.connect('disposal', { eligible:active, sync, stop, selector });
+
+ const lifecycle=g.SLINK_CRIME_LIFECYCLE.connect('disposal',{eligible:active,sync,stop,selector});
  return {sync:lifecycle.sync,setEnabled(value){enabled=value===true;lifecycle.sync();},dispose(){enabled=false;lifecycle.dispose();}};
 }
 g.SLINK_DISPOSAL=Object.freeze({advise,connect});

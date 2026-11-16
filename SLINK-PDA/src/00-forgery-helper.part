@@ -8,8 +8,9 @@ const ratings=new Map(Object.entries({
   'birth certificate':'High risk','travel visa':'High risk','id badge':'High risk','bank check':'High risk','passport':'High risk'
 }));
 const rate=name=>ratings.get(String(name??'').trim().toLowerCase())||'Unrated';
-const picker='.crime-option:has(.crime-image img[srcset*="/11-forgery/forgery_new_project"])';
-const option='[data-testid="dropdown-list"] [role="option"]';
+const picker='[data-testid="dropdown-list"]';
+const option='[role="option"][data-testid^="option-"]';
+const nameSelector='[class*="optionWithLevelRequirement___"] [class*="name___"]';
 const mark='data-slink-forgery-risk';
 const css='['+mark+']::after{content:attr('+mark+');display:inline-block;margin-inline-start:.35em;font-size:10px;font-weight:600;white-space:normal;border-radius:4px;padding:1px 4px;color:var(--slt-text,CanvasText);background:var(--slt-surface,Canvas);border:1px solid var(--slt-border,currentColor);pointer-events:none}';
 function connect({eligible}){
@@ -24,12 +25,16 @@ function connect({eligible}){
  function render(){
   frame=0;if(!active()){stop();return;}
   const next=new Set();
-  for(const row of d.querySelectorAll(picker))for(const entry of row.querySelectorAll(option)){
-   const name=entry.querySelector('[class*="optionWithLevelRequirement___"] [class*="name___"]');
-   if(!name?.textContent.trim())continue;
-   next.add(name);
-   const risk=rate(name.textContent);
-   if(name.getAttribute(mark)!==risk)name.setAttribute(mark,risk);
+  for(const list of d.querySelectorAll(picker)){
+   if(list.closest('[hidden],[aria-hidden="true"]')||!list.getClientRects().length)continue;
+   const names=Array.from(list.querySelectorAll(option),entry=>entry.querySelector(nameSelector))
+    .filter(name=>name?.textContent.trim());
+   if(!names.some(name=>rate(name.textContent)!=='Unrated'))continue;
+   for(const name of names){
+    next.add(name);
+    const risk=rate(name.textContent);
+    if(name.getAttribute(mark)!==risk)name.setAttribute(mark,risk);
+   }
   }
   for(const node of marked)if(!next.has(node))node.removeAttribute(mark);
   marked=next;
@@ -40,9 +45,14 @@ function connect({eligible}){
   if(!observer&&d.body){
    style=d.createElement('style');style.textContent=css;(d.head||d.body).append(style);
    observer=new g.MutationObserver(records=>{
-    if(records.some(r=>(r.target.nodeType===1?r.target:r.target.parentElement)?.closest(picker)||[...r.addedNodes,...r.removedNodes].some(n=>n.matches?.(picker)||n.querySelector?.(picker))))schedule();
+    if(records.some(record=>{
+     const target=record.target.nodeType===1?record.target:record.target.parentElement;
+     return target?.closest(picker)||(record.type==='attributes'&&target?.querySelector(picker))||
+      [...record.addedNodes,...record.removedNodes].some(node=>node.matches?.(picker)||node.querySelector?.(picker));
+    }))schedule();
    });
-   observer.observe(d.querySelector('#mainContainer')||d.body,{subtree:true,childList:true,characterData:true});
+   // Torn may render the dropdown outside the job card or the main content root.
+   observer.observe(d.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class','hidden','aria-hidden']});
   }
   schedule();
  }
