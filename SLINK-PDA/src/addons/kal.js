@@ -1,8 +1,6 @@
 (function installKal(global) {
   'use strict';
   if (global.SLINK_KAL) return;
-  // Source-level reuse permission confirmed by the user on 2026-11-19.
-  const COLLECTOR_ENABLED = true;
   const ORIGIN = 'https://api.kalends.dev';
   const TTL = 10 * 60_000;
   const errors = Object.freeze({1:'Enter a registered KAL key.',2:'KAL key is invalid or disabled.',3:'KAL rejected conflicting credentials.',4:'KAL account is disabled.',5:'Accept the required policies on KAL’s website.',6:'KAL account is restricted.',11:'KAL rejected this player or cursor.',13:'No visible loadout is available.',20:'KAL rate limit reached. Try again later.'});
@@ -101,7 +99,7 @@
     }
     async function status() {
       const [auth,prefs]=await Promise.all([credentials(),settings()]);
-      return {connected:!!auth,enabled:prefs.enabled===true,display:prefs.display||'manual',collectionSelected:prefs.collectionEnabled===true,collectorEnabled:COLLECTOR_ENABLED&&prefs.enabled===true&&prefs.collectionEnabled===true,collectorReason:prefs.collectionEnabled===true?'SLINK collection selected. Keep this off when the official KAL collector is installed.':'SLINK collection is off. Select it only when using SLINK instead of the official KAL collector.'};
+      return {connected:!!auth,enabled:prefs.enabled===true,display:prefs.display||'manual'};
     }
     async function connect(key, consent) {
       return serial(async()=>{
@@ -111,7 +109,7 @@
         const response=await api('/check-key',key);
         if(response.is_registered!==true)throw failure('Register this key and accept KAL’s policies at kalends.dev first.', 'KAL_UNREGISTERED');
         revision++;cursors.clear();
-        await storage.set('settings',{...await settings(),schema:1,enabled:false,collectionEnabled:false});
+        await storage.set('settings',{schema:1,enabled:false,display:(await settings()).display||'manual'});
         await storage.set('credentials',{schema:1,key,scope:uuid(),validatedAt:now()});
         try{await cache.clear();}catch{} // Account-scoped cache cannot be reused by the new connection.
         return status();
@@ -121,7 +119,7 @@
       return serial(async()=>{
         if(value.enabled===true && !await credentials())throw failure('Connect a registered KAL key first.');
         const prior=await settings();revision++;cursors.clear();
-        await storage.set('settings',{...prior,enabled:value.enabled===true,collectionEnabled:typeof value.collectionEnabled==='boolean'?value.collectionEnabled:prior.collectionEnabled===true,display:['manual','slink','official'].includes(value.display)?value.display:prior.display});
+        await storage.set('settings',{schema:1,enabled:value.enabled===true,display:['manual','slink','official'].includes(value.display)?value.display:prior.display});
         return status();
       });
     }
@@ -175,5 +173,5 @@
     }
     return Object.freeze({select,older:()=>selected?.pagination?.next_cursor?select(id,selected.pagination.next_cursor):Promise.resolve(null),latest:()=>select(id),clear:()=>{generation++;id=null;selected=null;cursor=null;},selected:()=>selected,text:()=>selected?loadoutText(selected):null,cursor:()=>cursor});
   }
-  global.SLINK_KAL=Object.freeze({COLLECTOR_ENABLED,ORIGIN,create,openCache,playerId,parseLoadout,stamp,equipmentText,loadoutText,history});
+  global.SLINK_KAL=Object.freeze({ORIGIN,create,openCache,playerId,parseLoadout,stamp,equipmentText,loadoutText,history});
 })(globalThis);

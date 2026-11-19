@@ -14,7 +14,6 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
-// @connect      kalends.dev
 // @connect      api.kalends.dev
 // @connect      api.torn.com
 // @connect      slink-chat-central-test.richard-johnson554.workers.dev
@@ -454,8 +453,7 @@ const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new 
  e=e.catch(()=>{}).then(()=>payload.action==='reset-settings'?store.resetSettings(payload.value,payload.confirmed):store.recoverSettings(payload.value,payload.confirmed)).then(result=>{storagePaused=false;storageReadFailure='';reply(true,'',result);},error=>{reply(false,String(error?.message||error));}).finally(()=>{nativeOutstanding=false;});return;
 }if(isRecord(payload)&&payload.action==='retry'){if(!nativeOutstanding)storagePaused=false;return;}if(isRecord(payload)&&d.has(payload.key)&&(!payload.remove||payload.key===n)&&(payload.remove||isRecord(payload.value))){if(storagePaused){acknowledge(payload,false,pausedStorageError().message);return;}if(!payload.remove&&payload.key!==u)if(payload.key===n)writeMirror(payload.value);else try{globalThis.localStorage?.setItem(payload.key,JSON.stringify(payload.value))}catch{}if(payload.protocol===2)acknowledge(payload,false,'',undefined,'queued');e=e.catch(()=>{}).then(()=>runStorageJob(async()=>{if(payload.protocol===2)acknowledge(payload,false,'',undefined,'working');if(payload.key===u)return targetJournal(payload.value);if(payload.remove){const e=nativeStorage();if(e){if('function'!=typeof e.delete)throw Error('Storage delete unavailable.');await e.delete(payload.key)}else{if('function'!=typeof globalThis.GM_deleteValue)throw Error('Storage delete unavailable.');await Promise.resolve(globalThis.GM_deleteValue(payload.key))}try{globalThis.localStorage?.removeItem(s),globalThis.localStorage?.removeItem(n)}catch{}}else{const e=await gmRead(payload.key,null);if(payload.key===i&&Number(e?.checkedAt||0)>Number(payload.value?.checkedAt||0))return;let value=payload.value;if(payload.key===n&&isRecord(e)&&isRecord(payload.base)){const t=mergeChanges(payload.base.settings,value.settings,e.settings||{}),r=mergeChanges(payload.base.targetList,value.caches?.targetList||{},e.caches?.targetList||{});value={...savedAt(e)>savedAt(value)?e:value,settings:t,caches:{...savedAt(e)>savedAt(value)?e.caches:value.caches,targetList:r},_savedAt:Math.max(savedAt(e),savedAt(value))+1}}else if(savedAt(e)>savedAt(value))return;if(payload.base?.protected&&e)for(const key of Object.keys(payload.base.protected))value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(e,key)?e[key]:payload.value[key]);await gmWrite(payload.key,value)}})).then(value=>acknowledge(payload,!0,'',value),e=>acknowledge(payload,!1,String(e?.message||e?.code||'Storage write failed')))}});Object.defineProperty(globalThis,'__SLINK_PDA_STORAGE_BRIDGE__',{value:Object.freeze({protocol:1,document,channel:m}),configurable:true});}(),/* SLINK_KAL_BRIDGE_START */(function installKalLauncherBridge(options) {
   'use strict';
-  const {channel,nativeStorage}=options;
-  const eventName=channel+':kal', keys=new Set(['credentials','settings','backoff','pending']);
+  const {channel,nativeStorage}=options,eventName=channel+':kal',keys=new Set(['credentials','settings','backoff']);
   if(document.documentElement?.getAttribute('data-slink-kal-bridge')===channel)return;
   document.documentElement?.setAttribute('data-slink-kal-bridge',channel);
   let queue=Promise.resolve();
@@ -466,43 +464,27 @@ const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new 
     async function run(){
       if(payload.action==='request') {
         const url=new URL(payload.url);
-        const method=payload.options?.method||'GET',upload=method==='POST'&&url.href==='https://kalends.dev/api/script/upload-loadout';
-        if(!upload&&(method!=='GET'||url.origin!=='https://api.kalends.dev'||url.searchParams.has('key')||!/^\/(check-key|user\/[1-9]\d*\/loadout)$/.test(url.pathname)))throw Error('Invalid KAL destination.');
-        const headers=upload?{Accept:'application/json','Content-Type':'application/json'}:{Accept:'application/json',Authorization:payload.options?.headers?.Authorization};
-        if(!upload&&(typeof headers.Authorization!=='string'||!/^ApiKey [a-zA-Z0-9]{16}$/.test(headers.Authorization)))throw Error('Invalid KAL authentication.');
-        if(typeof PDA_httpGet==='function'&&(!upload||typeof PDA_httpPost==='function')){
-          const response=upload?await PDA_httpPost(url.href,headers,payload.options.body):await PDA_httpGet(url.href,headers);
-          if(!response)throw Error('No native HTTP response.');
-          const raw=response.data??response.responseText??response.body;
-          const responseHeaders=response.responseHeaders??response.headers??{};
+        if((payload.options?.method||'GET')!=='GET'||url.origin!=='https://api.kalends.dev'||url.searchParams.has('key')||!/^\/(check-key|user\/[1-9]\d*\/loadout)$/.test(url.pathname))throw Error('Invalid KAL read request.');
+        if(url.pathname!=='/check-key'&&(globalThis.location?.pathname!=='/profiles.php'||Number(new URL(globalThis.location.href).searchParams.get('XID'))!==Number(url.pathname.split('/')[2])))throw Error('KAL equipment is available only on the selected player profile.');
+        const headers={Accept:'application/json',Authorization:payload.options?.headers?.Authorization};
+        if(typeof headers.Authorization!=='string'||!/^ApiKey [a-zA-Z0-9]{16}$/.test(headers.Authorization))throw Error('Invalid KAL authentication.');
+        if(typeof PDA_httpGet==='function'){
+          const response=await PDA_httpGet(url.href,headers);if(!response)throw Error('No native HTTP response.');
+          const raw=response.data??response.responseText??response.body,responseHeaders=response.responseHeaders??response.headers??{};
           const retryAfter=typeof responseHeaders==='string'?responseHeaders.match(/^retry-after:\s*(.+)$/im)?.[1]:Object.entries(responseHeaders).find(([name])=>name.toLowerCase()==='retry-after')?.[1];
           return{status:Number(response.status??response.statusCode)||0,text:typeof raw==='string'?raw:JSON.stringify(raw),retryAfter};
         }
         if(typeof GM_xmlhttpRequest!=='function')throw Error('KAL HTTP transport unavailable.');
-        return new Promise((resolve,reject)=>GM_xmlhttpRequest({method,url:url.href,headers,...upload?{data:payload.options.body}:{},timeout:12000,onload:r=>resolve({status:r.status,text:r.responseText,retryAfter:r.responseHeaders?.match(/^retry-after:\s*(.+)$/im)?.[1]}),onerror:reject,ontimeout:reject}));
+        return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:url.href,headers,timeout:12000,onload:r=>resolve({status:r.status,text:r.responseText,retryAfter:r.responseHeaders?.match(/^retry-after:\s*(.+)$/im)?.[1]}),onerror:reject,ontimeout:reject}));
       }
       if(!keys.has(payload.name)||!['get','set','remove'].includes(payload.action))throw Error('Invalid KAL storage operation.');
-      const name='slink-pda-kal:'+payload.name+':v1', store=nativeStorage();
-      if(payload.action==='get') {
-        if(store)return await store.get(name,null);
-        if(typeof GM_getValue!=='function')throw Error('KAL storage unavailable.');
-        return await GM_getValue(name,null);
-      }
-      if(payload.action==='remove') {
-        if(store){if(typeof store.delete!=='function')throw Error('KAL storage delete unavailable.');await store.delete(name);}
-        else{if(typeof GM_deleteValue!=='function')throw Error('KAL storage delete unavailable.');await GM_deleteValue(name);}
-        return null;
-      }
+      const name='slink-pda-kal:'+payload.name+':v1',store=nativeStorage();
+      if(payload.action==='get'){if(store)return await store.get(name,null);if(typeof GM_getValue!=='function')throw Error('KAL storage unavailable.');return await GM_getValue(name,null);}
+      if(payload.action==='remove'){if(store){if(typeof store.delete!=='function')throw Error('KAL storage delete unavailable.');await store.delete(name);}else{if(typeof GM_deleteValue!=='function')throw Error('KAL storage delete unavailable.');await GM_deleteValue(name);}return null;}
       if(!payload.value||payload.value.schema!==1)throw Error('Invalid KAL schema.');
-      if(store)await store.set(name,payload.value);
-      else{
-        if(typeof GM_setValue!=='function'||typeof GM_getValue!=='function')throw Error('KAL storage unavailable.');
-        await GM_setValue(name,payload.value);
-        if(JSON.stringify(await GM_getValue(name,null))!==JSON.stringify(payload.value))throw Error('KAL storage was not retained.');
-      }
+      if(store)await store.set(name,payload.value);else{if(typeof GM_setValue!=='function'||typeof GM_getValue!=='function')throw Error('KAL storage unavailable.');await GM_setValue(name,payload.value);if(JSON.stringify(await GM_getValue(name,null))!==JSON.stringify(payload.value))throw Error('KAL storage was not retained.');}
       return null;
     }
-    // Only storage jobs are serialized; a hung network read cannot block disconnect.
     if(payload.action==='request')Promise.resolve().then(run).then(value=>respond(true,value),()=>respond(false));
     else{const next=queue.catch(()=>{}).then(run);queue=next;next.then(value=>respond(true,value),()=>respond(false));}
   });

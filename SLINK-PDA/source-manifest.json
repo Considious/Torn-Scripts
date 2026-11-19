@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-394563d60df11126deb018e9ba2878ca31f5c8019578ebd2d86eba7da5010ed1",
+  "revision": "sha256-913778abaeca588a59af8a9e27f75fa7693fd640abc97b3e8dde57171ccdd608",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -33,15 +33,6 @@
   "startupAddons": [
     {
       "source": "src/addons/kal.js"
-    },
-    {
-      "source": "src/addons/kal-capture.js"
-    },
-    {
-      "source": "src/addons/kal-observer.js"
-    },
-    {
-      "source": "src/addons/kal-contributions.js"
     },
     {
       "source": "src/addons/kal-ui.js"
