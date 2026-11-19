@@ -1,0 +1,34 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {readFile} from 'node:fs/promises';
+import {webcrypto} from 'node:crypto';
+const source=await readFile(new URL('./src/kal-launcher-bridge.js',import.meta.url),'utf8');
+class DetailEvent extends Event{constructor(type,options){super(type);this.detail=options?.detail;}}
+function bridge({native=true}={}){
+  const document=new EventTarget(),attributes=new Map(),stored=new Map(),calls=[];let fail=false,release=null,delayed=false,sequence=0;
+  document.documentElement={getAttribute:n=>attributes.get(n),setAttribute:(n,v)=>attributes.set(n,v)};
+  const store={get:async(n,f)=>{if(fail)throw Error('read failed secret');return stored.get(n)??f;},set:async(n,v)=>{if(fail)throw Error('QuotaExceeded secret');if(delayed)await new Promise(resolve=>{release=resolve;});stored.set(n,structuredClone(v));},delete:async n=>stored.delete(n)};
+  const c=vm.createContext({document,CustomEvent:DetailEvent,URL,Set,Promise,PDA_httpGet:async(url,headers)=>{calls.push({url,headers});return{status:200,responseText:'{"is_registered":true}',responseHeaders:'Retry-After: 7\r\n'};},GM_getValue:store.get,GM_setValue:store.set,GM_deleteValue:store.delete});
+  vm.runInContext(source,c);c.installKalLauncherBridge({channel:'test',nativeStorage:()=>native?store:null});
+  function call(payload){const id=String(++sequence);return new Promise(resolve=>{const listener=event=>{const result=JSON.parse(event.detail);if(result.id!==id)return;document.removeEventListener('test:kal:ack',listener);resolve(result);};document.addEventListener('test:kal:ack',listener);document.dispatchEvent(new DetailEvent('test:kal',{detail:JSON.stringify({...payload,id})}));});}
+  return{call,stored,calls,context:c,store,set fail(v){fail=v;},set delayed(v){delayed=v;},get release(){return release;}};
+}
+for(const native of [true,false])test('PDA storage separation and explicit credential removal, native='+native,async()=>{const b=bridge({native});assert.equal((await b.call({action:'set',name:'credentials',value:{schema:1,key:'abcdefghijklmnop'}})).ok,true);await b.call({action:'set',name:'settings',value:{schema:1,enabled:false}});assert.equal(b.stored.size,2);assert.equal((await b.call({action:'get',name:'credentials'})).value.key,'abcdefghijklmnop');await b.call({action:'remove',name:'credentials'});assert.equal(b.stored.has('slink-pda-kal:credentials:v1'),false);assert.equal(b.stored.has('slink-pda-kal:settings:v1'),true);assert.equal((await b.call({action:'set',name:'official-kal-private',value:{schema:1}})).ok,false);});
+test('PDA native acknowledgement waits for completion and serializes overlapping writes',async()=>{const b=bridge();b.delayed=true;let acknowledged=false;const first=b.call({action:'set',name:'settings',value:{schema:1,enabled:true}}).then(value=>{acknowledged=true;return value;});const second=b.call({action:'set',name:'settings',value:{schema:1,enabled:false}});while(!b.release)await new Promise(setImmediate);assert.equal(acknowledged,false);assert.equal(b.stored.size,0);b.delayed=false;b.release();await Promise.all([first,second]);assert.equal(b.stored.get('slink-pda-kal:settings:v1').enabled,false);});
+test('PDA native quota and read errors remain failures, no fallback or secret leakage',async()=>{const b=bridge();b.fail=true;for(const action of ['get','set']){const response=await b.call({action,name:'credentials',value:{schema:1,key:'abcdefghijklmnop'}});assert.equal(response.ok,false);assert.equal(JSON.stringify(response).includes('secret'),false);}assert.equal(b.stored.size,0);});
+test('PDA checked GM fallback rejects swallowed writes',async()=>{const b=bridge({native:false});b.context.GM_setValue=async()=>{};const response=await b.call({action:'set',name:'settings',value:{schema:1}});assert.equal(response.ok,false);});
+test('PDA read transport keeps credentials in header and rejects other destinations',async()=>{const b=bridge();const payload={action:'request',url:'https://api.kalends.dev/user/42/loadout?cursor=opaque%2B%2F',options:{headers:{Authorization:'ApiKey abcdefghijklmnop'}}};const response=await b.call(payload);assert.equal(response.ok,true);assert.equal(response.value.retryAfter,'7');assert.equal(b.calls[0].url.includes('abcdefghijklmnop'),false);assert.equal(b.calls[0].headers.Authorization,'ApiKey abcdefghijklmnop');for(const url of ['https://slink.example/upload','https://api.kalends.dev/script/upload-loadout','https://api.kalends.dev/check-key?key=secret'])assert.equal((await b.call({...payload,url})).ok,false);assert.equal(b.calls.length,1);});
+test('PDA repeated launcher initialization registers one handler',async()=>{const b=bridge();b.context.installKalLauncherBridge({channel:'test',nativeStorage:()=>b.store});await b.call({action:'request',url:'https://api.kalends.dev/check-key',options:{headers:{Authorization:'ApiKey abcdefghijklmnop'}}});assert.equal(b.calls.length,1);});
+test('PDA upstream capture reaches original upload protocol with native pending storage',async()=>{
+ const b=bridge();Object.assign(b.context,{crypto:webcrypto,TextEncoder,structuredClone});const uploads=[];
+ b.context.PDA_httpPost=async(url,headers,body)=>{uploads.push({url,headers,body:JSON.parse(body)});return{status:200,responseText:'{}'};};
+ vm.runInContext(await readFile(new URL('./src/addons/kal-capture.js',import.meta.url),'utf8'),b.context);
+ vm.runInContext(await readFile(new URL('./src/addons/kal-contributions.js',import.meta.url),'utf8'),b.context);
+ const data={DB:{defenderUser:{userID:42},attackerUser:{userID:77},fightID:3,defenderItems:{'398':{item:[{ID:398,armouryID:1,equipSlot:1}]}}}};
+ const C=b.context.SLINK_KAL_CAPTURE,capture=C.buildAttackCapture(data,{expectedTargetId:42,capturedAt:'2026-11-19T10:00:00Z',payloadSource:'native'});capture.capture_id=await C.captureId(data,capture);
+ const options={store:{get:async()=>{const r=await b.call({action:'get',name:'pending'});if(!r.ok)throw Error(r.error);return r.value;},set:async value=>{const r=await b.call({action:'set',name:'pending',value});if(!r.ok)throw Error(r.error);}},auth:async()=>({enabled:true,scope:'same-account',key:'abcdefghijklmnop'}),request:async(url,options)=>{const r=await b.call({action:'request',url,options});if(!r.ok)throw Error(r.error);return r.value;}};
+ const collector=b.context.SLINK_KAL_CONTRIBUTIONS.create(options);await collector.enqueue(capture);await collector.drain();
+ assert.equal(uploads.length,1);assert.equal(uploads[0].url,'https://kalends.dev/api/script/upload-loadout');assert.equal(uploads[0].body.capture_id,capture.capture_id);assert.equal(uploads[0].body.version,'1.3.3');assert.equal((await collector.status()).pendingCount,0);
+ await b.context.SLINK_KAL_CONTRIBUTIONS.create(options).drain();assert.equal(uploads.length,1);assert.equal(JSON.stringify([...b.stored]).includes('abcdefghijklmnop'),false);
+});

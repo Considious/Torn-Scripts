@@ -19,6 +19,8 @@ ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : 
 <div class="access-form">
 <label>Torn API key<input type="password" autocomplete="off" data-field="api-key" value="${escapeHtml(dataState.apiKey)}" placeholder="Limited-access Torn key"></label>
 <label>FFScouter API key<input type="password" autocomplete="off" data-field="ff-key" value="${escapeHtml(dataState.ffKey)}" placeholder="Usually different from the Torn key"></label>
+<p class="wide muted">Battle-stat estimates provided by <a href="https://ffscouter.com/" target="_blank" rel="noopener noreferrer">FFScouter — Glasnost [1844049]</a></p>
+<section class="wide" data-kal-settings aria-label="KAL settings"></section>
 ${PDA_API_KEY_AVAILABLE ? `<label class="check-row"><input type="checkbox" data-field="use-pda-api-key" ${dataState.usePdaApiKey ? 'checked' : ''}>Use Torn PDA's injected key for Torn API requests.</label><label class="check-row"><input type="checkbox" data-field="use-pda-ff-key" ${dataState.usePdaFfKey ? 'checked' : ''}>Use Torn PDA's injected key as the FFScouter fallback.</label>` : '<span class="muted wide">Torn PDA key injection was not detected. Saved Torn and FFScouter keys will be used independently.</span>'}
 <span class="muted wide">The FFScouter key is sent only to FFScouter when refining target estimates.</span>
 <label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK permission, Leveling, and War terms/disclosures shown below.</label>
