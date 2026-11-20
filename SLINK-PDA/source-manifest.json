@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-ee06318c5f1606d5ed82c1cdd262dbb3e3b9635bf8967e7643c254e71b96a0e1",
+  "revision": "sha256-913778abaeca588a59af8a9e27f75fa7693fd640abc97b3e8dde57171ccdd608",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -31,6 +31,15 @@
     "src/90-shell-bootstrap.part"
   ],
   "startupAddons": [
+    {
+      "source": "src/addons/kal.js"
+    },
+    {
+      "source": "src/addons/kal-ui.js"
+    },
+    {
+      "source": "src/addons/kal.addon.js"
+    },
     {
       "source": "src/addons/faction-node-client.js"
     },

@@ -24,6 +24,12 @@ const addonSources = await Promise.all((manifest.startupAddons || []).map(async 
 
 const loaderPath = resolve(root, manifest.output || 'SLINK_PDA_Dashboard.user.js');
 let loaderSource = await readFile(loaderPath, 'utf8');
+const kalBridge = await readFile(resolve(root, 'src/kal-launcher-bridge.js'), 'utf8');
+const kalEmbedded = '/* SLINK_KAL_BRIDGE_START */(' + kalBridge + ')({channel:m,nativeStorage})/* SLINK_KAL_BRIDGE_END */';
+const kalPattern = /\/\* SLINK_KAL_BRIDGE_START \*\/[\s\S]*?\/\* SLINK_KAL_BRIDGE_END \*\//;
+if (!kalPattern.test(loaderSource)) throw new Error('PDA loader is missing its KAL platform bridge.');
+if (process.argv.includes('--write')) loaderSource = loaderSource.replace(kalPattern, () => kalEmbedded);
+else if (loaderSource.match(kalPattern)[0] !== kalEmbedded) throw new Error('KAL launcher bridge is stale. Run node build.mjs --write.');
 const sourceRevision = 'sha256-' + createHash('sha256')
   .update([runtimeSource, ...addonSources.map(addon => addon.source)].join('\n;\n'), 'utf8')
   .digest('hex');

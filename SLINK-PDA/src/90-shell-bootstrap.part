@@ -1112,6 +1112,7 @@ renderAllModules();
 } catch (error) { moduleState.access.error = errorMessage(error); renderAccess(); }
 })();
 if (action === 'clear-access') {
+await global.SLINK_KAL_PDA?.disconnect();
 dataState.apiKey = '';
 dataState.ffKey = '';
 dataState.usePdaApiKey = PDA_API_KEY_AVAILABLE;
