@@ -235,7 +235,7 @@ if(marketWatchLimit()<=0)throw new Error('A current Market Watch permission is r
 const key = currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const normalized = normalizeMarketPriority(priority);
-await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:'market' });
+await reserveTornApi(endpoint, { wait:false, limit:TORN_PRIORITY_LIMITS[normalized], priority:'market', script:'SLINK Market Watch' });
 if(!marketSettings().enabled)throw new Error('Market Watch checks are paused.');
 if(marketWatchLimit()<=0)throw new Error('Market Watch permission expired before the price check.');
 const body = await requestJson(url, { headers:{ Authorization:`ApiKey ${key}` } });
@@ -583,7 +583,7 @@ dataState.sessions.permission?.apiKeyFingerprint === currentKeyFingerprint
 ) return dataState.sessions.permission;
 await fetchAllTerms(false);
 if (!termsAccepted('permission')) throw new Error('Accept the current SLINK terms before authenticating.');
-await reserveTornApi('/v2/user/basic');
+await reserveTornApi('/api/permissions/auth',{script:'SLINK Access authentication'});
 const response = await requestJson(`${URLS.permission}/api/permissions/auth`, {
 method:'POST',
 body:{
@@ -607,7 +607,7 @@ if (!hasScope('slink.level')) throw new Error('Your SLINK account does not have 
 if (!force && validSession('leveling')) return dataState.sessions.leveling;
 await fetchAllTerms(false);
 if (!termsAccepted('leveling')) throw new Error('Accept the current SLINK Leveling terms and disclosure under Access.');
-await reserveTornApi('/v2/user/basic');
+await reserveTornApi('/api/auth',{script:'SLINK Leveling authentication'});
 const terms = dataState.terms.leveling;
 const response = await requestJson(`${URLS.leveling}/api/auth`, {
 method:'POST',

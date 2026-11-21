@@ -351,7 +351,7 @@ const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 url.searchParams.delete('key');
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', 'SLINK PDA Bounties');
 await bountyReserve('torn', settings.tornCallsPerMinute);
-await reserveTornApi(url.pathname, { limit:API_LIMIT, priority:'normal' });
+await reserveTornApi(url.pathname+url.search, { limit:API_LIMIT, priority:'normal', script:'SLINK Bounties' });
 const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
 return result;

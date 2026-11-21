@@ -1884,7 +1884,7 @@ if (ledger.cooldownUntil > now || full) return { waitUntil:Math.max(ledger.coold
 ledger.events.push({
 at:now,
 id:`slink-pda:${global.crypto?.randomUUID?.() || `${now}:${Math.random().toString(36).slice(2)}`}`,
-script:String(options.script||'SLINK PDA Dashboard').slice(0,80), priority, method:'GET', endpoint:String(endpoint).slice(0, 180), tabId:'pda-dashboard'
+script:String(options.script||'SLINK PDA Dashboard').slice(0,80), priority, method:'GET', endpoint:accessTelemetry.endpoint(endpoint), tabId:'pda-dashboard'
 });
 writeApiLedger(ledger);
 noteAccessRequest(ledger.events.at(-1));
@@ -1909,7 +1909,7 @@ const key = options.apiKey || currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
-await reserveTornApi(url.pathname,{...options,script:options.script||comment});
+await reserveTornApi(url.pathname+url.search,{...options,script:options.script||comment});
 if(options.active && !options.active()) return null;
 const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
