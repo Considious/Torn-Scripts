@@ -395,6 +395,7 @@ error = api.errorMessage(caught);
 throw caught;
 } finally { busy = false; render(); }
 }
+global.SLINK_PDA_STOCK_BENEFITS=Object.freeze({rows:stockRows});
 global.SLINK_PDA_BANK_PREVIEW=Object.freeze({
   compare:bankComparison,
   load:async()=>{

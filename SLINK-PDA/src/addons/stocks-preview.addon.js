@@ -8,8 +8,23 @@
   const host=pda?{
     load:async()=>{
       await pda.ensurePermission(false);if(!pda.hasScope(scope))throw Error('Money & Property access is required.');
-      const [holdings,market,money]=await Promise.all([pda.tornJson('/v2/user/stocks','SLINK Stocks'),pda.tornJson('/v2/torn/stocks','SLINK Stocks'),pda.tornJson('/v2/user/money','SLINK Stocks').catch(()=>null)]);
-      return {holdings:holdings.stocks,market:market.stocks,cash:money?.money?.cash,fetchedAt:Date.now()};
+      const cache=pda.cache('stocksPreviewEducation');
+      const catalog=async()=>{
+        if(cache.body&&Date.now()-cache.at<7*86400000)return cache.body;
+        const body=await pda.tornJson('/v2/torn/education','SLINK Stocks');
+        cache.body=body;cache.at=Date.now();await pda.save();return body;
+      };
+      const [holdings,market,money,items,education,educationCourses]=await Promise.all([
+        pda.tornJson('/v2/user/stocks','SLINK Stocks'),
+        pda.tornJson('/v2/torn/stocks','SLINK Stocks'),
+        pda.tornJson('/v2/user/money','SLINK Stocks').catch(()=>null),
+        pda.sharedCatalog({maxAgeMs:7*86400000,needPrices:true}).catch(()=>null),
+        pda.tornJson('/v2/user/education','SLINK Stocks').catch(()=>null),
+        catalog().catch(()=>null)
+      ]);
+      const cash=money?.money?.cash??money?.money?.wallet??null;
+      return {holdings:holdings.stocks,market:market.stocks,cash,education,educationCourses,
+        benefitRows:g.SLINK_PDA_STOCK_BENEFITS?.rows(holdings,market,items?.items||[],cash??0)||[],fetchedAt:Date.now()};
     },
     get:async()=>pdaId()?pda.settings('stocksPreview',{})[pdaId()]:[],
     set:async value=>{const id=pdaId();if(!id)throw Error('Verify Access first.');const prefs=pda.settings('stocksPreview',{}),old=prefs[id];prefs[id]=value;try{await pda.save();}catch(e){if(old===undefined)delete prefs[id];else prefs[id]=old;throw e;}}
@@ -21,8 +36,10 @@
   const money=n=>n==null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n);
   const element=(tag,text)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;return el;};
   const button=(label,fn)=>{const b=element('button',label);b.type='button';b.addEventListener('click',fn);return b;};
-  let hidden=new Set(), saving=false, showHidden=false, data=null, root=null, observer=null, pending=false, loading=false, status, summary, controls, picker, search, ownership, panel, tradeTools;
+  let hidden=new Set(), saving=false, showHidden=false, data=null, root=null, observer=null, pending=false, loading=false, status, summary, controls, picker, search, ownership, panel, tradeTools, recommendationList, recommendationStatus, affordable, sort;
+  const compact=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',notation:'compact',maximumFractionDigits:2}).format(n);
   const tradeBlocks=new Map();
+  const hideButtons=new WeakSet();
   const tradeSelector='[class*="stockDropdown__"] :is([class*="buyBlock__"],[class*="sellBlock__"])';
   const quantitySelector='input.input-money:not([type="hidden"])';
   const shown=node=>node?.isConnected&&!node.closest('[hidden],[aria-hidden="true"]')&&node.getClientRects().length>0;
@@ -42,6 +59,23 @@
     const result=model.portfolio(data?.holdings,prices);
     summary.textContent=result?`Portfolio value: ${money(result.value)} · Unrealized profit/loss before fees: ${money(result.profit)}`:'Load stock data to see your portfolio and benefit costs.';
     controls.textContent=showHidden?'Hide filtered stocks':`Show hidden stocks (${hidden.size})`;
+    renderRecommendations();
+  }
+  function renderRecommendations(){
+    if(!recommendationList)return;
+    const rows=model.recommendations(data,{affordableOnly:affordable.checked,sort:sort.value,hidden:[...hidden]});
+    const nodes=rows.map(stock=>{
+      const item=element('li');
+      const label=element('strong',stock.acronym+' · '+stock.name);
+      const detail=stock.education
+        ? stock.benefitDescription+' · Education still in progress'
+        : compact(stock.weeklyValue)+'/week · '+(stock.monthlyRoi*100).toFixed(2)+'% monthly ROI';
+      item.append(label,element('div',compact(stock.incrementalCost)+' to first benefit · '+detail));
+      return item;
+    });
+    recommendationList.replaceChildren(...nodes);
+    recommendationStatus.textContent=!data?'Load stock data to see recommendations.':rows.length?'Based on loaded payout prices. Affordability uses cash on hand.':
+      affordable.checked&&data.cash==null?'Cash balance unavailable. Refresh or turn off the affordability filter.':'No qualifying unowned stocks match these filters.';
   }
   async function toggle(id){
     if(!id||saving)return;
@@ -102,19 +136,34 @@
       const filtered=(hidden.has(id)&&!showHidden)||!name.includes(search.value.trim().toLowerCase())||(wanted==='owned'&&owned!==true)||(wanted==='unowned'&&owned!==false);
       if(row.classList.contains('slink-stock-filtered')!==filtered)row.classList.toggle('slink-stock-filtered',filtered);
       if(!id)continue;
-      let label=row.querySelector('.slink-stock-detail');
-      if(!label){
-        label=element('div');label.className='slink-stock-detail';globalThis.SLINK_TORN_COMPONENTS?.mark(label,'slink-page-note');
-        label.append(element('span'),button('Hide stock',e=>{e.stopPropagation();void toggle(id);}));
-        row.append(label);
+      row.querySelectorAll(':scope > .slink-stock-detail').forEach(node=>node.remove());
+      const nameCell=title?.querySelector('[class*="nameContainer___"]')||title;
+      let hideButton=row.querySelector('.slink-stock-hide');
+      if(!hideButton&&nameCell){
+        hideButton=element('button','Hide stock');hideButton.type='button';
+        hideButton.className='slink-stock-hide';
+        globalThis.SLINK_TORN_COMPONENTS?.mark(hideButton,'slink-page-action');
+        nameCell.append(hideButton);
       }
-      const h=holding(id), price=stock?.market?.price;
-      const shares=h?.shares??0;
-      const goal=stock&&model.threshold(stock.bonus?.requirement,shares,{passive:stock.bonus?.passive===true,cap:stock.acronym==='MCS'?10:Infinity});
-      const msg=goal!=null&&price>0?`Next benefit: ${(goal-shares).toLocaleString()} more shares · estimated ${money((goal-shares)*price)} `:'';
-      if(label.firstChild.textContent!==msg)label.firstChild.textContent=msg;
+      if(hideButton&&!hideButtons.has(hideButton)){
+        hideButtons.add(hideButton);
+        hideButton.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();void toggle(rowId(row));});
+        hideButton.addEventListener('keydown',event=>event.stopPropagation());
+      }
       const caption=hidden.has(id)?'Restore stock':'Hide stock';
-      if(label.lastChild.textContent!==caption)label.lastChild.textContent=caption;
+      if(hideButton&&hideButton.textContent!==caption)hideButton.textContent=caption;
+      const info=row.querySelector('[class*="dividendInfo___"]');
+      let benefit=row.querySelector('.slink-stock-benefit');
+      const h=holding(id),price=stock?.market?.price,shares=h?.shares??0;
+      const goal=data&&stock&&model.threshold(stock.bonus?.requirement,shares,{passive:stock.bonus?.passive===true,cap:stock.acronym==='MCS'?10:Infinity});
+      const show=info&&goal!=null&&price>0&&!info.querySelector('.tt-cost-to-next');
+      if(show){
+        if(!benefit){benefit=element('small');benefit.className='slink-stock-benefit';globalThis.SLINK_TORN_COMPONENTS?.mark(benefit,'slink-page-positive');info.append(benefit);}
+        const text='Next benefit: '+compact((goal-shares)*price);
+        if(benefit.textContent!==text)benefit.textContent=text;
+        const detail=(goal-shares).toLocaleString()+' more shares · estimated '+money((goal-shares)*price);
+        if(benefit.title!==detail)benefit.title=detail;
+      }else if(benefit)benefit.remove();
     }
     const blocks=new Set(Array.from(root.querySelectorAll(tradeSelector)).filter(block=>
       shown(block)&&Array.from(block.querySelectorAll(quantitySelector)).some(shown)));
@@ -131,6 +180,7 @@
     try{
       const snapshot=await host.load();
       if(!Array.isArray(snapshot.holdings)||!Array.isArray(snapshot.market)||!snapshot.market.length)throw Error('Torn did not return stock data.');
+      snapshot.educationRemaining=model.educationRemaining(snapshot.education,snapshot.educationCourses);
       data=snapshot;
       status.textContent='Snapshot: '+new Date(data.fetchedAt).toLocaleTimeString()+'. Refresh after trading.';
       refreshDisplay();schedule();
@@ -150,8 +200,17 @@
       observeRoot();
       return;
     }
-    const style=element('style','.slink-stock-filtered{display:none!important}');
-    panel=element('section');panel.className='slink-stocks-panel';panel.setAttribute('aria-label','SLINK Stocks tools');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
+    const style=element('style',`
+      .slink-stock-filtered{display:none!important}
+      #stockmarketroot .slink-stock-hide{display:block!important;inline-size:max-content!important;min-inline-size:0!important;min-block-size:0!important;block-size:auto!important;margin:2px 0 0!important;padding:0 2px!important;border:0!important;border-radius:2px!important;background:transparent!important;color:var(--sp-link)!important;font:11px/1.25 Arial,sans-serif!important;text-decoration:underline;white-space:nowrap!important}
+      #stockmarketroot .slink-stock-hide:hover{color:var(--sp-text)!important}
+      #stockmarketroot .slink-stock-benefit{display:block;font:11px/1.3 Arial,sans-serif;color:var(--sp-success);overflow-wrap:anywhere}
+      .slink-stock-recommendations{margin:8px 0;padding:0;min-width:0}
+      .slink-stock-recommendations label{display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0}
+      .slink-stock-recommendations ol{padding-inline-start:22px;margin:5px 0}
+      .slink-stock-recommendations li{margin:5px 0}
+    `);
+    panel=element('details');panel.open=true;panel.className='slink-stocks-panel';panel.setAttribute('aria-label','SLINK Stocks tools');globalThis.SLINK_TORN_COMPONENTS?.card(panel);
     summary=element('div');status=element('div');status.setAttribute('role','status');
     controls=button('',()=>{showHidden=!showHidden;refreshDisplay();schedule();});
     picker=button('Load / refresh stocks',()=>void load());
@@ -162,9 +221,16 @@
     try{const saved=JSON.parse(localStorage.getItem(filterKey)||'{}');if(typeof saved?.query==='string')search.value=saved.query.slice(0,80);if(['owned','unowned'].includes(saved?.ownership))ownership.value=saved.ownership;}catch{}
     const savePreset=button('Save filter preset',()=>{try{localStorage.setItem(filterKey,JSON.stringify({query:search.value,ownership:ownership.value}));status.textContent='Stock filter preset saved.';}catch{status.textContent='Could not save the preset on this device.';}});
     const resetFilters=button('Reset filters',()=>{search.value=ownership.value='';try{localStorage.removeItem(filterKey);}catch{}schedule();});
+    const recommendations=element('div');recommendations.className='slink-stock-recommendations';
+    const affordLabel=element('label');affordable=element('input');affordable.type='checkbox';affordLabel.append(affordable,'What can I afford');
+    sort=element('select');sort.setAttribute('aria-label','Recommendation order');
+    for(const [value,label] of [['monthlyRoi','Monthly ROI'],['weeklyValue','Weekly payout']]){const option=element('option',label);option.value=value;sort.append(option);}
+    sort.addEventListener('change',renderRecommendations);affordable.addEventListener('change',renderRecommendations);
+    recommendationList=element('ol');recommendationStatus=element('small');recommendationStatus.setAttribute('role','status');
+    recommendations.append(element('strong','Top 3 unowned stocks'),affordLabel,sort,recommendationList,recommendationStatus);
     tradeTools=element('div');
     tradeTools.hidden=true;
-    panel.append(element('strong','SLINK Stocks'),summary,picker,controls,search,ownership,savePreset,resetFilters,status,tradeTools,style);
+    panel.append(element('summary','SLINK Stocks'),summary,picker,controls,search,ownership,savePreset,resetFilters,status,recommendations,tradeTools,style);
     root.before(panel);
     refreshDisplay();
     observeRoot();

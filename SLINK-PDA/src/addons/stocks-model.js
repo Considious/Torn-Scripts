@@ -37,5 +37,37 @@
     if(!valid(shares)||!shares)return null;
     return {shares,total:shares*unit,exceeds:valid(limit)&&shares>limit};
   }
-  g.SLINK_STOCKS_MODEL=Object.freeze({threshold,portfolio,amount,quote});
+  function educationRemaining(user, catalog){
+    const completed=user?.education?.complete, groups=catalog?.education;
+    if(!Array.isArray(completed)||!Array.isArray(groups))return null;
+    const ids=groups.flatMap(group=>Array.isArray(group?.courses)?group.courses.map(course=>Number(course.id)):[]);
+    if(!ids.length||ids.some(id=>!Number.isSafeInteger(id)||id<=0))return null;
+    const known=completed.map(course=>Number(course?.id??course));
+    if(known.some(id=>!Number.isSafeInteger(id)||id<=0))return null;
+    const done=new Set(known);
+    return ids.some(id=>!done.has(id));
+  }
+  function recommendations(snapshot, {affordableOnly=false,sort='monthlyRoi',hidden=[]}={}){
+    if(!Array.isArray(snapshot?.holdings)||!Array.isArray(snapshot?.market))return [];
+    const owned=new Set(snapshot.holdings.filter(row=>Number(row.shares)>0).map(row=>Number(row.id)));
+    const excluded=new Set(hidden), market=new Map(snapshot.market.map(row=>[Number(row.id),row]));
+    const cash=typeof snapshot.cash==='number'&&Number.isFinite(snapshot.cash)&&snapshot.cash>=0?snapshot.cash:null;
+    const choices=(Array.isArray(snapshot.benefitRows)?snapshot.benefitRows:[]).filter(row=>
+      row.acronym!=='WSU'&&!owned.has(Number(row.id))&&!excluded.has(Number(row.id))&&market.get(Number(row.id))?.bonus?.passive!==true&&
+      row.incrementalCost>0&&row.weeklyValue>0&&row.monthlyRoi>0&&
+      Number.isFinite(row.weeklyValue)&&Number.isFinite(row.monthlyRoi));
+    const wsu=snapshot.market.find(row=>row.acronym==='WSU');
+    if(wsu&&snapshot.educationRemaining===true&&!owned.has(Number(wsu.id))&&!excluded.has(Number(wsu.id))){
+      const shares=Number(wsu.bonus?.requirement),price=Number(wsu.market?.price);
+      if(Number.isSafeInteger(shares)&&shares>0&&price>0&&Number.isFinite(price)){
+        choices.push({id:wsu.id,acronym:'WSU',name:wsu.name,incrementalCost:Math.ceil(shares*price),
+          education:true,benefitDescription:wsu.bonus?.description||'Reduced education time'});
+      }
+    }
+    return choices.filter(row=>!affordableOnly||(cash!==null&&row.incrementalCost<=cash))
+      .sort((a,b)=>Number(Boolean(b.education))-Number(Boolean(a.education))||
+        (sort==='weeklyValue'?b.weeklyValue-a.weeklyValue:b.monthlyRoi-a.monthlyRoi)||Number(a.id)-Number(b.id))
+      .slice(0,3);
+  }
+  g.SLINK_STOCKS_MODEL=Object.freeze({threshold,portfolio,amount,quote,educationRemaining,recommendations});
 })(globalThis);
