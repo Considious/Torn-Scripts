@@ -24,14 +24,14 @@
       :host([data-chat-picker]) .panel>label,:host([data-chat-picker]) .panel>.actions,:host([data-chat-picker]) .panel>a{flex-shrink:0}.tile button{font-size:12px}
       a{color:#b5caff}[hidden]{display:none!important}.attribution{display:block;width:150px;height:auto;max-width:100%}
     </style><div class="panel"><h3>Chat media picker</h3>
-      <label><input type="checkbox" data-enabled disabled> Enable GIFs &amp; stickers</label>
+      <label><input class="slink-switch" role="switch" type="checkbox" data-enabled disabled> Enable GIFs &amp; stickers</label>
       <label>API key<select data-mode disabled><option value="integrated">SLINK integrated key (shared quota)</option><option value="custom">My own GIPHY API key</option></select></label>
       <label data-key-label hidden>Your GIPHY key<input type="password" data-key autocomplete="off" maxlength="128" placeholder="Enter a GIPHY API key"></label>
       <div class="actions"><button type="button" data-clear hidden>Remove saved key</button><button type="button" data-retry hidden>Retry save</button></div>
       <p data-save role="status">Loading saved settings…</p>
       <p>Optional. GIF searches contact GIPHY; sticker searches also contact ChatSticker. Animated previews play only when clicked. Your message is never sent automatically.</p>
       <div class="actions" aria-label="Media type"><button type="button" data-media-type="gif" aria-pressed="true" disabled>GIFs</button><button type="button" data-media-type="sticker" aria-pressed="false" disabled>Stickers</button></div>
-      <label><input type="checkbox" data-inline-media disabled> Show GIF/sticker images inside chat</label>\n      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
+      <label><input class="slink-switch" role="switch" type="checkbox" data-inline-media disabled> Show GIF/sticker images inside chat</label>\n      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
       <div class="actions"><button type="button" data-search disabled>Search</button><button type="button" data-trending disabled>Trending / popular</button><button type="button" data-next hidden>Next results</button></div>
       <a href="https://giphy.com/" target="_blank" rel="noopener noreferrer"><img class="attribution" data-attribution alt="Powered by GIPHY"></a>
       <p data-status role="status"></p><div class="actions"><button type="button" data-load-retry hidden>Retry loading settings</button><button type="button" data-save-retry hidden>Retry save</button></div><div data-results></div>

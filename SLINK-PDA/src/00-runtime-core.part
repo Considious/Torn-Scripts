@@ -2775,7 +2775,7 @@ const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
 let contrastInput=shadow.querySelector('[data-theme-higher-contrast]');
 if(!contrastInput){
  const label=document.createElement('label');label.className='check-row';
- contrastInput=document.createElement('input');contrastInput.type='checkbox';contrastInput.setAttribute('data-theme-higher-contrast','');
+ contrastInput=document.createElement('input');contrastInput.type='checkbox';contrastInput.setAttribute('role','switch');contrastInput.classList.add('slink-switch');contrastInput.setAttribute('data-theme-higher-contrast','');
  label.append(contrastInput,document.createTextNode(' Higher theme contrast'));row.after(label);
 }
 globalThis.SLINK_THEME_APPEARANCE?.attach(host,shadow)?.bind(contrastInput);

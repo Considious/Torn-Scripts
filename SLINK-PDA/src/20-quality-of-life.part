@@ -716,9 +716,9 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 <label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${escapeHtml(TRAVEL_LABELS[method]||method)}</option>`).join('')}</select><span class="muted">${current.settings.travelMethodExplicit?'Manually selected':'Automatically selected from your current property'}</span></label>
 <label>Arrive early (minutes)<input type="number" min="0" max="30" data-field="abroad-arrival-buffer" value="${current.settings.arrivalBufferMinutes}"></label>
 <label>Alert before leave time (minutes)<input type="number" min="0" max="180" data-field="abroad-alert-lead" value="${current.settings.alertLeadMinutes}"></label>
-<label class="check-row"><input type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
-<label class="check-row"><input type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
-<label class="check-row"><input type="checkbox" data-field="abroad-landing-recommendation" ${current.settings.landingRecommendationEnabled ? 'checked' : ''}>Two-minute landing purchase recommendation</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="abroad-landing-recommendation" ${current.settings.landingRecommendationEnabled ? 'checked' : ''}>Two-minute landing purchase recommendation</label>
 <span class="muted">Checks YATA, Prometheus, and Torn Intel, then recommends the in-stock item with the best return against Torn market value.</span>
 <label class="check-row"><input type="checkbox" data-field="abroad-use-droqs" ${current.settings.useDroqs ? 'checked' : ''}>Use optional DroqsDB enrichment</label>
 <button type="button" data-action="save-abroad-settings">Save settings</button>

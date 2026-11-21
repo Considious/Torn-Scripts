@@ -125,7 +125,7 @@ input[type=checkbox].slink-switch::before{
 }
 input[type=checkbox].slink-switch:checked{background:var(--sw-accent)!important;border-color:var(--sw-accent)!important}
 input[type=checkbox].slink-switch:checked::before{transform:translateX(14px)!important}
-label.slink-switch-label{display:flex!important;align-items:center!important;justify-content:space-between;gap:10px!important;min-block-size:36px;min-inline-size:0;cursor:pointer}
+label.slink-switch-label,label:has(>input.slink-switch){display:flex!important;align-items:center!important;justify-content:space-between;gap:10px!important;min-block-size:36px;min-inline-size:0;cursor:pointer}
 button.slink-switch-button{display:inline-flex;align-items:center;justify-content:space-between;gap:10px;min-block-size:36px;max-inline-size:100%;padding:5px 8px;border:1px solid var(--sw-border);border-radius:7px;background:var(--sw-bg);font:inherit}
 button.slink-switch-button::after{content:'';flex:none;width:36px;height:22px;box-sizing:border-box;border:1px solid var(--sw-border);border-radius:999px;background:radial-gradient(circle at 10px 50%,var(--sw-text) 0 7px,transparent 7.5px),var(--sw-bg)}
 button.slink-switch-button[aria-checked=true]::after{background:radial-gradient(circle at 24px 50%,var(--sw-text) 0 7px,transparent 7.5px),var(--sw-accent);border-color:var(--sw-accent)}
@@ -137,45 +137,33 @@ button.slink-switch-button[aria-checked=true]::after{background:radial-gradient(
 input[type=checkbox][data-racing-toggle]{appearance:auto!important;width:18px!important;inline-size:18px!important;min-inline-size:18px!important;max-inline-size:18px!important;height:18px!important;block-size:18px!important;min-block-size:18px!important;margin:0 6px 0 0!important;padding:0!important;accent-color:var(--slink-accent,var(--s-accent,#8435c5))}
 label:has(>input[data-racing-toggle]){display:inline-flex;align-items:center;gap:6px;min-height:36px}
 `;
-  const switchRoots=new WeakSet();
-  function slinkNode(node){
-    return !!node&&(String(node.id||'').startsWith('slink-')||String(node.className||'').split(/\s+/).some(c=>c.startsWith('slink-'))||Object.keys(node.dataset||{}).some(k=>k.startsWith('slink')));
-  }
-  function switchInput(input,root){
-    const label=input.closest('label')||input.labels?.[0];
-    const identity=[input.id,input.name,...Object.keys(input.dataset||{})].join(' ');
-    if(input.matches('[data-switch-exempt],[data-racing-toggle]')||/consent|terms|disclosure|agreement|accept|api.?scope|api.?feature|api.?use/i.test(identity)||/\b(?:accept|agree|consent|authorize|grant|acknowledge|understand)\b|terms|disclosure|use saved.*api key/i.test(label?.textContent||''))return;
-    if(root.nodeType===9&&!/^(?:chrome|moz)-extension:$/.test(root.location?.protocol||'')){
-      let own=false;for(let n=input;n;n=n.parentElement)if(slinkNode(n)){own=true;break;}
-      if(!own)return;
-    }
-    input.classList.add('slink-switch');input.setAttribute('role','switch');label?.classList.add('slink-switch-label');
-  }
-  function enhanceSwitches(root){
-    if(!root||switchRoots.has(root))return;switchRoots.add(root);
-    const scan=node=>{
-      if(node.nodeType!==1&&node!==root)return;
-      if(node.matches?.('input[type=checkbox]'))switchInput(node,root);
-      for(const input of node.querySelectorAll?.('input[type=checkbox]')||[])switchInput(input,root);
-      for(const host of [node,...node.querySelectorAll?.('*')||[]])if(host.shadowRoot&&slinkNode(host))install(host.shadowRoot);
-    };
-    scan(root);
-    new MutationObserver(records=>{for(const r of records)for(const node of r.addedNodes)scan(node);}).observe(root,{childList:true,subtree:true});
-  }
+  const styleObservers=new WeakSet();
+  function enhanceSwitches(root){install(root);}
 
-  const installed=new WeakSet();
-  function install(root=global.document){
-    if(!root||installed.has(root)||(root.nodeType!==9&&!root.host))return;
+  const installed=new WeakMap();
+  function ensureStyle(root){
     const parent=root.nodeType===9?root.head||root.documentElement:root;
     if(!parent)return;
-    const style=(root.ownerDocument||root).createElement('style');
-    style.dataset.slinkTornComponents='';style.textContent=css;parent.append(style);installed.add(root);enhanceSwitches(root);
+    let style=installed.get(root);
+    if(!style){
+      style=(root.ownerDocument||root).createElement('style');
+      style.dataset.slinkTornComponents='';style.textContent=css;installed.set(root,style);
+    }
+    if(style.parentNode!==parent)parent.append(style);
+  }
+  function install(root=global.document){
+    if(!root||(root.nodeType!==9&&!root.host))return;
+    ensureStyle(root);
+    if(!styleObservers.has(root)){
+      const parent=root.nodeType===9?root.head||root.documentElement:root;
+      if(parent){new MutationObserver(()=>ensureStyle(root)).observe(parent,{childList:true});styleObservers.add(root);}
+    }
   }
   function mark(node,...classes){node.classList.add(...classes);install(node.ownerDocument);return node;}
   function card(node){return mark(node,'slink-page-ui','slink-page-card');}
   function switchRow(label,input){
     label.classList.add('slink-page-toggle');
-    input.setAttribute('role','switch');return label;
+    input.setAttribute('role','switch');input.classList.add('slink-switch');label.classList.add('slink-switch-label');return label;
   }
   function weaponStat(icon,kind,value,label){
     return decorateWeaponValue(icon?.nextElementSibling,kind,value,label,false);
