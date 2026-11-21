@@ -26,9 +26,10 @@
     const storage=ext.core.storage;
     const [session,alerts,company,war,companyDaily]=await Promise.all(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1',companyKey].map(k=>storage.get(k,null)));
     if(!session?.token||session.expiresAt<=Date.now()||!session.userId)return null;
+    const preferences=await storage.get('qol.page-tools.v1:'+session.userId,{});
     const scope=s=>ext.core.permissions.hasScope(session,s);
     const a=alerts?.snapshot, user=Number(a?.data?.profile?.id??a?.data?.profile?.player_id??a?.data?.player_id);
-    return {companyDaily,owner:session.userId,expiresAt:session.expiresAt,canVirus:scope('slink.adhd.alerts'),canCompany:scope('slink.qol.company'),canWar:scope('slink.war'),
+    return {timersEnabled:preferences?.enabled!==false&&preferences?.timers!==false,companyDaily,owner:session.userId,expiresAt:session.expiresAt,canVirus:scope('slink.adhd.alerts'),canCompany:scope('slink.qol.company'),canWar:scope('slink.war'),
       alerts:scope('slink.adhd.alerts')&&user===Number(session.userId)?a:null,
       company:scope('slink.qol.company')&&company?.snapshot?.userId===Number(session.userId)?company.snapshot:null,
       war:scope('slink.war')&&war&&Number(war.ownFactionId)===Number(session.factionId)?war:null};
@@ -38,7 +39,7 @@
  const visible=()=>document.visibilityState!=='hidden';
  function paint(){
   if(!visible())return;
-  const now=Date.now(),current=data?.expiresAt>now?data:null;
+  const now=Date.now(),current=data?.expiresAt>now&&data.timersEnabled!==false?data:null;
   const hosts=[...document.querySelectorAll('[class^="userInformation___"],[class*=" userInformation___"]')];
   const target=hosts.find(n=>n.getClientRects().length);
   if(!target||!current){sidebar?.remove();sidebar=null;return;}
@@ -61,7 +62,7 @@
   sidebar.replaceChildren(...rows.map(([title,value,href])=>{const row=make('div'),link=make('a',title+': ');link.href=href;link.style.cssText='color:inherit;text-decoration:none';row.append(link,make('span',value));return row;}));sidebar.hidden=!rows.length;
  }
  async function checkData(){
-  if(checking||!visible()||!data||data.expiresAt<=Date.now())return;
+  if(checking||!visible()||!data||data.timersEnabled===false||data.expiresAt<=Date.now())return;
   checking=true;const current=data,owner=String(current.owner),now=Date.now();
   try{
    if(pda?.moduleMonitoringEnabled?.('alerts')!==false&&current.canVirus&&now-lastVirusAttempt>=15*minute){
@@ -99,7 +100,7 @@
   if(!visible())return;
   if(running){dirty=true;return;}running=true;
   try{do{dirty=false;const next=ext?await extensionStatus():pda.inlineStatus();if(String(next?.owner)!==String(data?.owner)){virus=null;company=null;lastVirusAttempt=0;companyAttempt='';}data=next;
-   if(pda&&data){const c=pda.cache('sidebarCompanyDaily',{});data.companyDaily=c;}
+   if(pda&&data){const c=pda.cache('sidebarCompanyDaily',{});data.companyDaily=c;const settings=pda.settings?.('pageTools',{accounts:{}})?.accounts?.[String(data.owner)];data.timersEnabled=settings?.enabled!==false&&settings?.timers!==false;}
    if(data?.canCompany){
     const owner=String(data.owner),saved=data.companyDaily;
     if(saved?.owner===owner)company=saved;
@@ -116,8 +117,8 @@
   new MutationObserver(records=>{if(sidebar&&!sidebar.isConnected||records.some(r=>[...r.addedNodes].some(n=>n.nodeType===1&&(n.matches('[class*="userInformation___"]')||n.querySelector('[class*="userInformation___"]')))))schedule();}).observe(document.body,{childList:true,subtree:true});
   void refresh();
  }
- if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1',companyKey].some(k=>Object.hasOwn(changes,ext.core.storage.fullKey(k))))void refresh();});
- document.addEventListener('visibilitychange',()=>{if(visible())void refresh();});g.addEventListener('hashchange',()=>void refresh());
+ if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1',companyKey].some(k=>Object.hasOwn(changes,ext.core.storage.fullKey(k)))||data&&Object.hasOwn(changes,ext.core.storage.fullKey('qol.page-tools.v1:'+data.owner)))void refresh();});
+ document.addEventListener('visibilitychange',()=>{if(visible())void refresh();});g.addEventListener('hashchange',()=>void refresh());g.addEventListener('slink:qol-settings',()=>void refresh());
  setInterval(()=>void refresh(),15000);
  if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
 })(globalThis);

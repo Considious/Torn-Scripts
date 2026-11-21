@@ -13,7 +13,7 @@
     function node(tag,text,attrs={}){const el=doc.createElement(tag);if(text!==undefined)el.textContent=text;for(const [k,v]of Object.entries(attrs))el.setAttribute(k,String(v));return el;}
     function button(label,fn,attrs={}){const b=node('button',label,{type:'button',...attrs});b.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();Promise.resolve(fn(event)).catch(error=>notice(error.message||String(error)));});return b;}
     function notice(text){status=String(text||'');for(const el of [tray?.querySelector('[role="status"]'),manager?.querySelector('[role="status"]')])if(el)el.textContent=status;}
-    function emit(){for(const fn of changed)fn(config);}
+    function emit(){for(const fn of changed)fn(config);global.dispatchEvent(new Event('slink:qol-settings'));}
     function mutate(fn){
       const task=queue.then(async()=>{const next=Q.normalize(fn(Q.normalize(config)));await host.save(next);config=next;emit();drawManager();schedule();return config;});
       queue=task.catch(()=>{});return task;
@@ -41,7 +41,7 @@
     function drawManager(){
       if(!manager||inputPending)return;manager.replaceChildren();manager.classList.add('slink-qol');globalThis.SLINK_TORN_COMPONENTS?.card(manager);globalThis.SLINK_TORN_COMPONENTS?.install(manager.getRootNode());const localStyle=node('style');localStyle.textContent=style?.textContent||'';manager.append(localStyle);
       manager.append(node('h3','Page tools'));
-      for(const [key,label]of [['enabled','Enable page tools'],['quickItems','Quick-use favorites'],['customLinks','Custom links'],['effects','Item effects'],['values','Item values'],['hideBazaarDescription','Hide Bazaar description']]){
+      for(const [key,label]of [['enabled','Enable page tools'],['quickItems','Quick-use favorites'],['customLinks','Custom links'],['effects','Item effects'],['values','Item values'],['hideBazaarDescription','Hide Bazaar description'],['timers','Enable SLINK timers']]){
         const l=node('label'),input=node('input',undefined,{type:'checkbox'});input.checked=config[key];input.addEventListener('change',()=>void mutate(s=>({...s,[key]:input.checked})).catch(e=>notice(e.message)));l.append(input,doc.createTextNode(label));manager.append(l);
       }
       const row=node('div',undefined,{class:'slink-qol-row'}),blood=node('select',undefined,{'aria-label':'Your Torn blood type'});blood.append(node('option','Choose Torn blood type',{value:''}));for(const type of Q.BLOOD)blood.append(node('option',type,{value:type}));blood.value=config.bloodType||'';

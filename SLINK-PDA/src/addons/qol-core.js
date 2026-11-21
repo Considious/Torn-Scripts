@@ -28,7 +28,7 @@
       const href=safeUrl(row?.href),id=String(row?.id||'').slice(0,80);if(!href||!id||ids.has(id))continue;ids.add(id);
       links.push({id,href,name:String(row.name||'Link').slice(0,60),newTab:row.newTab===true});if(links.length>=30)break;
     }
-    return {enabled:input.enabled!==false,hideBazaarDescription:input.hideBazaarDescription===true,quickItems:input.quickItems!==false,customLinks:input.customLinks!==false,effects:input.effects!==false,values:input.values!==false,
+    return {enabled:input.enabled!==false,timers:input.timers!==false,hideBazaarDescription:input.hideBazaarDescription===true,quickItems:input.quickItems!==false,customLinks:input.customLinks!==false,effects:input.effects!==false,values:input.values!==false,
       bloodType:blood(input.bloodType),favorites,links,version:1};
   }
   function favoriteKey(row){return row.source+':'+row.id;}

@@ -103,14 +103,73 @@
 .slink-weapon-modifiers>[data-slink-weapon-xp]{color:color-mix(in srgb,var(--sp-text) 56%,#267de2)}
 .slink-page-ui .slink-page-warning{color:var(--sp-danger)}
 @media(pointer:coarse){.slink-page-ui :is(button,select,summary),.slink-page-toggle,.slink-page-action{min-block-size:34px}}
+
+/* Shared boolean controls; consent and task-completion checkboxes stay native. */
+input[type=checkbox].slink-switch,button.slink-switch-button{
+ --sw-text:var(--slt-text,var(--slink-text,var(--s-text,currentColor)));
+ --sw-bg:var(--slt-control,var(--slink-bg-control,var(--s-control,#343b48)));
+ --sw-accent:var(--slt-accent,var(--slink-accent,var(--s-accent,#8435c5)));
+ --sw-border:var(--slt-border,var(--slink-border,var(--s-border,#8391a3)));
+ cursor:pointer;color:var(--sw-text);vertical-align:middle;flex-shrink:0;
+}
+input[type=checkbox].slink-switch{
+ appearance:none!important;-webkit-appearance:none!important;position:relative!important;display:inline-block!important;
+ inline-size:36px!important;width:36px!important;min-inline-size:36px!important;max-inline-size:36px!important;
+ block-size:22px!important;height:22px!important;min-block-size:22px!important;max-block-size:22px!important;
+ padding:0!important;margin:0!important;border:1px solid var(--sw-border)!important;border-radius:999px!important;
+ background:var(--sw-bg)!important;box-sizing:border-box!important;box-shadow:none!important;align-self:center;order:1;
+}
+input[type=checkbox].slink-switch::before{
+ content:''!important;position:absolute!important;inset:3px auto auto 3px!important;width:14px!important;height:14px!important;
+ inline-size:14px!important;block-size:14px!important;border-radius:50%!important;background:var(--sw-text)!important;transform:none!important;
+}
+input[type=checkbox].slink-switch:checked{background:var(--sw-accent)!important;border-color:var(--sw-accent)!important}
+input[type=checkbox].slink-switch:checked::before{transform:translateX(14px)!important}
+label.slink-switch-label{display:flex!important;align-items:center!important;justify-content:space-between;gap:10px!important;min-block-size:36px;min-inline-size:0;cursor:pointer}
+button.slink-switch-button{display:inline-flex;align-items:center;justify-content:space-between;gap:10px;min-block-size:36px;max-inline-size:100%;padding:5px 8px;border:1px solid var(--sw-border);border-radius:7px;background:var(--sw-bg);font:inherit}
+button.slink-switch-button::after{content:'';flex:none;width:36px;height:22px;box-sizing:border-box;border:1px solid var(--sw-border);border-radius:999px;background:radial-gradient(circle at 10px 50%,var(--sw-text) 0 7px,transparent 7.5px),var(--sw-bg)}
+button.slink-switch-button[aria-checked=true]::after{background:radial-gradient(circle at 24px 50%,var(--sw-text) 0 7px,transparent 7.5px),var(--sw-accent);border-color:var(--sw-accent)}
+:is(input.slink-switch,button.slink-switch-button):focus-visible{outline:2px solid var(--sw-accent)!important;outline-offset:3px!important}
+:is(input.slink-switch,button.slink-switch-button):disabled{opacity:.5;cursor:not-allowed}
+@media(pointer:coarse){label.slink-switch-label,button.slink-switch-button{min-block-size:44px}}
+@media(forced-colors:active){input[type=checkbox].slink-switch{appearance:auto!important;inline-size:22px!important;width:22px!important}input.slink-switch::before{display:none!important}button.slink-switch-button::after{content:'Off';background:none}button.slink-switch-button[aria-checked=true]::after{content:'On'}}
+
+input[type=checkbox][data-racing-toggle]{appearance:auto!important;width:18px!important;inline-size:18px!important;min-inline-size:18px!important;max-inline-size:18px!important;height:18px!important;block-size:18px!important;min-block-size:18px!important;margin:0 6px 0 0!important;padding:0!important;accent-color:var(--slink-accent,var(--s-accent,#8435c5))}
+label:has(>input[data-racing-toggle]){display:inline-flex;align-items:center;gap:6px;min-height:36px}
 `;
+  const switchRoots=new WeakSet();
+  function slinkNode(node){
+    return !!node&&(String(node.id||'').startsWith('slink-')||String(node.className||'').split(/\s+/).some(c=>c.startsWith('slink-'))||Object.keys(node.dataset||{}).some(k=>k.startsWith('slink')));
+  }
+  function switchInput(input,root){
+    const label=input.closest('label')||input.labels?.[0];
+    const identity=[input.id,input.name,...Object.keys(input.dataset||{})].join(' ');
+    if(input.matches('[data-switch-exempt],[data-racing-toggle]')||/consent|terms|disclosure|agreement|accept|api.?scope|api.?feature|api.?use/i.test(identity)||/\b(?:accept|agree|consent|authorize|grant|acknowledge|understand)\b|terms|disclosure|use saved.*api key/i.test(label?.textContent||''))return;
+    if(root.nodeType===9&&!/^(?:chrome|moz)-extension:$/.test(root.location?.protocol||'')){
+      let own=false;for(let n=input;n;n=n.parentElement)if(slinkNode(n)){own=true;break;}
+      if(!own)return;
+    }
+    input.classList.add('slink-switch');input.setAttribute('role','switch');label?.classList.add('slink-switch-label');
+  }
+  function enhanceSwitches(root){
+    if(!root||switchRoots.has(root))return;switchRoots.add(root);
+    const scan=node=>{
+      if(node.nodeType!==1&&node!==root)return;
+      if(node.matches?.('input[type=checkbox]'))switchInput(node,root);
+      for(const input of node.querySelectorAll?.('input[type=checkbox]')||[])switchInput(input,root);
+      for(const host of [node,...node.querySelectorAll?.('*')||[]])if(host.shadowRoot&&slinkNode(host))install(host.shadowRoot);
+    };
+    scan(root);
+    new MutationObserver(records=>{for(const r of records)for(const node of r.addedNodes)scan(node);}).observe(root,{childList:true,subtree:true});
+  }
+
   const installed=new WeakSet();
   function install(root=global.document){
     if(!root||installed.has(root)||(root.nodeType!==9&&!root.host))return;
     const parent=root.nodeType===9?root.head||root.documentElement:root;
     if(!parent)return;
     const style=(root.ownerDocument||root).createElement('style');
-    style.dataset.slinkTornComponents='';style.textContent=css;parent.append(style);installed.add(root);
+    style.dataset.slinkTornComponents='';style.textContent=css;parent.append(style);installed.add(root);enhanceSwitches(root);
   }
   function mark(node,...classes){node.classList.add(...classes);install(node.ownerDocument);return node;}
   function card(node){return mark(node,'slink-page-ui','slink-page-card');}
@@ -161,6 +220,6 @@
     piece.remove();
     if(group&&!group.childElementCount){group.remove();base?.classList.remove('slink-weapon-stat','slink-weapon-market-value');base?.parentElement?.classList.remove('slink-weapon-stat-cell','slink-weapon-shop-stat');}
   }
-  global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,weaponStat,clearWeaponStat,marketWeaponRows,marketStats,marketWeaponId,marketWeaponStat});
+  global.SLINK_TORN_COMPONENTS=Object.freeze({install,mark,card,switchRow,enhanceSwitches,weaponStat,clearWeaponStat,marketWeaponRows,marketStats,marketWeaponId,marketWeaponStat});
   if(global.document)install();
 })(globalThis);
