@@ -17,6 +17,37 @@
   spray:35,stricken:20,stun:58,suppress:60,sureshot:78,throttle:48,toxin:103,warlord:81,weaken:46,
   windup:76,wither:42
  }));
+ // Ranked-war cache contents and class compatibility, checked 2026-11-21.
+ // https://wiki.torn.com/wiki/{Weapon,Weapon_Bonus,Melee_Cache,Small_Arms_Cache,Medium_Arms_Cache,Heavy_Arms_Cache}
+ // Cache eligibility excludes intrinsic-only, dual, NPC and Mechanical weapons.
+ const gearClasses={CL:'Clubbing',PI:'Piercing',SL:'Slashing',PS:'Pistol',SM:'SMG',RF:'Rifle',SG:'Shotgun',MG:'Machine gun',HA:'Heavy artillery'};
+ const gearWeapons=[];
+ for(const [slot,code,names] of [
+  ['primary','SM','9mm Uzi|AK74U|Bushmaster Carbon 15|MP 40|MP5 Navy|P90|Thompson'],
+  ['primary','RF','AK-47|ArmaLite M-15A4|Enfield SA-80|Heckler & Koch SL8|M16 A2 Rifle|M4A1 Colt Carbine|SIG 552|SKS Carbine|Steyr AUG|Tavor TAR-21|Vektor CR-21|XM8 Rifle'],
+  ['primary','SG','Benelli M1 Tactical|Benelli M4 Super|Ithaca 37|Jackhammer|Mag 7|Sawed-Off Shotgun'],
+  ['primary','MG','M249 SAW|Minigun|Negev NG-5|PKM|Stoner 96'],
+  ['secondary','PS','Beretta 92FS|Beretta M9|Cobra Derringer|Desert Eagle|Fiveseven|Glock 17|Lorcin 380|Luger|Magnum|Qsz-92|Raven MP25|Ruger 57|S&W Revolver|Springfield 1911|Taurus|USP'],
+  ['secondary','SM','BT MP9|MP5k|Skorpion|TMP'],
+  ['secondary','SG','Blunderbuss'],
+  ['secondary','HA','China Lake|Milkor MGL|RPG Launcher|SMAW Launcher|Type 98 Anti Tank'],
+  ['melee','CL','Axe|Baseball Bat|Bo Staff|Cricket Bat|Crowbar|Flail|Frying Pan|Hammer|Knuckle Dusters|Metal Nunchakus|Wooden Nunchakus'],
+  ['melee','PI','Butterfly Knife|Dagger|Diamond Bladed Knife|Kitchen Knife|Macana|Ninja Claws|Pen Knife|Sai|Spear|Swiss Army Knife'],
+  ['melee','SL','Chain Whip|Claymore Sword|Guandao|Kama|Katana|Kodachi|Leather Bullwhip|Naval Cutlass|Samurai Sword|Scimitar|Yasukuni Sword']
+ ])for(const name of names.split('|'))gearWeapons.push({name,category:slot,weaponClass:gearClasses[code].toLowerCase(),code});
+ const gearBonuses=Object.entries({
+  Achilles:'PI PS RF',Assassinate:'PI PS RF',Backstab:'PI',Berserk:'SL',Bleed:'PI SG SL',Blindside:'SG',Bloodlust:'SL',Comeback:'SM',Conserve:'MG RF SM',Cripple:'HA SG',Crusher:'CL',Cupid:'PI PS RF',Deadeye:'PI PS RF MG',Deadly:'SG',Disarm:'CL PI PS RF SL','Double-edged':'SL','Double Tap':'PS',Empower:'PI CL SL',Eviscerate:'PI SG SL',Execute:'PS',Expose:'PS RF SG SL',Finale:'HA',Focus:'RF',Frenzy:'CL PI SL',Fury:'CL PI SL',Grace:'SL','Home Run':'CL',Irradiate:'PI',Motivation:'CL PS SL SM',Paralyze:'HA',Parry:'SL',Penetrate:'MG PI RF',Plunder:'CL PI SL',Powerful:'CL HA RF SM SG MG',Proficience:'SM',Puncture:'MG PI RF',Quicken:'PS SL SM',Rage:'CL PI SL',Revitalize:'SM',Roshambo:'CL',Slow:'CL PI SM',Smurf:'MG',Specialist:'MG PS RF SM SG HA',Stricken:'HA',Stun:'CL HA SG',Suppress:'MG','Sure Shot':'RF',Throttle:'PS RF SG SL SM',Warlord:'HA RF SG SM MG',Weaken:'PI RF SG SL','Wind-up':'CL PI SL',Wither:'PI PS SM'
+ }).map(([name,codes])=>({name,codes:codes.split(' ')})).sort((a,b)=>a.name.localeCompare(b.name));
+ const weaponMatches=(row,filters,omit)=>Object.entries(filters).every(([k,v])=>!v||k===omit||!['item','category','weaponClass','bonus1','bonus2'].includes(k)||(k==='item'?row.name===v:k.startsWith('bonus')?gearBonuses.find(b=>b.name===v)?.codes.includes(row.code):row[k]===v));
+ function gearChoices(filters,field){
+  const rows=gearWeapons.filter(row=>weaponMatches(row,filters,field));
+  if(field==='item')return [...rows].sort((a,b)=>['primary','secondary','melee'].indexOf(a.category)-['primary','secondary','melee'].indexOf(b.category)||a.name.localeCompare(b.name)).map(r=>[r.name,r.name]);
+  if(field==='category')return ['primary','secondary','melee'].filter(v=>rows.some(r=>r.category===v)).map(v=>[v,v[0].toUpperCase()+v.slice(1)]);
+  if(field==='weaponClass')return Object.values(gearClasses).filter(v=>rows.some(r=>r.weaponClass===v.toLowerCase())).sort().map(v=>[v.toLowerCase(),v]);
+  const other=filters[field==='bonus1'?'bonus2':'bonus1'];
+  return gearBonuses.filter(b=>b.name!==other&&rows.some(r=>b.codes.includes(r.code))).map(b=>[b.name,b.name]);
+ }
+
  function itemMarketSearchLink(x){
   const category=new Map([['melee','Melee'],['primary','Primary'],['secondary','Secondary'],['armor','Defensive'],['defensive','Defensive']]).get(x.category);
   if(x.source!=='item_market'||!category||!Number.isSafeInteger(x.itemId)||x.itemId<1||!Number.isSafeInteger(x.price)||x.price<1||!/^\d{1,24}$/.test(String(x.uid??'')))return null;
@@ -88,6 +119,20 @@
   const d=root.ownerDocument;
   const add=(parent,tag,text)=>{const e=d.createElement(tag);if(text!=null)e.textContent=text;parent.append(e);return e;};
   panel=d.createElement('details');panel.className='card full';panel.dataset.slinkRankedGear='';panels.set(root,panel);root.prepend(panel);
+  const style=add(panel,'style');style.textContent=`
+   [data-slink-ranked-gear]{--rg-bg:var(--slink-bg-control,var(--slink-control,var(--s-control,#223140)));--rg-border:var(--slink-border,var(--s-border,#657586));--rg-text:var(--slink-text,var(--s-text,#edf7ff));color:var(--rg-text)}
+   [data-slink-ranked-gear] .rg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px;margin:10px 0;min-width:0}
+   [data-slink-ranked-gear] label{font-size:12px;min-width:0}
+   [data-slink-ranked-gear] input:not([type=checkbox]),[data-slink-ranked-gear] select{display:block;box-sizing:border-box;width:100%;min-width:0;max-width:100%;margin:4px 0 0;padding:6px 8px;border:1px solid var(--rg-border);border-radius:6px;background:var(--rg-bg);color:var(--rg-text);font:inherit}
+   [data-slink-ranked-gear] option{background:var(--rg-bg);color:var(--rg-text)}
+   [data-slink-ranked-gear] input:focus-visible,[data-slink-ranked-gear] select:focus-visible{outline:2px solid var(--slink-accent,var(--s-accent,#75c1ff));outline-offset:2px}
+   [data-slink-ranked-gear] .rg-advanced,[data-slink-ranked-gear] fieldset{box-sizing:border-box;min-width:0;margin:12px 0;padding:10px;border:1px solid var(--rg-border);border-radius:8px;background:var(--slink-card,var(--s-card,transparent))}
+   [data-slink-ranked-gear] .rg-range{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-content:start;margin:0;padding:8px}
+   [data-slink-ranked-gear] .rg-range legend{padding:0 4px;font-size:12px}
+   [data-slink-ranked-gear] .rg-advanced .rg-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))}
+   [data-slink-ranked-gear] button{background:var(--rg-bg);color:var(--rg-text);border:1px solid var(--rg-border);border-radius:6px;padding:6px 10px;max-width:100%}
+   [data-slink-ranked-gear] button:disabled{opacity:.6}
+  `;
   add(panel,'summary','Ranked Gear');
   const intro=add(panel,'p','Completed Torn sales and Weaver’s observed asking prices are separate. Bunker value is a scrap equivalent, not a sale estimate.');
   intro.className='muted';
@@ -104,13 +149,59 @@
   function status(container){const out=add(container,'div');out.setAttribute('role','status');return out;}
   function action(form,label){const button=add(form,'button',label);button.type='submit';return button;}
   const historyForm=add(history,'form');
-  for(const [n,label] of [['item','Exact item name'],['category','Category'],['rarity','Rarity'],['weaponClass','Weapon class'],['bonus1','Bonus 1'],['bonus2','Bonus 2']])field(historyForm,n,label);
-  const advanced=add(historyForm,'details');add(advanced,'summary','Value, stats and date filters');
-  for(const [n,label] of [['Bonus1','Bonus 1'],['Bonus2','Bonus 2'],['Quality','Quality'],['Damage','Damage'],['Accuracy','Accuracy'],['Armor','Armor']])for(const [prefix,desc] of [['min','Minimum'],['max','Maximum']])field(advanced,prefix+n,desc+' '+label,'number');
-  field(advanced,'minDate','From date','date');field(advanced,'maxDate','Through date','date');
+  const mainGrid=add(historyForm,'div');mainGrid.className='rg-grid';
+  const controls={};
+  controls.item=field(mainGrid,'item','Exact item name');controls.item.placeholder='Search ranked-war weapons…';controls.item.autocomplete='off';
+  const items=add(mainGrid,'datalist');items.id='slink-ranked-items-'+Math.random().toString(36).slice(2);controls.item.setAttribute('list',items.id);
+  const select=(parent,name,label)=>{const wrap=add(parent,'label',label);const input=add(wrap,'select');input.name=name;return input;};
+  for(const [n,label] of [['category','Category'],['rarity','Rarity'],['weaponClass','Weapon class'],['bonus1','Bonus 1'],['bonus2','Bonus 2']])controls[n]=select(mainGrid,n,label);
+  function options(input,values,empty='Any'){
+   const previous=input.value;input.replaceChildren();add(input,'option',empty).value='';
+   for(const [value,label] of values)add(input,'option',label).value=value;
+   input.value=values.some(([v])=>v===previous)?previous:'';
+  }
+  options(controls.rarity,['yellow','orange','red'].map(v=>[v,v[0].toUpperCase()+v.slice(1)]));
+  const help=add(historyForm,'p','Search for a cache weapon, or leave the item blank to search all matching weapons. Options narrow to compatible weapon classes and bonuses.');help.className='muted';
+  const filterStatus=status(historyForm);
+  const advanced=add(historyForm,'details');advanced.className='rg-advanced';add(advanced,'summary','Value, stats and date filters');
+  const statGrid=add(advanced,'div');statGrid.className='rg-grid';
+  for(const [n,label] of [['Bonus1','Bonus 1 value (%)'],['Bonus2','Bonus 2 value (%)'],['Quality','Quality (%)'],['Damage','Damage'],['Accuracy','Accuracy'],['Armor','Armor']]){
+   const pair=add(statGrid,'fieldset');pair.className='rg-range';add(pair,'legend',label);
+   for(const [prefix,desc] of [['min','Min'],['max','Max']])field(pair,prefix+n,desc,'number');
+  }
+  const dates=add(statGrid,'fieldset');dates.className='rg-range';add(dates,'legend','Sale dates (UTC)');
+  field(dates,'minDate','From','date');field(dates,'maxDate','Through','date');
+  function refresh(changed){
+   const before=Object.fromEntries(Object.entries(controls).map(([n,i])=>[n,i.value]));
+   if(changed==='item'&&before.item){
+    const found=gearWeapons.find(w=>w.name.toLowerCase()===before.item.trim().toLowerCase());
+    if(!found){controls.item.setCustomValidity('Choose a ranked-war weapon from the suggestions, or clear this field.');return;}
+    before.item=found.name;controls.item.value=found.name;
+   }
+   controls.item.setCustomValidity('');
+   const selected={};
+   for(const name of [...new Set([changed,'category','weaponClass','item','bonus1','bonus2'])]){
+    if(!name||name==='rarity')continue;
+    const value=before[name];
+    if(value&&!(name==='bonus2'&&controls.rarity.value==='yellow')&&gearChoices(selected,name).some(([v])=>v===value))selected[name]=value;
+   }
+   for(const name of ['category','weaponClass','bonus1','bonus2']){
+    controls[name].value=selected[name]??'';
+    options(controls[name],gearChoices(selected,name));
+   }
+   controls.item.value=selected.item??'';items.replaceChildren();
+   for(const [value] of gearChoices(selected,'item')){const o=add(items,'option');o.value=value;const w=gearWeapons.find(w=>w.name===value);o.label=w.category+' · '+gearClasses[w.code];}
+   controls.bonus2.disabled=controls.rarity.value==='yellow';
+   const cleared=Object.keys(before).filter(n=>n!==changed&&n!=='rarity'&&before[n]&&!selected[n]);
+   for(const n of cleared)if(n.startsWith('bonus'))for(const prefix of ['min','max'])historyForm.elements.namedItem(prefix+'Bonus'+n.slice(-1)).value='';
+   filterStatus.textContent=cleared.length?'Cleared incompatible filters: '+cleared.map(n=>({item:'item',weaponClass:'weapon class',category:'category',bonus1:'bonus 1',bonus2:'bonus 2'}[n])).join(', ')+'.':controls.bonus2.disabled?'Yellow weapons have one bonus.':'';
+  }
+  for(const [name,input] of Object.entries(controls))input.addEventListener('change',()=>refresh(name));
+  controls.item.addEventListener('input',()=>controls.item.setCustomValidity(''));
+  refresh();
   const find=action(historyForm,'Search completed sales'),historyOut=status(history);
   historyForm.addEventListener('submit',async e=>{
-   e.preventDefault();const qs=new URLSearchParams();
+   e.preventDefault();refresh('item');if(!historyForm.reportValidity())return;const qs=new URLSearchParams();
    for(const [n,value] of new FormData(historyForm))if(String(value).trim()){
     let v=String(value).trim();if(n.endsWith('Date'))v=String(Date.parse(v+'T00:00:00Z')/1000+(n==='maxDate'?86399:0));
     if(['rarity','category','weaponClass'].includes(n))v=v.toLowerCase();qs.set(n,v);
@@ -143,10 +234,18 @@
     const l=add(box,'label');const i=add(l,'input');i.type='checkbox';i.checked=config[name]?.includes(value)??true;l.append(' '+(name==='rarities'?value:groupLabels[value])+' ');return [value,i];
    });
   }
+  const watchGrid=add(watchForm,'div');watchGrid.className='rg-grid';
   for(const [n,label] of [['maxPercent','Maximum % of bunker value'],['maxPrice','Your maximum spend'],['minBB','Minimum Bunker Bucks'],['minDiscount','Minimum discount %'],['minBonus','Minimum bonus value'],['rate','Manual $ / BB (blank uses Small Arms Cache ÷ 20)']]){
-   const i=field(watchForm,n,label,'number');i.value=config[n]??(n==='maxPercent'?90:'');
+   const i=field(watchGrid,n,label,'number');i.value=config[n]??(n==='maxPercent'?90:'');
   }
-  field(watchForm,'bonus','Required bonus').value=config.bonus??'';
+  const watchBonus=field(watchGrid,'bonus','Required bonus');watchBonus.value=config.bonus??'';
+  const watchBonuses=add(watchGrid,'datalist');watchBonuses.id=items.id+'-watch';watchBonus.setAttribute('list',watchBonuses.id);
+  function refreshWatchBonuses(){
+   const selected=groups.groups.filter(([,i])=>i.checked).map(([v])=>v);
+   const codes={small:['PS','SM'],melee:['CL','PI','SL'],long:['RF','SG'],heavy:['MG','HA']};
+   watchBonuses.replaceChildren();for(const b of gearBonuses)if(selected.some(group=>codes[group]?.some(c=>b.codes.includes(c))))add(watchBonuses,'option').value=b.name;
+  }
+  for(const [,input] of groups.groups)input.addEventListener('change',refreshWatchBonuses);refreshWatchBonuses();
   const scan=action(watchForm,'Save and check watch'),liveOut=status(watch);
   let lastScan=0,pending=false,active=!!config.enabled;
   async function poll(){
