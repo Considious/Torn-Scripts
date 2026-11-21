@@ -46,11 +46,11 @@
   }
   let mounted,queued=false;
   function mount(root,anchor){
-    const box=make('div'),load=make('button','Show weapon XP'),toggle=make('button','Explain special bonuses'),status=make('span');
-    load.type=toggle.type='button';status.setAttribute('role','status');status.style.marginInlineStart='.4em';
-    globalThis.SLINK_TORN_COMPONENTS?.card(box);box.classList.add('slink-page-toolbar');
+    const box=make('div'),load=make('button','Show weapon XP'),toggle=make('input'),status=make('span');
+    load.type='button';toggle.type='checkbox';toggle.checked=true;status.setAttribute('role','status');status.style.marginInlineStart='.4em';
+    ui?.mark(box,'slink-page-ui','slink-page-toolbar');box.dataset.slinkWeaponPerksToolbar='';
     if(!inlineOnly){
-      box.append(make('strong','Weapon experience'),status,...(attack?[]:[toggle]),load);
+      const label=make('label');label.append(make('span','Show ranked perks'),toggle);ui?.switchRow(label,toggle);box.append(label);
       if(anchor)anchor.before(box);else root.prepend(box);
     }
     const itemsRoot=path==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
@@ -134,15 +134,14 @@
       finally{if(run===seq)load.disabled=false;}
     }
     load.hidden=true;load.onclick=loadExperience;
-    toggle.setAttribute('aria-pressed','true');toggle.textContent='Hide ranked perks';
-    toggle.onclick=()=>{show=!show;toggle.setAttribute('aria-pressed',String(show));toggle.textContent=show?'Hide ranked perks':'Show ranked perks';update();};
+    toggle.onchange=()=>{show=toggle.checked;update();};
     const obs=new MutationObserver(records=>{if((cache||show)&&records.some(r=>!box.contains(r.target)&&!r.target.closest?.('[data-slink-weapon-details]')))schedule();});
     obs.observe(itemsRoot,{subtree:true,childList:true,attributes:true,attributeFilter:['src','srcset','title','aria-describedby','data-item','data-itemid','data-id','data-bonus-attachment-title','data-bonus-attachment-description','aria-label']});
     function auto(){
       if(market&&!root.querySelector(ui.marketStats))return;
       if((!cache&&!status.textContent)||(cache&&Date.now()-cache.at>=21600000))void loadExperience();
     }
-    if(market)update();auto();
+    update();auto();
     return {root,box,update,reset,auto,check(){if(cache)void owner().then(id=>{if(cache&&cache.owner!==id){reset();void loadExperience();}}).catch(reset);},dispose(){seq++;obs.disconnect();clear();box.remove();}};
   }
   function sync(){

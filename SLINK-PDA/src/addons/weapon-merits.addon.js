@@ -83,19 +83,17 @@
     const parent=anchor?.parentElement;
     const safe=anchor?.getClientRects().length&&parent&&!parent.matches('#mainContainer,#mainwrap')&&['block','flow-root'].includes(getComputedStyle(parent).display);
     const target=market?(document.querySelector('#mainContainer,.content-wrapper[role="main"],#mainwrap')||document.body):safe?parent:null;
-    if(root===target&&button&&(market||button.isConnected)){if((!snapshot&&!notice?.textContent)||(snapshot&&Date.now()-snapshot.at>=21600000))void load();return;}
+    if(root===target&&button){if((!snapshot&&!notice?.textContent)||(snapshot&&Date.now()-snapshot.at>=21600000))void load();return;}
     observer?.disconnect();const old=button?.parentNode;reset();old?.remove();root=target;button=null;
     if(!root)return;
-    const bar=document.createElement('div');globalThis.SLINK_TORN_COMPONENTS?.card(bar);bar.classList.add('slink-page-toolbar');
     button=document.createElement('button');button.type='button';button.hidden=true;button.textContent='Retry weapon mastery';button.onclick=e=>{if(e.isTrusted)void load();};
     notice=document.createElement('span');notice.setAttribute('role','status');notice.style.marginInlineStart='.5em';
-    const title=document.createElement('strong');title.textContent='Weapon mastery';bar.append(title,notice,button);if(anchor)anchor.before(bar);
     const itemsRoot=location.pathname==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
     observer=new MutationObserver(()=>{if(market&&!snapshot&&!notice.textContent)void load();schedule();});observer.observe(itemsRoot,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','srcset','aria-label','data-item','data-itemid']});
     void load();
   }
   function start(){
-    new MutationObserver(()=>{if((!root?.isConnected||!market&&!button?.isConnected)&&allowed())sync();}).observe(document.body,{childList:true,subtree:true});
+    new MutationObserver(()=>{if((!root?.isConnected)&&allowed())sync();}).observe(document.body,{childList:true,subtree:true});
     window.addEventListener('hashchange',sync);document.addEventListener('visibilitychange',sync);window.addEventListener('focus',sync);
     window.addEventListener('focus',()=>{if(snapshot)void own().then(owner=>{if(snapshot&&owner!==snapshot.owner){reset();sync();}}).catch(reset);});
     if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(storageKey))){reset();sync();}});
