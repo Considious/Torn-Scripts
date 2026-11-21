@@ -1,149 +1,123 @@
 (function(g){
-  'use strict';
-  const positive=n=>typeof n==='number'&&Number.isFinite(n)&&n>0;
-  const epoch=n=>positive(n)?n*(n<1e10?1000:1):0;
-  const recent=(at,now,age)=>positive(at)&&at<=now&&now-at<=age;
-  function timers(snapshot,now){
-    const out={}, a=snapshot?.alerts, body=a?.data??a?.body, at=a?.fetchedAt??a?.at;
-    if(recent(at,now,15*60000)){
-      for(const key of ['medical','drug','booster']){
-        const seconds=body?.cooldowns?.[key];
-        if(positive(seconds)&&at+seconds*1000>now)out[key]={end:at+seconds*1000,at};
-      }
-    }
-    if(recent(at,now,60*60000)){
-      const education=epoch(body?.education?.current?.until);
-      const crime=body?.organizedcrime??body?.organizedCrime;
-      const oc=epoch(crime?.ready_at);
-      if(education>now)out.education={end:education,at};
-      if(oc>now&&!epoch(crime?.executed_at))out.oc={end:oc,at};
-    }
-    const war=snapshot?.war;
-    const start=epoch(war?.startedAt??war?.start);
-    if(start>now&&recent(war?.detectedAt,now,60*60000))out.war={end:start,at:war.detectedAt};
-    const v=snapshot?.virus;
-    if(recent(v?.at,now,60*60000)&&positive(v?.seconds)&&v.at+v.seconds*1000>now)out.virus={end:v.at+v.seconds*1000,at:v.at};
-    return out;
-  }
-  g.SLINK_INLINE_STATUS=Object.freeze({timers});
-  if(!g.document)return;
-  const ext=g.SLINK_EXTENSION,pda=g.SLINK_PDA_PLUGIN_API;
-  if(!ext&&!pda?.inlineStatus)return;
-  const names={medical:'Medical cooldown',drug:'Drug cooldown',booster:'Booster cooldown',education:'Education ends',oc:'Organized crime ready',war:'Ranked war starts',virus:'Virus coding ends'};
-  const el=(tag,value)=>{const node=document.createElement(tag);if(value!==undefined)node.textContent=value;return node;};
-  const fmt=n=>new Date(n).toLocaleString();
-  const elapsed=ms=>{const m=Math.max(1,Math.ceil(ms/60000)),d=Math.floor(m/1440),h=Math.floor(m%1440/60);return [d?d+'d':'',h?h+'h':'',m%60?m%60+'m':''].filter(Boolean).join(' ')||'under 1m';};
+ 'use strict';
+ const minute=60000,day=86400000,companyKey='inline-status.companyDaily.v1';
+ const positive=n=>typeof n==='number'&&Number.isFinite(n)&&n>0;
+ const epoch=n=>positive(n)?n*(n<1e10?1000:1):0;
+ const recent=(at,now,age)=>positive(at)&&at<=now&&now-at<=age;
+ const dailyWindow=now=>{const d=new Date(now);return d.getUTCHours()===18&&d.getUTCMinutes()===15;};
+ const elapsed=ms=>{const m=Math.max(0,Math.floor(ms/minute));return [m>=1440?Math.floor(m/1440)+'d':'',m>=60?Math.floor(m%1440/60)+'h':'',m%60+'m'].filter(Boolean).join(' ');};
+ function timers(snapshot,now){
+  const out={},a=snapshot?.alerts,body=a?.data??a?.body,at=a?.fetchedAt??a?.at;
+  const crime=body?.organizedCrime??body?.organizedcrime;
+  const oc=epoch(crime?.ready_at),expired=epoch(crime?.expired_at);
+  if(recent(at,now,60*minute)&&oc&&!epoch(crime?.executed_at)&&(!expired||expired>now))out.oc={end:oc};
+  const war=snapshot?.war,start=epoch(war?.startedAt??war?.start);
+  if(start>now&&recent(war?.detectedAt,now,60*minute))out.war={end:start};
+  const v=snapshot?.virus,end=epoch(v?.until);
+  if(end>now&&recent(v?.at,now,60*minute))out.virus={end};
+  return out;
+ }
+ g.SLINK_INLINE_STATUS=Object.freeze({timers,elapsed,dailyWindow});
+ if(!g.document)return;
+ const ext=g.SLINK_EXTENSION,pda=g.SLINK_PDA_PLUGIN_API;
+ if(!ext&&!pda?.inlineStatus)return;
+ const make=(tag,text)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;return n;};
   async function extensionStatus(){
     const storage=ext.core.storage;
-    const [session,alerts,company,war]=await Promise.all(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1'].map(k=>storage.get(k,null)));
+    const [session,alerts,company,war,companyDaily]=await Promise.all(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1',companyKey].map(k=>storage.get(k,null)));
     if(!session?.token||session.expiresAt<=Date.now()||!session.userId)return null;
     const scope=s=>ext.core.permissions.hasScope(session,s);
     const a=alerts?.snapshot, user=Number(a?.data?.profile?.id??a?.data?.profile?.player_id??a?.data?.player_id);
-    return {owner:session.userId,expiresAt:session.expiresAt,canVirus:scope('slink.adhd.alerts'),canCompany:scope('slink.qol.company'),canWar:scope('slink.war'),
+    return {companyDaily,owner:session.userId,expiresAt:session.expiresAt,canVirus:scope('slink.adhd.alerts'),canCompany:scope('slink.qol.company'),canWar:scope('slink.war'),
       alerts:scope('slink.adhd.alerts')&&user===Number(session.userId)?a:null,
       company:scope('slink.qol.company')&&company?.snapshot?.userId===Number(session.userId)?company.snapshot:null,
       war:scope('slink.war')&&war&&Number(war.ownFactionId)===Number(session.factionId)?war:null};
   }
-  let data=null, virus=null, busy=false, feedback='', running=false, dirty=false, queued=false, sidebar=null, main=null;
-  const visible=()=>document.visibilityState!=='hidden';
-  function pageKeys(){
-    if(location.pathname==='/education.php')return ['education'];
-    if(location.pathname==='/factions.php'&&new URLSearchParams(location.search).get('step')==='your')return ['oc','war'];
-    if(['/joblist.php','/companies.php'].includes(location.pathname))return ['company'];
-    return [];
+
+ let data=null,virus=null,company=null,sidebar=null,running=false,dirty=false,queued=false,checking=false,lastVirusAttempt=0,companyAttempt='';
+ const visible=()=>document.visibilityState!=='hidden';
+ function paint(){
+  if(!visible())return;
+  const now=Date.now(),current=data?.expiresAt>now?data:null;
+  const hosts=[...document.querySelectorAll('[class^="userInformation___"],[class*=" userInformation___"]')];
+  const target=hosts.find(n=>n.getClientRects().length);
+  if(!target||!current){sidebar?.remove();sidebar=null;return;}
+  if(!sidebar?.isConnected||sidebar.parentNode!==target){
+   sidebar?.remove();sidebar=make('section');sidebar.dataset.slinkSidebarTimers='';sidebar.setAttribute('aria-label','SLINK sidebar information');
+   sidebar.style.cssText='font-size:12px;line-height:1.4;margin-block:5px;color:inherit';target.append(sidebar);
   }
-  function panel(current,target,title){
-    if(current?.node.parentNode===target){if(current.heading.textContent!==title)current.heading.textContent=title;return current;}
-    current?.node.remove();
-    if(!target)return null;
-    const node=el('details');node.className='slink-inline-status';globalThis.SLINK_TORN_COMPONENTS?.card(node);
-    
-    const heading=el('summary',title), content=el('div');node.append(heading,content);target.prepend(node);
-    node.addEventListener('toggle',()=>{if(node.open)schedule();});
-    return {node,heading,content,signature:''};
+  const out=timers({...current,virus:virus?.owner===String(current.owner)?virus:null},now),rows=[];
+  for(const [key,title,href] of [['oc','OC','/factions.php?step=your#/tab=crimes'],['war','RW','/factions.php?step=your#/tab=war'],['company','Company Addiction','/companies.php#/option=employees'],['virus','Virus','/computer.php']]){
+   let value;
+   if(key==='company'){
+    if(!current.canCompany)continue;
+    const saved=company?.owner===String(current.owner)?company:current.companyDaily;
+    const penalty=saved?.owner===String(current.owner)?saved.penalty:current.company?.self?.addictionPenalty;
+    if(typeof penalty==='number'&&Number.isFinite(penalty))value=String(penalty?-Math.abs(penalty):0);
+   }else if(out[key])value=elapsed(out[key].end-now);
+   if(value!=null)rows.push([title,value,href]);
   }
-  function paint(){
-    if(!visible())return;
-    const now=Date.now(), current=data?.expiresAt>now?data:null;
-    const side=document.querySelector('#sidebar');
-    const keys=pageKeys(), target=keys.length?(document.querySelector('#mainContainer')||document.querySelector('.content-wrapper[role="main"]')||document.querySelector('#mainwrap')):null;
-    const alerts=current?.alerts,checked=alerts?.fetchedAt??alerts?.at,cooldowns=(alerts?.data??alerts?.body)?.cooldowns;
-    const hasCooldown=recent(checked,now,15*60000)&&['medical','drug','booster'].some(key=>positive(cooldowns?.[key])&&checked+cooldowns[key]*1000>now);
-    sidebar=panel(sidebar,current&&(current.canVirus||hasCooldown)?side:null,'SLINK timers');
-    const allowed=keys[0]==='company'?current?.canCompany:current?.canVirus||(keys.includes('war')&&current?.canWar);
-    main=panel(main,allowed?target:null,keys[0]==='company'?'SLINK · Your company':'SLINK · Timers');
-    if(!sidebar?.node.open&&!main?.node.open)return;
-    const out=timers(current?{...current,virus:virus?.owner===current.owner?virus:null}:null,now);
-    function update(box,list,sidePanel){
-      if(!box?.node.open)return;
-      const rows=[];
-      for(const key of list){
-        if(out[key])rows.push(`${names[key]}: ${elapsed(out[key].end-now)} left · ${fmt(out[key].end)} (checked ${fmt(out[key].at)})`);
+  const signature=JSON.stringify(rows);if(sidebar.dataset.signature===signature)return;sidebar.dataset.signature=signature;
+  sidebar.replaceChildren(...rows.map(([title,value,href])=>{const row=make('div'),link=make('a',title+': ');link.href=href;link.style.cssText='color:inherit;text-decoration:none';row.append(link,make('span',value));return row;}));sidebar.hidden=!rows.length;
+ }
+ async function checkData(){
+  if(checking||!visible()||!data||data.expiresAt<=Date.now())return;
+  checking=true;const current=data,owner=String(current.owner),now=Date.now();
+  try{
+   if(pda?.moduleMonitoringEnabled?.('alerts')!==false&&current.canVirus&&now-lastVirusAttempt>=15*minute){
+    lastVirusAttempt=now;
+    try{
+     const cache=pda?.cache('sidebarVirus',{});
+     const cached=cache?.owner===owner&&recent(cache.at,now,15*minute);
+     const reply=cached?cache:ext?await ext.core.messaging.send('inline-status.virus'):await pda.tornJson('/v2/user/virus','SLINK virus timer');
+     const value=cached?reply.until:reply?.virus?.until;
+     if(value!=null&&!positive(value))throw Error('Invalid virus timestamp');
+     if(String(data?.owner)===owner){virus={owner,at:cached?cache.at:Date.now(),until:value??null};if(cache&&!cached){Object.assign(cache,virus);pda.persist?.();}}
+    }catch{}
+   }
+   const date=new Date(now).toISOString().slice(0,10),attempt=owner+':'+date;
+   if(pda?.moduleMonitoringEnabled?.('company')!==false&&current.canCompany&&dailyWindow(now)&&companyAttempt!==attempt){
+    companyAttempt=attempt;
+    try{
+     if(ext)company=await ext.core.messaging.send('inline-status.company');
+     else{
+      const cache=pda.cache('sidebarCompanyDaily',{});
+      if(cache.owner!==owner||cache.date!==date){
+       Object.assign(cache,{owner,date,at:now,penalty:null});pda.persist?.();
+       const result=await pda.tornJson('/v2/company/employees','SLINK Company sidebar');
+       const self=(Array.isArray(result.employees)?result.employees:Object.values(result.employees||{})).find(e=>Number(e.id??e.user_id)===Number(owner));
+       const penalty=self?.effectiveness?.addiction;
+       if(String(data?.owner)===owner){cache.penalty=typeof penalty==='number'&&Number.isFinite(penalty)?Math.min(0,penalty):null;pda.persist?.();}
       }
-      if(list.includes('company')){
-        const c=current?.company;
-        if(c?.company?.id&&recent(c.fetchedAt,now,60*60000)){
-          const employee=e=>{
-            const last=epoch(e.lastAction?.timestamp);
-            return [e.name,Number.isFinite(e.addictionPenalty)?'addiction penalty '+(e.addictionPenalty?-e.addictionPenalty:0):'addiction penalty unavailable',Number.isFinite(e.totalEffectiveness)?'effectiveness '+e.totalEffectiveness:'effectiveness unavailable',last&&last<=now?'last active '+elapsed(now-last)+' ago':'last active unavailable'].join(' · ');
-          };
-          rows.push((c.company.name||'Your company')+' · checked '+fmt(c.fetchedAt));
-          if(c.self)rows.push(employee(c.self));
-          if(c.director===true)for(const e of (c.employees||[]))if(e.id!==c.self?.id)rows.push(employee(e));
-        }else rows.push('No recent company information. Refresh Company in SLINK.');
-      }
-      if(!rows.length)rows.push('No active timer in the recent SLINK data.');
-      const canCheck=sidePanel&&current?.canVirus;
-      const signature=JSON.stringify([rows,canCheck,busy,sidePanel?feedback:'']);
-      if(signature===box.signature)return;
-      box.signature=signature;
-      const listNode=el('ul');for(const row of rows)listNode.append(el('li',row));
-      box.content.replaceChildren(listNode);
-      if(canCheck){
-        const button=el('button',busy?'Checking…':'Check virus timer');button.type='button';button.disabled=busy;
-        button.addEventListener('click',()=>void checkVirus());box.content.append(button);
-        if(feedback){const status=el('p',feedback);status.setAttribute('role','status');box.content.append(status);}
-      }
+      company={...cache};
+     }
+    }catch{}
+   }
+  }finally{checking=false;paint();}
+ }
+ async function refresh(){
+  if(!visible())return;
+  if(running){dirty=true;return;}running=true;
+  try{do{dirty=false;const next=ext?await extensionStatus():pda.inlineStatus();if(String(next?.owner)!==String(data?.owner)){virus=null;company=null;lastVirusAttempt=0;companyAttempt='';}data=next;
+   if(pda&&data){const c=pda.cache('sidebarCompanyDaily',{});data.companyDaily=c;}
+   if(data?.canCompany){
+    const owner=String(data.owner),saved=data.companyDaily;
+    if(saved?.owner===owner)company=saved;
+    else if(typeof data.company?.self?.addictionPenalty==='number'){
+     company={owner,date:'',at:Date.now(),penalty:data.company.self.addictionPenalty};
+     if(ext)await ext.core.storage.set(companyKey,company);else{Object.assign(pda.cache('sidebarCompanyDaily',{}),company);pda.persist?.();}
     }
-    update(sidebar,['medical','drug','booster','virus'],true);update(main,keys,false);
-  }
-  async function checkVirus(){
-    if(busy||!data?.canVirus||data.expiresAt<=Date.now()||!visible())return;
-    busy=true;feedback='';const owner=data.owner;paint();
-    try{
-      const reply=ext?await ext.core.messaging.send('inline-status.virus'):await pda.tornJson('/v2/user/virus','SLINK virus timer');
-      if(data?.owner!==owner)return;
-      const value=reply?.virus;
-      if(value!==null&&!Number.isFinite(value?.time_left))throw Error('Torn did not return a usable virus timer.');
-      virus={owner,at:Date.now(),seconds:value?.time_left};
-      if(!positive(virus.seconds))feedback='Torn reports no active virus timer.';
-    }catch(e){feedback=e.message||'Could not check the virus timer.';}
-    finally{busy=false;paint();}
-  }
-  async function refresh(){
-    if(!visible())return;
-    if(running){dirty=true;return;}
-    running=true;
-    try{
-      do{dirty=false;data=ext?await extensionStatus():pda.inlineStatus();}while(dirty&&visible());
-    }catch{data=null;}
-    finally{running=false;paint();}
-  }
-  function schedule(){if(queued||!visible())return;queued=true;requestAnimationFrame(()=>{queued=false;paint();});}
-  function watch(){
-    if(!document.body)return;
-    const hosts='#sidebar,#mainContainer,.content-wrapper[role="main"],#mainwrap';
-    new MutationObserver(records=>{
-      if(sidebar&&!sidebar.node.isConnected||main&&!main.node.isConnected||records.some(record=>
-        [...record.addedNodes].some(n=>n.nodeType===1&&(n.matches(hosts)||n.querySelector(hosts)))))schedule();
-    }).observe(document.body,{childList:true,subtree:true});
-    void refresh();
-  }
-  if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{
-    if(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1'].some(k=>Object.hasOwn(changes,ext.core.storage.fullKey(k))))void refresh();
-  });
-  document.addEventListener('visibilitychange',()=>{if(visible())void refresh();});
-  g.addEventListener('hashchange',schedule);
-  setInterval(()=>{if(visible()){if(pda&&!ext)void refresh();else paint();}},15000);
-  if(document.body)watch();else document.addEventListener('DOMContentLoaded',watch,{once:true});
+   }
+  }while(dirty&&visible());}catch{data=null;}
+  finally{running=false;paint();void checkData();}
+ }
+ function schedule(){if(queued||!visible())return;queued=true;requestAnimationFrame(()=>{queued=false;paint();});}
+ function start(){
+  new MutationObserver(records=>{if(sidebar&&!sidebar.isConnected||records.some(r=>[...r.addedNodes].some(n=>n.nodeType===1&&(n.matches('[class*="userInformation___"]')||n.querySelector('[class*="userInformation___"]')))))schedule();}).observe(document.body,{childList:true,subtree:true});
+  void refresh();
+ }
+ if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(['access.session.v1','adhd.runtime.v1','company.runtime.v1','war.activeWar.v1',companyKey].some(k=>Object.hasOwn(changes,ext.core.storage.fullKey(k))))void refresh();});
+ document.addEventListener('visibilitychange',()=>{if(visible())void refresh();});g.addEventListener('hashchange',()=>void refresh());
+ setInterval(()=>void refresh(),15000);
+ if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
 })(globalThis);
