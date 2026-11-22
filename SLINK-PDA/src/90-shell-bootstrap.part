@@ -2118,8 +2118,11 @@ missionPrices:()=>dataState.caches.sharedProviders?.catalog?.items,
 travelRunPlanning:()=>{
   if(!moduleMonitoringEnabled('travel-run'))throw Error('Travel Run is paused in Access.');
   const current=PDA_ABROAD.status();
+  const session=validSession('permission');
+  const account=session?.userId??session?.user_id;
+  const bloodType=account&&hasScope('slink.adhd.alerts')?dataState.settings.plugins?.pageTools?.accounts?.[account]?.bloodType:null;
   return {rows:current.rows||[],fetchedAt:Number(current.fetchedAt)||0,countries:ABROAD_STOCKS.COUNTRIES,
-    settings:{travelMethod:current.settings.travelMethod},
+    settings:{travelMethod:current.settings.travelMethod},bloodType,
     catalog:dataState.caches.sharedProviders?.catalog||dataState.caches.market?.catalog||null};
 },
 inlineStatus:()=>{
