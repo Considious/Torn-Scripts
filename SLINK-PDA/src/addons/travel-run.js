@@ -315,8 +315,8 @@
     shadow.innerHTML = `<style>
       :host{display:block;min-width:0;max-width:100%}form,label{display:grid;gap:5px}form{margin-top:8px;max-width:700px}textarea{resize:vertical}
       .planning-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));gap:8px}.travel-hint{font-size:.92em;opacity:.85}.travel-progress{padding-left:20px}.travel-progress li{margin:4px 0}#planning-results article{border:1px solid var(--slink-border,var(--s-border,#7778));border-radius:6px;padding:8px;margin:8px 0}#planning-results p{margin:5px 0}.travel-error{color:var(--slink-error,var(--s-danger,inherit))}
-      </style><section class="slink-page-ui slink-page-card"><h3>Travel Run</h3>
-      <section id="plan-panel" aria-label="Travel Run configuration" hidden>
+      </style><section class="slink-page-ui slink-page-card">
+      <button id="compact" type="button" aria-expanded="true" aria-controls="run-details">Collapse</button><div id="run-details"><h3>Travel Run</h3><section id="plan-panel" aria-label="Travel Run configuration" hidden>
       <form><label>Sell inventory first<select name="sellMode"><option value="off">Off</option><option value="all">All eligible items</option><option value="selected">Selected items</option></select></label>
       <label id="sell-picker" hidden>Items to sell<select name="sellIds" multiple></select></label>
       <label>Destination<select name="country"></select></label>
@@ -342,10 +342,23 @@
       <div class="slink-page-toolbar"><button type="submit">Save and start run</button></div></form>
       </section><p id="status" role="status"></p><p id="availability" class="travel-hint"></p><p id="limits" class="travel-hint"></p>
       <ol id="progress" class="travel-progress" aria-label="Shopping progress"></ol>
-      <div class="slink-page-toolbar"><button type="button" id="open" hidden></button><button type="button" id="next"></button><button type="button" id="skip">Skip this step</button><button type="button" id="finish" hidden>Finish shopping · return home</button><button type="button" id="edit">Set up Travel Run</button><button type="button" id="next-trip" hidden>Prepare next trip</button></div></section>`;
+      <div class="slink-page-toolbar"><button type="button" id="next"></button><button type="button" id="skip">Skip this step</button><button type="button" id="finish" hidden>Finish shopping · return home</button><button type="button" id="edit">Set up Travel Run</button><button type="button" id="next-trip" hidden>Prepare next trip</button></div></div><button type="button" id="open" hidden></button></section>`;
     const get = id => shadow.getElementById(id);g.SLINK_TORN_COMPONENTS?.install(shadow);
     const panel=get('plan-panel'),form=shadow.querySelector('form'),fields=form.elements;
     const next=get('next'),skip=get('skip'),edit=get('edit'),status=get('status'),open=get('open');
+    let compact=read('localStorage',key+'.compact')===true;
+    const compactButton=get('compact'),details=get('run-details');
+    function paintCompact(){
+      details.hidden=compact;
+      compactButton.textContent=compact?'Expand Travel Run':'Collapse';
+      compactButton.setAttribute('aria-expanded',String(!compact));
+    }
+    compactButton.addEventListener('click',()=>{
+      compact=!compact;
+      write('localStorage',key+'.compact',compact);
+      paintCompact();
+    });
+    paintCompact();
     let editing=index===null,maxSet=new WeakSet(),planningRevision=0,snapshot=emptySnapshot,draftIds=[],draftCountry='',bloodType='';
     const foreground=()=>foregroundPage();
     function active(){

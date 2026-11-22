@@ -1065,8 +1065,6 @@ if (muggingProfile) rememberPlayerProfileIntent(muggingProfile.dataset.muggingPr
 const targetProfile = event.target.closest('[data-target-list-profile]');
 if (targetProfile) rememberPlayerProfileIntent(targetProfile.dataset.targetListProfile, 'target-list');
 const action = event.target.closest('[data-action]')?.dataset.action;
-const abroadMode = event.target.closest('[data-abroad-mode]')?.dataset.abroadMode;
-if (abroadMode) PDA_ABROAD.setMode(abroadMode);
 const racingView = event.target.closest('[data-racing-view]')?.dataset.racingView;
 if (racingView) {
 racingSettings().view = racingView;
@@ -1588,10 +1586,6 @@ renderAccess();
 }
 });
 overlay.addEventListener('input', event => {
-if (event.target.matches('[data-abroad-query]')) {
-PDA_ABROAD.setQuery(event.target.value);
-return;
-}
 if (!event.target.matches('[data-racing-name]')) return;
 const card = event.target.closest('[data-racing-build]');
 const buildState = card ? racingSettings().builds[card.dataset.racingBuild] : null;

@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-cb7e5a14152413fda5e55fb3ed62cffbad35a47c1c03a1eae2d78d556848073e",
+  "revision": "sha256-69dc038ac0c28f9344258fd1b2f60f6ad6fefb560c6d45886ae1c622f27800fa",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -155,5 +155,5 @@
     }
   ],
   "channel": "main",
-  "clientVersion": "0.4.277"
+  "clientVersion": "0.4.278"
 }

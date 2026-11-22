@@ -51,12 +51,18 @@ console.log('PDA Abroad Stocks validation passed.');
     {key:'can:1',countryCode:'can',countryName:'Canada',itemId:1,itemName:'Item A',itemType:'Melee'},
     {key:'can:2',countryCode:'can',countryName:'Canada',itemId:2,itemName:'Item B',itemType:'Contraband'}
   ];
-  const persisted=JSON.parse(JSON.stringify(stockFilters({item:'id:2',excluded:['Weapons']})));
+  const persisted=JSON.parse(JSON.stringify(stockFilters({item:'id:2',categoriesSelected:['Contraband']})));
   const itemView=filterModel(rows,persisted);
   assert(itemView.countries.length===1&&itemView.countries[0][0]==='can','Item selection must restrict countries.');
   assert(itemView.visible.has('can:2')&&!itemView.visible.has('can:1'),'Exclusion or selection was lost.');
   const countryView=filterModel(rows,stockFilters({country:'mex'}));
   assert(countryView.items.length===1&&countryView.items[0][0]==='id:1','Country must restrict item choices.');
+  assert(countryView.categories.length===1&&countryView.categories[0]==='Weapons','Country must restrict categories.');
+  const contraband=filterModel(rows,stockFilters({categoriesSelected:['Contraband']}),{items:[{id:2,type:'Other'}]});
+  assert(contraband.items.length===1&&contraband.countries.length===1,'Contraband must restrict both lists even when catalog metadata is generic.');
+  const priced=rows.map((row,index)=>({...row,sources:{yata:{cost:(index+1)*100,updatedAt:10}}}));
+  assert([...filterModel(priced,stockFilters({sort:'buy'})).visible][0]==='mex:1','Buy sort must start at the lowest price.');
+  assert([...filterModel(priced,stockFilters({sort:'sell'})).visible][0]==='can:2','Sell sort must start at the highest price.');
   const first=abroad.normalizeProvider('yata',{stocks:{can:{stocks:[{id:2,name:'Item B',quantity:0,category:'Contraband'}]}}});
   const removed=abroad.normalizeProvider('droqs',{stocks:{can:{stocks:[{id:3,name:'Old item',quantity:15}]}}});
   const merged=abroad.mergeSnapshots({yata:first,droqs:removed});
