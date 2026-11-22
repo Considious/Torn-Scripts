@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.272
+// @version      0.4.273
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/feature/qol-batch-6/SLINK-PDA/SLINK_PDA_Dashboard.user.js
@@ -14,6 +14,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @connect      api.kalends.dev
 // @connect      api.torn.com
 // @connect      slink-chat-central-test.richard-johnson554.workers.dev
 // @connect      slink-faction-node-46978-test.richard-johnson554.workers.dev

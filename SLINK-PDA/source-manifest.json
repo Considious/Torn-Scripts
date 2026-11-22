@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-68e2288526fd537c90fdc9b0503571ba678cf89f4f83c07e39bc9f2b4d4adf3f",
+  "revision": "sha256-07898a0834302242099e9e105f578c357ce51a43e5c1a471d036c5fcb054e9dd",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -143,6 +143,15 @@
     },
     {
       "source": "src/addons/lease-compare.addon.js"
+    },
+    {
+      "source": "src/addons/kal-model.js"
+    },
+    {
+      "source": "src/addons/kal-ui.js"
+    },
+    {
+      "source": "src/addons/kal.addon.js"
     }
   ],
   "channel": "feature/qol-batch-6",

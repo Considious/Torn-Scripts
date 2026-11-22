@@ -62,9 +62,12 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
 <label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label>
 <label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="merits" ${dataState.settings.monitoring.merits!==false?'checked':''}>Merit checks</label>
-<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="dollarBazaars" ${dataState.settings.monitoring.dollarBazaars!==false?'checked':''}>$1 Bazaar checks</label></article>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="dollarBazaars" ${dataState.settings.monitoring.dollarBazaars!==false?'checked':''}>$1 Bazaar checks</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="kal" ${moduleMonitoringEnabled('kal')?'checked':''}>KAL equipment</label><p data-kal-module-status role="status"></p></article>
+<article class="card wide"><div data-kal-settings></div></article>
 <article class="card wide" data-access-usage aria-label="Torn API usage"></article>
 </div>`;
+global.SLINK_PDA_KAL?.renderAccess(moduleRoot('access'));
 updateAccessUsage();
 applyPermissionGates();
 }

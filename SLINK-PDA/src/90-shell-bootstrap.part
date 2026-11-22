@@ -7,6 +7,7 @@ dirty.delete(name);
 return true;
 }
 function moduleMonitoringEnabled(id) {
+if(id==='kal')return dataState.settings.monitoring.kal===true;
 return dataState.settings.monitoring[id==='moneyProperty'?'money-property':id==='factionOfficers'?'faction-officers':id]!==false;
 }
 function renderActivePdaPanel() {
@@ -1657,6 +1658,13 @@ return;
 }
 if(event.target.matches('[data-access-monitor]')){
 const control=event.target, module=control.dataset.accessMonitor, enabled=control.checked===true;
+if(module==='kal'){
+ control.disabled=true;const plugin=pdaPlugins.get('kal');
+ try{if(!plugin)throw Error('KAL is still loading. Reopen Access and try again.');await plugin.setEnabled(enabled);}
+ catch(error){control.checked=moduleMonitoringEnabled('kal');const status=moduleRoot('access')?.querySelector('[data-kal-module-status]');if(status)status.textContent=error.message;}
+ finally{control.disabled=false;}
+ return;
+}
 if(['faction-officers','travel-run','chat'].includes(module)){
 dataState.settings.monitoring[module]=enabled;
 if(module==='travel-run')global.dispatchEvent(new CustomEvent('slink:travel-run-monitoring'));
@@ -2014,6 +2022,7 @@ if (!plugin || !/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(String(plugin.id || ''))) t
 const id = String(plugin.id);
 if (pdaPlugins.has(id)) return pdaPlugins.get(id);
 pdaPlugins.set(id, plugin);
+if(plugin.accessOnly){if(moduleMonitoringEnabled(id))plugin.start?.();plugin.render?.();return plugin;}
 const page = shadow.querySelector('[data-page-panel="quality-of-life"]');
 const nav = page?.querySelector('.subnav');
 if (nav && !nav.querySelector('[data-quality-of-life-tab="' + id + '"]')) {
@@ -2051,6 +2060,21 @@ const result=await access().central(path,force);if(path==='token')endpoint=globa
 return Object.freeze({central,view:Object.freeze({async get(){return state.factionNodeView||{};},async save(record){if(record.visible===false&&Object.keys(record).length===1){state.factionNodeView={...state.factionNodeView,visible:false};await writeState();return state.factionNodeView;}state.factionNodeView={visible:record.visible===true,view:['home','chat','admin'].includes(record.view)?record.view:'home',userId:Number(record.userId)||0,factionId:Number(record.factionId)||0,roomId:typeof record.roomId==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(record.roomId)?record.roomId:null,windows:(Array.isArray(record.windows)?record.windows:[]).filter(item=>item&&typeof item.id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(item.id)).slice(0,12).map(item=>({id:item.id,minimized:item.minimized===true}))};await writeState();return state.factionNodeView;}}),request(url,options){const parsed=new URL(url);if(!endpoint||parsed.origin!==endpoint||!parsed.pathname.startsWith('/api/'))throw new Error('Faction chat request does not match the verified node.');return requestJson(url,options);},theme(){const style=global.getComputedStyle(host),out={};for(let i=0;i<style.length;i++){const key=style[i];if(key.startsWith('--slink-'))out[key]=style.getPropertyValue(key).trim();}out['--slink-panel']=out['--slink-panel-bg']||out['--slink-bg']||style.getPropertyValue('--s-panel').trim();return out;}});
 })();
 global.SLINK_PDA_PLUGIN_API = Object.freeze({
+kal:Object.freeze({
+ enabled:()=>moduleMonitoringEnabled('kal'),
+ async monitor(enabled){const old=dataState.settings.monitoring.kal;dataState.settings.monitoring.kal=enabled===true;try{await savePdaChanges();}catch(error){dataState.settings.monitoring.kal=old;throw error;}},
+ storage:{get:async name=>storageRead('slink.kal.'+name+'.v1',null)?.value??null,set:(name,value)=>storageWrite('slink.kal.'+name+'.v1',{schema:1,value}),remove:name=>storageWrite('slink.kal.'+name+'.v1',{schema:1,value:null})},
+ async request(url,options){
+  const target=new URL(url);if(target.origin!=='https://api.kalends.dev'||options.method!=='GET')throw Error('KAL supports read requests only.');
+  if(!moduleMonitoringEnabled('kal')&&target.pathname!=='/check-key')throw Error('KAL is disabled in Access.');
+  try{const value=await requestJsonRaw(url,{...options,retries:0,timeout:12000});return {status:200,text:JSON.stringify(value)};}
+  catch(error){if(!error.status)throw error;return {status:error.status,text:JSON.stringify(error.body||{}),retryAfter:error.retryAfter};}
+ },
+ openAccess(){selectPage('access',false);renderAccess();openDashboard();},
+ renderAccess:()=>renderAccess(),
+ host:()=>host,
+ theme(){const css=getComputedStyle(host);return Object.fromEntries([['--slink-panel-bg','--s-panel'],['--slink-surface','--s-card'],['--slink-bg-control','--s-control'],['--slink-text','--s-text'],['--slink-border','--s-border'],['--slink-accent','--s-accent'],['--slink-muted','--s-muted']].map(([key,value])=>[key,css.getPropertyValue(value).trim()]));}
+}),
 armoryFilter:Object.freeze({
   read(){
     const owner=global.SLINK_OC_PARTICIPANTS?.identity(validSession('permission'));
