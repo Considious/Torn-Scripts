@@ -17,9 +17,9 @@ test('sale, priority order, fallback, and return are explicit steps', () => {
   assert.equal(advance(queue, 4, 'done'), 5);
 });
 
-test('buying any option skips remaining options and the fallback', () => {
-  assert.equal(advance(queue, 1, 'done'), 4);
-  assert.equal(advance(queue, 2, 'done'), 4);
+test('buying an item preserves the remaining shopping priorities', () => {
+  assert.equal(advance(queue, 1, 'done'), 2);
+  assert.equal(advance(queue, 2, 'done'), 3);
 });
 
 test('medical fallback can be skipped; unknown outcomes do not move the run', () => {

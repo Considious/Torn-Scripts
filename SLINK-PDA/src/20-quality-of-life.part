@@ -793,6 +793,6 @@ writeDataState();
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 renderAlerts();
 }
-return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
+return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, status, toggleWatch, touch, visible };
 })();
 
