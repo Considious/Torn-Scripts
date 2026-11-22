@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-f74547b14aab1b12513cd36f7d452757639c8fc46b6c2308048c23bca9f0bd01",
+  "revision": "sha256-bdf72c924ec25fd44bbd87289a54db7a7a1d89ac2b12d3b94503a2fda481bc1d",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -154,6 +154,6 @@
       "source": "src/addons/kal.addon.js"
     }
   ],
-  "channel": "feature/qol-batch-6",
-  "clientVersion": "0.4.262"
+  "channel": "main",
+  "clientVersion": "0.4.275"
 }
