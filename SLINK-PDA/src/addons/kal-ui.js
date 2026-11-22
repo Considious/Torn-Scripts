@@ -5,24 +5,25 @@
   const attribution='Loadout intelligence provided by KAL — Kalends [2032147]';
   function element(doc,tag,text) {const node=doc.createElement(tag);if(text!=null)node.textContent=text;return node;}
   function button(doc,text,work) {const node=element(doc,'button',text);node.type='button';node.addEventListener('click',work);return node;}
-  function mountSettings(root,client) {
+  function mountSettings(root,client,{keyRoot=root}={}) {
     if(root.dataset.kalMounted)return;root.dataset.kalMounted='true';
     const doc=root.ownerDocument;
     global.SLINK_TORN_COMPONENTS?.mark(root,'slink-page-ui');global.SLINK_TORN_COMPONENTS?.install(root.getRootNode());
     root.style.cssText='display:grid;gap:8px;min-width:0;';
     root.append(element(doc,'h3','KAL — Loadout Intelligence'));
     root.append(element(doc,'p','Connect your registered KAL account to view equipment intelligence on player profiles. Equipment collection remains with the official KAL script. This opt-in integration keeps your registered key on this device and sends it only to api.kalends.dev; it is not included in SLINK cloud backups.'));
-    const label=element(doc,'label','KAL API Key'), input=element(doc,'input');input.type='password';input.autocomplete='off';input.maxLength=16;input.setAttribute('aria-label','KAL API Key');label.append(input);root.append(label);
+    const label=element(doc,'label','KAL API Key'), input=element(doc,'input');input.type='password';input.autocomplete='off';input.maxLength=16;input.setAttribute('aria-label','KAL API Key');label.append(input);keyRoot.append(label);
     const consentLabel=element(doc,'label'),consent=element(doc,'input');consent.type='checkbox';consentLabel.append(consent,doc.createTextNode(' Send this registered key only to KAL to validate and use my account. Register and accept policies on KAL’s website first.'));root.append(consentLabel);
     const status=element(doc,'p');status.setAttribute('role','status');
     const controls=element(doc,'div'),displayLabel=element(doc,'label','Equipment display '),display=element(doc,'select');controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;';
     for(const [value,text]of [['manual','Open SLINK equipment manually'],['slink','Use SLINK equipment panel'],['official','Use official KAL display']]){const option=element(doc,'option',text);option.value=value;display.append(option);}displayLabel.append(display);root.append(displayLabel);
     let state=null,busy=false;
-    const show=value=>{state=value;display.value=value.display;enable.textContent=value.enabled?'Disable integration':'Enable integration';status.textContent=(value.connected?'KAL key validated. ':'Not connected. ')+(value.enabled?'Integration enabled.':'Integration disabled.');};
+    const show=value=>{state=value;input.placeholder=value.connected?'Saved — leave blank to keep':'Enter your registered KAL key';display.value=value.display;enable.textContent=value.enabled?'Disable integration':'Enable integration';status.textContent=(value.connected?'KAL key validated. ':'Not connected. ')+(value.enabled?'Integration enabled.':'Integration disabled.');};
     async function run(work){if(busy)return;busy=true;for(const b of controls.querySelectorAll('button'))b.disabled=true;try{show(await work());root.dispatchEvent(new Event('kal-settings-changed',{bubbles:true}));}catch(error){status.textContent=error.message;}finally{busy=false;for(const b of controls.querySelectorAll('button'))b.disabled=false;}}
-    const connect=button(doc,'Connect / Validate',()=>run(async()=>{const key=input.value;input.value='';return client.connect(key,consent.checked);}));
+    const connect=button(doc,'Save KAL key',()=>run(async()=>{const key=input.value.trim();if(!key){if(state?.connected)return client.status();throw Error('Enter your registered KAL key first.');}input.value='';return client.connect(key,consent.checked);}));
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();connect.click();}});
     const enable=button(doc,'Enable integration',()=>run(()=>client.configure({enabled:!state?.enabled,display:display.value})));
-    const disconnect=button(doc,'Disconnect / Clear key',()=>run(()=>{input.value='';consent.checked=false;return client.disconnect();}));
+    const disconnect=button(doc,'Remove KAL key',()=>run(()=>{input.value='';consent.checked=false;return client.disconnect();}));
     controls.append(connect,enable,disconnect,button(doc,'Refresh diagnostics',()=>run(()=>client.status())));root.append(controls,status);
     display.addEventListener('change',()=>run(()=>client.configure({enabled:state?.enabled===true,display:display.value})));
     for(const [title,url]of [['KAL website / registration','https://kalends.dev/'],['API documentation','https://kalends.dev/api-docs'],['Official forum thread','https://www.torn.com/forums.php#/p=threads&f=67&t=16597240']]){const a=element(doc,'a',title);a.href=url;a.target='_blank';a.rel='noopener noreferrer';root.append(a,doc.createTextNode(' · '));}

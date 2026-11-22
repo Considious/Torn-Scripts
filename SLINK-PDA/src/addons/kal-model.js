@@ -109,7 +109,7 @@
         const response=await api('/check-key',key);
         if(response.is_registered!==true)throw failure('Register this key and accept KAL’s policies at kalends.dev first.', 'KAL_UNREGISTERED');
         revision++;cursors.clear();
-        await storage.set('settings',{schema:1,enabled:false,display:(await settings()).display||'manual'});
+        await storage.set('settings',{schema:1,enabled:true,display:(await settings()).display||'manual'});
         await storage.set('credentials',{schema:1,key,scope:uuid(),validatedAt:now()});
         try{await cache.clear();}catch{} // Account-scoped cache cannot be reused by the new connection.
         return status();

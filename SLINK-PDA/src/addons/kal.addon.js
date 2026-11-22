@@ -16,11 +16,11 @@
  const client={
   status:async()=>{const state=await raw.status();return {...state,enabled:state.enabled&&api.kal.enabled()};},
   load:(id,cursor)=>{if(!api.kal.enabled())throw Error('KAL is disabled in SLINK Access.');return raw.load(id,cursor);},
-  connect:async(key,consent)=>{const state=await raw.connect(key,consent);await api.kal.monitor(false);await sync();api.kal.renderAccess();return state;},
+  connect:async(key,consent)=>{const state=await raw.connect(key,consent);try{await api.kal.monitor(true);}catch(error){await raw.configure({enabled:false});throw error;}await sync();api.kal.renderAccess();return state;},
   configure,
   disconnect:async()=>{const state=await raw.disconnect();await api.kal.monitor(false);await sync();api.kal.renderAccess();return state;}
  };
- function renderAccess(root){const target=root?.querySelector('[data-kal-settings]');if(target)global.SLINK_KAL_UI.mountSettings(target,client);}
+ function renderAccess(root){const target=root?.querySelector('[data-kal-settings]');if(target)global.SLINK_KAL_UI.mountSettings(target,client,{keyRoot:root.querySelector('[data-kal-key-field]')||target});}
  const plugin={id:'kal',title:'KAL equipment',accessOnly:true,render:()=>renderAccess(api.root('access')),start:()=>void sync().catch(report),stop(){revision++;panel?.destroy();panel=null;themeObserver?.disconnect();themeObserver=null;void raw.configure({enabled:false}).catch(report);},async setEnabled(enabled){return configure({enabled});}};
  function report(error){const status=api.root('access')?.querySelector('[data-kal-module-status]');if(status)status.textContent=error.message||'KAL settings could not be loaded. Reopen Access to retry.';}
  global.SLINK_PDA_KAL=Object.freeze({renderAccess});api.register(plugin);

@@ -1315,8 +1315,30 @@ company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinu
 }
 };
 }
+function cloudBackupSecretField(key, path = '') {
+const name=String(key).replace(/[^a-z0-9]/gi,'').toLowerCase();
+return /^(?:apikeys?|credentials|secrets|tornkey|ffkey|ffscouterkey|kalkey|giphykey|accesskey|secretkey|clientsecret|password|authorization|token|accesstoken|refreshtoken|sessiontoken|managementtoken)$/.test(name)
+|| (name==='key' && /api|credential|auth|secret/i.test(path));
+}
+function cloudBackupSettings(value, path = '') {
+if(Array.isArray(value))return value.map(item=>cloudBackupSettings(item,path));
+if(!value||typeof value!=='object')return value;
+return Object.fromEntries(Object.entries(value).filter(([key])=>!cloudBackupSecretField(key,path)).map(([key,item])=>[key,cloudBackupSettings(item,path+'.'+key)]));
+}
+function keepLocalBackupCredentials(restored, local, path = '') {
+if(!local||typeof local!=='object')return restored;
+for(const [key,item]of Object.entries(local)){
+if(cloudBackupSecretField(key,path))restored[key]=item;
+else if(item&&typeof item==='object'){
+const destination=restored[key]&&typeof restored[key]==='object'?restored[key]:Array.isArray(item)?[]:{};
+keepLocalBackupCredentials(destination,item,path+'.'+key);
+if(Object.keys(destination).length)restored[key]=destination;
+}
+}
+return restored;
+}
 function portableBackupPayload() {
-const settings=JSON.parse(JSON.stringify(dataState.settings || {}));
+const settings=cloudBackupSettings(dataState.settings || {});
 if(settings.plugins?.chat?.giphy)delete settings.plugins.chat.giphy.apiKey;
 if(settings.plugins)delete settings.plugins.profileNotes;
 return {
@@ -1324,7 +1346,7 @@ schema:1,
 client:'pda',
 createdAt:Date.now(),
 settings,
-targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {})),
+targetList:cloudBackupSettings(dataState.caches?.targetList || {}),
 uiState:{
 page:state.page,
 combatTab:state.combatTab,
@@ -1336,7 +1358,7 @@ launcherOpacity:state.launcherOpacity,
 themePanelOpacity:state.themePanelOpacity,
 themeItemOpacity:state.themeItemOpacity,
 bubblePosition:state.bubblePosition,
-panels:{ ...(state.panels || {}) }
+panels:cloudBackupSettings(state.panels || {})
 }
 };
 }
@@ -1348,7 +1370,7 @@ if (pdaTargetRecords) await pdaTargetRecords.replace(backup.targetList);
 else dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
 const localGiphyKey=dataState.settings?.plugins?.chat?.giphy?.apiKey;
 const localProfileNotes=dataState.settings?.plugins?.profileNotes;
-dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
+dataState.settings = keepLocalBackupCredentials({ ...dataState.settings, ...cloudBackupSettings(backup.settings) },dataState.settings);
 if(dataState.settings.plugins)delete dataState.settings.plugins.profileNotes;
 if(localProfileNotes){dataState.settings.plugins ||= {};dataState.settings.plugins.profileNotes=localProfileNotes;}
 if(dataState.settings.plugins?.chat?.giphy){
