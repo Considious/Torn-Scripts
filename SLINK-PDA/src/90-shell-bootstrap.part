@@ -1731,6 +1731,7 @@ scheduleMarketWake();
 renderMarket();
 }else if(module==='mugging'){
 dataState.settings.mugging.enabled=enabled;
+if(!enabled)muggingAssignmentController?.abort(new Error('Mugging was disabled.'));
 if(enabled&&hasScope('slink.mugging'))touchMuggingActivity();
 renderMugging();
 }
@@ -1743,6 +1744,7 @@ if (event.target.matches('[data-field="mugging-enabled"],[data-field="mugging-mi
 if (!hasScope('slink.mugging')) return;
 const root = moduleRoot('mugging');
 dataState.settings.mugging.enabled = root?.querySelector('[data-field="mugging-enabled"]')?.checked === true;
+if(!dataState.settings.mugging.enabled)muggingAssignmentController?.abort(new Error('Mugging was disabled.'));
 dataState.settings.mugging.minFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-min-ff"]')?.value) || 1));
 dataState.settings.mugging.maxFairFight = Math.max(1, Math.min(3, Number(root?.querySelector('[data-field="mugging-max-ff"]')?.value) || 3));
 dataState.settings.mugging.limit = Math.max(1, Math.min(100, Math.trunc(Number(root?.querySelector('[data-field="mugging-limit"]')?.value) || 50)));
