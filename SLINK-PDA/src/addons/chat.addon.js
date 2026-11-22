@@ -125,7 +125,7 @@
       id: String(source.id || newId()),
       label: String(source.label || '').trim().slice(0, 80),
       message: String(source.message || ''),
-      scope: SCOPES.has(source.scope) ? source.scope : 'both',
+      scope: source.scope === 'newsletter' ? 'newsletter' : ['all','faction_newsletter','private_newsletter'].includes(source.scope) ? 'all' : 'both',
       enabled: source.enabled !== false,
     };
   }
@@ -327,8 +327,8 @@
     if (legacyRoot) return legacyRoot;
     let candidate = header.parentElement;
     const fallback = candidate;
-    for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-      if (candidate.querySelector(COMPOSER_SELECTOR)&&(!header.closest('#chatRoot')||/^(?:\d+|faction(?:-.*)?|private-.+|company)$/.test(candidate.id))) return candidate;
+    for (let depth = 0; candidate && candidate !== document.body && candidate.id !== 'chatRoot' && depth < 8; depth += 1) {
+      if (candidate.querySelector(COMPOSER_SELECTOR)&&(!header.closest('#chatRoot')||candidate.id&&candidate.querySelectorAll(COMPOSER_SELECTOR).length===1)) return candidate;
       candidate = candidate.parentElement;
     }
     return header.closest('#chatRoot')?null:fallback;
@@ -829,15 +829,13 @@
   }
 
   function scopeIncludes(scope, context) {
-    return SCOPE_CONTEXTS[scope]?.includes(context) === true;
+    const destinations=SCOPE_CONTEXTS[scope];
+    return context==='newsletter'?destinations?.includes('newsletter')===true:destinations?.some(value=>value==='faction'||value==='private')===true;
   }
 
   function scopeFromContexts(contexts) {
-    const selected = ['faction', 'private', 'newsletter'].filter((context) => contexts.has(context));
-    return Object.keys(SCOPE_CONTEXTS).find((scope) => {
-      const values = SCOPE_CONTEXTS[scope];
-      return values.length === selected.length && values.every((value) => selected.includes(value));
-    }) || '';
+    const chats=contexts.has('both'),newsletter=contexts.has('newsletter');
+    return chats?(newsletter?'all':'both'):newsletter?'newsletter':'';
   }
 
   function scopeUsesNewsletter(scope) {
@@ -877,7 +875,7 @@
     const title = document.createElement('strong');
     title.textContent = 'Custom message buttons';
     const note = document.createElement('small');
-    note.textContent = 'Messages are stored as raw HTML. Choose whether each button belongs in chats, newsletters, or both.';
+    note.textContent = 'Messages are stored as raw HTML. Chat buttons are shared across all chats. Choose chats, newsletters, or both.';
     headingText.append(title, note);
     const add = document.createElement('button');
     add.type = 'button';
@@ -971,15 +969,14 @@
       if (messageCount) messageCount.textContent = messageCountText(macro);
     };
     [
-      ['faction', 'Faction chat'],
-      ['private', 'Private chat'],
+      ['both', 'All chats'],
       ['newsletter', 'Newsletter'],
     ].forEach(([value, text]) => {
       const choice = document.createElement('label');
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.value = value;
-      checkbox.checked = scopeIncludes(macro.scope, value);
+      checkbox.checked = scopeIncludes(macro.scope, value==='both'?'private':value);
       checkbox.addEventListener('change', updateScope);
       choice.append(checkbox, document.createTextNode(text));
       scopeField.appendChild(choice);
