@@ -16,7 +16,7 @@
     const consentLabel=element(doc,'label'),consent=element(doc,'input');consent.type='checkbox';consentLabel.append(consent,doc.createTextNode(' Send this registered key only to KAL to validate and use my account. Register and accept policies on KAL’s website first.'));root.append(consentLabel);
     const status=element(doc,'p');status.setAttribute('role','status');
     const controls=element(doc,'div'),displayLabel=element(doc,'label','Equipment display '),display=element(doc,'select');controls.style.cssText='display:flex;flex-wrap:wrap;gap:6px;';
-    for(const [value,text]of [['manual','Open SLINK equipment manually'],['slink','Use SLINK equipment panel'],['official','Use official KAL display']]){const option=element(doc,'option',text);option.value=value;display.append(option);}displayLabel.append(display);root.append(displayLabel);
+    for(const [value,text]of [['slink','Automatically open SLINK equipment'],['manual','Open SLINK equipment manually']]){const option=element(doc,'option',text);option.value=value;display.append(option);}displayLabel.append(display);root.append(displayLabel);
     let state=null,busy=false;
     const show=value=>{state=value;input.placeholder=value.connected?'Saved — leave blank to keep':'Enter your registered KAL key';display.value=value.display;enable.textContent=value.enabled?'Disable integration':'Enable integration';status.textContent=(value.connected?'KAL key validated. ':'Not connected. ')+(value.enabled?'Integration enabled.':'Integration disabled.');};
     async function run(work){if(busy)return;busy=true;for(const b of controls.querySelectorAll('button'))b.disabled=true;try{show(await work());root.dispatchEvent(new Event('kal-settings-changed',{bubbles:true}));}catch(error){status.textContent=error.message;}finally{busy=false;for(const b of controls.querySelectorAll('button'))b.disabled=false;}}
@@ -50,6 +50,8 @@
       #slink-kal-panel [role=status]{margin:8px 10px;overflow-wrap:anywhere}#slink-kal-panel .slink-kal-actions{display:flex;flex-wrap:wrap;gap:6px;margin:8px 10px}#slink-kal-panel .slink-kal-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));min-width:0}
       #slink-kal-panel .slink-kal-equipment{display:grid;grid-template-columns:60px minmax(0,1fr);gap:9px;padding:8px 10px;border-bottom:1px solid var(--kal-border);align-items:center;min-width:0}
       #slink-kal-panel .slink-kal-item-plate{width:60px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid var(--kal-border);border-radius:5px;background:var(--kal-control);overflow:hidden}
+      #slink-kal-panel .slink-kal-item-plate[data-rarity="yellow"]{--kal-rarity:#d6b23a}#slink-kal-panel .slink-kal-item-plate[data-rarity="orange"]{--kal-rarity:#d38b25}#slink-kal-panel .slink-kal-item-plate[data-rarity="red"]{--kal-rarity:#dc4b49}
+      #slink-kal-panel .slink-kal-item-plate[data-rarity]{border-color:var(--kal-rarity);background:linear-gradient(0deg,color-mix(in srgb,var(--kal-rarity) 35%,#101014),#101014 90%)}
       #slink-kal-panel .slink-kal-item-plate img{object-fit:contain;max-width:100%;max-height:100%}#slink-kal-panel .slink-kal-item-details{display:grid;gap:3px;min-width:0;overflow-wrap:anywhere}#slink-kal-panel small{color:var(--kal-muted)}#slink-kal-panel .slink-kal-bonus{color:var(--kal-accent)}#slink-kal-panel footer{padding:8px 10px;font-size:11px}
       @media(max-width:600px){#slink-kal-panel .slink-kal-groups{grid-template-columns:minmax(0,1fr)}#slink-kal-panel .slink-kal-header{align-items:flex-start}#slink-kal-panel button{min-height:40px}}
     `;
@@ -80,8 +82,10 @@
     }
     function draw(value){
       cards.replaceChildren();const weapons=element(doc,'div'),armor=element(doc,'div');weapons.setAttribute('aria-label','Weapons and other equipment');armor.setAttribute('aria-label','Armor');cards.append(weapons,armor);
-      for(const item of value.equipment){
+      const slotRank=item=>{const slot=String(item.slot_name||'').toLowerCase();return /^primary/.test(slot)?0:/^secondary/.test(slot)?1:/^melee/.test(slot)?2:/^(?:temp|temporary)\b/.test(slot)?3:4;};
+      for(const item of [...value.equipment].sort((a,b)=>slotRank(a)-slotRank(b))){
         const row=element(doc,'article');row.className='slink-kal-equipment';const plate=element(doc,'span');plate.className='slink-kal-item-plate';plate.append(image(item));
+        const rarity=String(item.rarity||'').trim().toLowerCase();if(['yellow','orange','red'].includes(rarity))plate.dataset.rarity=rarity;
         const details=element(doc,'div');details.className='slink-kal-item-details';details.append(element(doc,'strong',item.name||'Unknown equipment'));
         const meta=[item.slot_name,item.rarity].filter(Boolean);if(meta.length)details.append(element(doc,'small',meta.join(' · ')));
         const stats=item.stats&&typeof item.stats==='object'?Object.entries(item.stats):[['Damage',item.damage],['Accuracy',item.accuracy],['Armor',item.armor]];
@@ -89,7 +93,7 @@
         for(const bonus of item.bonuses||[]){const line=element(doc,'span',[bonus.title||bonus.name||'Bonus',bonus.description??bonus.value].filter(v=>v!=null&&v!=='').join(' · '));line.className='slink-kal-bonus';details.append(line);}
         for(const mod of [...(item.mods||[]),...(item.upgrades||[])])details.append(element(doc,'small','Mod · '+(mod.description||mod.name||'Unknown')));
         if(item.ammo)details.append(element(doc,'small','Ammo · '+(item.ammo.type||item.ammo.name||'Unknown')));if(item.effect)details.append(element(doc,'small',String(item.effect)));
-        row.append(plate,details);const isArmor=/armou?r|helmet|body|chest|pants|trousers|legs|boots|feet|gloves|hands|head/i.test(String(item.slot_name||''))||item.stats?.armor!=null;(isArmor?armor:weapons).append(row);
+        row.append(plate,details);const isArmor=slotRank(item)===4&&(/armou?r|helmet|body|chest|pants|trousers|legs|boots|feet|gloves|hands|head/i.test(String(item.slot_name||''))||Number(item.stats?.armor)>0);(isArmor?armor:weapons).append(row);
       }
       weapons.hidden=!weapons.childElementCount;armor.hidden=!armor.childElementCount;
       show(value.equipment.length?'ready':'empty',value.equipment.length?'Observed: '+K.stamp(value.observed_at):'KAL has no equipment records for this player. Missing slots are unknown, not empty. Try another profile or check again later.');
@@ -117,7 +121,7 @@
     async function refresh(force=false){
       if(destroyed)return;if(!state){show('loading','Checking KAL connection…');sync();}const next=pagePlayer(location);if(next!==id){id=next;reset();show('idle','Choose Load equipment to read KAL history.');}if(!id){root.hidden=true;return;}place();
       const token=generation;try{const value=await client.status();if(destroyed||token!==generation)return;if(state&&(state.connected!==value.connected||state.enabled!==value.enabled||state.display!==value.display)){reset();show('idle','Choose Load equipment to read KAL history.');}state=value;
-        root.hidden=value.display==='official'||value.connected&&!value.enabled;
+        root.hidden=value.connected&&!value.enabled;
         if(root.hidden){reset();show('disabled','KAL integration is disabled. Enable it in SLINK Access → KAL.');}
         else if(!value.connected){reset();show('credentials','No KAL API key is connected. Open SLINK Access → KAL to register and validate your key.');}
         else if(force||!selected()&&!['error','empty','registration'].includes(root.dataset.state)){show('idle','Choose Load equipment to read KAL’s recorded equipment history.');sync();if(force||value.display==='slink')void load('select');}

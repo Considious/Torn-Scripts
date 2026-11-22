@@ -76,7 +76,9 @@
     async function settings() {
       const value=await storage.get('settings');
       if(value!=null && value.schema!==1)throw failure('Unsupported KAL settings version.', 'KAL_STORAGE');
-      return value || {schema:1,enabled:false,display:'manual'};
+      // Older builds defaulted to manual and offered an "official" mode that hid SLINK.
+      // Migrate those defaults to auto-open; retain manual choices saved by this UI.
+      return {...(value||{}),schema:1,enabled:value?.enabled===true,display:value?.displayVersion===2&&value.display==='manual'?'manual':'slink',displayVersion:2};
     }
     async function api(path, key) {
       const backoff=await storage.get('backoff');
@@ -99,7 +101,7 @@
     }
     async function status() {
       const [auth,prefs]=await Promise.all([credentials(),settings()]);
-      return {connected:!!auth,enabled:prefs.enabled===true,display:prefs.display||'manual'};
+      return {connected:!!auth,enabled:prefs.enabled===true,display:prefs.display};
     }
     async function connect(key, consent) {
       return serial(async()=>{
@@ -109,7 +111,7 @@
         const response=await api('/check-key',key);
         if(response.is_registered!==true)throw failure('Register this key and accept KAL’s policies at kalends.dev first.', 'KAL_UNREGISTERED');
         revision++;cursors.clear();
-        await storage.set('settings',{schema:1,enabled:true,display:(await settings()).display||'manual'});
+        await storage.set('settings',{schema:1,enabled:true,display:(await settings()).display,displayVersion:2});
         await storage.set('credentials',{schema:1,key,scope:uuid(),validatedAt:now()});
         try{await cache.clear();}catch{} // Account-scoped cache cannot be reused by the new connection.
         return status();
@@ -119,7 +121,7 @@
       return serial(async()=>{
         if(value.enabled===true && !await credentials())throw failure('Connect a registered KAL key first.');
         const prior=await settings();revision++;cursors.clear();
-        await storage.set('settings',{schema:1,enabled:value.enabled===true,display:['manual','slink','official'].includes(value.display)?value.display:prior.display});
+        await storage.set('settings',{schema:1,enabled:value.enabled===true,display:['manual','slink'].includes(value.display)?value.display:prior.display,displayVersion:2});
         return status();
       });
     }
@@ -127,7 +129,7 @@
       return serial(async()=>{
         revision++;cursors.clear();
         await storage.remove('credentials');
-        await storage.set('settings',{schema:1,enabled:false,display:'manual'});
+        await storage.set('settings',{schema:1,enabled:false,display:'slink',displayVersion:2});
         try{await cache.clear();}catch{} // Credential removal remains effective even if cache cleanup fails.
         return status();
       });

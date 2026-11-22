@@ -7,6 +7,7 @@
   const run=++revision,state=await raw.status();if(run!==revision)return;
   if(!api.kal.enabled()||!state.enabled){panel?.destroy();panel=null;themeObserver?.disconnect();themeObserver=null;return;}
   if(!panel){panel=global.SLINK_KAL_UI.mountPage({client,openAccess:api.kal.openAccess});if(panel){const apply=()=>{for(const [key,value]of Object.entries(api.kal.theme()))panel?.root.style.setProperty(key,value);};apply();const host=api.kal.host();if(host){themeObserver=new MutationObserver(apply);themeObserver.observe(host,{attributes:true,attributeFilter:['data-theme','class','style']});}}}
+  else await panel.refresh();
  }
  async function configure(value){
   const previous=await raw.status();const result=await raw.configure(value);
