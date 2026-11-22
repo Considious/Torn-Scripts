@@ -39,3 +39,26 @@ const flatItems = abroad.normalizeProvider('tornIntel', {
 assert(flatItems.length === 1 && flatItems[0].countryCode === 'mex' && flatItems[0].quantity === 5, 'Flat item lists were not normalized.');
 
 console.log('PDA Abroad Stocks validation passed.');
+
+// Exercise the filter model from the production view.
+{
+  const filterSource = fs.readFileSync(path.join(root, 'src/20-quality-of-life.part'), 'utf8');
+  const filterStart = filterSource.indexOf('function stockFilters(');
+  const filterEnd = filterSource.indexOf('function stockFilterOptions(', filterStart);
+  const {stockFilters,filterModel}=vm.runInNewContext(filterSource.slice(filterStart,filterEnd)+'\n({stockFilters,filterModel});');
+  const rows=[
+    {key:'mex:1',countryCode:'mex',countryName:'Mexico',itemId:1,itemName:'Item A',itemType:'Melee'},
+    {key:'can:1',countryCode:'can',countryName:'Canada',itemId:1,itemName:'Item A',itemType:'Melee'},
+    {key:'can:2',countryCode:'can',countryName:'Canada',itemId:2,itemName:'Item B',itemType:'Contraband'}
+  ];
+  const persisted=JSON.parse(JSON.stringify(stockFilters({item:'id:2',excluded:['Weapons']})));
+  const itemView=filterModel(rows,persisted);
+  assert(itemView.countries.length===1&&itemView.countries[0][0]==='can','Item selection must restrict countries.');
+  assert(itemView.visible.has('can:2')&&!itemView.visible.has('can:1'),'Exclusion or selection was lost.');
+  const countryView=filterModel(rows,stockFilters({country:'mex'}));
+  assert(countryView.items.length===1&&countryView.items[0][0]==='id:1','Country must restrict item choices.');
+  const first=abroad.normalizeProvider('yata',{stocks:{can:{stocks:[{id:2,name:'Item B',quantity:0,category:'Contraband'}]}}});
+  const removed=abroad.normalizeProvider('droqs',{stocks:{can:{stocks:[{id:3,name:'Old item',quantity:15}]}}});
+  const merged=abroad.mergeSnapshots({yata:first,droqs:removed});
+  assert(merged.length===1&&merged[0].sources.yata.quantity===0&&merged[0].itemType==='Contraband','Zero stock stays listed and enrichment alone cannot advertise inventory.');
+}

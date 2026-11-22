@@ -572,6 +572,7 @@ function normalizeProvider(providerId, payload, fetchedAt = Date.now()) {
         countryName:country.name,
         itemId:id || null,
         itemName:name || ('Item ' + id),
+          itemType:String(item?.category ?? item?.type ?? nestedItem?.category ?? nestedItem?.type ?? '').trim(),
         quantity:quantity === null ? null : Math.max(0, Math.trunc(quantity)),
         cost:cost === null ? null : Math.max(0, Math.round(cost)),
         updatedAt:itemTimestamp(item, [
@@ -620,13 +621,15 @@ countryCode:source.countryCode,
 countryName:source.countryName,
 itemId:source.itemId,
 itemName:source.itemName,
+          itemType:source.itemType||'',
 sources:{},
 lastRestockAt:0,
 nextRestockAt:0,
 predictionSource:'',
 predictionSamples:0
 };
-current.sources[providerId] = {
+if(!current.itemType&&source.itemType)current.itemType=source.itemType;
+        current.sources[providerId] = {
 quantity:source.quantity,
 cost:source.cost,
 updatedAt:source.updatedAt
@@ -648,7 +651,7 @@ row.predictionSource = 'SLINK observed history';
 row.predictionSamples = prediction.samples;
 }
 }
-return [...merged.values()].sort((left,right) => left.countryName.localeCompare(right.countryName) || left.itemName.localeCompare(right.itemName));
+return [...merged.values()].filter(row=>Object.keys(row.sources).some(id=>!PROVIDERS[id]?.enrichment)).sort((left,right) => left.countryName.localeCompare(right.countryName) || left.itemName.localeCompare(right.itemName));
 }
 function travelMinutes(countryCode, method = 'standard', bufferMinutes = 0) {
 const country = countryByCode.get(String(countryCode || '').toLowerCase());
@@ -2824,5 +2827,3 @@ const tier = Number(scope.match(/^slink\.adhd\.marketwatch\.(\d+)$/)?.[1]) || 0;
 return MARKET_TIERS.includes(tier) ? Math.max(maximum, tier) : maximum;
 }, 0);
 }
-
-

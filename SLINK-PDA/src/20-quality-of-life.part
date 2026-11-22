@@ -677,14 +677,60 @@ if(Number(current.snoozes[id]||0)<=now){const roi=Math.round(Number(recommendati
 }
 return rows;
 }
-function filteredRows() {
-const current = status();
-const query = String(moduleState.abroadStocks.query || '').trim().toLocaleLowerCase();
-if (!query) return current.rows;
-return current.rows.filter(row => {
-const primary = moduleState.abroadStocks.mode === 'country' ? row.countryName : `${row.itemName} ${row.itemId || ''}`;
-return String(primary).toLocaleLowerCase().includes(query);
-});
+function stockFilters(saved={}) {
+  return {mode:saved.mode==='country'?'country':'item',query:String(saved.query||'').slice(0,100),
+    item:String(saved.item||''),country:String(saved.country||''),
+    excluded:Array.isArray(saved.excluded)?saved.excluded.filter(value=>typeof value==='string'):[]};
+}
+function filterModel(rows, view, catalog) {
+  const types=new Map((catalog?.items||[]).map(item=>[Number(item.id),item.type||item.category]));
+  const itemKey=row=>row.itemId?'id:'+row.itemId:'name:'+String(row.itemName).toLowerCase();
+  const category=row=>{
+    const type=String(types.get(Number(row.itemId))||row.itemType||'Uncategorized');
+    return /^(primary|secondary|melee|temporary|weapon|weapons)$/i.test(type)?'Weapons':
+      /^(armour|armor)$/i.test(type)?'Armor':type;
+  };
+  const categories=[...new Set(rows.map(category))].sort((a,b)=>a.localeCompare(b));
+  const available=rows.filter(row=>!view.excluded.includes(category(row)));
+  const mapOptions=(input,key,label)=>[...new Map(input.map(row=>[key(row),label(row)])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
+  const countries=mapOptions(available.filter(row=>!view.item||itemKey(row)===view.item),row=>String(row.countryCode),row=>row.countryName);
+  const items=mapOptions(available.filter(row=>!view.country||String(row.countryCode)===view.country),itemKey,row=>row.itemName);
+  const query=view.query.trim().toLocaleLowerCase();
+  const visible=new Set(available.filter(row=>
+    (!view.country||String(row.countryCode)===view.country)&&(!view.item||itemKey(row)===view.item)&&
+    (!query||String(view.mode==='country'?row.countryName+' '+row.countryCode:row.itemName+' '+(row.itemId||'')).toLocaleLowerCase().includes(query))
+  ).map(row=>row.key));
+  return {countries,items,categories,visible};
+}
+function stockFilterOptions(model,view){
+  function options(entries,selected,all){
+    const display=[['',all],...entries];
+    if(selected&&!entries.some(([key])=>key===selected))display.push([selected,'Selection unavailable']);
+    return display.map(([key,label])=>'<option value="'+escapeHtml(key)+'"'+(key===selected?' selected':'')+'>'+escapeHtml(label)+'</option>').join('');
+  }
+  const categories=[...new Set([...model.categories,...view.excluded])];
+  return '<label>Country<select data-stock-country>'+options(model.countries,view.country,'All countries')+'</select></label>'+
+    '<label>Item<select data-stock-item>'+options(model.items,view.item,'All items')+'</select></label>'+
+    '<details><summary>Exclude categories'+(view.excluded.length?' ('+view.excluded.length+')':'')+'</summary>'+
+    categories.map(category=>'<label><input type="checkbox" data-stock-category="'+escapeHtml(category)+'"'+(view.excluded.includes(category)?' checked':'')+'> '+escapeHtml(category)+'</label>').join(' ')+'</details>';
+}
+function changeStockFilter(view,target){
+  if(target.matches('[data-stock-country]'))view.country=target.value;
+  else if(target.matches('[data-stock-item]'))view.item=target.value;
+  else if(target.matches('[data-stock-category]')){
+    const category=target.dataset.stockCategory;
+    view.excluded=target.checked?[...new Set([...view.excluded,category])]:view.excluded.filter(value=>value!==category);
+  }else return false;
+  return true;
+}
+
+const viewKey='slink.abroad-stocks.view.v1';
+let savedView;
+try{savedView=JSON.parse(localStorage.getItem(viewKey)||'{}');}catch{}
+const view=stockFilters(savedView);
+function saveView(){try{localStorage.setItem(viewKey,JSON.stringify(view));}catch{}}
+function currentFilterModel(rows,filters=view){
+  return filterModel(rows,filters,dataState.caches.sharedProviders?.catalog||dataState.caches.market?.catalog);
 }
 function sourceCell(row, providerId) {
 const source = row.sources?.[providerId];
@@ -699,7 +745,10 @@ const root = moduleRoot('abroadStocks');
 if (!root) return;
 if(dataState.settings.monitoring['abroad-stocks']===false){root.innerHTML=moduleMessage('Abroad Stocks is paused. Resume it in Access.');return;}
 const current = status();
-const rows = filteredRows();
+const model=currentFilterModel(current.rows);
+const facetKeys=currentFilterModel(current.rows,{...view,query:''}).visible;
+const rows=current.rows.filter(row=>facetKeys.has(row.key));
+const categoriesOpen=root.querySelector('[data-stock-filters] details')?.open;
 const watchedCount = runtime().watches.length;
 const providerStatus = PROVIDER_STATUS_ORDER.map(id => {
 const provider = current.providers[id] || {};
@@ -710,7 +759,8 @@ root.innerHTML = `<div class="grid"><article class="card full">
 <div class="card-head"><div><h2>Abroad Stocks</h2><span class="muted">Compare public reports from YATA, Prometheus, and Torn Intel.</span></div><button type="button" data-action="refresh-abroad-stocks" ${moduleState.abroadStocks.busy ? 'disabled' : ''}>${moduleState.abroadStocks.busy ? 'Refreshing…' : 'Refresh'}</button></div>
 ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error, 'error') : ''}
 <div class="abroad-overview"><div class="abroad-summary"><div><span>Updated</span><strong>${current.fetchedAt ? escapeHtml(relativeTime(current.fetchedAt)) : 'Not loaded'}</strong></div><div><span>Departure watches</span><strong>${watchedCount}</strong></div></div><div class="target-actions abroad-provider-status">${providerStatus}</div></div>
-<div class="abroad-search"><div class="racing-filters"><button type="button" data-abroad-mode="item" aria-selected="${String(moduleState.abroadStocks.mode === 'item')}">Search item</button><button type="button" data-abroad-mode="country" aria-selected="${String(moduleState.abroadStocks.mode === 'country')}">Search country</button></div><input type="search" data-abroad-query value="${escapeHtml(moduleState.abroadStocks.query)}" placeholder="${moduleState.abroadStocks.mode === 'item' ? 'Xanax, plushie, flower…' : 'Mexico, China, UAE…'}"></div>
+<div class="abroad-search"><div class="racing-filters"><button type="button" data-abroad-mode="item" aria-selected="${String(view.mode === 'item')}">Search item</button><button type="button" data-abroad-mode="country" aria-selected="${String(view.mode === 'country')}">Search country</button></div><input type="search" data-abroad-query value="${escapeHtml(view.query)}" placeholder="${view.mode === 'item' ? 'Xanax, plushie, flower…' : 'Mexico, China, UAE…'}"></div><div class="abroad-search" data-stock-filters>${stockFilterOptions(model,view)}</div>
+
 <details class="alert-settings"><summary>Travel and reminder settings</summary>
 <div class="abroad-settings">
 <label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${escapeHtml(TRAVEL_LABELS[method]||method)}</option>`).join('')}</select><span class="muted">${current.settings.travelMethodExplicit?'Manually selected':'Automatically selected from your current property'}</span></label>
@@ -728,9 +778,12 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 const prediction = row.nextRestockAt
 ? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span class="abroad-leave-time">Leave at ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))}</span><span>${escapeHtml(row.predictionSource || 'reported estimate')}</span>`
 : '<strong>Restock estimate unavailable</strong><span>No connected provider has published an estimate for this item yet.</span>';
-return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}" data-abroad-item="${escapeHtml((row.itemName + ' ' + (row.itemId || '')).toLocaleLowerCase())}" data-abroad-country="${escapeHtml(row.countryName.toLocaleLowerCase())}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" class="slink-switch-button" role="switch" aria-checked="${row.watched === true}" data-action="toggle-abroad-watch">Departure alert</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
+return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}" ${model.visible.has(row.key)?'':'hidden'} data-abroad-item="${escapeHtml((row.itemName + ' ' + (row.itemId || '')).toLocaleLowerCase())}" data-abroad-country="${escapeHtml(row.countryName.toLocaleLowerCase())}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" class="slink-switch-button" role="switch" aria-checked="${row.watched === true}" data-action="toggle-abroad-watch">Departure alert</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
 }).join('') : moduleMessage(current.fetchedAt ? 'No abroad stocks match this search.' : 'Press Refresh to load abroad stock reports.')}</div>
 </article></div>`;
+const filters=root.querySelector('[data-stock-filters]');
+filters.querySelector('details').open=Boolean(categoriesOpen);
+filters.addEventListener('change',event=>{if(changeStockFilter(view,event.target)){saveView();render();}});
 }
 function toggleWatch(key) {
 const current = runtime();
@@ -775,17 +828,16 @@ render();
 void refresh(true);
 }
 function setMode(mode) {
-moduleState.abroadStocks.mode = mode === 'country' ? 'country' : 'item';
+view.mode = mode === 'country' ? 'country' : 'item';
+saveView();
 render();
 }
 function setQuery(value) {
-moduleState.abroadStocks.query = String(value || '').slice(0,100);
-const root = moduleRoot('abroadStocks');
-const needle = moduleState.abroadStocks.query.trim().toLocaleLowerCase();
-for (const card of root?.querySelectorAll?.('[data-abroad-key]') || []) {
-const haystack = moduleState.abroadStocks.mode === 'country' ? card.dataset.abroadCountry : card.dataset.abroadItem;
-card.hidden = Boolean(needle && !String(haystack || '').includes(needle));
-}
+view.query=String(value||'').slice(0,100);
+saveView();
+const root=moduleRoot('abroadStocks');
+const {visible}=currentFilterModel(status().rows);
+for(const card of root?.querySelectorAll('[data-abroad-key]')||[])card.hidden=!visible.has(card.dataset.abroadKey);
 }
 function snooze(id, minutes) {
 runtime().snoozes[String(id)] = Date.now() + Math.max(1, Number(minutes) || 60) * 60_000;
@@ -795,4 +847,3 @@ renderAlerts();
 }
 return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, status, toggleWatch, touch, visible };
 })();
-
