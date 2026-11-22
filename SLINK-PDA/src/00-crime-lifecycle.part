@@ -1,0 +1,141 @@
+(function installCrimeLifecycle(global) {
+  'use strict';
+
+  const doc = global.document;
+  const helpers = new Set();
+  let observer = null;
+  let frame = null;
+  let suspended = false;
+
+  function crimePage() {
+    const { pathname, search } = global.location;
+    return pathname === '/page.php' && new URLSearchParams(search).get('sid')?.toLowerCase() === 'crimes';
+  }
+
+  function currentCrime() {
+    if (!crimePage()) return null;
+    const name = global.location.hash.match(/^#\/?([^/?]+)/)?.[1]?.toLowerCase();
+    return name === 'pickpocketing' ? 'pickpocket' : name || null;
+  }
+
+  function contentRoot() {
+    return doc.querySelector('#mainContainer') || doc.body;
+  }
+
+  function visibleRoot(selector, scope = contentRoot()) {
+    for (const candidate of [].concat(selector)) {
+      const root = Array.from(scope?.querySelectorAll(candidate) || []).find(node =>
+        !node.closest('[hidden],[aria-hidden="true"]') && node.getClientRects().length > 0
+      );
+      if (root) return root;
+    }
+    return null;
+  }
+
+  function schedule() {
+    if (frame !== null || suspended) return;
+    frame = global.requestAnimationFrame(() => {
+      frame = null;
+      reconcile();
+    });
+  }
+
+  function inspect(records) {
+    const crime = currentCrime();
+    const scope = contentRoot();
+    for (const helper of helpers) {
+      const active = helper.name === crime && helper.eligible();
+      if (active !== helper.active || active && scope !== helper.scope) {
+        schedule();
+        return;
+      }
+      if (!active || !helper.selector) continue;
+      const relevant = records.some(record => {
+        if (!helper.root?.isConnected) return scope?.contains(record.target);
+        if (record.type === 'attributes') {
+          return record.target.contains(helper.root) || record.target.matches(helper.matchSelector)
+            || Boolean(record.target.querySelector(helper.matchSelector));
+        }
+        return [...record.addedNodes].some(node =>
+          node.nodeType === 1 && (node.matches(helper.matchSelector) || node.querySelector(helper.matchSelector))
+        );
+      });
+      if (relevant) {
+        schedule();
+        return;
+      }
+    }
+  }
+
+  function reconcile() {
+    const watching = helpers.size > 0 && crimePage() && !suspended && !doc.hidden;
+    if (watching && !observer && doc.documentElement) {
+      observer = new global.MutationObserver(inspect);
+      observer.observe(doc.documentElement, {
+        subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'aria-hidden']
+      });
+    } else if (!watching && observer) {
+      observer.disconnect();
+      observer = null;
+    }
+    const crime = watching ? currentCrime() : null;
+    const scope = watching ? contentRoot() : null;
+    for (const helper of helpers) {
+      if (helper.name !== crime || !helper.eligible()) {
+        if (helper.active) helper.stop();
+        helper.active = false;
+        helper.scope = null;
+        helper.root = null;
+        continue;
+      }
+      if (helper.active && helper.scope !== scope) helper.stop();
+      helper.active = true;
+      helper.scope = scope;
+      helper.root = helper.selector ? visibleRoot(helper.selector, scope) : null;
+      helper.sync(helper.root);
+    }
+  }
+
+  function pagehide() {
+    suspended = true;
+    if (frame !== null) global.cancelAnimationFrame(frame);
+    frame = null;
+    reconcile();
+  }
+
+  function pageshow() {
+    suspended = false;
+    reconcile();
+  }
+
+  const events = [
+    [global, 'hashchange', schedule], [global, 'popstate', schedule],
+    [global.navigation, 'currententrychange', schedule],
+    [global, 'focus', reconcile], [global, 'blur', reconcile],
+    [global, 'pagehide', pagehide], [global, 'pageshow', pageshow],
+    [doc, 'visibilitychange', reconcile]
+  ];
+
+  function connect(name, { eligible, sync, stop, selector }) {
+    const matchSelector = selector ? [].concat(selector).join(',') : null;
+    const helper = { name, eligible, sync, stop, selector, matchSelector, active: false, scope: null, root: null };
+    if (!helpers.size) for (const [target, event, listener] of events) target?.addEventListener(event, listener);
+    helpers.add(helper);
+    return {
+      sync: reconcile,
+      dispose() {
+        if (!helpers.delete(helper)) return;
+        stop();
+        if (!helpers.size) {
+          for (const [target, event, listener] of events) target?.removeEventListener(event, listener);
+          if (frame !== null) global.cancelAnimationFrame(frame);
+          frame = null;
+          suspended = false;
+        }
+        reconcile();
+      }
+    };
+  }
+
+  global.SLINK_CRIME_LIFECYCLE = Object.freeze({ connect, currentCrime, contentRoot, visibleRoot });
+})(globalThis);

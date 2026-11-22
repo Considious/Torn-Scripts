@@ -16,9 +16,8 @@ assert(loader.includes('let selected=hasData(primary)?primary:mirror||{}'), 'The
 assert(loader.includes('savedAt(mirror)>savedAt(selected)'), 'A mirror may only replace primary data when it proves it is newer.');
 assert(!core.includes('global.localStorage.removeItem(DATA_STORAGE_KEY);'), 'Startup must never erase the legacy recovery copy.');
 assert(loader.includes('localStorage?.getItem(s)'), 'The startup loader must recover from the mirror before bootstrapping the runtime.');
-assert(loader.includes('source-manifest.json')&&loader.includes('readSourceManifest(2500)'), 'The startup loader must check the authored source manifest with a bounded cached-startup wait.');
+assert(loader.includes('source-manifest.json')&&loader.includes('await executeBundle(cached);void stageUpdate(cached)'), 'The startup loader must use the cached runtime before checking for updates.');
 assert(loader.includes('slink-pda-dashboard:runtime-cache:v1'), 'The startup loader must retain a last-known-working runtime.');
-assert(loader.includes('using the last-known-working runtime.'), 'A failed source download must fall back to the cached runtime.');
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
 assert(loader.includes('primaryFailed')&&loader.includes('await gmWrite(n,selected)'), 'Mirror repair must not overwrite primary storage after a failed primary read, and must repair the primary when safe.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');

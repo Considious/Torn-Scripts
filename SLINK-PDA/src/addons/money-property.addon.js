@@ -3,6 +3,8 @@
 const api = global.SLINK_PDA_PLUGIN_API;
 if (!api) throw new Error('SLINK PDA plugin API is unavailable.');
 const ID = 'moneyProperty';
+const enabled=()=>api.moduleMonitoringEnabled?.(ID)!==false;
+let heartbeat=null;
 const SCOPE = 'slink.qol.money-property';
 const CACHE_MS = 15 * 60_000;
 const CATALOG_MS = 7 * 86_400_000;
@@ -221,7 +223,11 @@ if (!next) {
 const base = tiers[tiers.length-1];
 if (!base.benefit.repeatable) return [];
 next = base;
-threshold = base.requirement * Math.max(1,integer(holding.bonus?.increment)+1,Math.floor(sharesOwned/base.requirement)+1);
+if (base.benefit.passive === true) return [];
+threshold = base.requirement;
+const cap = stock.acronym === 'MCS' ? 10 : 53;
+for (let block=1; threshold<=sharesOwned && block<cap; block++) threshold=threshold*2+base.requirement;
+if (!Number.isSafeInteger(threshold) || threshold<=sharesOwned) return [];
 }
 const sharesNeeded = Math.max(0,threshold-sharesOwned);
 const incrementalCost = Math.ceil(sharesNeeded*price);
@@ -285,6 +291,7 @@ function render() {
 if (api.shouldRender && !api.shouldRender(ID)) return;
 const root = api.root(ID);
 if (!root) return;
+if(!enabled()){root.textContent='Money & Property is paused. Resume it in Access.';return;}
 if (!api.hasScope(SCOPE)) { root.innerHTML = api.lockedModule(SCOPE,'Money & Property'); return; }
 const current = cache();
 const status = current.status;
@@ -297,14 +304,14 @@ const property = status.currentProperty;
 const stockRowsHtml = status.stocks.length ? status.stocks.map(stock => {
 const checked=config.stockAlerts[stock.alertKey]===true?' checked':'';
 const roi=(stock.monthlyRoi*100).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')+'%';
-return '<article class="card"><div class="card-head"><div><h2>'+api.escapeHtml(stock.acronym||stock.name)+'</h2><span class="muted">'+api.escapeHtml(stock.benefitDescription)+'</span></div><strong title="'+api.escapeHtml(exactMoney(stock.payoutValue))+'">'+money(stock.payoutValue)+'</strong></div><p><strong>Actual payout:</strong> '+money(stock.payoutValue)+' · '+api.escapeHtml(stock.cadenceLabel)+'</p><div class="stats"><div><strong>'+money(stock.incrementalCost)+'</strong><span>Next block · '+stock.sharesNeeded.toLocaleString()+' shares</span></div><div><strong>'+money(Math.round(stock.weeklyValue))+'</strong><span>Weekly value</span></div><div><strong>'+money(Math.round(stock.monthlyValue))+'</strong><span>Monthly value</span></div><div><strong>'+roi+'</strong><span>Monthly ROI</span></div></div><label class="check-row"><input type="checkbox" data-mp-stock="'+api.escapeHtml(stock.alertKey)+'"'+checked+'> Alert when affordable</label></article>';
+return '<article class="card"><div class="card-head"><div><h2>'+api.escapeHtml(stock.acronym||stock.name)+'</h2><span class="muted">'+api.escapeHtml(stock.benefitDescription)+'</span></div><strong title="'+api.escapeHtml(exactMoney(stock.payoutValue))+'">'+money(stock.payoutValue)+'</strong></div><p><strong>Actual payout:</strong> '+money(stock.payoutValue)+' · '+api.escapeHtml(stock.cadenceLabel)+'</p><div class="stats"><div><strong>'+money(stock.incrementalCost)+'</strong><span>Next block · '+stock.sharesNeeded.toLocaleString()+' shares</span></div><div><strong>'+money(Math.round(stock.weeklyValue))+'</strong><span>Weekly value</span></div><div><strong>'+money(Math.round(stock.monthlyValue))+'</strong><span>Monthly value</span></div><div><strong>'+roi+'</strong><span>Monthly ROI</span></div></div><label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-mp-stock="'+api.escapeHtml(stock.alertKey)+'"'+checked+'> Alert when affordable</label></article>';
 }).join('') : '<article class="card wide">No income-producing stock benefit could be valued from Torn’s current stock and item data.</article>';
 root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Money &amp; Property</h2><span class="muted">Updated '+api.relativeTime(status.at)+' · cached for 15 minutes</span></div><button type="button" data-mp-action="refresh">'+(busy?'Checking…':'Refresh')+'</button></div>'+(error?api.moduleMessage(error,'error'):'')+'<label class="check-row"><input type="checkbox" data-mp-setting="enabled"'+(config.enabled?' checked':'')+'> Enable Money &amp; Property reminders</label></article>'+
 summaryCard('Cash on hand',money(status.money.cashOnHand),'Personal cash')+
 summaryCard('Faction armory cash',money(status.money.factionCash),'Included for affordability alerts')+
 summaryCard('Available for stocks',money(status.money.availableCash),'Cash + faction armory')+
 summaryCard('Property',property?.name||'Unavailable',property?.rentalEndsAt?'Rental ends in '+duration(property.rentalEndsAt-Date.now()):'No rental timer returned')+
-'<article class="card wide"><h2>Reminder settings</h2><div class="form-grid"><label>Bank lead hours<input type="number" min="0" max="168" data-mp-setting="bankLeadHours" value="'+config.bankLeadHours+'"></label><label>Rental lead days<input type="number" min="0" max="30" data-mp-setting="rentalLeadDays" value="'+config.rentalLeadDays+'"></label><label>Cashier-check lead hours<input type="number" min="0" max="168" data-mp-setting="cashierLeadHours" value="'+config.cashierLeadHours+'"></label><label>Upkeep alert threshold<input type="number" min="0" step="1000" data-mp-setting="upkeepThreshold" value="'+config.upkeepThreshold+'"></label></div><label class="check-row"><input type="checkbox" data-mp-setting="loanReminder"'+(config.loanReminder?' checked':'')+'> Remind me to pursue Loan Shark when the achievement state is available</label><label class="check-row"><input type="checkbox" data-mp-setting="soundEnabled"'+(config.soundEnabled?' checked':'')+'> Play sounds for Money &amp; Property alerts</label></article>'+
+'<article class="card wide"><h2>Reminder settings</h2><div class="form-grid"><label>Bank lead hours<input type="number" min="0" max="168" data-mp-setting="bankLeadHours" value="'+config.bankLeadHours+'"></label><label>Rental lead days<input type="number" min="0" max="30" data-mp-setting="rentalLeadDays" value="'+config.rentalLeadDays+'"></label><label>Cashier-check lead hours<input type="number" min="0" max="168" data-mp-setting="cashierLeadHours" value="'+config.cashierLeadHours+'"></label><label>Upkeep alert threshold<input type="number" min="0" step="1000" data-mp-setting="upkeepThreshold" value="'+config.upkeepThreshold+'"></label></div><label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-mp-setting="loanReminder"'+(config.loanReminder?' checked':'')+'> Remind me to pursue Loan Shark when the achievement state is available</label><label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-mp-setting="soundEnabled"'+(config.soundEnabled?' checked':'')+'> Play sounds for Money &amp; Property alerts</label></article>'+
 '<article class="card wide"><div class="card-head"><div><h2>Financial status</h2><span class="muted">Only fields actually returned by Torn are shown.</span></div></div><p><strong>Bank:</strong> '+(status.bank.amount?money(status.bank.amount)+(status.bank.matured?' · ready to collect':status.bank.maturedAt?' · '+duration(status.bank.maturedAt-Date.now())+' remaining':''):'No active investment returned')+'</p><p><strong>Duke:</strong> '+(status.loan.amount?money(status.loan.amount)+' owed':'No balance returned')+'</p><p><strong>Daily property upkeep:</strong> '+(property?money(property.upkeepPerDay):'Unavailable')+'</p><p><strong>Upkeep owed:</strong> '+(property&&Number.isFinite(property.upkeepOwed)?money(property.upkeepOwed):'Not exposed by Torn API')+'</p><p><strong>Cashier checks:</strong> '+status.cashierChecks.length+'</p><div class="target-actions">'+api.actionLink('Open Bank',URLS.bank)+api.actionLink('Open Property',URLS.property)+api.actionLink('Open Duke',URLS.loan)+'</div></article>'+
 bankPlannerHtml()+'<article class="card full"><div class="card-head"><div><h2>Income-producing stock benefits</h2><span class="muted">Actual payout value and cadence, sorted by estimated monthly ROI. Non-income perks are omitted.</span></div>'+api.actionLink('Open Stocks',URLS.stocks)+'</div><div class="grid">'+stockRowsHtml+'</div></article></div>';
 bind(root);
@@ -338,12 +345,14 @@ if(results)results.innerHTML=bankResultsHtml(event.target.value);
 });
 }
 async function refresh(force = false) {
+if(!enabled())return cache().status;
 const current = cache();
 if (busy) return current.status;
 if (!force && current.status && current.bankPlanner && Date.now()-Number(current.fetchedAt||0)<CACHE_MS) { render(); return current.status; }
 busy = true; error = ''; render();
 try {
 await api.ensurePermission(false);
+if(!enabled())return cache().status;
 if (!api.hasScope(SCOPE)) throw new Error('Your SLINK account does not have '+SCOPE+' permission.');
 const [moneyData,propertiesData,currentPropertyData,stocksData,achievements,tornStocks,userMerits] = await Promise.all([
 api.tornJson('/v2/user/money','SLINK PDA Money and Property'),
@@ -386,16 +395,30 @@ error = api.errorMessage(caught);
 throw caught;
 } finally { busy = false; render(); }
 }
+global.SLINK_PDA_STOCK_BENEFITS=Object.freeze({rows:stockRows});
+global.SLINK_PDA_BANK_PREVIEW=Object.freeze({
+  compare:bankComparison,
+  load:async()=>{
+    await api.ensurePermission(false);
+    if(!api.hasScope(SCOPE))throw Error('Money & Property access is required.');
+    if(busy)throw Error('Money & Property is already refreshing. Try again in a moment.');
+    await refresh(true);
+    return cache().bankPlanner;
+  }
+});
 function alerts() {
+if(!enabled())return [];
 const status = cache().status;
 return status ? buildAlerts(status) : [];
 }
 function start() {
+if(!enabled()||heartbeat!==null)return;
 if (api.hasScope(SCOPE)) void refresh(false).catch(() => undefined);
-global.setInterval(() => {
-if (api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) void refresh(false).catch(() => undefined);
+heartbeat=global.setInterval(() => {
+if (enabled()&&api.hasScope(SCOPE) && Date.now()-Number(cache().fetchedAt||0)>=CACHE_MS) void refresh(false).catch(() => undefined);
 },60000);
 }
-api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
+function stop(){if(heartbeat!==null)global.clearInterval(heartbeat);heartbeat=null;}
+api.register({id:ID,title:'Money & Property',shortTitle:'Money',scope:SCOPE,render,refresh,alerts,start,stop,test:Object.freeze({buildStatus,buildAlerts,bankComparison,bankMeritLevel,bankStockBonus,bankRateRows})});
 })(globalThis);
 

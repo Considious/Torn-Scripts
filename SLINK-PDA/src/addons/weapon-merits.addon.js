@@ -1,0 +1,103 @@
+(function(g){
+  'use strict';
+  const market=['/amarket.php','/bazaar.php'].includes(location.pathname)||location.pathname==='/page.php'&&['itemmarket','bazaar'].includes(new URLSearchParams(location.search).get('sid')?.toLowerCase());
+  const allowed=()=>market||location.pathname==='/item.php'||location.pathname==='/factions.php'&&location.hash.includes('tab=armoury');
+  if(!market&&!['/item.php','/factions.php'].includes(location.pathname))return;
+  const model=g.SLINK_WEAPON_MERITS,ext=g.SLINK_EXTENSION,pda=g.SLINK_PDA_PLUGIN_API;
+  if(!model||!ext&&!pda)return;
+  const selectors={damage:'.bonus-attachment-item-damage-bonus',accuracy:'.bonus-attachment-item-accuracy-bonus'};
+  const both=Object.values(selectors).join(',');
+  const ui=g.SLINK_TORN_COMPONENTS;
+  if(!ui?.weaponStat)return;
+  let root,button,notice,observer,snapshot,queued=false,generation=0;
+  const added=new Set();
+  const storageKey='access.session.v1';
+  const own=async()=>{
+    if(pda)return String(pda.accountId?.()||'');
+    const s=await ext.core.storage.get(storageKey,null);return s?.token&&s.expiresAt>Date.now()?String(s.userId||''):'';
+  };
+  function itemId(icon){
+    for(let n=icon.parentElement,depth=0;n&&n!==root&&depth<8;n=n.parentElement,depth++){
+      if(n.querySelectorAll(both).length>2)return '';
+      const ids=new Set();
+      if(n.matches('li[data-item],li[data-itemid]'))ids.add(n.dataset.item||n.dataset.itemid);
+      for(const img of n.querySelectorAll('img[src*="/images/items/"]')){
+        const id=img.getAttribute('src').match(/\/images\/items\/(\d+)\//)?.[1];if(id)ids.add(id);
+      }
+      if(ids.size===1)return [...ids][0];
+      if(ids.size>1)return '';
+    }
+    return '';
+  }
+  function clear(){for(const n of added)ui.clearWeaponStat(n);added.clear();}
+  function draw(){
+    queued=false;if(!root?.isConnected||!allowed()||document.hidden||!snapshot)return;
+    const next=new Set();
+    const itemsRoot=location.pathname==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
+    if(market){
+      for(const row of itemsRoot.querySelectorAll(ui.marketWeaponRows)){
+        const id=ui.marketWeaponId(row);
+        if(!id||row.querySelector(ui.marketWeaponRows))continue;
+        for(const stat of Object.keys(selectors)){
+          const value=model.suffix(snapshot.levels[snapshot.classes[id]],stat).replace(/[()]/g,'');
+          const label=ui.marketWeaponStat(row,stat,'merit',value,'Weapon mastery: '+value+' '+stat);
+          if(label)next.add(label);
+        }
+      }
+    }else for(const icon of itemsRoot.querySelectorAll(both)){
+      const id=itemId(icon),stat=icon.matches(selectors.damage)?'damage':'accuracy';
+      const value=model.suffix(snapshot.levels[snapshot.classes[id]],stat);
+      const label=ui.weaponStat(icon,'merit',value.replace(/[()]/g,''),'Weapon mastery: '+value.replace(/[()]/g,'')+' '+stat);
+      if(label)next.add(label);
+    }
+    for(const n of added)if(!next.has(n))ui.clearWeaponStat(n);
+    added.clear();for(const n of next)added.add(n);
+  }
+  function schedule(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(draw);}}
+  async function load(){
+    if(document.hidden||!document.hasFocus()||button.disabled||market&&!root.querySelector(ui.marketStats))return;
+    const revision=++generation;button.hidden=true;button.disabled=true;notice.textContent='Loading weapon merits…';
+    try{
+      const owner=await own();if(!owner)throw Error('Verify Access in SLINK first.');
+      let value;
+      if(pda){
+        const cache=pda.cache('weaponMeritCatalogue',{}),fresh=cache.at>Date.now()-86400000&&cache.classes;
+        if(fresh&&cache.merits?.schema===2&&cache.merits.owner===owner&&cache.merits.at>Date.now()-21600000)value={levels:cache.merits.levels,classes:fresh};
+        else {
+        const meritDefs=cache.definitionsAt>Date.now()-86400000&&cache.definitions;
+        const [user,defs,catalogue]=await Promise.all([pda.tornJson('/v2/user/merits','SLINK Mastery'),meritDefs||pda.tornJson('/v2/torn/merits','SLINK Merits'),fresh?null:pda.tornJson('/v2/torn/items?cat=Weapon','SLINK weapon catalogue')]);
+        if(!meritDefs){cache.definitions=defs;cache.definitionsAt=Date.now();}
+        const classes=fresh||model.catalogue(catalogue);if(!Object.keys(classes).length)throw Error('Torn did not return weapon classes.');if(!fresh){cache.classes=classes;cache.at=Date.now();}
+        value={levels:model.upgrades(user,defs),classes};cache.merits={schema:2,owner,at:Date.now(),levels:value.levels};pda.persist?.();
+        }
+      }else value=await ext.core.messaging.send('qol.weaponMerits');
+      if(revision!==generation||owner!==await own()||revision!==generation||!allowed())return;
+      snapshot={...value,owner,at:Date.now()};button.textContent='Retry weapon mastery';
+      notice.textContent=Object.keys(value.levels).length?Object.keys(value.levels).map(kind=>kind==='smg'?'SMG':kind[0].toUpperCase()+kind.slice(1)).join(', ')+' mastery detected.':'No weapon mastery bonuses found.';schedule();
+    }catch(e){if(revision===generation){snapshot=null;clear();button.hidden=false;button.textContent='Retry weapon mastery';notice.textContent=e.message||'Could not load weapon merits.';}}
+    finally{if(revision===generation&&button)button.disabled=false;}
+  }
+  function reset(){generation++;snapshot=null;clear();if(button){button.disabled=false;button.hidden=true;button.textContent='Retry weapon mastery';notice.textContent='';}}
+  function sync(){
+    const anchor=allowed()&&!market?document.querySelector(location.pathname==='/factions.php'?'#faction-armoury > hr':'.equipped-items-wrap'):null;
+    const parent=anchor?.parentElement;
+    const safe=anchor?.getClientRects().length&&parent&&!parent.matches('#mainContainer,#mainwrap')&&['block','flow-root'].includes(getComputedStyle(parent).display);
+    const target=market?(document.querySelector('#mainContainer,.content-wrapper[role="main"],#mainwrap')||document.body):safe?parent:null;
+    if(root===target&&button){if((!snapshot&&!notice?.textContent)||(snapshot&&Date.now()-snapshot.at>=21600000))void load();return;}
+    observer?.disconnect();const old=button?.parentNode;reset();old?.remove();root=target;button=null;
+    if(!root)return;
+    button=document.createElement('button');button.type='button';button.hidden=true;button.textContent='Retry weapon mastery';button.onclick=e=>{if(e.isTrusted)void load();};
+    notice=document.createElement('span');notice.setAttribute('role','status');notice.style.marginInlineStart='.5em';
+    const itemsRoot=location.pathname==='/item.php'?(root.closest('#mainContainer,.content-wrapper[role="main"],#mainwrap')||root):root;
+    observer=new MutationObserver(()=>{if(market&&!snapshot&&!notice.textContent)void load();schedule();});observer.observe(itemsRoot,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['src','srcset','aria-label','data-item','data-itemid']});
+    void load();
+  }
+  function start(){
+    new MutationObserver(()=>{if((!root?.isConnected)&&allowed())sync();}).observe(document.body,{childList:true,subtree:true});
+    window.addEventListener('hashchange',sync);document.addEventListener('visibilitychange',sync);window.addEventListener('focus',sync);
+    window.addEventListener('focus',()=>{if(snapshot)void own().then(owner=>{if(snapshot&&owner!==snapshot.owner){reset();sync();}}).catch(reset);});
+    if(ext)g.chrome?.storage?.onChanged?.addListener(changes=>{if(Object.hasOwn(changes,ext.core.storage.fullKey(storageKey))){reset();sync();}});
+    sync();
+  }
+  if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
+})(globalThis);

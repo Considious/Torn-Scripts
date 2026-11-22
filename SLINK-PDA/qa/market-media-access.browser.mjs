@@ -8,7 +8,7 @@ const read=path=>fs.readFileSync(new URL('../'+path,import.meta.url),'utf8');
 try{
  const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.setContent('<main></main>');
- for(const path of ['src/addons/chat-giphy.addon.js','src/addons/chat-giphy-ui.addon.js'])await page.addScriptTag({path:fileURLToPath(new URL('../'+path,import.meta.url))});
+ for(const path of ['src/00-torn-components.part','src/addons/chat-giphy.addon.js','src/addons/chat-giphy-ui.addon.js'])await page.addScriptTag({path:fileURLToPath(new URL('../'+path,import.meta.url))});
  for(const scenario of ['fresh','disabled','read-failure']){
   await page.evaluate(async scenario=>{
    window.stored=scenario==='disabled'?{enabled:false}:{};window.failRead=scenario==='read-failure';window.requests=[];window.requestPaths=[];window.writes=0;
@@ -24,7 +24,7 @@ try{
   if(scenario==='disabled'){
    assert.equal(await query.isEnabled(),true,'Explicitly disabled feature must not present an unexplained inert text box');
    assert.equal(await page.evaluate(()=>stored.enabled),false,'Do not silently override a saved opt-out');
-   await page.locator('[data-enable-picker]').click();await page.waitForFunction(()=>stored.enabled===true);
+   await page.getByRole('switch',{name:'Enable GIFs & stickers'}).check();await page.waitForFunction(()=>stored.enabled===true);
    assert.equal(await page.evaluate(()=>writes),1);
   }
   assert.equal(await query.isEnabled(),true);await query.fill('working search');await query.press('Enter');await page.waitForFunction(()=>requests.includes('working search'));

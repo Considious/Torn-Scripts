@@ -79,10 +79,10 @@ ${error ? moduleMessage(error, 'error') : ''}${current.notice?moduleMessage(curr
 <div class="market-item-field"><label for="slink-market-item-input">Item</label><div class="market-item-picker"><input id="slink-market-item-input" type="text" data-field="market-item" value="${escapeHtml(itemValue)}" placeholder="Type an item name" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" ${form.marketType === 'points' ? 'disabled' : ''}><div class="market-item-suggestions" data-market-item-suggestions role="listbox" hidden></div></div><small>${catalog.length ? `Type a name or ID to search ${number(catalog.length)} API catalog items.` : 'Loading Torn item names and shop sell prices automatically…'}</small></div>
 <label>Maximum price<input type="number" inputmode="numeric" min="1" step="1" data-field="market-price" value="${form.maxPrice || ''}" placeholder="Target price"></label>
 <label>Priority<select data-field="market-priority"><option value="high" ${form.priority === 'high' ? 'selected' : ''}>High</option><option value="normal" ${form.priority === 'normal' ? 'selected' : ''}>Normal</option><option value="low" ${form.priority === 'low' ? 'selected' : ''}>Low</option></select></label>
-<fieldset class="market-sources" ${form.marketType === 'points' ? 'disabled' : ''}><legend>Sources</legend><label><input type="checkbox" data-field="market-source" ${form.marketEnabled ? 'checked' : ''}> Item Market</label><label><input type="checkbox" data-field="bazaar-source" ${form.bazaarEnabled ? 'checked' : ''}> Weaver Bazaar</label></fieldset>
+<fieldset class="market-sources" ${form.marketType === 'points' ? 'disabled' : ''}><legend>Sources</legend><label><input class="slink-switch" role="switch" type="checkbox" data-field="market-source" ${form.marketEnabled ? 'checked' : ''}> Item Market</label><label><input class="slink-switch" role="switch" type="checkbox" data-field="bazaar-source" ${form.bazaarEnabled ? 'checked' : ''}> Weaver Bazaar</label></fieldset>
 <div class="market-form-actions"><button type="button" data-action="save-market-watch">${edit ? 'Update watch' : 'Save watch'}</button><button type="button" data-action="clear-market-form">Clear</button></div>
 </div>
-<div class="market-options"><label><input type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input type="checkbox" data-field="market-listed-items" ${settings.listedItemsEnabled ? 'checked' : ''}> Listed SLINK watches</label><label><input type="checkbox" data-field="market-weaver-pricelist" ${settings.weaverPricelistEnabled ? 'checked' : ''}> My Weaver price list</label><label>Check first <select data-field="market-weaver-source-order"><option value="listed-first" ${settings.weaverSourceOrder === 'listed-first' ? 'selected' : ''}>Listed SLINK watches</option><option value="pricelist-first" ${settings.weaverSourceOrder === 'pricelist-first' ? 'selected' : ''}>Weaver price list</option></select></label><button type="button" data-action="sync-market-weaver-pricelist" ${current.busy ? 'disabled' : ''}>Sync Weaver price list</button><span class="muted">${escapeHtml(pricelistStatus)}</span><label><input type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label>${hasScope('admin.*') ? `<button type="button" data-action="toggle-market-dom-test">${marketPurchaseState.domTestEnabled ? 'Stop Market DOM Test' : 'Market DOM Test'}</button><span class="muted">Admin diagnostic: forces the first compatible visible listing through the real highlight and SLINK Buy path.</span>` : ''}</div><p class="muted">One Weaver marketplace snapshot screens every active ID locally; seller details are requested only for items that can meet a SLINK or Weaver target.</p>
+<div class="market-options"><label><input class="slink-switch" role="switch" type="checkbox" data-field="market-enabled" ${settings.enabled ? 'checked' : ''}> Run market watches while Torn/PDA keeps this userscript alive</label><label><input class="slink-switch" role="switch" type="checkbox" data-field="market-listed-items" ${settings.listedItemsEnabled ? 'checked' : ''}> Listed SLINK watches</label><label><input class="slink-switch" role="switch" type="checkbox" data-field="market-weaver-pricelist" ${settings.weaverPricelistEnabled ? 'checked' : ''}> My Weaver price list</label><label>Check first <select data-field="market-weaver-source-order"><option value="listed-first" ${settings.weaverSourceOrder === 'listed-first' ? 'selected' : ''}>Listed SLINK watches</option><option value="pricelist-first" ${settings.weaverSourceOrder === 'pricelist-first' ? 'selected' : ''}>Weaver price list</option></select></label><button type="button" data-action="sync-market-weaver-pricelist" ${current.busy ? 'disabled' : ''}>Sync Weaver price list</button><span class="muted">${escapeHtml(pricelistStatus)}</span><label><input class="slink-switch" role="switch" type="checkbox" data-field="market-quick-buy" ${settings.quickBuyEnabled ? 'checked' : ''}> Add SLINK Buy over highlighted native buy/cart controls</label>${hasScope('admin.*') ? `<button type="button" data-action="toggle-market-dom-test">${marketPurchaseState.domTestEnabled ? 'Stop Market DOM Test' : 'Market DOM Test'}</button><span class="muted">Admin diagnostic: forces the first compatible visible listing through the real highlight and SLINK Buy path.</span>` : ''}</div><p class="muted">One Weaver marketplace snapshot screens every active ID locally; seller details are requested only for items that can meet a SLINK or Weaver target.</p>
 </article>
 <article class="card full"><div class="card-head"><div><h2>Active deals</h2><span class="muted">Updated ${relativeTime(runtime.fetchedAt)} · Torn API ${usage.count}/${usage.limit} in the shared rolling minute</span></div><span class="badge ${deals.length ? 'ready' : ''}">${deals.length}</span></div>
 <div class="market-bulk-actions"><button type="button" data-action="copy-market-list" ${deals.length ? '' : 'disabled'}>Copy item list</button><button type="button" data-action="send-market-list" ${deals.length ? '' : 'disabled'}>Send list to Faction</button></div>
@@ -90,6 +90,7 @@ ${error ? moduleMessage(error, 'error') : ''}${current.notice?moduleMessage(curr
 </article>
 ${savedMarketWatchRemovalHtml()}
 </div>`;
+global.SLINK_RANKED_GEAR?.mount(root,{request:(path,body)=>requestJsonTransport('https://slink-ranked-gear-preview.richard-johnson554.workers.dev'+path,{method:body?'POST':'GET',body,timeout:12000})});
 updateAlertIndicator(alertRows(moduleState.alerts.data).length);
 }
 function readMarketForm() {
@@ -216,6 +217,8 @@ const style = document.createElement('style');
 style.id = 'tdd-purchase-highlight-styles';
 style.textContent = `
 [data-tdd-bazaar-targeted],
+[data-slink-ranked-bazaar-match],
+[data-slink-ranked-market-info],
 [data-tdd-bazaar-one-dollar],
 [data-tdd-item-market-one-dollar],
 [data-tdd-market-dom-test] {
@@ -247,18 +250,14 @@ margin: 0;
 padding: 0 3px;
 border: 1px solid rgba(255,255,255,.32);
 border-radius: 4px;
-color: #111;
-background: linear-gradient(#b9ff68, #68c51d);
-box-shadow: inset 0 1px rgba(255,255,255,.48), 0 0 7px rgba(112,255,40,.55);
+color:var(--sp-text);background:color-mix(in srgb,var(--sp-accent) 22%,var(--sp-control));border-color:var(--sp-accent);min-block-size:0;
 font: 700 10px/1.1 Arial, sans-serif;
 text-transform: uppercase;
 cursor: pointer;
 pointer-events: auto;
 }
 button[data-tdd-quick-buy][data-tdd-quick-buy-stage="confirm"] {
-color: #fff;
-background: linear-gradient(#ff4fbd, #be197d);
-box-shadow: inset 0 1px rgba(255,255,255,.35), 0 0 8px rgba(255,79,189,.62);
+color:var(--sp-text);background:color-mix(in srgb,var(--sp-danger) 25%,var(--sp-control));border-color:var(--sp-danger);
 }
 button[data-tdd-quick-buy]:disabled {
 opacity: .6;
@@ -391,6 +390,10 @@ if (!focusedTornPage() || !onBazaarPage()) return;
 ensurePurchaseHighlightStyles();
 requestPurchaseSellPriceCatalog();
 const cards = new Set(bazaarListingCards());
+globalThis.SLINK_RANKED_GEAR?.highlightBazaar(cards, {
+  itemId: bazaarCardItemId, price: bazaarCardPrice,
+  available: card => !bazaarCardUnavailable(card) && bazaarCardStock(card) > 0,
+}, location.href);
 marketDomTestTarget('bazaar', cards);
 const target = targetedBazaarListing();
 document.querySelectorAll('[data-tdd-bazaar-targeted]').forEach((card) => {
@@ -519,6 +522,10 @@ return true;
 }
 function formatItemMarketPurchaseOpportunities() {
 if (!focusedTornPage() || !onItemMarketPage()) return;
+if (new URL(location.href).searchParams.has('slinkRankedMarket')) {
+  ensurePurchaseHighlightStyles();
+  globalThis.SLINK_RANKED_GEAR?.highlightMarketInfo(document, location.href);
+}
 const rows = new Set(itemMarketSellerRows());
 marketDomTestTarget('item-market', rows);
 document.querySelectorAll('[data-tdd-item-market-one-dollar], [data-tdd-item-market-shop-profit], [data-tdd-item-market-overseas-profit]').forEach((row) => {
@@ -610,6 +617,7 @@ itemName: bazaarCardItemName(element),
 price: bazaarCardPrice(element),
 stock: bazaarCardStock(element),
 sellerId: 0,
+rankedUid: element?.getAttribute('data-slink-ranked-bazaar-match') || '',
 };
 }
 return {
@@ -670,6 +678,7 @@ stock: Number(listing.stock) > 0 ? listing.stock : flow?.stock,
 function highlightedQuickPurchaseListing(kind, element) {
 if (!marketPurchaseState.settings.highlightedQuickBuyEnabled || !element?.isConnected) return false;
 if (kind === 'bazaar') {
+if (element.hasAttribute('data-slink-ranked-bazaar-match')) return bazaarCardStock(element) === 1;
 return element.hasAttribute('data-tdd-bazaar-targeted')
 || element.hasAttribute('data-tdd-bazaar-one-dollar')
 || element.hasAttribute('data-tdd-bazaar-shop-profit')
@@ -692,6 +701,7 @@ const selector = flow.kind === 'bazaar' ? '[data-testid="buy-confirmation"]' : '
 return Array.from(document.querySelectorAll(selector)).find((wrapper) => elementVisible(wrapper) && quickPurchaseConfirmationMatches(wrapper, flow)) || null;
 }
 function quickPurchaseConfirmationMatches(wrapper, flow) {
+if (flow?.rankedUid) return Boolean(globalThis.SLINK_RANKED_GEAR?.rankedConfirmationMatches(wrapper, flow));
 const text = normalizedPurchaseText(wrapper?.textContent);
 const itemName = normalizedPurchaseText(flow?.itemName);
 if (!text || !itemName || !text.includes(itemName)) return false;
@@ -730,6 +740,7 @@ return Array.from(document.querySelectorAll(selector));
 }
 function resolvedQuickPurchaseListing(flow) {
 if (!flow) return null;
+if (flow.rankedUid) return flow;
 if (flow.kind === 'bazaar') {
 const cards = [...new Set([
 flow.element?.isConnected ? flow.element : null,
@@ -746,6 +757,7 @@ return highlightedQuickPurchaseElements(flow.kind)
 .find((listing) => sameQuickPurchaseListing(flow, listing)) || null;
 }
 function quickPurchaseListingControlKey(listing) {
+if (listing.rankedUid) return `bazaar:ranked:${listing.rankedUid}`;
 if (listing.kind === 'bazaar') {
 const identity = Number(listing.itemId) > 0
 ? `item-${Number(listing.itemId)}`
@@ -781,6 +793,10 @@ desired.set(activeFlow.controlKey, waitingForNativeTransition
 : { ...spec, anchor: activeFlow.anchor, controlKey: activeFlow.controlKey });
 }
 function activeBazaarQuickPurchaseControl(flow, selector) {
+if (flow.rankedUid) {
+  const native = nativeQuickPurchaseControl(flow.element, selector);
+  return {native: measurableQuickPurchaseControl(native) ? native : null, listing: flow};
+}
 const resolved = resolvedQuickPurchaseListing(flow);
 let native = nativeQuickPurchaseControl(resolved?.element, selector);
 if (native && !measurableQuickPurchaseControl(native)) native = null;
@@ -982,6 +998,7 @@ if (!button?.isConnected) {
 button = document.createElement('button');
 button.type = 'button';
 button.setAttribute('data-tdd-quick-buy', 'true');
+        button.classList.add('slink-page-action');
 layer.appendChild(button);
 marketPurchaseState.quickPurchaseOverlays.set(controlKey, button);
 }
@@ -1045,12 +1062,14 @@ return;
 }
 const continuingFlow = marketPurchaseState.quickPurchaseFlow?.controlKey === spec.controlKey;
 if (!continuingFlow && !highlightedQuickPurchaseListing(listing.kind, listing.element)) return;
+if (listing.rankedUid && (!listing.element?.contains(spec.native) || (!continuingFlow && listing.element.getAttribute('data-slink-ranked-bazaar-match') !== listing.rankedUid))) return;
 if (spec.stage === 'buy') {
 if (listing.kind === 'bazaar') {
 const currentCard = bazaarListingCards().find((candidate) => candidate.contains(spec.native))
 || spec.native.closest('[data-testid="item"]')
 || listing.element;
 const currentListing = mergedBazaarQuickPurchaseListing(listing, quickPurchaseListing('bazaar', currentCard));
+if (listing.rankedUid && (currentCard !== listing.element || currentListing.itemId !== listing.itemId || currentListing.price !== listing.price || currentListing.stock !== 1)) return;
 const pending = {
 ...currentListing,
 card: currentCard,
@@ -1058,12 +1077,12 @@ clickedAt: Date.now(),
 };
 marketPurchaseState.pendingBazaarPurchase = pending;
 fillBazaarPurchaseMaximum(pending);
-Object.assign(listing, currentListing);
+Object.assign(listing, currentListing, {rankedUid: listing.rankedUid});
 } else {
 fillItemMarketPurchaseMaximum(listing.element, listing.price);
 }
 listing.quantity = quickPurchaseQuantity(listing);
-if (listing.quantity < 1) return;
+if (listing.quantity < 1 || (listing.rankedUid && listing.quantity !== 1)) return;
 }
 const now = Date.now();
 marketPurchaseState.quickPurchaseFlow = {
@@ -1133,7 +1152,7 @@ clearQuickPurchaseControls();
 marketPurchaseState.quickPurchaseFlow = null;
 marketPurchaseState.pendingBazaarPurchase = null;
 const attributes = [
-'data-tdd-bazaar-targeted', 'data-tdd-bazaar-one-dollar', 'data-tdd-bazaar-shop-profit', 'data-tdd-bazaar-overseas-profit', 'data-tdd-item-market-overseas-profit',
+'data-slink-ranked-market-info', 'data-slink-ranked-bazaar-match', 'data-tdd-bazaar-targeted', 'data-tdd-bazaar-one-dollar', 'data-tdd-bazaar-shop-profit', 'data-tdd-bazaar-overseas-profit', 'data-tdd-item-market-overseas-profit',
 'data-tdd-item-market-one-dollar', 'data-tdd-item-market-shop-profit', 'data-tdd-item-market-max-applied',
 'data-tdd-purchase-reason', 'data-tdd-market-dom-test'
 ];
@@ -1146,6 +1165,7 @@ const root = moduleRoot('dollarBazaars');
 if (!root) return;
 if (!hasScope(DOLLAR_BAZAARS_SCOPE)) { root.innerHTML = lockedModule(DOLLAR_BAZAARS_SCOPE, 'Weaver $1 Bazaars'); return; }
 const current = moduleState.dollarBazaars;
+if(dataState.settings.monitoring.dollarBazaars===false){root.innerHTML=moduleMessage('$1 Bazaar checks are paused. Resume them in Access.');return;}
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading Weaver $1 Bazaar listings through its JSON API…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
 const items = weaverDollarBazaarItems(current.data?.bazaars ? { bazaars:current.data.bazaars } : current.data?.items ? { items:current.data.items } : current.data || {});
@@ -1158,6 +1178,7 @@ ${current.error ? moduleMessage(`${current.error}${current.data?.fetchedAt ? ` S
 </article></div>`;
 }
 async function refreshDollarBazaars(force = false) {
+if(dataState.settings.monitoring.dollarBazaars===false)return false;
 const current = moduleState.dollarBazaars;
 if (current.busy) return false;
 const cached = dataState.caches.dollarBazaars;
@@ -1169,6 +1190,7 @@ renderDollarBazaars();
 try {
 await ensurePermissionSession(false);
 if (!hasScope(DOLLAR_BAZAARS_SCOPE)) throw new Error(`Your SLINK account does not have ${DOLLAR_BAZAARS_SCOPE} permission.`);
+if(dataState.settings.monitoring.dollarBazaars===false)return false;
 const body = await requestJson(`${URLS.weaver}/api/dollar-bazaars/bazaars?page=1&limit=${DOLLAR_BAZAAR_LIMIT}`);
 const fetchedAt = Date.now();
 current.data = dataState.caches.dollarBazaars = {
@@ -1261,6 +1283,7 @@ const root = moduleRoot('merits');
 if (!root) return;
 if (!hasScope(MERITS_SCOPE)) { root.innerHTML = lockedModule(MERITS_SCOPE, 'Merit tracking'); return; }
 const current = moduleState.merits;
+if(dataState.settings.monitoring.merits===false){root.innerHTML=moduleMessage('Merit checks are paused. Resume them in Access.');return;}
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading award catalog and progress…'); return; }
 if (current.error && !current.data) { root.innerHTML = moduleMessage(current.error, 'error'); return; }
 const allGoals = meritGoals(current.data?.data);
@@ -1273,11 +1296,12 @@ dataState.settings.merits.page = page;
 const visibleGoals = goals.slice((page - 1) * pageSize, page * pageSize);
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Merit farm</h2><span class="muted">Only the next incomplete award in each milestone family is shown; later tiers stay summarized on its tile.</span></div><span class="badge ready">${(dataState.settings.merits.pinned || []).length} / 3 pinned</span></div>
 <div class="module-toolbar"><span>Updated ${relativeTime(current.data?.at)} · ${number(goals.length)} next milestones · page ${page} / ${totalPages}</span><label>Show <select data-field="merit-filter"><option value="all" ${filter === 'all' ? 'selected' : ''}>All</option><option value="medal" ${filter === 'medal' ? 'selected' : ''}>Medals</option><option value="honor" ${filter === 'honor' ? 'selected' : ''}>Honors</option></select></label><label>Refresh <select data-field="merit-refresh"><option value="15" ${Number(dataState.settings.merits.refreshMinutes) === 15 ? 'selected' : ''}>15m</option><option value="30" ${Number(dataState.settings.merits.refreshMinutes) === 30 ? 'selected' : ''}>30m</option><option value="60" ${Number(dataState.settings.merits.refreshMinutes) === 60 ? 'selected' : ''}>1h</option></select></label></div>${current.error ? moduleMessage(current.error, 'error') : ''}
-<div class="merit-list">${visibleGoals.length ? visibleGoals.map(award => { const later = award.laterMilestones || []; const shown = later.slice(0, 8); return `<article class="merit merit-row"><div class="award-emblem ${escapeHtml(award.kind)}" aria-hidden="true">${award.kind === 'medal' ? '★' : 'H'}</div><div class="merit-copy"><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award?.type?.title || (award.kind === 'medal' ? 'Medal' : 'Honor'))}</small><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span>${later.length ? `<span class="merit-later">Later: ${escapeHtml(shown.map(row => row.targets.length ? row.targets.map(value => number(value)).join(' / ') : row.name).join(' · '))}${later.length > shown.length ? ` · +${later.length - shown.length} more` : ''}</span>` : ''}</div><button type="button" data-action="pin-merit" data-merit-key="${escapeHtml(award.pinKey)}">${award.pinned ? 'Unpin' : 'Pin'}</button></article>`; }).join('') : moduleMessage('No incomplete awards match this filter.')}</div>
+<div class="merit-list">${visibleGoals.length ? visibleGoals.map(award => { const later = award.laterMilestones || []; const shown = later.slice(0, 8); return `<article class="merit merit-row"><div class="award-emblem ${escapeHtml(award.kind)}" aria-hidden="true">${award.kind === 'medal' ? '★' : 'H'}</div><div class="merit-copy"><strong>${escapeHtml(award.name)}</strong><small>${escapeHtml(award?.type?.title || (award.kind === 'medal' ? 'Medal' : 'Honor'))}</small><span>${escapeHtml(cleanAwardText(award.description) || `${award.kind} ${award.id}`)}</span>${later.length ? `<span class="merit-later">Later: ${escapeHtml(shown.map(row => row.targets.length ? row.targets.map(value => number(value)).join(' / ') : row.name).join(' · '))}${later.length > shown.length ? ` · +${later.length - shown.length} more` : ''}</span>` : ''}</div><div><button type="button" class="slink-switch-button" role="switch" aria-label="Pin ${escapeHtml(award.name)}" aria-checked="${award.pinned === true}" ${!award.pinned && (dataState.settings.merits.pinned || []).length >= 3 ? 'disabled title="Three merits are pinned. Unpin one to add another."' : ''} data-action="pin-merit" data-merit-key="${escapeHtml(award.pinKey)}">Pinned</button>${!award.pinned && (dataState.settings.merits.pinned || []).length >= 3 ? '<small>Three merits are pinned. Unpin one to add another.</small>' : ''}</div></article>`; }).join('') : moduleMessage('No incomplete awards match this filter.')}</div>
 <nav class="pagination" aria-label="Merit pages"><button type="button" data-action="merit-page" data-merit-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${page} of ${totalPages}</span><button type="button" data-action="merit-page" data-merit-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button></nav>
 </article></div>`;
 }
 async function refreshMerits(force = false) {
+if(dataState.settings.monitoring.merits===false||moduleState.merits.busy)return;
 const current = moduleState.merits;
 const cached = dataState.caches.merits;
 const ttl = Math.max(5, Number(dataState.settings.merits.refreshMinutes) || 15) * 60_000;
@@ -1286,6 +1310,7 @@ current.busy = true; current.error = ''; renderMerits();
 try {
 await ensurePermissionSession(false);
 if (!hasScope(MERITS_SCOPE)) throw new Error(`Your SLINK account does not have ${MERITS_SCOPE} permission.`);
+if(dataState.settings.monitoring.merits===false)return;
 const [player, personalStats, catalog] = await Promise.all([
 tornJson('/v2/user?selections=profile,faction,medals,honors,merits', 'SLINK PDA Merit farm'),
 tornJson('/v2/user/personalstats?cat=all', 'SLINK PDA Merit progress'),

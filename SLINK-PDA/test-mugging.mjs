@@ -36,7 +36,7 @@ assert(source.includes('delete latest[playerId]'), 'PDA does not remove acknowle
 assert(source.includes("mode === 'active'") && source.includes('MUGGING_ASSIGNMENT_REFRESH_MS'), 'Inactive PDA users can still request new personal Mugging assignments.');
 assert(combatSource.includes('Last sync') && !combatSource.includes('Contributor checks use only'), 'PDA should show last sync without internal scheduling commentary.');
 assert(source.includes("muggingRequest('/api/assignments/rough'"), 'PDA does not request rough assignments from the Mugging Worker.');
-assert(source.includes('Rough FF') && source.includes('acknowledged_report_ids'), 'PDA must label rough assignments and retain acknowledged synchronization.');
+assert(source.includes('Estimated FF') && source.includes('acknowledged_report_ids'), 'PDA must label estimated assignments and retain acknowledged synchronization.');
 assert(source.includes('data-action="refresh-mugging"'), 'PDA has no manual assignment refresh.');
 assert(source.includes('data-target-source="mugging"') && source.includes("tags = ['Mug']"), 'Mugging does not reuse the explicit Target List handoff.');
 assert(!/MUGGING_TEST_USER|MUGGING_FACTION_ID|MUGGING_SERVICE_TOKEN/.test(source), 'PDA contains a hard-coded Mugging override or backend secret.');

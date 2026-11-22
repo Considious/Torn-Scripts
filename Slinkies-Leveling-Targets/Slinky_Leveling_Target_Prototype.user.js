@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK Leveling Service
 // @namespace    Considious [3853023]
-// @version      0.14.2
+// @version      0.14.3
 // @description  Authenticated client for the Shared Live Intelligence NetworK leveling service.
 // @author       Considious [3853023]
 // @match        https://www.torn.com/*
@@ -1568,6 +1568,13 @@
     }
 
 
+    let lastBasicInput=0;
+    const legacyBasicCache=new Map();
+    const legacyBasicInFlight=new Map();
+    for(const event of ['pointerdown','keydown','wheel','touchstart']) document.addEventListener(event,e=>{
+        if(e.isTrusted && !document.hidden && document.hasFocus()) lastBasicInput=Date.now();
+    },{capture:true,passive:true});
+    const legacyBasicActive=()=>!document.hidden && document.hasFocus() && lastBasicInput>0 && Date.now()-lastBasicInput<=120_000;
     async function runPacedChecks(apiKey, checks, pollSeconds) {
         const observations = [];
         const localCompletions = [];
@@ -1581,6 +1588,7 @@
             : 0;
         const startedAt = Date.now();
 
+        if (!legacyBasicActive()) return { observations, localCompletions, failures };
         await Promise.all(checks.map(async (target, index) => {
             const delayMs = Math.max(
                 0,
@@ -1590,6 +1598,7 @@
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             }
 
+            if (!legacyBasicActive()) return;
             try {
                 const observation = await getUserStatus(
                     apiKey,
@@ -1597,12 +1606,13 @@
                     'normal'
                 );
 
+                if (!observation) return;
                 if (canCompleteOkayLocally(target, observation)) {
                     localCompletions.push({
                         target_id: Number(target.id),
                         check_batch_id: String(target.check_batch_id || '')
                     });
-                } else {
+                } else if(!observation.reused) {
                     observations.push(observation);
                 }
             } catch (error) {
@@ -1614,14 +1624,26 @@
     }
 
 
-    async function getUserStatus(apiKey, target, priority) {
-        const url = `https://api.torn.com/v2/user/${encodeURIComponent(target.id)}/basic`;
+    async function getUserStatus(apiKey,target,priority) {
+        if (!legacyBasicActive()) return null;
+        const id=Number(target.id), now=Date.now(), hit=legacyBasicCache.get(id);
+        const batch={check_batch_id:String(target?.check_batch_id||'')||undefined};
+        if(hit && (hit.until*1000>now || (!hit.until && now-hit.checkedAt<300_000))) return {...hit,...batch,reused:true};
+        if(legacyBasicInFlight.has(id)) return {...await legacyBasicInFlight.get(id),...batch,reused:true};
+        const task=fetchUserStatus(apiKey,target,priority).then(result=>{
+            if(legacyBasicCache.size>=1000&&!legacyBasicCache.has(id)) legacyBasicCache.delete(legacyBasicCache.keys().next().value);
+            legacyBasicCache.set(id,{...result,checkedAt:Date.now()});return result;
+        }).finally(()=>legacyBasicInFlight.delete(id));
+        legacyBasicInFlight.set(id,task);return task;
+    }
+    async function fetchUserStatus(apiKey, target, priority) {
+        const url = `https://api.torn.com/v2/user/${encodeURIComponent(target.id)}/basic?comment=SLINK%20Lvl%20Old`;
         const data = await TornLib.tornRequest(url, apiKey, {
             tornScript: SCRIPT_NAME,
             tornPriority: priority,
             tornLimit: TornLib.TORN_API_DEFAULT_LIMIT,
-            tornWait: true,
-            tornMaxWaitMs: 65_000
+            tornWait: false,
+            tornMaxWaitMs: 0
         });
         const source = data?.profile ?? data?.basic ?? data?.user ?? data;
         const status = source?.status ?? data?.status ?? {};

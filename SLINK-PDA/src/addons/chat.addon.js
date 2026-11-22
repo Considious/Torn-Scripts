@@ -66,7 +66,7 @@
   }
   activity.subscribe(syncActivity);
   function enable() {
-    if (enabled) return;
+    if (enabled||globalThis.SLINK_PDA_PLUGIN_API?.moduleMonitoringEnabled?.('chat')===false) return;
     enabled = true;
     if(!inlineMedia&&globalThis.SLINK_CHAT_MEDIA)inlineMedia=globalThis.SLINK_CHAT_MEDIA.mount({activity,enabled:()=>enabled,settings:()=>globalThis.SLINK_GIPHY.client().get()});
     void inlineMedia?.refresh();
@@ -82,7 +82,8 @@
     window.addEventListener('hashchange', scheduleScan);
   }
   window.addEventListener('slink-chat-enable', enable);
-  window.addEventListener('slink-chat-media-settings',()=>{void inlineMedia?.refresh();});
+  window.addEventListener('slink-chat-disable',()=>{enabled=false;syncActivity();document.querySelectorAll('[data-ccb-trigger],[data-ccb-newsletter-trigger],[data-ccb-media-trigger]').forEach(node=>node.remove());});
+  window.addEventListener('slink-chat-media-settings',()=>{if(enabled)void inlineMedia?.refresh();});
 
   window.addEventListener('resize', () => {
     if (activity.eligible() && menu && !menu.hidden && menuChatRoot) positionMenu(menuChatRoot);
@@ -124,7 +125,7 @@
       id: String(source.id || newId()),
       label: String(source.label || '').trim().slice(0, 80),
       message: String(source.message || ''),
-      scope: SCOPES.has(source.scope) ? source.scope : 'both',
+      scope: source.scope === 'newsletter' ? 'newsletter' : ['all','faction_newsletter','private_newsletter'].includes(source.scope) ? 'all' : 'both',
       enabled: source.enabled !== false,
     };
   }
@@ -326,8 +327,8 @@
     if (legacyRoot) return legacyRoot;
     let candidate = header.parentElement;
     const fallback = candidate;
-    for (let depth = 0; candidate && candidate !== document.body && depth < 8; depth += 1) {
-      if (candidate.querySelector(COMPOSER_SELECTOR)&&(!header.closest('#chatRoot')||/^(?:\d+|faction(?:-.*)?|private-.+|company)$/.test(candidate.id))) return candidate;
+    for (let depth = 0; candidate && candidate !== document.body && candidate.id !== 'chatRoot' && depth < 8; depth += 1) {
+      if (candidate.querySelector(COMPOSER_SELECTOR)&&(!header.closest('#chatRoot')||candidate.id&&candidate.querySelectorAll(COMPOSER_SELECTOR).length===1)) return candidate;
       candidate = candidate.parentElement;
     }
     return header.closest('#chatRoot')?null:fallback;
@@ -828,15 +829,13 @@
   }
 
   function scopeIncludes(scope, context) {
-    return SCOPE_CONTEXTS[scope]?.includes(context) === true;
+    const destinations=SCOPE_CONTEXTS[scope];
+    return context==='newsletter'?destinations?.includes('newsletter')===true:destinations?.some(value=>value==='faction'||value==='private')===true;
   }
 
   function scopeFromContexts(contexts) {
-    const selected = ['faction', 'private', 'newsletter'].filter((context) => contexts.has(context));
-    return Object.keys(SCOPE_CONTEXTS).find((scope) => {
-      const values = SCOPE_CONTEXTS[scope];
-      return values.length === selected.length && values.every((value) => selected.includes(value));
-    }) || '';
+    const chats=contexts.has('both'),newsletter=contexts.has('newsletter');
+    return chats?(newsletter?'all':'both'):newsletter?'newsletter':'';
   }
 
   function scopeUsesNewsletter(scope) {
@@ -876,7 +875,7 @@
     const title = document.createElement('strong');
     title.textContent = 'Custom message buttons';
     const note = document.createElement('small');
-    note.textContent = 'Messages are stored as raw HTML. Choose whether each button belongs in chats, newsletters, or both.';
+    note.textContent = 'Messages are stored as raw HTML. Chat buttons are shared across all chats. Choose chats, newsletters, or both.';
     headingText.append(title, note);
     const add = document.createElement('button');
     add.type = 'button';
@@ -928,7 +927,7 @@
     toolbar.className = 'ccb-card-toolbar';
     const enabledLabel = document.createElement('label');
     const enabled = document.createElement('input');
-    enabled.type = 'checkbox';
+    enabled.type = 'checkbox';enabled.setAttribute('role','switch');enabled.classList.add('slink-switch');
     enabled.checked = macro.enabled;
     enabled.addEventListener('change', () => { macro.enabled = enabled.checked; });
     enabledLabel.append(enabled, document.createTextNode(' Enabled'));
@@ -970,15 +969,14 @@
       if (messageCount) messageCount.textContent = messageCountText(macro);
     };
     [
-      ['faction', 'Faction chat'],
-      ['private', 'Private chat'],
+      ['both', 'All chats'],
       ['newsletter', 'Newsletter'],
     ].forEach(([value, text]) => {
       const choice = document.createElement('label');
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.value = value;
-      checkbox.checked = scopeIncludes(macro.scope, value);
+      checkbox.checked = scopeIncludes(macro.scope, value==='both'?'private':value);
       checkbox.addEventListener('change', updateScope);
       choice.append(checkbox, document.createTextNode(text));
       scopeField.appendChild(choice);
@@ -1146,14 +1144,15 @@ const api=global.SLINK_PDA_PLUGIN_API;if(!api)return;
 const ID='chat',COLORS=[['yellow','#ffe066','#241f00'],['orange','#ff9f43','#2b1300'],['red','#ff6b6b','#2a0000'],['pink','#ff85c2','#2a0016'],['purple','#c792ea','#170025'],['blue','#74c0fc','#001c2e'],['cyan','#66d9e8','#002126'],['green','#8ce99a','#002607'],['lime','#c0eb75','#172500'],['white','#f1f3f5','#111']],SELECTOR='[class*="message___"],[class*="messageContent___"],[class*="messageText___"],.msg';
 let observer=null,timer=null;
 const highlightScopes=new Set();
-function syncHighlights(){observer?.disconnect();global.SLINK_PDA_PAGE_ACTIVITY.cancel(timer);timer=null;const root=document.getElementById('chatRoot');if(global.SLINK_PDA_PAGE_ACTIVITY.eligible()&&observer&&root)observer.observe(root,{childList:true,subtree:true});}
+function syncHighlights(){observer?.disconnect();global.SLINK_PDA_PAGE_ACTIVITY.cancel(timer);timer=null;const root=document.getElementById('chatRoot');if(masterEnabled()&&global.SLINK_PDA_PAGE_ACTIVITY.eligible()&&observer&&root)observer.observe(root,{childList:true,subtree:true});}
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(()=>{syncHighlights();if(global.SLINK_PDA_PAGE_ACTIVITY.eligible())schedule();});
 global.addEventListener('slink-chat-root',()=>{syncHighlights();schedule();});
+const masterEnabled=()=>api.moduleMonitoringEnabled?.(ID)!==false;
 function config(){const value=api.settings(ID,{});value.highlights=Array.isArray(value.highlights)?value.highlights:[];return value;}
 function rx(value){return String(value).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 function palette(id){return COLORS.find(row=>row[0]===id)||COLORS[0];}
 function clear(){document.querySelectorAll('mark[data-slink-chat-highlight]').forEach(mark=>mark.replaceWith(document.createTextNode(mark.textContent||'')));document.querySelectorAll(SELECTOR).forEach(node=>{delete node.dataset.slinkChatHighlighted;node.normalize();});}
-function scanContent(scope=document.getElementById('chatRoot')){if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible())return;const active=config().highlights.filter(row=>row.enabled!==false&&String(row.term||'').trim());if(!active.length)return;if(!scope)return;[...(scope.matches?.(SELECTOR)?[scope]:[]),...scope.querySelectorAll(SELECTOR)].forEach(container=>{if(container.dataset.slinkChatHighlighted==='true')return;const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT,{acceptNode(node){if(!node.nodeValue?.trim()||node.parentElement?.closest('a,button,textarea,input,mark,[contenteditable="true"],style,script'))return NodeFilter.FILTER_REJECT;return active.some(row=>new RegExp(rx(row.term),'i').test(node.nodeValue))?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}}),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const pattern=new RegExp(active.map(row=>'('+rx(row.term)+')').join('|'),'gi'),fragment=document.createDocumentFragment();let last=0,found;while((found=pattern.exec(node.nodeValue))!==null){if(found.index>last)fragment.append(document.createTextNode(node.nodeValue.slice(last,found.index)));const row=active.find(candidate=>new RegExp(rx(candidate.term),'i').test(found[0])),colors=palette(row?.color),mark=document.createElement('mark');mark.dataset.slinkChatHighlight='true';mark.textContent=found[0];mark.style.cssText='background:'+colors[1]+';color:'+colors[2]+';padding:0 2px;border-radius:3px;font-weight:800';fragment.append(mark);last=found.index+found[0].length;if(!found[0].length)pattern.lastIndex++;}if(last<node.nodeValue.length)fragment.append(document.createTextNode(node.nodeValue.slice(last)));node.replaceWith(fragment);}container.dataset.slinkChatHighlighted='true';});}
+function scanContent(scope=document.getElementById('chatRoot')){if(!masterEnabled()||!global.SLINK_PDA_PAGE_ACTIVITY.eligible())return;const active=config().highlights.filter(row=>row.enabled!==false&&String(row.term||'').trim());if(!active.length)return;if(!scope)return;[...(scope.matches?.(SELECTOR)?[scope]:[]),...scope.querySelectorAll(SELECTOR)].forEach(container=>{if(container.dataset.slinkChatHighlighted==='true')return;const walker=document.createTreeWalker(container,NodeFilter.SHOW_TEXT,{acceptNode(node){if(!node.nodeValue?.trim()||node.parentElement?.closest('a,button,textarea,input,mark,[contenteditable="true"],style,script'))return NodeFilter.FILTER_REJECT;return active.some(row=>new RegExp(rx(row.term),'i').test(node.nodeValue))?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}}),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const pattern=new RegExp(active.map(row=>'('+rx(row.term)+')').join('|'),'gi'),fragment=document.createDocumentFragment();let last=0,found;while((found=pattern.exec(node.nodeValue))!==null){if(found.index>last)fragment.append(document.createTextNode(node.nodeValue.slice(last,found.index)));const row=active.find(candidate=>new RegExp(rx(candidate.term),'i').test(found[0])),colors=palette(row?.color),mark=document.createElement('mark');mark.dataset.slinkChatHighlight='true';mark.textContent=found[0];mark.style.cssText='background:'+colors[1]+';color:'+colors[2]+';padding:0 2px;border-radius:3px;font-weight:800';fragment.append(mark);last=found.index+found[0].length;if(!found[0].length)pattern.lastIndex++;}if(last<node.nodeValue.length)fragment.append(document.createTextNode(node.nodeValue.slice(last)));node.replaceWith(fragment);}container.dataset.slinkChatHighlighted='true';});}
 function scan(scope=document.getElementById('chatRoot')){observer?.disconnect();try{scanContent(scope);}finally{const root=document.getElementById('chatRoot');if(observer&&root&&global.SLINK_PDA_PAGE_ACTIVITY.eligible())observer.observe(root,{childList:true,subtree:true});}}
 function highlightMutations(mutations){
 if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible()||!config().highlights.some(row=>row.enabled!==false&&String(row.term||'').trim()))return;
@@ -1165,22 +1164,24 @@ for(const node of mutation.addedNodes||[]){if(node.nodeType!==1)continue;if(node
 }
 if(highlightScopes.size)schedule();
 }
-function schedule(){if(!global.SLINK_PDA_PAGE_ACTIVITY.eligible()||timer!==null)return;timer=global.SLINK_PDA_PAGE_ACTIVITY.defer(()=>{
+function schedule(){if(!masterEnabled()||!global.SLINK_PDA_PAGE_ACTIVITY.eligible()||timer!==null)return;timer=global.SLINK_PDA_PAGE_ACTIVITY.defer(()=>{
 timer=null;const scopes=highlightScopes.size?[...highlightScopes]:[document.getElementById('chatRoot')];highlightScopes.clear();observer?.disconnect();
 try{for(const scope of scopes)if(scope?.isConnected)scan(scope);}finally{syncHighlights();}
 },80);}
-function renderBase(){const root=api.root(ID)?.querySelector('[data-chat-base]');if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea'))return;const rows=config().highlights;root.innerHTML='<div class="grid"><article class="card full"><div class="card-head"><div><h2>Custom chat buttons</h2><span class="muted">First click loads the HTML message; second click sends it.</span></div></div><p>Unquoted links are corrected to &lt;a href="link"&gt;. Page-link and page-URL tokens remain available in the existing custom-button editor.</p><div class="target-actions"><button type="button" data-chat-action="manage">Manage custom buttons</button></div></article><article class="card full"><div class="card-head"><div><h2>Highlight chat terms</h2><span class="muted">Case-insensitive custom words and phrases.</span></div></div><div data-chat-rows>'+(rows.length?rows.map((row,index)=>'<div class="module-toolbar" data-chat-row="'+index+'"><input type="text" data-chat-term value="'+api.escapeHtml(String(row.term||''))+'" placeholder="Term or phrase"><select data-chat-color>'+COLORS.map(color=>'<option value="'+color[0]+'" '+(row.color===color[0]?'selected':'')+'>'+color[0]+'</option>').join('')+'</select><label><input type="checkbox" data-chat-enabled '+(row.enabled!==false?'checked':'')+'>On</label><button type="button" data-chat-action="delete" data-chat-index="'+index+'">×</button></div>').join(''):'<p>No highlighted terms configured.</p>')+'</div><div class="target-actions"><button type="button" data-chat-action="add">Add term</button><button type="button" data-chat-action="save">Save highlights</button></div></article></div>';}
+function renderBase(){const root=api.root(ID)?.querySelector('[data-chat-base]');if(!root)return;if(root.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea'))return;const rows=config().highlights;root.innerHTML='<div class="grid"><article class="card full"><div class="card-head"><div><h2>Custom chat buttons</h2><span class="muted">First click loads the HTML message; second click sends it.</span></div></div><p>Unquoted links are corrected to &lt;a href="link"&gt;. Page-link and page-URL tokens remain available in the existing custom-button editor.</p><div class="target-actions"><button type="button" data-chat-action="manage">Manage custom buttons</button></div></article><article class="card full"><div class="card-head"><div><h2>Highlight chat terms</h2><span class="muted">Case-insensitive custom words and phrases.</span></div></div><div data-chat-rows>'+(rows.length?rows.map((row,index)=>'<div class="module-toolbar" data-chat-row="'+index+'"><input type="text" data-chat-term value="'+api.escapeHtml(String(row.term||''))+'" placeholder="Term or phrase"><select data-chat-color>'+COLORS.map(color=>'<option value="'+color[0]+'" '+(row.color===color[0]?'selected':'')+'>'+color[0]+'</option>').join('')+'</select><label><input class="slink-switch" role="switch" type="checkbox" data-chat-enabled '+(row.enabled!==false?'checked':'')+'>On</label><button type="button" data-chat-action="delete" data-chat-index="'+index+'">×</button></div>').join(''):'<p>No highlighted terms configured.</p>')+'</div><div class="target-actions"><button type="button" data-chat-action="add">Add term</button><button type="button" data-chat-action="save">Save highlights</button></div></article></div>';}
 let giphyPanel=null;
-const ffAllowed=()=>api.hasScope('slink.qol.chat')||api.hasScope('admin.*');
+const ffAllowed=()=>masterEnabled()&&(api.hasScope('slink.qol.chat')||api.hasScope('admin.*'));
 const ffBubbles=global.SLINK_CHAT_FF.mount({activity:global.SLINK_PDA_PAGE_ACTIVITY,enabled:()=>ffAllowed()&&config().ffBubbles===true,mentions:()=>ffAllowed()&&config().ffMentions===true,lookup:ids=>api.chatFairFight(ids)});
 global.addEventListener('slink-chat-enable',()=>ffBubbles.sync());
+global.addEventListener('slink-chat-disable',()=>ffBubbles.sync());
 function render(){
   if (api.shouldRender && !api.shouldRender(ID)) return;
   const root=api.root(ID);if(!root)return;
+  if(!masterEnabled()){root.textContent='Chat enhancements are paused. Resume them in Access.';return;}
   if(!root.querySelector('[data-chat-base]')){const base=document.createElement('div');base.dataset.chatBase='';root.append(base);}
   renderBase();
   if(!root.querySelector('[data-chat-ff-panel]')){
-   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input type="checkbox" data-chat-ff-toggle> Show Fair Fight beside chat names</label><br><label><input type="checkbox" data-chat-ff-mentions> Show Fair Fight next to player mentions</label><p>† marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
+   const panel=document.createElement('article');panel.className='card full';panel.dataset.chatFfPanel='';panel.innerHTML='<h2>Fair Fight in chat</h2><label><input class="slink-switch" role="switch" type="checkbox" data-chat-ff-toggle> Show Fair Fight beside chat names</label><br><label><input class="slink-switch" role="switch" type="checkbox" data-chat-ff-mentions> Show Fair Fight next to player mentions</label><p>† marks cached backup data; hold or hover for source and age.</p><span role="status" data-chat-ff-status></span>';root.append(panel);
    for(const [key,selector] of [['ffBubbles','[data-chat-ff-toggle]'],['ffMentions','[data-chat-ff-mentions]']]){
     const toggle=panel.querySelector(selector),status=panel.querySelector('[data-chat-ff-status]');toggle.checked=config()[key]===true;
     api.listen(toggle,'change',async()=>{config()[key]=toggle.checked;ffBubbles.sync();status.textContent='Saving…';try{await api.save();status.textContent='Saved.';}catch{status.textContent='Not saved. Change the option again to retry.';}});
@@ -1190,6 +1191,6 @@ function render(){
   if(giphyPanel&&!root.contains(giphyPanel.host))root.append(giphyPanel.host);
 }
 function bind(){const root=api.root(ID);if(!root||root.dataset.chatBound==='true')return;root.dataset.chatBound='true';api.listen(root,'click',async event=>{const button=event.target.closest('[data-chat-action]');if(!button)return;const action=button.dataset.chatAction;if(action==='manage')global.dispatchEvent(new CustomEvent('slink-chat-open-editor'));if(action==='add'){config().highlights.push({term:'',color:'yellow',enabled:true});await api.save();render();}if(action==='delete'){config().highlights.splice(Number(button.dataset.chatIndex),1);await api.save();clear();scan();render();}if(action==='save'){config().highlights=[...root.querySelectorAll('[data-chat-row]')].map(row=>({term:String(row.querySelector('[data-chat-term]')?.value||'').trim().slice(0,80),color:String(row.querySelector('[data-chat-color]')?.value||'yellow'),enabled:row.querySelector('[data-chat-enabled]')?.checked!==false})).filter(row=>row.term);await api.save();clear();scan();render();}});}
-api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(highlightMutations);syncHighlights();scan();},render(){render();bind();},alerts(){return[];}});
+api.register({id:ID,title:'Chat',shortTitle:'Chat',scopes:['slink.qol.chat','admin.*'],start(){if(!masterEnabled()||observer)return;global.dispatchEvent(new CustomEvent('slink-chat-enable'));observer=new MutationObserver(highlightMutations);syncHighlights();scan();},stop(){global.dispatchEvent(new CustomEvent('slink-chat-disable'));observer?.disconnect();observer=null;syncHighlights();highlightScopes.clear();clear();void giphyPanel?.stop();giphyPanel=null;},render(){render();bind();},alerts(){return[];}});
 })(globalThis);
 

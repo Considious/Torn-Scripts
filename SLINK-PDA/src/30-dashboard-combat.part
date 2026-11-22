@@ -1,9 +1,20 @@
+let accessUsageTimer;
+function updateAccessUsage(){
+ global.clearTimeout(accessUsageTimer);
+ if(!dashboardOpen||!pdaDomActive()||activeModuleName()!=='access')return;
+ const panel=moduleRoot('access')?.querySelector('[data-access-usage]');
+ if(!panel)return;
+ const expanded=panel.querySelector('details')?.open;
+ const summary=accessTelemetry.html(accessUsageSnapshot());
+ if(panel.accessSummary!==summary){panel.accessSummary=summary;panel.innerHTML=summary;if(expanded)panel.querySelector('details').open=true;}
+ accessUsageTimer=global.setTimeout(updateAccessUsage,10000);
+}
+document.addEventListener('visibilitychange',updateAccessUsage);
 function renderAccess() {
 if (!shouldRenderPdaModule('access')) return;
 const root = moduleRoot('access');
 if (!root) return;
 const permission = validSession('permission');
-const usage = apiUsage();
 const terms = dataState.terms || {};
 const accepted = ['permission', 'leveling', 'war'].every(termsAccepted);
 const termLinks = ['permission', 'leveling', 'war'].map(name => {
@@ -19,6 +30,7 @@ ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : 
 <div class="access-form">
 <label>Torn API key<input type="password" autocomplete="off" data-field="api-key" value="${escapeHtml(dataState.apiKey)}" placeholder="Limited-access Torn key"></label>
 <label>FFScouter API key<input type="password" autocomplete="off" data-field="ff-key" value="${escapeHtml(dataState.ffKey)}" placeholder="Usually different from the Torn key"></label>
+<div data-kal-key-field></div>
 ${PDA_API_KEY_AVAILABLE ? `<label class="check-row"><input type="checkbox" data-field="use-pda-api-key" ${dataState.usePdaApiKey ? 'checked' : ''}>Use Torn PDA's injected key for Torn API requests.</label><label class="check-row"><input type="checkbox" data-field="use-pda-ff-key" ${dataState.usePdaFfKey ? 'checked' : ''}>Use Torn PDA's injected key as the FFScouter fallback.</label>` : '<span class="muted wide">Torn PDA key injection was not detected. Saved Torn and FFScouter keys will be used independently.</span>'}
 <span class="muted wide">The FFScouter key is sent only to FFScouter when refining target estimates.</span>
 <label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK permission, Leveling, and War terms/disclosures shown below.</label>
@@ -32,8 +44,32 @@ ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') 
 <span class="muted">${dataState.caches.dataBackup?.lastRemoteAt ? `Latest cloud backup: ${relativeTime(dataState.caches.dataBackup.lastRemoteAt)}` : 'Authenticate first, then SLINK will create an API-key-free backup automatically.'}</span>
 </article>
 <article class="card"><div class="card-head"><div><h2>Session</h2><span class="muted">${permission ? `${escapeHtml(permission.userName)} [${permission.userId}]` : 'Not authenticated'}</span></div></div><details class="scope-details"><summary>${permission?.scopes?.length ? `${permission.scopes.length} granted permissions` : 'No permissions loaded'}</summary><div class="scope-list">${permission?.scopes?.length ? permission.scopes.map(scope => `<span>${escapeHtml(scope)}</span>`).join('') : '<span>No scopes loaded</span>'}</div></details></article>
-<article class="card"><div class="card-head"><div><h2>Shared API limiter</h2><span class="muted">Shared with compatible Considious scripts in this Torn page.</span></div></div><div class="stats"><div class="stat"><strong>${usage.count}</strong><span>Last minute</span></div><div class="stat"><strong>${usage.remaining}</strong><span>Remaining</span></div><div class="stat"><strong>${usage.limit}</strong><span>Limit</span></div><div class="stat"><strong>1</strong><span>Queue</span></div></div></article>
+<article class="card wide"><h2>Modules</h2><p class="muted">Pausing a module keeps its tab and saved settings.</p>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="war" ${dataState.settings.monitoring.war!==false?'checked':''}>War</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="leveling" ${dataState.settings.monitoring.leveling!==false?'checked':''}>Leveling</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="alerts" ${dataState.settings.monitoring.alerts!==false?'checked':''}>Efficiency alerts</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="target-list" ${dataState.settings.monitoring['target-list']!==false?'checked':''}>Target List</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="player-stats" ${dataState.settings.monitoring['player-stats']!==false?'checked':''}>Player Stats</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="abroad-stocks" ${dataState.settings.monitoring['abroad-stocks']!==false?'checked':''}>Abroad Stocks</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="bounties" ${dataState.settings.monitoring['bounties']!==false?'checked':''}>Bounties</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="racing" ${dataState.settings.monitoring['racing']!==false?'checked':''}>Racing</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="company" ${dataState.settings.monitoring['company']!==false?'checked':''}>Company</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="museums" ${dataState.settings.monitoring['museums']!==false?'checked':''}>Museums</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="money-property" ${dataState.settings.monitoring['money-property']!==false?'checked':''}>Money &amp; Property</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="events" ${dataState.settings.monitoring['events']!==false?'checked':''}>Events</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="faction-officers" ${dataState.settings.monitoring['faction-officers']!==false?'checked':''}>Faction Officers</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="travel-run" ${dataState.settings.monitoring['travel-run']!==false?'checked':''}>Travel Run</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="chat" ${dataState.settings.monitoring['chat']!==false?'checked':''}>Chat enhancements</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="market" ${marketSettings().enabled?'checked':''}>Market Watch checks</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="mugging" ${dataState.settings.mugging.enabled?'checked':''}>Mugging checks</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="merits" ${dataState.settings.monitoring.merits!==false?'checked':''}>Merit checks</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="dollarBazaars" ${dataState.settings.monitoring.dollarBazaars!==false?'checked':''}>$1 Bazaar checks</label>
+<label class="check-row"><input class="slink-switch" type="checkbox" role="switch" data-access-monitor="kal" ${moduleMonitoringEnabled('kal')?'checked':''}>KAL equipment</label><p data-kal-module-status role="status"></p></article>
+<article class="card wide"><div data-kal-settings></div></article>
+<article class="card wide" data-access-usage aria-label="Torn API usage"></article>
 </div>`;
+global.SLINK_PDA_KAL?.renderAccess(moduleRoot('access'));
+updateAccessUsage();
 applyPermissionGates();
 }
 async function loadTerms(force = false) {
@@ -104,6 +140,7 @@ const required = MODULE_SCOPES[name];
 return !required || hasScope(required);
 }
 function applyPermissionGates() {
+pdaCompanion?.sync();
 const gates = [
 ['combat','leveling'],['combat','bounties'],['combat','mugging'],['combat','targetList'],['combat','war'],['combat','stats'],
 ['efficiency','alerts'],['efficiency','crimes'],['efficiency','market'],['efficiency','merits'],['efficiency','dollarBazaars'],
@@ -195,6 +232,7 @@ function renderLeveling() {
 if (!shouldRenderPdaModule('leveling')) return;
 const root = moduleRoot('leveling');
 if (!root) return;
+if(dataState.settings.monitoring.leveling===false){root.innerHTML=moduleMessage('Leveling is paused. Resume it in Access.');return;}
 if (!hasScope('slink.level')) { root.innerHTML = lockedModule('slink.level', 'SLINK Leveling'); return; }
 const current = moduleState.leveling;
 if (current.busy && !current.data) { root.innerHTML = moduleMessage('Loading recommendations…'); return; }
@@ -214,13 +252,16 @@ return `<article class="target-card"><div><strong>${escapeHtml(name)} [${id}]</s
 </article></div>`;
 }
 async function refreshLeveling(force = false) {
+if(dataState.settings.monitoring.leveling===false||moduleState.leveling.busy)return;
 const current = moduleState.leveling;
 const cached = dataState.caches.leveling;
 if (!force && cached?.at && Date.now() - cached.at < 5 * 60_000) { current.data = cached; renderLeveling(); return; }
 current.busy = true; current.error = ''; renderLeveling();
 try {
 await ensurePermissionSession(false);
+if(dataState.settings.monitoring.leveling===false)return;
 await ensureLevelingSession(false);
+if(dataState.settings.monitoring.leveling===false)return;
 const lastActivity = moduleLastActiveAt('leveling');
 const reportedActivity = Math.max(0, Number(dataState.caches.levelingActivityReportedAt) || 0);
 if (lastActivity > reportedActivity) {
@@ -229,7 +270,9 @@ dataState.caches.levelingActivityReportedAt = lastActivity;
 }
 const settings = dataState.settings.leveling;
 const query = new URLSearchParams({ limit:'20', poll_seconds:'300', min_ff:String(Math.min(settings.minFF, settings.maxFF)), max_ff:String(Math.max(settings.minFF, settings.maxFF)) });
+if(dataState.settings.monitoring.leveling===false)return;
 const payload = await productRequest('leveling', `/api/recommendations?${query}`);
+if(dataState.settings.monitoring.leveling===false)return;
 if (Array.isArray(payload?.targets)) payload.targets = await refineWithFfScouter(payload.targets);
 else if (Array.isArray(payload?.recommendations)) payload.recommendations = await refineWithFfScouter(payload.recommendations);
 current.data = dataState.caches.leveling = { at:Date.now(), payload };
@@ -279,9 +322,11 @@ moduleState.bounties.data = runtime;
 return runtime;
 }
 function bountyActive(now = Date.now()) {
+if(dataState.settings.monitoring.bounties===false)return false;
 return bountySettings().enabled && now - Number(dataState.caches.bountyActivityAt || 0) < BOUNTY_ACTIVE_GRACE_MS;
 }
 function touchBounties() {
+if(dataState.settings.monitoring.bounties===false)return;
 dataState.caches.bountyActivityAt = Date.now();
 writeDataState();
 }
@@ -302,6 +347,7 @@ bountyBudgetQueue = result.catch(() => undefined);
 return result;
 }
 async function bountyTornJson(path) {
+if(dataState.settings.monitoring.bounties===false)throw Error('Bounties is paused in Access.');
 const settings = bountySettings();
 const key = currentApiKey();
 if (!key) throw new Error('Save a Torn public API key under Access first.');
@@ -309,7 +355,7 @@ const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 url.searchParams.delete('key');
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', 'SLINK PDA Bounties');
 await bountyReserve('torn', settings.tornCallsPerMinute);
-await reserveTornApi(url.pathname, { limit:API_LIMIT, priority:'normal' });
+await reserveTornApi(url.pathname+url.search, { limit:API_LIMIT, priority:'normal', script:'SLINK Bounties' });
 const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
 return result;
@@ -345,6 +391,7 @@ const object = response?.results || response?.data || response;
 return object && typeof object === 'object' ? Object.entries(object).map(([id, row]) => ({ player_id:Number(row?.player_id ?? row?.id ?? id), ...(row || {}) })) : [];
 }
 async function enrichBountyFairFight(runtime, targets) {
+if(dataState.settings.monitoring.bounties===false)return;
 const key = currentFfKey();
 if (!key || !targets.length) return;
 const now = Date.now();
@@ -404,13 +451,29 @@ if (settings.statusFilter === 'hide-hospital' && target.status.state === 'Hospit
 return true;
 }).sort((a, b) => b.highestReward - a.highestReward || (b.fairFight || 0) - (a.fairFight || 0));
 }
+let pdaBountyTab='torn',pdaFfBoardRoot=null;
+const pdaFfBounties=global.SLINK_FF_BOUNTIES.service({
+ getKey:()=>dataState.settings.monitoring.bounties!==false&&hasScope(BOUNTY_SCOPE)?currentFfKey():'',
+ request:(url,body)=>{if(dataState.settings.monitoring.bounties===false)throw Error('Bounties is paused in Access.');return requestJsonTransport(url,{method:body?'POST':'GET',body,timeout:12000});}
+});
+function selectPdaBountyTab(tab){if(pdaBountyTab!==tab){pdaBountyTab=tab;pdaFfBoardRoot=null;renderBounties();}}
 function renderBounties() {
 if (!shouldRenderPdaModule('bounties')) return;
 const root = moduleRoot('bounties');
 if (!root) return;
+if(dataState.settings.monitoring.bounties===false){pdaFfBoardRoot=null;root.innerHTML=moduleMessage('Bounties is paused. Resume it in Access.');return;}
+if(pdaBountyTab==='ff'){
+ if(pdaFfBoardRoot?.parentNode===root)return;
+ pdaFfBoardRoot=root.ownerDocument.createElement('section');
+ root.replaceChildren(pdaFfBoardRoot);
+ global.SLINK_FF_BOUNTIES.tabs(root,pdaBountyTab,selectPdaBountyTab);
+ global.SLINK_FF_BOUNTIES.mount(pdaFfBoardRoot,pdaFfBounties);
+ return;
+}
 const settings = bountySettings(), runtime = bountyRuntime(), current = moduleState.bounties, candidates = bountyCandidates(runtime);
-const controls = `<div class="bounty-form"><label class="check-row wide"><input type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
+const controls = `<div class="bounty-form"><label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="bounty-enabled" ${settings.enabled ? 'checked' : ''}>Enable Bounty Tracker</label><label>Minimum highest bounty<input type="number" min="1" step="50000" data-field="bounty-minimum" value="${settings.minimumReward}"></label><label>Status<select data-field="bounty-status"><option value="hide-hospital" ${settings.statusFilter === 'hide-hospital' ? 'selected' : ''}>Hide hospitalized</option><option value="all" ${settings.statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="okay" ${settings.statusFilter === 'okay' ? 'selected' : ''}>Known okay</option><option value="hospital" ${settings.statusFilter === 'hospital' ? 'selected' : ''}>Hospital only</option></select></label><label>Minimum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-min-ff" value="${settings.minFF}"></label><label>Maximum FF<input type="number" min="1" max="3" step=".1" data-field="bounty-max-ff" value="${settings.maxFF}"></label><label>Maximum estimated BS<input type="number" min="0" step="100000" data-field="bounty-max-bs" value="${settings.maxBattleStats}"></label><label>Torn calls / minute<input type="number" min="1" max="20" data-field="bounty-torn-rate" value="${settings.tornCallsPerMinute}"></label><label>FF batches / minute<input type="number" min="1" max="20" data-field="bounty-ff-rate" value="${settings.ffBatchesPerMinute}"></label><label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="bounty-full-list" ${settings.scanFullList ? 'checked' : ''}>Scan full list for merits</label><label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="bounty-unknown" ${settings.includeUnknownEstimates ? 'checked' : ''}>Show targets without FF estimates</label><label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="bounty-abroad" ${settings.includeAbroad ? 'checked' : ''}>Show abroad/traveling targets</label><div class="bounty-form-actions wide"><button type="button" data-action="save-bounties">Save</button><button type="button" data-action="restart-bounties">Restart scan</button></div></div>`;
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Bounties</h2><span class="muted">Torn API list + weekly FFScouter estimates · active for five minutes after leaving</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${settings.enabled ? runtime.completed ? 'Complete' : 'Scanning' : 'Disabled'}</span></div><div class="stats"><div class="stat"><strong>${number(runtime.scannedRows)}</strong><span>Rows</span></div><div class="stat"><strong>${number(runtime.targets.length)}</strong><span>Targets</span></div><div class="stat"><strong>${number(candidates.length)}</strong><span>Matches</span></div><div class="stat"><strong>${runtime.pagesFetched || 0}</strong><span>Pages</span></div></div>${current.error ? moduleMessage(current.error, 'error') : ''}${controls}<div class="target-stack">${candidates.length ? candidates.slice(0, 200).map(target => { const status = target.status.state === 'Hospital' && target.status.until ? `Hospital · ${duration(target.status.until - Date.now() / 1000)}` : target.status.label; return `<article class="target-card"><div><strong>${escapeHtml(target.name)} [${target.id}] · ${money(target.highestReward)}</strong><small>Level ${number(target.level)} · ${escapeHtml(status)} · FF ${escapeHtml(ffLabel(target))} · BS ${target.battleStats === null ? '?' : number(target.battleStats)}${target.highestQuantity > 1 ? ` · ×${target.highestQuantity}` : ''}</small></div><div class="target-actions"><a class="action-link" href="https://www.torn.com/profiles.php?XID=${target.id}" data-bounty-profile="${target.id}">Profile</a>${actionLink('Attack', `https://www.torn.com/page.php?sid=attack&user2ID=${target.id}`)}<button type="button" data-action="save-source-target" data-target-source="bounties" data-target-id="${target.id}">Save Target</button></div></article>`; }).join('') : moduleMessage(current.busy ? 'Scanning and estimating targets…' : 'No targets are currently loaded. Press Refresh to start or restart the five-minute Bounty cycle.')}</div></article></div>`;
+global.SLINK_FF_BOUNTIES.tabs(root,pdaBountyTab,selectPdaBountyTab);
 }
 function pdaBattleStatsTotal(payload) {
 const source = payload?.battlestats ?? payload?.battle_stats ?? payload?.stats ?? payload ?? {};
@@ -426,7 +489,9 @@ if (!(total > 0)) throw new Error('Your Torn battle-stat total is unavailable.')
 return total;
 }
 async function muggingRequest(path, options = {}, retried = false) {
+options.signal?.throwIfAborted();
 const session = await ensurePermissionSession(false);
+options.signal?.throwIfAborted();
 if (!hasScope('slink.mugging')) throw new Error('Your SLINK account does not have slink.mugging permission.');
 try {
 return await requestJson(`${URLS.mugging}${path}`, {
@@ -434,6 +499,7 @@ return await requestJson(`${URLS.mugging}${path}`, {
 headers:{ Authorization:`Bearer ${session.token}`, ...(options.headers || {}) }
 });
 } catch (error) {
+options.signal?.throwIfAborted();
 if (error?.status === 401 && !retried) {
 dataState.sessions.permission = null;
 writeDataState();
@@ -595,13 +661,18 @@ async function runMuggingContribution(force = false) {
 const now = Date.now();
 const settings = dataState.settings.mugging;
 const previous = dataState.caches.muggingContribution || {};
-if (!settings.enabled || !hasScope('slink.mugging') || !currentApiKey()) return previous;
+if (!settings.enabled || !hasScope('slink.mugging') || hasScope('admin.*') || !currentApiKey()) return previous;
 if (!force && now - Number(previous.at || 0) < MUGGING_CONTRIBUTION_INTERVAL_MS) return previous;
 if (muggingContributionBusy) return previous;
 muggingContributionBusy = true;
 beginPdaCacheBatch();
 try {
 const mode = muggingContributionMode(now);
+if (mode!=='active' || !pdaPlayerBasicActive() || !dashboardOpen || activeModuleName()!=='mugging') {
+await syncMuggingContributorReports(false);
+dataState.caches.muggingContribution={...previous,at:now,enabled:true,mode:'inactive',fetched:0,skipped:0};
+return dataState.caches.muggingContribution;
+}
 const capacity = contributionCapacity(readApiLedger(now));
 const response = capacity.available > 0 || currentFfKey()
 ? await muggingRequest('/api/contributor/tasks', {
@@ -611,12 +682,18 @@ body:{ client_id:muggingClientId(), active:mode === 'active', limit:Math.min(40,
 : { tasks:[] };
 let fetched = 0, skipped = 0, errors = 0;
 const tasks = Array.isArray(response?.tasks) ? response.tasks : [];
-await muggingFairFightChecks.check(Array.isArray(response?.estimate_tasks) ? response.estimate_tasks : tasks).catch(()=>null);
+if(!dataState.settings.mugging.enabled)return previous;
+await muggingFairFightChecks.check(Array.isArray(response?.estimate_tasks)?response.estimate_tasks:tasks,false,{active:async()=>dataState.settings.mugging.enabled&&pdaPlayerBasicActive()&&dashboardOpen&&activeModuleName()==='mugging'}).catch(()=>null);
+const budget=Math.min(capacity.available,Math.max(0,Number(response?.api_budget_per_minute)||0));
+const seen=new Set();
 for (const task of tasks) {
-if (fetched >= capacity.available) break;
+if (!dataState.settings.mugging.enabled || fetched >= budget || !pdaPlayerBasicActive() || !dashboardOpen || activeModuleName()!=='mugging') break;
+const id=Number(task.player_id);
+if (!Number.isSafeInteger(id) || id<=0 || seen.has(id)) continue;
+seen.add(id);
 try {
 const result = await refreshPlayerIntelligence({
-playerId:task.player_id,
+playerId:id,owner:'mugging',adaptive:true,background:true,
 maxAgeMs:15 * 60_000,
 priority:'contribution',
 contribution:true,
@@ -633,7 +710,7 @@ if (error?.code === 'SLINK_TORN_API_LIMIT') break;
 let assignmentsRefreshed = false;
 const assignmentCache = muggingCache();
 const ownStats = Number(pdaStoredOwnBattleStats()?.total) || 0;
-if (mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
+if (dataState.settings.mugging.enabled && mode === 'active' && ownStats > 0 && now - assignmentCache.updatedAt >= MUGGING_ASSIGNMENT_REFRESH_MS) {
 try {
 await refreshMugging(false, { userBattleStats:ownStats, touch:false, background:true });
 assignmentsRefreshed = true;
@@ -641,7 +718,7 @@ assignmentsRefreshed = true;
 }
 const sync = await syncMuggingContributorReports(false);
 const status = {
-at:Date.now(), enabled:true, mode, apiBudgetPerMinute:capacity.available,
+at:Date.now(), enabled:true, mode, apiBudgetPerMinute:budget,
 contributionCeiling:CONTRIBUTION_CEILING,
 interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE,
 sharedUsageAtStart:capacity.count,
@@ -687,6 +764,7 @@ return {
 updatedAt:Math.max(0, Number(value.updatedAt ?? value.generated_at) || 0),
 estimateKind:String((value.estimateKind ?? value.estimate_kind) || 'rough'),
 estimateSource:String((value.estimateSource ?? value.estimate_source) || 'cached battle-stat estimate'),
+ffCheckNotice:String(value.ffCheckNotice||''),
 userBattleStats:Math.max(0, Number(ownStats?.total) || 0),
 userLevel:Math.max(0, Math.trunc(Number(ownStats?.level) || 0)),
 pool:{
@@ -707,8 +785,28 @@ confidence:String(target?.confidence || '')
 })).filter(target => target.id)
 };
 }
+function muggingDeadline(controller, work) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('Find Targets timed out. Try again.'));
+      controller.abort();
+    }, 25_000);
+  });
+  return Promise.race([Promise.resolve().then(work), timeout]).finally(() => clearTimeout(timer));
+}
+
+let muggingAssignmentRefresh = null;
+let muggingAssignmentController = null;
 async function refreshMugging(force = false, options = {}) {
-const settings = dataState.settings.mugging;
+// Capture the list at the user's click, even if a background refresh is running.
+const excludeTargetIds = Array.isArray(options.excludeTargetIds) ? options.excludeTargetIds
+: force && !options.background ? muggingCache().targets.map(target=>target.id) : undefined;
+while (muggingAssignmentRefresh) {
+if (!Array.isArray(excludeTargetIds)) return muggingAssignmentRefresh;
+try { await muggingAssignmentRefresh; } catch {}
+}
+const settings = {...dataState.settings.mugging};
 const current = moduleState.mugging;
 if (!hasScope('slink.mugging')) { renderMugging(); return; }
 if (!settings.enabled) {
@@ -716,48 +814,66 @@ if (force) current.error = 'Enable Mugging on this PDA installation before reque
 renderMugging();
 return;
 }
-if (current.busy) return;
+if (options.background && hasScope('admin.*')) return;
 current.busy = true;
 current.error = '';
 current.notice = '';
 if (options.touch !== false) touchMuggingActivity();
 renderMugging();
-try {
+const deadline=new AbortController(),signal=deadline.signal;
+muggingAssignmentController=deadline;
+const ensureEnabled=async()=>{
+signal.throwIfAborted();
+if (!dataState.settings.mugging.enabled || !hasScope('slink.mugging')) throw Error('Mugging was disabled or access changed. Enable it in Access before finding targets.');
+return true;
+};
+muggingAssignmentRefresh=muggingDeadline(deadline,async()=>{
+await ensureEnabled();
 const userBattleStats = Number(options.userBattleStats) > 0 ? Number(options.userBattleStats) : await pdaOwnBattleStats(force === true && options.background !== true);
-const excludeTargetIds=options.excludeCurrent===true?muggingCache().targets.map(target=>target.id):undefined;
-const loadAssignments=()=>muggingRequest('/api/assignments/rough', {
+await ensureEnabled();
+const response=await muggingRequest('/api/assignments/rough', {
 method:'POST',
+timeout:20_000,
+signal,
 body:{
+assignment_mode:options.background?'background':'manual',
 user_battle_stats:userBattleStats,
-exclude_target_ids:excludeTargetIds,
+exclude_target_ids:Array.isArray(excludeTargetIds)?[...new Set(excludeTargetIds.map(Number).filter(id=>Number.isSafeInteger(id)&&id>0))].slice(0,100):undefined,
 verify_fair_fight:true,
 min_fair_fight:Number(settings.minFairFight) || 1,
 max_fair_fight:Number(settings.maxFairFight) || 3,
 limit:100
 }
 });
-const response=await loadAssignments();
+await ensureEnabled();
 const candidates=Array.isArray(response?.targets)?response.targets:[];
-const checked=await muggingFairFightChecks.check(candidates,true).catch(()=>({queued:0}));
-if(checked.queued>0)await syncMuggingContributorReports(true).catch(()=>null);
-response.targets=global.SLINK_MUGGING_FF.applyRange(candidates,checked.scores,pdaStoredOwnBattleStats()?.score,Number(settings.minFairFight)||1,Number(settings.maxFairFight)||3,Math.max(1,Math.min(100,Math.trunc(Number(settings.limit)||50))));
+const checked=await muggingFairFightChecks.check(candidates,true,{signal,active:ensureEnabled});
+await ensureEnabled();
+const ownProfile=pdaStoredOwnBattleStats();
 dataState.caches.mugging = {
 ...response,
+targets:global.SLINK_MUGGING_FF.applyRange(candidates,checked.scores,ownProfile?.score,Number(settings.minFairFight)||1,Number(settings.maxFairFight)||3,Math.max(1,Math.min(100,Math.trunc(Number(settings.limit)||50)))),
+ffCheckNotice:checked.keyMissing?'Save your FFScouter key in Access to check unknown targets.':checked.error||'',
 userBattleStats,
-userLevel:Math.max(0, Math.trunc(Number(pdaStoredOwnBattleStats()?.level) || 0)),
-ownBattleStatsCheckedAt:Math.max(0,Number(pdaStoredOwnBattleStats()?.checkedAt)||0),
+userLevel:Math.max(0, Math.trunc(Number(ownProfile?.level) || 0)),
+ownBattleStatsCheckedAt:Math.max(0,Number(ownProfile?.checkedAt)||0),
 updatedAt:Math.max(0, Number(response?.generated_at) || Date.now())
 };
 schedulePdaCacheSave();
 const cache = muggingCache();
-current.notice = checked.keyMissing?'Save your FFScouter key in Access to check unknown targets.':checked.error||`Loaded ${cache.targets.length} assignments; unchecked targets are labeled separately.`;
-} catch (error) {
-current.error = errorMessage(error);
-} finally {
+if(checked.queued>0&&!signal.aborted)void syncMuggingContributorReports(true).catch(()=>null);
+current.notice = cache.ffCheckNotice||`Loaded ${cache.targets.length} assignments; unchecked targets have no Attack action.`;
+});
+try { await muggingAssignmentRefresh; }
+catch (error) { current.error = errorMessage(error); }
+finally {
+muggingAssignmentRefresh=null;
+if(muggingAssignmentController===deadline)muggingAssignmentController=null;
 current.busy = false;
 renderMugging();
 }
 }
+
 function renderMugging() {
 if (!shouldRenderPdaModule('mugging')) return;
 const root = moduleRoot('mugging');
@@ -791,15 +907,15 @@ const battleStats = finite(target?.battleStatsEstimate ?? target?.battleStats);
 const levelBadge = muggingLevelBadge(target.level, cache.userLevel);
 return `<article class="target-card"><div>
 <strong>${escapeHtml(target.name || `Player ${target.id}`)} [${target.id}]</strong>
-<small>${levelBadge} · ${escapeHtml(statusLabel)} · ${!['ffscouter','bss'].includes(target.estimateKind)?'FF check pending':`Estimated FF ${fairFight === null ? '?' : number(fairFight, 2)}`} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
-</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${!['ffscouter','bss'].includes(target.estimateKind)?'':actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
+<small>${levelBadge} · ${escapeHtml(statusLabel)} · ${!['ffscouter','bss'].includes(target.estimateKind)||fairFight===null?'FF check pending':`Estimated FF ${number(fairFight, 2)}`} · Estimated BS ${battleStats === null ? '?' : number(battleStats)}${target.confidence ? ` · ${escapeHtml(target.confidence)}` : ''}</small>
+</div><div class="target-actions"><a href="${profile}" data-mugging-profile="${target.id}">Profile</a>${!['ffscouter','bss'].includes(target.estimateKind)||fairFight===null?'':actionLink('Attack', attack)}<button type="button" data-action="save-source-target" data-target-source="mugging" data-target-id="${target.id}">Save Target</button></div></article>`;
 }).join('');
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>SLINK Mugging</h2><span class="muted">Permission-gated rough Fair Fight assignments</span></div><span class="badge ${settings.enabled ? 'ready' : ''}">${state.busy ? 'Finding…' : settings.enabled ? 'Enabled' : 'Disabled'}</span></div>
 <div class="stats"><div class="stat"><strong>${cache.targets.length}</strong><span>Assignments</span></div><div class="stat"><strong>${cache.pool.eligible}</strong><span>Eligible pool</span></div><div class="stat"><strong>${cache.userBattleStats ? number(cache.userBattleStats) : '—'}</strong><span>Your BS</span></div><div class="stat"><strong>${escapeHtml(contribution.mode || 'disabled')}</strong><span>${Number(contribution.fetched) || 0}/${Number(contribution.apiBudgetPerMinute) || 0} contributor checks</span></div></div>
-${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice ? moduleMessage(state.notice) : ''}
+${state.error ? moduleMessage(state.error, 'error') : ''}${state.notice || cache.ffCheckNotice ? moduleMessage(state.notice || cache.ffCheckNotice) : ''}
 ${cache.pool.excluded ? moduleMessage(`Pool exclusions: ${Number(cache.pool.excluded.no_estimate)||0} without estimates · ${Number(cache.pool.excluded.timed_unavailable)||0} hospital/jail timers · ${Number(cache.pool.excluded.mug_cooldown)||0} post-mug cooldowns · ${Number(cache.pool.excluded.fair_fight_range)||0} outside your FF range.`) : ''}
 <div class="bounty-form">
-<label class="check-row wide"><input type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
+<label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="mugging-enabled" ${settings.enabled ? 'checked' : ''}>Enable Mugging on this PDA installation</label>
 <label>Minimum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-min-ff" value="${Number(settings.minFairFight) || 1}"></label>
 <label>Maximum rough FF<input type="number" min="1" max="3" step=".1" data-field="mugging-max-ff" value="${Number(settings.maxFairFight) || 3}"></label>
 <label>Target count<input type="number" min="1" max="100" step="1" data-field="mugging-limit" value="${Math.max(1, Number(settings.limit) || 50)}"></label>
@@ -818,6 +934,7 @@ function renderTargetList() {
 if (!shouldRenderPdaModule('targetList')) return;
 const root = moduleRoot('targetList');
 if (!root) return;
+if(dataState.settings.monitoring['target-list']===false){root.innerHTML=moduleMessage('Target List is paused. Resume it in Access.');return;}
 root.dataset.uiExplicitCommit = 'true';
 const state = moduleState.targetList, targets = pdaTargetListEntries();
 const pageSize=50,pageCount=Math.max(1,Math.ceil(targets.length/pageSize));
@@ -833,15 +950,15 @@ const form = state.formOpen ? `<div class="target-list-form" data-target-editor>
 <label>Player ID<input type="number" min="1" inputmode="numeric" data-field="target-list-id" value="${editing?.id || ''}" ${editing ? 'disabled' : ''} placeholder="123456"></label>
 <label>Name (optional)<input type="text" maxlength="80" data-field="target-list-name" value="${escapeHtml(editing?.name || '')}" placeholder="Player name"></label>
 <label class="wide">Notes<textarea maxlength="500" data-field="target-list-description" placeholder="Why are you tracking this player?">${escapeHtml(editing?.description || '')}</textarea></label>
-<label class="check-row wide"><input type="checkbox" data-field="target-list-stakeout" ${editing?.stakeout ? 'checked' : ''}>Stakeout — monitor this target substantially more often</label>
+<label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="target-list-stakeout" ${editing?.stakeout ? 'checked' : ''}>Stakeout — monitor this target substantially more often</label>
 <label>Stakeout interval (seconds)<input type="number" min="10" max="3600" step="1" data-field="target-list-stakeout-interval" value="${Number(editing?.stakeoutIntervalSeconds) || TARGET_STAKEOUT_DEFAULT_SECONDS}"></label>
 <div class="target-list-tags wide">${TARGET_LIST_DEFAULT_TAGS.map(tag => `<label class="check-row"><input type="checkbox" data-target-list-tag="${escapeHtml(tag)}" ${selectedTags.has(tag) ? 'checked' : ''}>${escapeHtml(tag)}</label>`).join('')}</div>
 <div class="target-list-form-actions wide"><button type="button" data-action="save-target-list">${editing ? 'Save changes' : 'Add target'}</button><button type="button" data-action="cancel-target-list">Cancel</button></div>
 </div>` : '';
 const pollingForm = state.pollingOpen ? `<div class="target-list-form" data-target-polling>
-<label class="check-row wide"><input type="checkbox" data-field="target-poll-enabled" ${pollingSettings.enabled ? 'checked' : ''}>Automatically check saved targets</label>
+<label class="check-row wide"><input class="slink-switch" role="switch" type="checkbox" data-field="target-poll-enabled" ${pollingSettings.enabled ? 'checked' : ''}>Automatically check saved targets</label>
 <label>Complete each rolling cycle every<input type="number" min="1" max="1440" step="1" data-field="target-poll-interval" value="${pollingSettings.intervalMinutes}"></label>
-<label class="check-row"><input type="checkbox" data-field="target-poll-mug-only" ${pollingSettings.mugOnly ? 'checked' : ''}>Only auto-check targets tagged Mug</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="target-poll-mug-only" ${pollingSettings.mugOnly ? 'checked' : ''}>Only auto-check targets tagged Mug</label>
 <div class="module-message wide">${pollingEligible.length} rolling-poll targets · up to ${pollingEstimate} scheduled checks/min before cache and timer skips${pollingRuntime.lastRunAt ? ` · last cycle ${escapeHtml(relativeTime(pollingRuntime.lastRunAt))}` : ''}${pollingRuntime.lastError ? ` · ${escapeHtml(pollingRuntime.lastError)}` : ''}</div>
 <div class="module-message wide"><strong>Stakeout:</strong> ${stakeout.targetCount} targets · up to ${stakeout.estimatedChecksPerMinute} evaluations/min before DOM, cache, and known-timer skips. Use sparingly; Stakeout can consume substantially more Torn API capacity.</div>
 <div class="target-list-form-actions wide"><button type="button" data-action="save-target-polling">Save polling</button></div>
@@ -854,7 +971,7 @@ return `<article class="target-card target-list-card${target.stakeout ? ' is-sta
 ${target.description ? `<div class="target-list-description">${escapeHtml(target.description)}</div>` : ''}
 <small>${escapeHtml(targetListStatusLabel(target))} · observed ${escapeHtml(relativeTime(target.lastChecked))}${target.intelligence?.lastDomObservedAt ? ` · DOM ${escapeHtml(relativeTime(target.intelligence.lastDomObservedAt))}` : ''}${target.intelligence?.lastApiCheckAt ? ` · API ${escapeHtml(relativeTime(target.intelligence.lastApiCheckAt))}` : ''}${target.lastSeenMugged ? ` · mugged ${escapeHtml(relativeTime(target.lastSeenMugged))}` : ''}${target.bountyCount ? ` · ${target.bountyCount} bounties / ${money(target.bountyTotal)}` : ''}</small>
 <div class="target-list-sources">${target.sources.map(source => `<span>${escapeHtml(source.label || source.source)}</span>`).join('')}</div>
-</div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" data-action="toggle-target-stakeout">${target.stakeout ? 'Stop Stakeout' : 'Stakeout'}</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
+</div><div class="target-actions"><a href="${profile}" data-target-list-profile="${target.id}">Profile</a><a href="${attack}">Attack</a><button type="button" data-action="refresh-target-list" ${state.busyId === target.id ? 'disabled' : ''}>${state.busyId === target.id ? 'Refreshing…' : 'Refresh'}</button><button type="button" class="slink-switch-button" role="switch" aria-checked="${target.stakeout === true}" data-action="toggle-target-stakeout">Stakeout</button><button type="button" data-action="edit-target-list">Edit</button><button type="button" data-action="remove-target-list">Remove</button></div></article>`;
 }).join('');
 root.innerHTML = `<div class="grid"><article class="card full"><div class="card-head"><div><h2>Target List</h2><span class="muted">Explicitly saved targets only · local to this PDA installation</span></div><div class="target-actions"><button type="button" data-action="toggle-target-list-form">${state.formOpen ? 'Close form' : 'Add target'}</button><button type="button" data-action="toggle-target-polling">${state.pollingOpen ? 'Close polling' : 'Polling'}</button></div></div>
 <div class="module-message">Other SLINK target feeds are not copied here automatically.${pollingSettings.enabled ? ` Rolling checks are spread across ${pollingSettings.intervalMinutes} minutes.` : ''}</div>
@@ -865,6 +982,8 @@ ${targets.length>pageSize?`<div class="module-toolbar" data-target-pages><button
 </article></div>`;
 }
 async function refreshBounties(force = false) {
+if(dataState.settings.monitoring.bounties===false)return;
+if(pdaBountyTab==='ff'){renderBounties();return;}
 const current = moduleState.bounties, settings = bountySettings();
 if (!hasScope(BOUNTY_SCOPE)) { renderBounties(); return; }
 if (!settings.enabled || !bountyActive()) { renderBounties(); return; }
@@ -1352,14 +1471,16 @@ return expiresAt > now && Number(dataState.settings.alerts.snoozedUntil?.[`war-r
 function warRetalControls() {
 const settings = dataState.settings.war;
 const until = Number(settings.retalSnoozedUntil) || 0;
-return `<details class="alert-settings" data-ui-key="war.retal-controls"><summary>Retal alert controls</summary><label><input type="checkbox" data-war-retal-pref="retalAlerts" ${settings.retalAlerts !== false ? 'checked' : ''}> Enable retal alerts</label><label><input type="checkbox" data-war-retal-pref="retalSound" ${settings.retalSound === true ? 'checked' : ''}> Play retal sound</label><div class="target-actions"><label>Snooze hours <input type="number" data-field="war-retal-hours" min="0.1" max="168" step="0.1" value="12" style="width:5em"></label><button type="button" data-action="pause-war-retals" data-hours="custom">Snooze</button><button type="button" data-action="pause-war-retals" data-hours="12">Snooze 12h</button><button type="button" data-action="pause-war-retals" data-hours="0">Resume retal alerts</button></div>${until > Date.now() ? `<div>Snoozed until ${escapeHtml(new Date(until).toLocaleString())}</div>` : ''}</details>`;
+return `<details class="alert-settings" data-ui-key="war.retal-controls"><summary>Retal alert controls</summary><label><input class="slink-switch" role="switch" type="checkbox" data-war-retal-pref="retalAlerts" ${settings.retalAlerts !== false ? 'checked' : ''}> Enable retal alerts</label><label><input class="slink-switch" role="switch" type="checkbox" data-war-retal-pref="retalSound" ${settings.retalSound === true ? 'checked' : ''}> Play retal sound</label><div class="target-actions"><label>Snooze hours <input type="number" data-field="war-retal-hours" min="0.1" max="168" step="0.1" value="12" style="width:5em"></label><button type="button" data-action="pause-war-retals" data-hours="custom">Snooze</button><button type="button" data-action="pause-war-retals" data-hours="12">Snooze 12h</button><button type="button" data-action="pause-war-retals" data-hours="0">Resume retal alerts</button></div>${until > Date.now() ? `<div>Snoozed until ${escapeHtml(new Date(until).toLocaleString())}</div>` : ''}</details>`;
 }
 function warRetalAlertRows() {
+if(dataState.settings.monitoring.war===false)return [];
 if (!hasScope('slink.war')) return [];
 const current = moduleState.war.data || dataState.caches.war || {};
 return warVisibleRetals(current.snapshot || {}, current.activeWar).map(retal => ({ id:`war-retal:${String(retal.attackId || retal.attackerId)}`, title:`Retaliation: ${retal.attackerName || 'Player ' + retal.attackerId}`, detail:`Attacked ${retal.defenderName || 'your faction'}`, links:[['【ATTACK】',`https://www.torn.com/page.php?sid=attack&user2ID=${Number(retal.attackerId)}`],['Profile',`https://www.torn.com/profiles.php?XID=${Number(retal.attackerId)}`]] }));
 }
 function syncPdaRetalSound() {
+if(dataState.settings.monitoring.war===false)return;
 const rows = warRetalAlertRows();
 const previous = dataState.caches.warRetalSoundIds;
 dataState.caches.warRetalSoundIds = rows.map(row => row.id);

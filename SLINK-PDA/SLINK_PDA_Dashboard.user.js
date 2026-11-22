@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         SLINK PDA Dashboard
 // @namespace    Considious [3853023]
-// @version      0.4.191
+// @version      0.4.274
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
-// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
-// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/SLINK_PDA_Dashboard.user.js
+// @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/feature/qol-batch-6/SLINK-PDA/SLINK_PDA_Dashboard.user.js
+// @downloadURL  https://raw.githubusercontent.com/Considious/Torn-Scripts/feature/qol-batch-6/SLINK-PDA/SLINK_PDA_Dashboard.user.js
 // @match        https://www.torn.com/*
 // @grant        GM_addElement
 // @grant        GM_getValue
@@ -14,6 +14,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @connect      api.kalends.dev
 // @connect      api.torn.com
 // @connect      slink-chat-central-test.richard-johnson554.workers.dev
 // @connect      slink-faction-node-46978-test.richard-johnson554.workers.dev
@@ -23,6 +24,7 @@
 // @connect      cdn.jsdelivr.net
 // @connect      ffscouter.com
 // @connect      weav3r.dev
+// @connect      slink-ranked-gear-preview.richard-johnson554.workers.dev
 // @connect      yata.yt
 // @connect      prombot.co.uk
 // @connect      torn-intel.com
@@ -33,7 +35,7 @@
 // @connect      slinkmuggingworker.richard-johnson554.workers.dev
 // @run-at       document-end
 // ==/UserScript==
-(async()=>{'use strict';const e='https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/',t=e+'source-manifest.json',r=String('###PDA-APIKEY###').trim(),o='slink-pda-runtime-load-error',a='slink-pda-dashboard-host',n='slink-pda-dashboard:data:v1',s='slink-pda-dashboard:data:mirror:v1',i='slink-pda-dashboard:own-battle-stats:v1',l='slink-pda-dashboard:ui:v1',c='slink-pda-dashboard:alert-snoozes:v1',u='slink-pda-dashboard:targets:v1',d=new Set([n,i,l,c,u]),f='slink-pda-dashboard:runtime-cache:v1',g='slink-pda-dashboard:runtime-cache-retry:v1';let h=!1,w=null;const residentBridge=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;const m=residentBridge?.protocol===1&&residentBridge.document===document&&typeof residentBridge.channel==='string'?residentBridge.channel:'slink-pda-storage-write:'+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random());function showFailure(e){const t=String(e?.message||e||'Unknown startup error');console.error('SLINK PDA runtime failed to load:',e),document.getElementById(o)?.remove();const r=document.createElement('button');r.id=o,r.type='button',r.textContent='SLINK could not load. '+t.replace(/([?&](?:key|api_key|token)=)[^&#\\s]+/gi,'$1[redacted]').slice(0,350)+' Torn is unaffected — tap to retry',r.title='Startup files could not finish loading. Check your connection, tap Retry once, then update SLINK if it continues. Saved settings have not been cleared. [SLINK_RUNTIME_LOAD]',r.style.cssText='position:fixed;right:10px;bottom:76px;z-index:2147483647;max-width:calc(100vw - 20px);white-space:normal;overflow-wrap:anywhere;padding:10px 12px;border:2px solid #111;border-radius:8px;background:#b91c1c;color:#fff;font:bold 12px Arial,sans-serif',r.addEventListener('click',()=>{r.remove(),loadRuntime(!0)}),(document.body||document.documentElement).appendChild(r)}function isRecord(value){return Boolean(value&&'object'==typeof value&&!Array.isArray(value))}function hasData(value){return Boolean(isRecord(value)&&Object.keys(value).length)}function savedAt(value){return Math.max(0,Number(isRecord(value)?value._savedAt||value.savedAt:0)||0)}function writeMirror(value){if(isRecord(value))try{globalThis.localStorage?.setItem(s,JSON.stringify({schema:1,savedAt:Date.now(),data:value})),globalThis.localStorage?.setItem(n,JSON.stringify(value))}catch{}}async function readPersistedData(){readPersistedData.failed=!1;let primary=null,primaryFailed=!1;try{const e=nativeStorage();if(e){const value=await e.get(n,null);if(hasData(value))return writeMirror(value),value}const value=await gmRead(n,{});isRecord(value)&&(primary=value)}catch{primaryFailed=!0,readPersistedData.failed=!0}const mirror=function(){try{const e=JSON.parse(globalThis.localStorage?.getItem(s)||'null');return isRecord(e?.data)?e.data:isRecord(e)?e:null}catch{return null}}();let selected=hasData(primary)?primary:mirror||{};return hasData(mirror)&&savedAt(mirror)>savedAt(selected)&&(selected=mirror),hasData(selected)&&writeMirror(selected),selected!==mirror||selected===primary||primaryFailed||await gmWrite(n,selected),selected}async function collectBootstrap(){const[data,e]=await Promise.all([readPersistedData(),gmRead(i,null)]),t=u;let r;try{if(r=await targetJournal(),readPersistedData.failed&&!r.ops.some(e=>'migration'===e.kind))throw Error('Legacy target storage could not be read.')}catch{r={ops:[],error:'Target storage is unavailable. Reload to retry; saved targets have not been changed.'}}let o=null;try{o=JSON.parse(globalThis.localStorage?.getItem(i)||'null')}catch{}const a=[e,o,data?.caches?.ownBattleStats].filter(value=>isRecord(value)&&Number(value.total)>0).sort((e,t)=>Number(t.checkedAt||0)-Number(e.checkedAt||0))[0]||null;return{[n]:data,[i]:a,[t]:r,storageAutoRecovery:nativeStorage.automaticRecovery||null,storageWriteEvent:m,[l]:await gmRead(l,{}),[c]:await gmRead(c,{})}}function nativeStorage(){
+(async()=>{'use strict';const e='https://raw.githubusercontent.com/Considious/Torn-Scripts/feature/qol-batch-6/SLINK-PDA/',t=e+'source-manifest.json',r=String('###PDA-APIKEY###').trim(),o='slink-pda-runtime-load-error',a='slink-pda-dashboard-host',n='slink-pda-dashboard:data:v1',s='slink-pda-dashboard:data:mirror:v1',i='slink-pda-dashboard:own-battle-stats:v1',l='slink-pda-dashboard:ui:v1',c='slink-pda-dashboard:alert-snoozes:v1',u='slink-pda-dashboard:targets:v1',d=new Set([n,i,l,c,u]),f='slink-pda-dashboard:runtime-cache:v1:feature-qol-batch-3',g='slink-pda-dashboard:runtime-cache-retry:v1';let h=!1,w=null;const residentBridge=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;const m=residentBridge?.protocol===1&&residentBridge.document===document&&typeof residentBridge.channel==='string'?residentBridge.channel:'slink-pda-storage-write:'+(globalThis.crypto?.randomUUID?.()||String(Date.now())+':'+Math.random());function showFailure(e){const t=String(e?.message||e||'Unknown startup error');console.error('SLINK PDA runtime failed to load:',e),document.getElementById(o)?.remove();const r=document.createElement('button');r.id=o,r.type='button',r.textContent='SLINK could not load. '+t.replace(/([?&](?:key|api_key|token)=)[^&#\\s]+/gi,'$1[redacted]').slice(0,350)+' Torn is unaffected — tap to retry',r.title='Startup files could not finish loading. Check your connection, tap Retry once, then update SLINK if it continues. Saved settings have not been cleared. [SLINK_RUNTIME_LOAD]',r.style.cssText='position:fixed;right:10px;bottom:76px;z-index:2147483647;max-width:calc(100vw - 20px);white-space:normal;overflow-wrap:anywhere;padding:10px 12px;border:2px solid #111;border-radius:8px;background:#b91c1c;color:#fff;font:bold 12px Arial,sans-serif',r.addEventListener('click',()=>{r.remove(),loadRuntime(!0)}),(document.body||document.documentElement).appendChild(r)}function isRecord(value){return Boolean(value&&'object'==typeof value&&!Array.isArray(value))}function hasData(value){return Boolean(isRecord(value)&&Object.keys(value).length)}function savedAt(value){return Math.max(0,Number(isRecord(value)?value._savedAt||value.savedAt:0)||0)}function writeMirror(value){if(isRecord(value))try{globalThis.localStorage?.setItem(s,JSON.stringify({schema:1,savedAt:Date.now(),data:value})),globalThis.localStorage?.setItem(n,JSON.stringify(value))}catch{}}async function readPersistedData(){readPersistedData.failed=!1;let primary=null,primaryFailed=!1;try{const e=nativeStorage();if(e){const value=await e.get(n,null);if(hasData(value))return writeMirror(value),value}const value=await gmRead(n,{});isRecord(value)&&(primary=value)}catch{primaryFailed=!0,readPersistedData.failed=!0}const mirror=function(){try{const e=JSON.parse(globalThis.localStorage?.getItem(s)||'null');return isRecord(e?.data)?e.data:isRecord(e)?e:null}catch{return null}}();let selected=hasData(primary)?primary:mirror||{};return hasData(mirror)&&savedAt(mirror)>savedAt(selected)&&(selected=mirror),hasData(selected)&&writeMirror(selected),selected!==mirror||selected===primary||primaryFailed||await gmWrite(n,selected),selected}async function collectBootstrap(){const[data,e]=await Promise.all([readPersistedData(),gmRead(i,null)]),t=u;let r;try{if(r=await targetJournal(),readPersistedData.failed&&!r.ops.some(e=>'migration'===e.kind))throw Error('Legacy target storage could not be read.')}catch{r={ops:[],error:'Target storage is unavailable. Reload to retry; saved targets have not been changed.'}}let o=null;try{o=JSON.parse(globalThis.localStorage?.getItem(i)||'null')}catch{}const a=[e,o,data?.caches?.ownBattleStats].filter(value=>isRecord(value)&&Number(value.total)>0).sort((e,t)=>Number(t.checkedAt||0)-Number(e.checkedAt||0))[0]||null;return{[n]:data,[i]:a,[t]:r,storageAutoRecovery:nativeStorage.automaticRecovery||null,storageWriteEvent:m,[l]:await gmRead(l,{}),[c]:await gmRead(c,{})}}function nativeStorage(){
  const store=typeof PDA_storage==='object'?PDA_storage:globalThis.PDA_storage;
  if(!store||typeof store.get!=='function'||typeof store.set!=='function')return null;
  const key=value=>{if(typeof value!=='string'||!value)throw Error('SLINK storage requires a non-empty key.');return value};
@@ -409,7 +411,94 @@ async function executeBrowserSource(source){
   try{Promise.resolve(add('script',{textContent:code})).then(element=>{node=element;if(!node)finish(Error('The userscript manager could not insert the SLINK runtime. [SLINK_BROWSER_EXECUTION_UNAVAILABLE]'));else node.remove?.();},finish);}catch(error){finish(error);}
  });
 }
-async function executeBundle(e){const t=document.getElementById(a),o='true'===t?.dataset?.slinkReady;if(o&&'true'===t?.dataset?.slinkAddonsReady)return;t&&(t.dataset.slinkAddonsReady='false');const sources=['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];if(!o){const t='globalThis.__SLINK_PDA_BOOTSTRAP__='+JSON.stringify({...await collectBootstrap(),sourceRevision:e.revision})+';';sources.push(t+'\n'+e.runtimeSource.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Runtime.js\n')}e.addonSources.forEach((source,e)=>{sources.push(source.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Addon_'+(e+1)+'.js\n')}),sources.push(`globalThis.__SLINK_PDA_ADDONS_READY__=true;\n(() => {\nconst slinkReadyHost=document.getElementById(${JSON.stringify(a)});\nif(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';\n})();`),await async function(source){'function'==typeof globalThis.PDA_evaluateJavascript?await globalThis.PDA_evaluateJavascript(source):await executeBrowserSource(source)}(sources.join('\n;\n')),await waitUntilReady()}function loadRuntime(force=!1){return w||(w=(async function(force=!1){const cached=await gmRead(f,null).catch(()=>null),retry='1'===globalThis.sessionStorage?.getItem(g);if(retry){if(globalThis.sessionStorage?.removeItem(g),!validBundle(cached))return showFailure(new Error('No known-working SLINK runtime is cached yet.'));try{return void await executeBundle(cached)}catch(error){return showFailure(error)}}let bundle=null;if(!force&&validBundle(cached)){try{const manifest=await readSourceManifest(2500);if(cached.revision===String(manifest.revision||'unversioned')&&cached.storageProtocol===manifest.storageProtocol){await executeBundle(cached);return}bundle=await fetchBundle(manifest)}catch(error){console.warn('[SLINK PDA] Live source check failed; using the last-known-working runtime.',error);try{await executeBundle(cached);return}catch(cachedError){return showFailure(cachedError)}}}if(!bundle)try{bundle=await fetchBundle()}catch(error){if(!validBundle(cached))return showFailure(error);console.warn('[SLINK PDA] Source download failed; using the last-known-working runtime.',error);try{return void await executeBundle(cached)}catch(cachedError){return showFailure(cachedError)}}try{await executeBundle(bundle);try{await gmWrite(f,bundle)}catch{console.warn('[SLINK PDA] Runtime cache not saved; running source remains active.')}}catch(error){if(validBundle(cached)&&cached.signature!==bundle.signature)try{return globalThis.sessionStorage?.setItem(g,'1'),void globalThis.location.reload()}catch{}showFailure(error)}})(force).finally(()=>{w=null}),w)}!function(){let e=Promise.resolve();const resident=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;if(resident?.protocol===1&&resident.document===document&&resident.channel===m)return;
+async function executeBundle(e){const t=document.getElementById(a),o='true'===t?.dataset?.slinkReady;if(o&&'true'===t?.dataset?.slinkAddonsReady)return;t&&(t.dataset.slinkAddonsReady='false');const sources=['globalThis.__SLINK_PDA_ADDONS_READY__=false;'];if(!o){startupMark('storage-start');const bootstrap=await collectBootstrap();startupMark('storage-end');const t='globalThis.__SLINK_PDA_BOOTSTRAP__='+JSON.stringify({...bootstrap,sourceRevision:e.revision,clientVersion:e.clientVersion})+';';sources.push(t+'\n'+e.runtimeSource.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Runtime.js\n')}e.addonSources.forEach((source,e)=>{sources.push(source.split('###PDA-APIKEY###').join(r)+'\n//# sourceURL=SLINK_PDA_Direct_Addon_'+(e+1)+'.js\n')}),sources.push(`globalThis.__SLINK_PDA_ADDONS_READY__=true;\n(() => {\nconst slinkReadyHost=document.getElementById(${JSON.stringify(a)});\nif(slinkReadyHost) slinkReadyHost.dataset.slinkAddonsReady='true';\n})();`),await async function(source){'function'==typeof globalThis.PDA_evaluateJavascript?await globalThis.PDA_evaluateJavascript(source):await executeBrowserSource(source)}(sources.join('\n;\n')),await waitUntilReady();startupMark('ready');}
+function startupMark(phase){try{globalThis.performance?.mark?.('slink-pda:'+phase);}catch{}}
+const updateHint=f+':pending',updateCheck=f+':checked',rejectedRevision=f+':rejected',stageMeta=f+':stage';
+const stageCacheName='slink-pda-public-runtime',stageUrl=t+'?slink-staged=1';
+const sessionGet=k=>{try{return globalThis.sessionStorage?.getItem(k)||'';}catch{return '';}};
+const sessionSet=(k,v)=>{try{if(v)globalThis.sessionStorage?.setItem(k,v);else globalThis.sessionStorage?.removeItem(k);}catch{}};
+function boundStartup(task,ms){let timer;return Promise.race([task,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Optional startup cache timed out.')),ms);})]).finally(()=>clearTimeout(timer));}
+async function stageDigest(text){
+ const bytes=await globalThis.crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
+ return Array.from(new Uint8Array(bytes),v=>v.toString(16).padStart(2,'0')).join('');
+}
+async function saveStaged(bundle){
+ if(!globalThis.caches||!globalThis.crypto?.subtle||typeof Response!=='function')return false;
+ const text=JSON.stringify(bundle),digest=await stageDigest(text),cache=await globalThis.caches.open(stageCacheName);
+ await cache.put(stageUrl,new Response(text));
+ // This digest is held in privileged storage: Torn-origin storage alone cannot authorize code.
+ await gmWrite(stageMeta,{revision:bundle.revision,digest});
+ return true;
+}
+async function readStaged(revision){
+ if(!globalThis.caches||!globalThis.crypto?.subtle)return null;
+ const [meta,cache]=await Promise.all([gmRead(stageMeta,null),globalThis.caches.open(stageCacheName)]);
+ if(meta?.revision!==revision||!meta.digest)return null;
+ const result=await cache.match(stageUrl),text=await result?.text();
+ if(!text||await stageDigest(text)!==meta.digest)return null;
+ const bundle=JSON.parse(text);
+ return validBundle(bundle)&&bundle.revision===revision?bundle:null;
+}
+async function stageUpdate(current){
+ const now=Date.now(),last=Number(sessionGet(updateCheck))||0;
+ if(now-last<5*60_000)return;
+ sessionSet(updateCheck,String(now));
+ try{
+  const manifest=await readSourceManifest(4000),revision=String(manifest.revision||'unversioned');
+  if(revision===current.revision&&manifest.storageProtocol===current.storageProtocol||revision===sessionGet(rejectedRevision))return;
+  if(!globalThis.caches||!globalThis.crypto?.subtle){sessionSet(updateHint,'fetch:'+revision);return;}
+  const bundle=await fetchBundle(manifest);
+  try{if(await saveStaged(bundle)){sessionSet(updateHint,'staged:'+revision);return;}}catch{}
+  sessionSet(updateHint,'fetch:'+revision);
+ }catch{}
+}
+function loadRuntime(force=false){
+ if(w)return w;
+ w=(async()=>{
+  startupMark('cache-start');
+  const cached=await gmRead(f,null).catch(()=>null);
+  startupMark(validBundle(cached)?'cache-hit':'cache-miss');
+  const retry=sessionGet(g);
+  if(retry){
+   sessionSet(g,'');
+   if(!validBundle(cached))return showFailure(Error('No known-working SLINK runtime is cached yet.'));
+   try{return await executeBundle(cached);}catch(error){return showFailure(error);}
+  }
+  let next=null;
+  if(!force&&validBundle(cached)){
+   const hint=sessionGet(updateHint);
+   if(hint.startsWith('staged:')&&hint.slice(7)!==cached.revision){
+    next=await boundStartup(readStaged(hint.slice(7)),200).catch(()=>null);
+    if(!next){sessionSet(updateHint,'');sessionSet(updateCheck,'');}
+   }else if(hint.startsWith('fetch:')&&hint.slice(6)!==cached.revision){
+    sessionSet(updateHint,'');
+    try{const manifest=await readSourceManifest(2500);if(manifest.revision===hint.slice(6)&&manifest.revision!==sessionGet(rejectedRevision))next=await fetchBundle(manifest);}catch{}
+   }
+   if(!next){
+    try{await executeBundle(cached);void stageUpdate(cached);return;}catch(error){return showFailure(error);}
+   }
+  }
+  if(!next)try{next=await fetchBundle();}catch(error){
+   if(!validBundle(cached))return showFailure(error);
+   try{return await executeBundle(cached);}catch(fallback){return showFailure(fallback);}
+  }
+  try{
+   await executeBundle(next);
+   try{
+    await gmWrite(f,next);sessionSet(updateHint,'');sessionSet(updateCheck,String(Date.now()));
+    if(globalThis.caches)void globalThis.caches.open(stageCacheName).then(cache=>cache.delete(stageUrl)).catch(()=>{});
+   }catch{console.warn('[SLINK PDA] Runtime cache not saved; running source remains active.');}
+  }catch(error){
+   if(validBundle(cached)&&cached.signature!==next.signature)try{
+    sessionSet(updateHint,'');sessionSet(rejectedRevision,next.revision);sessionSet(g,'1');
+    if(sessionGet(g)==='1'){globalThis.location.reload();return;}
+   }catch{}
+   showFailure(error);
+  }
+ })().finally(()=>{w=null;});
+ return w;
+}
+!function(){let e=Promise.resolve();const resident=globalThis.__SLINK_PDA_STORAGE_BRIDGE__;if(resident?.protocol===1&&resident.document===document&&resident.channel===m)return;
 let storagePaused=false,nativeOutstanding=false,storageReadFailure='';
 const storageLabel=()=>nativeStorage()?"PDA's native storage":"The userscript's storage";
 const pausedStorageError=()=>new Error(storageLabel()+(nativeOutstanding

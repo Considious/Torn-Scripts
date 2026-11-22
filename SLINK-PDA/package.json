@@ -1,9 +1,11 @@
 {
   "name": "slink-pda-dashboard",
-  "version": "0.4.191",
+  "version": "0.4.274",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:crime-tab": "node test-crime-tab.mjs",
+    "test:crime-lifecycle": "node --test test-crime-lifecycle.mjs",
     "test:native-auto-recovery": "node test-native-auto-recovery.mjs && node test-native-cursor-window.mjs && node test-native-reset-capability.mjs && node test-native-manual-recovery.mjs && node test-native-storage-compat.mjs",
     "test:native-cursor-window": "node test-native-reset-capability.mjs && node test-native-cursor-window.mjs && node test-native-manual-recovery.mjs && node test-native-storage-compat.mjs",
     "test:market-media-browser": "node qa/market-media-access.browser.mjs",
@@ -21,6 +23,7 @@
     "check": "node build.mjs --check",
     "test": "node test-market-budget.mjs && node build.mjs --check && node test-page-activity.mjs && node test-page-resume.mjs && node test-permissions.mjs && node test-form-state.mjs && node test-quality-of-life.mjs && node test-abroad-stocks.mjs && node test-money-property.mjs && node test-events.mjs && node test-mugging-shared-stats.mjs && node test-storage-ack.mjs && node test-native-storage-roundtrip.mjs && node test-settings-write-isolation.mjs && node test-storage-resilience.mjs && node test-alert-snooze-persistence.mjs && node test-shoplifting-unique-parity.mjs && node test-runtime-readiness.mjs && node test-theme-assets.mjs && node --test test-faction-node-native.mjs && node test-market-permission-gates.mjs && node test-museum-market-lifecycle.mjs",
     "test:alert-controls": "node test-alert-controls.mjs",
-    "test:native-read-recovery": "node test-native-read-recovery.mjs"
+    "test:native-read-recovery": "node test-native-read-recovery.mjs",
+    "test:travel-run": "node --test test-travel-run.mjs"
   }
 }

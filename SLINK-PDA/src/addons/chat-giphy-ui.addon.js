@@ -24,23 +24,24 @@
       :host([data-chat-picker]) .panel>label,:host([data-chat-picker]) .panel>.actions,:host([data-chat-picker]) .panel>a{flex-shrink:0}.tile button{font-size:12px}
       a{color:#b5caff}[hidden]{display:none!important}.attribution{display:block;width:150px;height:auto;max-width:100%}
     </style><div class="panel"><h3>Chat media picker</h3>
-      <label><input type="checkbox" data-enabled disabled> Enable GIFs &amp; stickers</label>
+      <label><input class="slink-switch" role="switch" type="checkbox" data-enabled disabled> Enable GIFs &amp; stickers</label>
       <label>API key<select data-mode disabled><option value="integrated">SLINK integrated key (shared quota)</option><option value="custom">My own GIPHY API key</option></select></label>
       <label data-key-label hidden>Your GIPHY key<input type="password" data-key autocomplete="off" maxlength="128" placeholder="Enter a GIPHY API key"></label>
       <div class="actions"><button type="button" data-clear hidden>Remove saved key</button><button type="button" data-retry hidden>Retry save</button></div>
       <p data-save role="status">Loading saved settings…</p>
       <p>Optional. GIF searches contact GIPHY; sticker searches also contact ChatSticker. Animated previews play only when clicked. Your message is never sent automatically.</p>
       <div class="actions" aria-label="Media type"><button type="button" data-media-type="gif" aria-pressed="true" disabled>GIFs</button><button type="button" data-media-type="sticker" aria-pressed="false" disabled>Stickers</button></div>
-      <label><input type="checkbox" data-inline-media disabled> Show GIF/sticker images inside chat</label>\n      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
+      <label><input class="slink-switch" role="switch" type="checkbox" data-inline-media disabled> Show GIF/sticker images inside chat</label>\n      <label>Search GIFs &amp; stickers<input type="search" data-query maxlength="50" placeholder="Search GIFs & stickers" disabled></label>
       <div class="actions"><button type="button" data-search disabled>Search</button><button type="button" data-trending disabled>Trending / popular</button><button type="button" data-next hidden>Next results</button></div>
       <a href="https://giphy.com/" target="_blank" rel="noopener noreferrer"><img class="attribution" data-attribution alt="Powered by GIPHY"></a>
-      <p data-status role="status"></p><div class="actions"><button type="button" data-enable-picker hidden>Enable GIFs &amp; stickers</button><button type="button" data-load-retry hidden>Retry loading settings</button><button type="button" data-save-retry hidden>Retry save</button></div><div data-results></div>
+      <p data-status role="status"></p><div class="actions"><button type="button" data-load-retry hidden>Retry loading settings</button><button type="button" data-save-retry hidden>Retry save</button></div><div data-results></div>
       <label data-link-label hidden>Selected media link — paste into chat<input data-link readonly></label>
       <p>Inspired by <a href="https://greasyfork.org/scripts/598147" target="_blank" rel="noopener noreferrer">Torn Chat GIF &amp; Image Embedder</a> by Carol [4021053].</p>
     </div>`;
     const $ = selector=>root.querySelector(selector);
     // Approved GIPHY attribution artwork, loaded from the provider, not recreated.
     $('[data-attribution]').src = 'data:image/png;base64,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';
+    global.SLINK_TORN_COMPONENTS?.install(root);
     let model, stopped=false, suspended=false, revision=0, dirty={}, saveQueue=Promise.resolve(), timer, searchTimer, searching=false, query='', mediaType='gif', cursors={}, queued=null,lastSearch=-Infinity;
     const keyLabel=$('[data-key-label]'),clearButton=$('[data-clear]'),retryButton=$('[data-retry]'),inlineControl=$('[data-inline-media]');
     const enabled=$('[data-enabled]'),mode=$('[data-mode]'),key=$('[data-key]'),saveStatus=$('[data-save]'),status=$('[data-status]'),results=$('[data-results]');
@@ -51,7 +52,7 @@
       keyLabel.hidden=mode.value!=='custom';clearButton.hidden=!model?.hasCustomKey;
       const unavailable=!model||!enabled.checked||Object.keys(dirty).length>0;
       $('[data-query]').disabled=!model;
-      $('[data-enable-picker]').hidden=!model||enabled.checked;
+
       if(model&&!enabled.checked)status.textContent='GIFs and stickers are switched off. Enable them here or in QOL > Chat.';
       for(const button of root.querySelectorAll('[data-media-type]'))button.disabled=unavailable;
       for(const selector of ['[data-search]','[data-trending]','[data-next]'])$(selector).disabled=unavailable||searching;
@@ -79,7 +80,7 @@
     clearButton.onclick=()=>{key.value='';change('apiKey','');};
     retryButton.onclick=()=>void save();
     $('[data-save-retry]').onclick=()=>void save();
-    $('[data-enable-picker]').onclick=()=>{enabled.checked=true;change('enabled',true);};
+
     $('[data-load-retry]').onclick=()=>void reloadSettings();
     function schedule(text,next=false,delay=450){
       revision++;queued={text,next};clearTimeout(searchTimer);
@@ -168,8 +169,8 @@
     if(options.chatWindow){
       host.dataset.chatPicker='';
       root.querySelector('h3').remove();root.querySelector('[aria-label="Media type"]').remove();
-      // Configuration stays in QOL > Chat, not in the in-chat search surface.
-      for(const control of [enabled,mode,key,inlineControl])control.closest('label')?.remove();
+      // Keep the on/off switch in chat; API key and display configuration stay in QOL > Chat.
+      for(const control of [mode,key,inlineControl])control.closest('label')?.remove();
       clearButton.closest('.actions').remove();
       for(const p of root.querySelectorAll('.panel>p'))if(p!==status)p.remove();
       $('[data-link-label]').remove();

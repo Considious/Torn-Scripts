@@ -42,6 +42,13 @@ let pdaActivityGeneration = 0;
 const pdaActivitySubscribers = new Set();
 const pdaDomTimers = new Set();
 function pdaDomActive() { return pdaPagePresent && document.visibilityState !== 'hidden'; }
+let lastPdaBasicInput=0;
+function pdaPlayerBasicActive() {
+return pdaDomActive() && document.hasFocus() && lastPdaBasicInput>0 && Date.now()-lastPdaBasicInput<=120_000;
+}
+for(const event of ['pointerdown','keydown','wheel','touchstart']) document.addEventListener(event,e=>{
+if(e.isTrusted && pdaDomActive() && document.hasFocus()) lastPdaBasicInput=Date.now();
+},{capture:true,passive:true});
 let pdaLastActive=pdaDomActive();
 function pdaActivityChanged() {
 const active=pdaDomActive();
@@ -273,6 +280,7 @@ function companyReminderText(employee) {
 return `Your addiction penalty is currently ${employee?.addictionPenalty === null ? 'unknown' : '-' + employee.addictionPenalty}. Please rehab as soon as possible.`;
 }
 function companyAlertRows() {
+if(dataState.settings.monitoring.company===false)return [];
 const snapshot = dataState.caches.company?.snapshot;
 const settings = companySettings();
 const snoozed = dataState.settings.alerts.snoozedUntil || {};
@@ -1024,6 +1032,7 @@ launcherOpacity:Math.min(100, Math.max(35, Math.round(Number(source.launcherOpac
 themePanelOpacity:Number.isFinite(Number(source.themePanelOpacity)) ? Math.min(100, Math.max(0, Math.round(Number(source.themePanelOpacity)))) : defaults.themePanelOpacity,
 themeItemOpacity:Number.isFinite(Number(source.themeItemOpacity)) ? Math.min(100, Math.max(0, Math.round(Number(source.themeItemOpacity)))) : defaults.themeItemOpacity,
 bubblePosition:source.bubblePosition && typeof source.bubblePosition === 'object' ? source.bubblePosition : null,
+companionPrefs:typeof source.companionPrefs==='string'?source.companionPrefs:null,
 factionNodeView:source.factionNodeView && typeof source.factionNodeView === 'object' && !Array.isArray(source.factionNodeView) ? { ...source.factionNodeView } : null,
 panels:source.panels && typeof source.panels === 'object' && !Array.isArray(source.panels) ? { ...source.panels } : {}
 };
@@ -1056,6 +1065,7 @@ launcherOpacity:state.launcherOpacity,
 themePanelOpacity:state.themePanelOpacity,
 themeItemOpacity:state.themeItemOpacity,
 bubblePosition:state.bubblePosition,
+companionPrefs:state.companionPrefs,
 factionNodeView:state.factionNodeView,
 panels:{ ...(state.panels || {}) }
 };
@@ -1297,6 +1307,7 @@ armoryMode:'ranked-all', armoryWhitelist:[],
 },
 alerts:{ snoozedUntil:{}, cityDoneDay:null, crimeUniqueDoneDay:{}, googlePlayPointsClaimedAt:0, stackModeSince:0, timer24EndsAt:0, ...(settingsSource?.alerts || {}), snoozedUntil:alertSnoozes, enabledTypes:normalizePdaAlertTypes(settingsSource?.alerts?.enabledTypes), crimeUniqueDoneDay:{ ...(settingsSource?.alerts?.crimeUniqueDoneDay || {}) } },
 market:{ enabled:true, quickBuyEnabled:true, lastPriority:'normal', listedItemsEnabled:true, weaverPricelistEnabled:false, weaverSourceOrder:'listed-first', watches:[], dismissals:{}, ...(settingsSource?.market || {}) },
+monitoring:{ 'faction-officers':settingsSource?.monitoring?.['faction-officers']!==false, 'travel-run':settingsSource?.monitoring?.['travel-run']!==false, chat:settingsSource?.monitoring?.chat!==false, 'bounties':settingsSource?.monitoring?.['bounties']!==false, 'racing':settingsSource?.monitoring?.['racing']!==false, 'company':settingsSource?.monitoring?.['company']!==false, 'museums':settingsSource?.monitoring?.['museums']!==false, 'money-property':settingsSource?.monitoring?.['money-property']!==false, 'events':settingsSource?.monitoring?.['events']!==false, 'target-list':settingsSource?.monitoring?.['target-list']!==false, 'player-stats':settingsSource?.monitoring?.['player-stats']!==false, 'abroad-stocks':settingsSource?.monitoring?.['abroad-stocks']!==false, war:settingsSource?.monitoring?.war!==false, leveling:settingsSource?.monitoring?.leveling!==false, alerts:settingsSource?.monitoring?.alerts!==false, merits:settingsSource?.monitoring?.merits!==false, dollarBazaars:settingsSource?.monitoring?.dollarBazaars!==false },
 merits:{ refreshMinutes:15, filter:'all', page:1, pageSize:20, pinned:[], ...(settingsSource?.merits || {}) },
 racing:normalizeRacingState(settingsSource?.racing),
 abroadStocks:{ ...(settingsSource?.abroadStocks || {}) },
@@ -1304,15 +1315,38 @@ company:{ enabled:true, addictionThreshold:10, directorThreshold:10, refreshMinu
 }
 };
 }
+function cloudBackupSecretField(key, path = '') {
+const name=String(key).replace(/[^a-z0-9]/gi,'').toLowerCase();
+return /^(?:apikeys?|credentials|secrets|tornkey|ffkey|ffscouterkey|kalkey|giphykey|accesskey|secretkey|clientsecret|password|authorization|token|accesstoken|refreshtoken|sessiontoken|managementtoken)$/.test(name)
+|| (name==='key' && /api|credential|auth|secret/i.test(path));
+}
+function cloudBackupSettings(value, path = '') {
+if(Array.isArray(value))return value.map(item=>cloudBackupSettings(item,path));
+if(!value||typeof value!=='object')return value;
+return Object.fromEntries(Object.entries(value).filter(([key])=>!cloudBackupSecretField(key,path)).map(([key,item])=>[key,cloudBackupSettings(item,path+'.'+key)]));
+}
+function keepLocalBackupCredentials(restored, local, path = '') {
+if(!local||typeof local!=='object')return restored;
+for(const [key,item]of Object.entries(local)){
+if(cloudBackupSecretField(key,path))restored[key]=item;
+else if(item&&typeof item==='object'){
+const destination=restored[key]&&typeof restored[key]==='object'?restored[key]:Array.isArray(item)?[]:{};
+keepLocalBackupCredentials(destination,item,path+'.'+key);
+if(Object.keys(destination).length)restored[key]=destination;
+}
+}
+return restored;
+}
 function portableBackupPayload() {
-const settings=JSON.parse(JSON.stringify(dataState.settings || {}));
+const settings=cloudBackupSettings(dataState.settings || {});
 if(settings.plugins?.chat?.giphy)delete settings.plugins.chat.giphy.apiKey;
+if(settings.plugins)delete settings.plugins.profileNotes;
 return {
 schema:1,
 client:'pda',
 createdAt:Date.now(),
 settings,
-targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {})),
+targetList:cloudBackupSettings(dataState.caches?.targetList || {}),
 uiState:{
 page:state.page,
 combatTab:state.combatTab,
@@ -1324,7 +1358,7 @@ launcherOpacity:state.launcherOpacity,
 themePanelOpacity:state.themePanelOpacity,
 themeItemOpacity:state.themeItemOpacity,
 bubblePosition:state.bubblePosition,
-panels:{ ...(state.panels || {}) }
+panels:cloudBackupSettings(state.panels || {})
 }
 };
 }
@@ -1335,7 +1369,10 @@ throw new Error('The saved SLINK backup is invalid or incompatible.');
 if (pdaTargetRecords) await pdaTargetRecords.replace(backup.targetList);
 else dataState.caches.targetList = JSON.parse(JSON.stringify(backup.targetList));
 const localGiphyKey=dataState.settings?.plugins?.chat?.giphy?.apiKey;
-dataState.settings = { ...dataState.settings, ...JSON.parse(JSON.stringify(backup.settings)) };
+const localProfileNotes=dataState.settings?.plugins?.profileNotes;
+dataState.settings = keepLocalBackupCredentials({ ...dataState.settings, ...cloudBackupSettings(backup.settings) },dataState.settings);
+if(dataState.settings.plugins)delete dataState.settings.plugins.profileNotes;
+if(localProfileNotes){dataState.settings.plugins ||= {};dataState.settings.plugins.profileNotes=localProfileNotes;}
 if(dataState.settings.plugins?.chat?.giphy){
 delete dataState.settings.plugins.chat.giphy.apiKey;
 if(localGiphyKey)dataState.settings.plugins.chat.giphy.apiKey=localGiphyKey;
@@ -1834,10 +1871,30 @@ ceiling:CONTRIBUTION_CEILING,
 interactiveReserve:CONTRIBUTION_INTERACTIVE_RESERVE
 };
 }
+const ACCESS_HISTORY_KEY='slink-pda:access-usage:v1';
+const accessTelemetry=global.SLINK_ACCESS_USAGE;
+let accessHistory=[];
+let accessHistoryWriteAt=0;
+try{accessHistory=accessTelemetry.prune(JSON.parse(global.localStorage.getItem(ACCESS_HISTORY_KEY)||'[]'));}catch{}
+function noteAccessRequest(event){
+ const observed=accessTelemetry.event(event);if(!observed)return;
+ accessHistory.push(observed);
+ if(event.at-accessHistoryWriteAt<10000)return;
+ accessHistory=accessTelemetry.prune(accessHistory,event.at);accessHistoryWriteAt=event.at;
+ try{global.localStorage.setItem(ACCESS_HISTORY_KEY,JSON.stringify(accessHistory));}catch{/* Telemetry is never required to reserve API capacity. */}
+}
+function adminMaintenanceBlocked(){
+ return Object.values(dataState.sessions||{}).some(session=>(session?.scopes||[]).some(scope=>scope==='admin.*'||scope==='*'));
+}
+function accessUsageSnapshot(){
+ const ledger=readApiLedger();
+ return accessTelemetry.snapshot(ledger.events,accessHistory,{limit:API_LIMIT,cooldownUntil:ledger.cooldownUntil,foreground:foregroundApiDemand(),maintenance:{adminExcluded:adminMaintenanceBlocked()}});
+}
 async function reserveTornApi(endpoint = 'unknown', options = {}) {
 const limit = Math.max(1, Math.min(API_LIMIT, Number(options.limit) || API_LIMIT));
 const wait = options.wait !== false;
 const contribution = options.contribution === true || String(options.priority) === 'contribution';
+if(contribution&&adminMaintenanceBlocked()){const error=new Error('Shared maintenance is disabled for admin.* keys.');error.code='SLINK_MAINTENANCE_ADMIN_EXCLUDED';throw error;}
 const priority = contribution ? 'contribution' : ['alerts', 'market', 'high', 'normal', 'low'].includes(String(options.priority)) ? String(options.priority) : 'normal';
 while (true) {
 const reservation = await serializeNetwork(() => withApiLock(() => {
@@ -1849,9 +1906,10 @@ if (ledger.cooldownUntil > now || full) return { waitUntil:Math.max(ledger.coold
 ledger.events.push({
 at:now,
 id:`slink-pda:${global.crypto?.randomUUID?.() || `${now}:${Math.random().toString(36).slice(2)}`}`,
-script:'SLINK PDA Dashboard', priority, method:'GET', endpoint:String(endpoint).slice(0, 180), tabId:'pda-dashboard'
+script:String(options.script||'SLINK PDA Dashboard').slice(0,80), priority, method:'GET', endpoint:accessTelemetry.endpoint(endpoint), tabId:'pda-dashboard'
 });
 writeApiLedger(ledger);
+noteAccessRequest(ledger.events.at(-1));
 return { reservedAt:now, contribution };
 }));
 if (reservation.reservedAt) return reservation;
@@ -1873,7 +1931,8 @@ const key = options.apiKey || currentApiKey();
 if (!key) throw new Error('Save a Torn API key under Access first.');
 const url = new URL(path.startsWith('http') ? path : `${URLS.torn}${path}`);
 if (!url.searchParams.has('comment')) url.searchParams.set('comment', comment);
-await reserveTornApi(url.pathname, options);
+await reserveTornApi(url.pathname+url.search,{...options,script:options.script||comment});
+if(options.active && !options.active()) return null;
 const result = await requestJson(url.href, { headers:{ Authorization:`ApiKey ${key}` } });
 if (result?.error) throw new Error(result.error.message || result.error.error || 'Torn API request failed.');
 return result;
@@ -2072,8 +2131,14 @@ const untilMs = playerIntelligenceUntilMilliseconds(normalized);
 if (PLAYER_INTELLIGENCE_TIMED_STATES.has(normalized.state) && untilMs > now + timerBufferMs) {
 return { required:false, reason:'known-timer', nextCheckAt:untilMs + timerBufferMs };
 }
-if (normalized.observedAt > 0 && now - normalized.observedAt < maxAgeMs) {
-return { required:false, reason:'fresh-cache', nextCheckAt:normalized.observedAt + maxAgeMs };
+const state=normalized.state;
+const floor = ['Federal','Fallen'].includes(state) ? 24*60*60_000 : state==='Okay' ? 5*60_000 : ['Abroad','Hiding Out'].includes(state) ? 3*60_000 : state==='Unknown' ? 60_000 : 0;
+const freshness=Math.max(maxAgeMs,options.adaptive?floor:0);
+if (PLAYER_INTELLIGENCE_TIMED_STATES.has(state) && untilMs && untilMs <= now && normalized.observedAt < untilMs) {
+return { required:true, reason:'timer-ended', nextCheckAt:now };
+}
+if (normalized.observedAt > 0 && now - normalized.observedAt < freshness) {
+return { required:false, reason:'fresh-cache', nextCheckAt:normalized.observedAt + freshness };
 }
 return { required:true, reason:'stale', nextCheckAt:now };
 }
@@ -2146,11 +2211,15 @@ nextCheckAt:decision.nextCheckAt
 }
 if (playerIntelligenceInFlight.has(playerId)) return playerIntelligenceInFlight.get(playerId);
 const pending = (async () => {
-const response = await tornJson(`/v2/user/${playerId}/basic`, 'SLINK PDA Player Intelligence', {
+const comments={mugging:'SLINK Mug PDA',polling:'SLINK Poll PDA',stakeout:'SLINK Stake PDA',target:'SLINK Tgt PDA'};
+const comment=Object.hasOwn(comments,input.owner)?comments[input.owner]:'SLINK Intel PDA';
+const response = await tornJson(`/v2/user/${playerId}/basic`, comment, {
+active:input.background?()=>pdaPlayerBasicActive() && (input.owner!=='mugging' || (dashboardOpen && activeModuleName()==='mugging')):null,
 wait:input.contribution === true ? input.wait === true : input.wait !== false,
 priority:input.contribution === true ? 'contribution' : input.priority || 'normal',
 contribution:input.contribution === true
 });
+if (!response) return {record:current,fetched:false,reason:'inactive'};
 const record = observePlayerIntelligence(playerIntelligenceFromTornResponse(playerId, response, Date.now()));
 return {
 record:{ ...record, status:effectivePlayerIntelligenceStatus(record) },
@@ -2324,7 +2393,8 @@ targets.forEach((target,index)=>{const id=String(target.playerId);if(!Number.isF
 return runtime;
 }
 async function runTargetPolling(now = Date.now()) {
-if (!hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
+if(dataState.settings.monitoring['target-list']===false)return;
+if (!pdaPlayerBasicActive() || !hasScope(TARGET_LIST_SCOPE) || targetPollingBusy) return;
 const settings=targetPollingSettings();
 if (!settings.enabled) return;
 targetPollingBusy=true;
@@ -2336,8 +2406,9 @@ const intervalMs=settings.intervalMinutes*60_000,perMinute=Math.max(1,Math.ceil(
 const due=targets.filter(target=>Number(runtime.schedule[String(target.playerId)])<=now).sort((a,b)=>Number(runtime.schedule[String(a.playerId)])-Number(runtime.schedule[String(b.playerId)])).slice(0,perMinute);
 if(!due.length){if(changes.value)schedulePdaCacheSave();return;}
 let processed=0,apiFetched=0,skipped=0,lastError='';
-for(const target of due){const id=String(target.playerId);try{
-const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs});
+for(const target of due){if(dataState.settings.monitoring['target-list']===false||!pdaPlayerBasicActive())break;const id=String(target.playerId);try{
+const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,owner:'polling',adaptive:true,background:true});
+if(result.reason==='inactive')break;
 processed++;if(result.fetched)apiFetched++;else skipped++;
 runtime.schedule[id]=result.reason==='known-timer'||result.reason==='fresh-cache'?Math.max(now+30_000,Number(result.nextCheckAt)||now+intervalMs):now+intervalMs;
 }catch(error){processed++;lastError=errorMessage(error);runtime.schedule[id]=now+60_000;}}
@@ -2375,6 +2446,7 @@ dataState.caches.targetStakeoutAlerts = value;
 return value;
 }
 function stakeoutAlertRows(now = Date.now()) {
+if(dataState.settings.monitoring['target-list']===false)return [];
 const cache = targetStakeoutAlertCache();
 const snoozed = dataState.settings.alerts.snoozedUntil || {};
 const rows = [];
@@ -2449,7 +2521,8 @@ runtime
 };
 }
 async function runTargetStakeouts(now = Date.now()) {
-if (!hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
+if(dataState.settings.monitoring['target-list']===false)return;
+if (!pdaPlayerBasicActive() || !hasScope(TARGET_LIST_SCOPE) || targetStakeoutBusy) return;
 targetStakeoutBusy=true;
 beginPdaCacheBatch();
 try {
@@ -2474,7 +2547,9 @@ return;
 let processed=0,apiFetched=0,skipped=0,lastError='';const generated=[];
 for(const target of due){const id=String(target.playerId),intervalMs=target.stakeoutIntervalSeconds*1000;
 generated.push(...collectTargetStakeoutChanges(target,runtime,playerIntelligenceRecord(target.playerId),now));
-try{const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,timerBufferMs:1000});
+if(dataState.settings.monitoring['target-list']===false||!pdaPlayerBasicActive())break;
+try{const result=await refreshPlayerIntelligence({playerId:target.playerId,maxAgeMs:intervalMs,timerBufferMs:1000,owner:'stakeout',background:true});
+if(result.reason==='inactive')break;
 processed++;if(result.fetched)apiFetched++;else skipped++;
 generated.push(...collectTargetStakeoutChanges(target,runtime,result.record,now));
 runtime.schedule[id]=result.reason==='known-timer'||result.reason==='fresh-cache'?Math.max(now+1000,Number(result.nextCheckAt)||now+intervalMs):now+intervalMs;
@@ -2719,6 +2794,13 @@ renderThemeChoices(); return cached?.catalog || null;
 function renderThemeChoices() {
 if (!shouldRenderPdaModule('access')) return;
 const row = shadow?.querySelector?.('.theme-row'); if (!row) return;
+let contrastInput=shadow.querySelector('[data-theme-higher-contrast]');
+if(!contrastInput){
+ const label=document.createElement('label');label.className='check-row';
+ contrastInput=document.createElement('input');contrastInput.type='checkbox';contrastInput.setAttribute('role','switch');contrastInput.classList.add('slink-switch');contrastInput.setAttribute('data-theme-higher-contrast','');
+ label.append(contrastInput,document.createTextNode(' Higher theme contrast'));row.after(label);
+}
+globalThis.SLINK_THEME_APPEARANCE?.attach(host,shadow)?.bind(contrastInput);
 row.innerHTML = themeCatalog().map(theme => {
 const unlocked = !theme.scope || hasThemeScope(theme.scope);
 const colors = Array.isArray(theme.swatch) && theme.swatch.length === 3 ? theme.swatch : ['#111827','#3b82f6','#dbeafe'];

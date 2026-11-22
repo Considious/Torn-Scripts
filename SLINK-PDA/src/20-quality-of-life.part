@@ -72,7 +72,7 @@ match.node.after(label);
 setRacingAssistant({ ...recommendation, status:'ready', message:'Recommended car highlighted.' });
 }
 function scheduleRacingScan(delay = 80) {
-if (!racingDomActive() || !hasScope(RACING_SCOPE)) { racingStateObserver?.disconnect(); clearRacingHighlight(); return; }
+if (!racingDomActive() || !hasScope(RACING_SCOPE)) { racingStateObserver?.disconnect(); global.SLINK_PDA_PAGE_ACTIVITY.cancel(racingScanTimer);racingScanTimer=null;clearRacingHighlight();return; }
 if (!racingStateObserver) racingStateObserver = new MutationObserver(mutations => {
 if (racingDomActive() && mutations.some(racingMutationRelevant)) scheduleRacingScan();
 });
@@ -86,6 +86,7 @@ scanOfficialRaceDom();
 }, delay);
 }
 function racingDomActive() {
+if(dataState.settings.monitoring.racing===false)return false;
 if (!pdaDomActive()) return false;
 const page = new URL(global.location.href);
 return /rac(?:e|ing)/i.test(page.pathname) || /rac(?:e|ing)/i.test(page.hash) || /rac(?:e|ing)/i.test(String(page.searchParams.get('sid') || ''));
@@ -107,6 +108,7 @@ function renderRacing() {
 if (!shouldRenderPdaModule('racing')) return;
 const root = moduleRoot('racing');
 if (!root) return;
+if(dataState.settings.monitoring.racing===false){root.innerHTML=moduleMessage('Racing is paused. Resume it in Access.');return;}
 const settings = racingSettings();
 const definitions = racingBuildsForView(settings.view, settings);
 const completed = RACING_RECOMMENDED_BUILDS.filter(definition => settings.builds[definition.id].completed).length;
@@ -122,7 +124,7 @@ return `<article class="racing-card" data-racing-build="${escapeHtml(definition.
 <header><div><h3>${escapeHtml(definition.car)}</h3><span>Class ${escapeHtml(definition.class)} · ${escapeHtml(definition.tracks.join(', '))}</span></div><span class="badge ${buildState.completed ? 'ready' : ''}">${buildState.completed ? 'COMPLETE' : 'NEEDED'}</span></header>
 <div class="racing-specs"><div><small>Turbo</small><strong>${escapeHtml(definition.build.turbo)}</strong></div><div><small>Transmission</small><strong>${escapeHtml(definition.build.transmission)}</strong></div><div><small>Gearbox</small><strong>${escapeHtml(definition.build.gearbox)}</strong></div><div><small>Tires</small><strong>${escapeHtml(definition.build.tires)}</strong></div></div>
 <div class="racing-name"><label>Expected Torn nickname<input type="text" maxlength="100" data-racing-name value="${escapeHtml(effective)}" placeholder="${escapeHtml(suggested)}" aria-invalid="${String(!validation.valid)}"></label><span class="racing-count" data-racing-count data-invalid="${String(!validation.valid)}">${validation.length}/${validation.maxLength}</span></div>
-<footer><small>${buildState.customName ? 'Custom nickname' : 'Suggested nickname'} · 22 characters maximum</small><div><button type="button" data-racing-reset-name>Use suggestion</button> <button type="button" data-racing-toggle>${buildState.completed ? 'Move to Needed' : 'Mark Complete'}</button></div></footer>
+<footer><small>${buildState.customName ? 'Custom nickname' : 'Suggested nickname'} · 22 characters maximum</small><div><button type="button" data-racing-reset-name>Use suggestion</button> <label><input type="checkbox" data-switch-exempt data-racing-toggle ${buildState.completed ? 'checked' : ''}> Completed</label></div></footer>
 </article>`;
 }).join('') : '<div class="module-message">No builds in this view.</div>'}</div></article></div>`;
 renderRacingAssistant();
@@ -149,6 +151,7 @@ function renderCompany() {
 if (!shouldRenderPdaModule('company')) return;
 const root = moduleRoot('company');
 if (!root) return;
+if(dataState.settings.monitoring.company===false){root.innerHTML=moduleMessage('Company is paused. Resume it in Access.');return;}
 if (!hasScope(COMPANY_SCOPE)) {
 root.innerHTML = lockedModule(COMPANY_SCOPE, 'Company & Job Points');
 return;
@@ -175,6 +178,7 @@ root.innerHTML = '<div class="grid"><article class="card wide"><div class="card-
 '</div></article>' : '') + '</div>';
 }
 async function refreshCompany(force = false) {
+if(dataState.settings.monitoring.company===false)return moduleState.company.data;
 const current = moduleState.company;
 if (current.busy) return current.data;
 const cached = dataState.caches.company;
@@ -190,6 +194,7 @@ current.notice = '';
 renderCompany();
 try {
 await ensurePermissionSession(false);
+if(dataState.settings.monitoring.company===false)return current.data;
 if (!hasScope(COMPANY_SCOPE)) throw new Error('Your SLINK account does not have ' + COMPANY_SCOPE + ' permission.');
 const [job,jobpoints,profile,employees] = await Promise.all([
 tornJson('/v2/user/job', 'SLINK PDA company assistant'),
@@ -246,20 +251,23 @@ button.click();
 function renderMuseums(){
 if (!shouldRenderPdaModule('museums')) return;
 const root=moduleRoot('museums');if(!root)return;
+if(dataState.settings.monitoring.museums===false){root.innerHTML=moduleMessage('Museums is paused. Resume it in Access.');return;}
 if(!hasScope(MUSEUM_SCOPE)){root.innerHTML=lockedModule(MUSEUM_SCOPE,'Museums');return}
 const current=moduleState.museums,status=current.data;
 if(!status?.sets?.length){root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">Compare your inventory with every Museum exchange set.</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh inventory')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+'<p>Refresh to load your inventory and Torn item catalog.</p></article></div>';return}
 root.innerHTML='<div class="grid"><article class="card wide"><div class="card-head"><div><h2>Museum Sets</h2><span class="muted">'+status.summary.completed+'/'+status.summary.total+' complete · '+number(status.summary.redeemablePoints)+' redeemable points</span></div><button type="button" data-action="refresh-museums">'+(current.busy?'Checking…':'Refresh')+'</button></div>'+(current.error?moduleMessage(current.error,'error'):'')+(current.notice?moduleMessage(current.notice,'ready'):'')+'<p>Updated '+relativeTime(status.fetchedAt)+'. Torn inventory data is cached for one hour.</p></article>'+status.sets.map(set=>'<article class="card full museum-set"><details '+(set.complete?'':'open')+'><summary><strong>'+(set.complete?'Complete':'Needs items')+' · '+escapeHtml(set.name)+'</strong><span>'+number(set.points)+' points</span></summary><div class="museum-set-toolbar"><span class="muted">'+number(set.completeSets)+' complete set'+(set.completeSets===1?'':'s')+' in inventory</span>'+'</div><div class="museum-list">'+set.items.map(item=>'<article class="museum-item"><div class="museum-item-main"><strong>'+escapeHtml(item.name)+'</strong><div class="museum-item-stats"><span>Owned <b>'+number(item.owned)+'</b> / '+number(item.required)+'</span>'+(item.needed?'<span>Need <b>'+number(item.needed)+'</b></span>':'<span class="ready-text">Complete</span>')+(item.marketPrice?'<span>Market <b>$'+number(item.marketPrice)+'</b></span>':'')+'</div></div>'+(item.needed&&item.itemId?'<div class="museum-watch-controls"><label><span>Alert below price</span><input type="number" min="1" step="1" inputmode="numeric" aria-label="Alert price for '+escapeHtml(item.name)+'" data-museum-price="'+item.itemId+'" value="'+Math.max(1,item.marketPrice)+'"></label><button type="button" data-action="museum-add-market" '+(marketWatchLimit()>0?'':'disabled title="Market Watch permission required"')+' data-museum-item="'+item.itemId+'">Add to Market Watch</button></div>':'')+'</article>').join('')+'</div></details></article>').join('')+'</div>'
 }
 async function refreshMuseums(force=false){
+if(dataState.settings.monitoring.museums===false)return moduleState.museums.data;
 const current=moduleState.museums;if(current.busy)return current.data;
 const cached=dataState.caches.museums;
 if(!force&&cached?.fetchedAt&&Date.now()-Number(cached.fetchedAt)<MUSEUM_CACHE_MS){current.data=cached;renderMuseums();return cached}
 current.busy=true;current.error='';current.notice='';renderMuseums();
 try{
 await ensurePermissionSession(false);if(!hasScope(MUSEUM_SCOPE))throw new Error('Your SLINK account does not have '+MUSEUM_SCOPE+' permission.');
+if(dataState.settings.monitoring.museums===false)return current.data;
 const runtime=marketRuntime(),catalog=await marketEnsureCatalog(runtime,false),inventoryRows=[];const wanted=new Set(MUSEUM_SETS.flatMap(set=>set.items).map(item=>museumKey(museumName(item.name))));const categories=[...new Set((catalog.items||[]).filter(item=>wanted.has(museumKey(museumName(item.name)))).map(item=>String(item.type||'')).filter(Boolean))];if(!categories.length)throw new Error('The item catalog has no Museum inventory categories. Refresh the item catalog before retrying.');for(const category of categories){let offset=0;
-for(let page=0;page<20;page++){const body=await tornJson('/v2/user/inventory?cat='+encodeURIComponent(category)+'&limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&offset+rows.length>=total))break;offset+=rows.length}}
+for(let page=0;page<20;page++){const body=await runMonitoredPdaRequest('museums',tornJson,'/v2/user/inventory?cat='+encodeURIComponent(category)+'&limit=250&offset='+offset,'SLINK PDA Museum assistant'),rows=Array.isArray(body?.inventory?.items)?body.inventory.items:[];inventoryRows.push(...rows);const total=Math.max(0,Number(body?._metadata?.total)||0);if(rows.length<250||(total&&offset+rows.length>=total))break;offset+=rows.length}}
 const status=museumBuildStatus(inventoryRows,catalog.items||[]);current.data=dataState.caches.museums={fetchedAt:Date.now(),...status};dataState.caches.market=runtime;writeDataState();return current.data
 }catch(error){current.error=errorMessage(error);throw error}finally{current.busy=false;renderMuseums()}
 }
@@ -409,6 +417,7 @@ function visible() {
 return dashboardOpen && state.page === 'quality-of-life' && state.qualityOfLifeTab === 'abroadStocks' && !document.hidden;
 }
 function touch() {
+if(dataState.settings.monitoring['abroad-stocks']===false)return;
 runtime().activeUntil = Date.now() + ACTIVITY_MS;
 writeDataState();
 }
@@ -471,6 +480,7 @@ throw failure;
 return payload || {};
 }
 async function requestProvider(providerId, currentSettings) {
+if(dataState.settings.monitoring['abroad-stocks']===false)throw Error('Abroad Stocks is paused.');
 const definition = ABROAD_STOCKS.PROVIDERS[providerId];
 if (providerId === 'tornIntel') {
 try {
@@ -555,6 +565,7 @@ return travelRecord(current,now);
 }
 }
 async function landingMarketPrices(now=Date.now()){
+if(dataState.settings.monitoring['abroad-stocks']===false)return {};
 const market=marketRuntime();
 const catalog=await pdaSharedData().catalog({key:currentApiKey(),maxAgeMs:MARKET_CACHE_MS,needPrices:true});
 market.catalog=catalog;
@@ -579,6 +590,7 @@ candidates.sort((left,right)=>right.roi-left.roi||right.profit-left.profit||righ
 return candidates[0]||null;
 }
 async function refresh(force = false) {
+if(dataState.settings.monitoring['abroad-stocks']===false)return status();
 const current = runtime();
 const now = Date.now();
 if (moduleState.abroadStocks.busy) return status();
@@ -592,6 +604,7 @@ moduleState.abroadStocks.error = '';
 render();
 try {
 const detectedSettings = await detectTravelDefault(current,currentSettings);
+if(dataState.settings.monitoring['abroad-stocks']===false)return status();
 const providerIds = ['yata','prometheus','tornIntel', ...(detectedSettings.useDroqs ? ['droqs'] : [])];
 const settled = await Promise.allSettled(providerIds.map(providerId => requestProvider(providerId, detectedSettings)));
 const snapshots = { ...current.snapshots };
@@ -636,6 +649,7 @@ render();
 }
 }
 function alerts(now = Date.now()) {
+if(dataState.settings.monitoring['abroad-stocks']===false)return [];
 const current = runtime();
 const currentSettings = settings();
 const rows=[];
@@ -683,6 +697,7 @@ function render() {
 if (!shouldRenderPdaModule('abroadStocks')) return;
 const root = moduleRoot('abroadStocks');
 if (!root) return;
+if(dataState.settings.monitoring['abroad-stocks']===false){root.innerHTML=moduleMessage('Abroad Stocks is paused. Resume it in Access.');return;}
 const current = status();
 const rows = filteredRows();
 const watchedCount = runtime().watches.length;
@@ -701,9 +716,9 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 <label>Travel method<select data-field="abroad-travel-method">${Object.keys(ABROAD_STOCKS.TRAVEL_MULTIPLIERS).map(method => `<option value="${method}" ${current.settings.travelMethod === method ? 'selected' : ''}>${escapeHtml(TRAVEL_LABELS[method]||method)}</option>`).join('')}</select><span class="muted">${current.settings.travelMethodExplicit?'Manually selected':'Automatically selected from your current property'}</span></label>
 <label>Arrive early (minutes)<input type="number" min="0" max="30" data-field="abroad-arrival-buffer" value="${current.settings.arrivalBufferMinutes}"></label>
 <label>Alert before leave time (minutes)<input type="number" min="0" max="180" data-field="abroad-alert-lead" value="${current.settings.alertLeadMinutes}"></label>
-<label class="check-row"><input type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
-<label class="check-row"><input type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
-<label class="check-row"><input type="checkbox" data-field="abroad-landing-recommendation" ${current.settings.landingRecommendationEnabled ? 'checked' : ''}>Two-minute landing purchase recommendation</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="abroad-alerts-enabled" ${current.settings.alertsEnabled ? 'checked' : ''}>Departure alerts</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="abroad-sound-enabled" ${current.settings.soundEnabled ? 'checked' : ''}>Notification sound</label>
+<label class="check-row"><input class="slink-switch" role="switch" type="checkbox" data-field="abroad-landing-recommendation" ${current.settings.landingRecommendationEnabled ? 'checked' : ''}>Two-minute landing purchase recommendation</label>
 <span class="muted">Checks YATA, Prometheus, and Torn Intel, then recommends the in-stock item with the best return against Torn market value.</span>
 <label class="check-row"><input type="checkbox" data-field="abroad-use-droqs" ${current.settings.useDroqs ? 'checked' : ''}>Use optional DroqsDB enrichment</label>
 <button type="button" data-action="save-abroad-settings">Save settings</button>
@@ -713,7 +728,7 @@ ${moduleState.abroadStocks.error ? moduleMessage(moduleState.abroadStocks.error,
 const prediction = row.nextRestockAt
 ? `<strong>Next restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.nextRestockAt))}</strong><span class="abroad-leave-time">Leave at ${escapeHtml(ABROAD_STOCKS.formatTct(row.departureAt))}</span><span>${escapeHtml(row.predictionSource || 'reported estimate')}</span>`
 : '<strong>Restock estimate unavailable</strong><span>No connected provider has published an estimate for this item yet.</span>';
-return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}" data-abroad-item="${escapeHtml((row.itemName + ' ' + (row.itemId || '')).toLocaleLowerCase())}" data-abroad-country="${escapeHtml(row.countryName.toLocaleLowerCase())}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" data-action="toggle-abroad-watch">${row.watched ? 'Stop alert' : 'Alert me when to leave'}</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
+return `<article class="abroad-card" data-abroad-key="${escapeHtml(row.key)}" data-abroad-item="${escapeHtml((row.itemName + ' ' + (row.itemId || '')).toLocaleLowerCase())}" data-abroad-country="${escapeHtml(row.countryName.toLocaleLowerCase())}"><header><div><h3>${escapeHtml(row.itemName)}</h3><span>${escapeHtml(row.countryName)}${row.itemId ? ` · Item ${row.itemId}` : ''}</span></div><button type="button" class="slink-switch-button" role="switch" aria-checked="${row.watched === true}" data-action="toggle-abroad-watch">Departure alert</button></header><div class="abroad-sources">${PROVIDER_ORDER.map(id => `<div><small>${escapeHtml(ABROAD_STOCKS.PROVIDERS[id].label)}</small>${sourceCell(row,id)}</div>`).join('')}</div><footer>${prediction}${row.lastRestockAt ? `<small>Last observed restock: ${escapeHtml(ABROAD_STOCKS.formatTct(row.lastRestockAt))}</small>` : ''}</footer></article>`;
 }).join('') : moduleMessage(current.fetchedAt ? 'No abroad stocks match this search.' : 'Press Refresh to load abroad stock reports.')}</div>
 </article></div>`;
 }
@@ -778,6 +793,6 @@ writeDataState();
 reconcileAlertNotifications(moduleState.alerts.data || dataState.caches.alerts);
 renderAlerts();
 }
-return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, toggleWatch, touch, visible };
+return { addItemWatches, alerts, refresh, render, saveFromRoot, setMode, setQuery, snooze, status, toggleWatch, touch, visible };
 })();
 
