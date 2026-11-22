@@ -26,6 +26,9 @@ const now=Date.parse('2026-11-21T20:00:00Z');
   return {page,jack,rect,advance,drag,errors};
  }
  try{
+  for(let direction=0;direction<8;direction++){
+   const {page,rect,advance,errors}=await boot();const before=await rect();await page.evaluate(direction=>{const values=[.2,.5,(direction+.01)/8];Math.random=()=>values.length?values.shift():.2;},direction);await advance(6500);const after=await rect();const [dx,dy]=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]][direction];assert.equal(Math.sign(after.x-before.x),dx,'Horizontal component for direction '+direction);assert.equal(Math.sign(after.y-before.y),dy,'Vertical component for direction '+direction);assert.deepEqual(errors,[]);await page.close();
+  }
   // Dragging must preserve both modes and use one deadline across refreshes.
   for(const movement of ['wander','stay']){
    const t=await boot({movement}),{page,rect,advance,drag}=t;

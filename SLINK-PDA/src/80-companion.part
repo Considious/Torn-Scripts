@@ -134,10 +134,12 @@
         if(Math.abs(x-edge)<12&&roll<.16){facing=inward;animate('peek');return;}
         if(roll<.8){
           const distance=35+Math.random()*125;
-          const rise=Math.random()<.3?(Math.random()<.5?-1:1)*(35+Math.random()*65):0;
-          const first=Math.random()<.2?-inward:inward,blocked=obstacles();
-          const candidates=[...new Set([first,-first])].flatMap(direction=>[[x+direction*distance,y+rise],[x+direction*Math.max(35,distance*.55),y]]);
-          candidates.push([x,y+distance*.6],[x,y-distance*.6]);
+          const directions=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+          const first=Math.floor(Math.random()*directions.length),blocked=obstacles();
+          const candidates=Array.from({length:directions.length},(_,index)=>directions[(first+index)%directions.length]).flatMap(([dx,dy])=>{
+            const scale=dx&&dy?Math.SQRT1_2:1;
+            return [distance,Math.max(35,distance*.55)].map(length=>[x+dx*length*scale,y+dy*length*scale]);
+          });
           for(const candidate of candidates){
             const [tx,ty]=fit(...candidate);
             if(Math.hypot(tx-x,ty-y)<18||![.25,.5,.75,1].every(f=>safeRect(x+(tx-x)*f,y+(ty-y)*f,width,height,blocked)))continue;
