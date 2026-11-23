@@ -50,6 +50,7 @@ const loaders = { leveling:refreshLeveling, bounties:refreshBounties, war:refres
 if (loaders[name] && !moduleState[name].busy) await loaders[name](force);
 }
 function renderAllModules() {
+syncPdaMuggingScores();
 applyPermissionGates();
 renderAlerts();
 if (activeModuleName() !== 'alerts') renderActivePdaPanel();
@@ -1728,6 +1729,7 @@ dataState.settings.mugging.enabled=enabled;
 if(!enabled)muggingAssignmentController?.abort(new Error('Mugging was disabled.'));
 if(enabled&&hasScope('slink.mugging'))touchMuggingActivity();
 renderMugging();
+syncPdaMuggingScores();
 }
 await savePdaChanges();
 if(enabled&&module==='market'&&marketWatchLimit()>0)void refreshMarket(false);
@@ -1747,6 +1749,7 @@ moduleState.mugging.notice = dataState.settings.mugging.enabled ? 'Mugging setti
 if (dataState.settings.mugging.enabled) touchMuggingActivity();
 await savePdaChanges();
 renderMugging();
+syncPdaMuggingScores();
 if (dataState.settings.mugging.enabled) void runMuggingContribution(true);
 }
 if (event.target.matches('[data-war-retal-pref]')) {
@@ -1926,7 +1929,14 @@ global.clearInterval(targetPollingTimer);global.clearInterval(targetStakeoutTime
 global.clearTimeout(targetPollingKickoff);global.clearTimeout(targetStakeoutKickoff);
 targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targetStakeoutKickoff=null;
 }
+const pdaMuggingScores = global.SLINK_MUGGING_SCORES.create((ids, signal) => muggingRequest('/api/targets/scores', {
+    method:'POST', body:JSON.stringify({player_ids:ids}), headers:{'Content-Type':'application/json'}, signal
+}));
+function syncPdaMuggingScores(active = pdaDomActive()) {
+    pdaMuggingScores.sync(active && dataState.settings.mugging.enabled === true && hasScope('slink.mugging'));
+}
 function syncPdaForeground(active=pdaDomActive()) {
+syncPdaMuggingScores(active);
 if(pdaArsonHelper)pdaArsonHelper.sync();
 if(pdaPickpocketHelper)pdaPickpocketHelper.sync();
 if(pdaCrackingHelper)pdaCrackingHelper.sync();
@@ -1959,6 +1969,7 @@ void scanIntendedProfileDom();
 }
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
 global.addEventListener('pagehide',stopPdaTargetTimers);
+global.addEventListener('pagehide',() => syncPdaMuggingScores(false));
 global.addEventListener('pagehide',()=>{void flushPdaCacheSave().catch(()=>{});});
 global.addEventListener('pageshow',startPdaTargetTimers);
 global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});

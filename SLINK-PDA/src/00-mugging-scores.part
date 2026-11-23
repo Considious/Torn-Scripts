@@ -1,0 +1,252 @@
+(function installMuggingScores(global) {
+    'use strict';
+    const playerAttrs = ['data-player-id', 'data-user-id', 'data-xid'];
+    const marker = 'data-slink-mug-player-id';
+    const identity = 'a[href*="profiles.php?"],a[href*="sid=attack"],' +
+        playerAttrs.map(name => '[' + name + ']').join(',');
+    const common = '.honor-text-wrap,.user-wrap.user-name,.user.name,[class*="userInfoBox__"]';
+    const hosts = {
+        '/factions.php': '.member',
+        '/companies.php': '.employee,.director',
+        '/joblist.php': '.employee,.director',
+        '/bounties.php': '.target,.listed',
+        '/forums.php': '.last-poster,.starter,.poster',
+        '/messages.php': '.name',
+        '/page.php': '.name,ul.participants-list li'
+    };
+    const explanations = {
+        historically_profitable:'Historically profitable payouts',
+        repeated_low_payouts:'Repeated low payouts',
+        protection_window_elapsed:'Previous observed protection window elapsed',
+        protection_mostly_expired:'Previous observed protection largely expired',
+        recent_mug_observed:'Recent mug observed',
+        possible_company_wages:'Possible company wages around the daily tick',
+        limited_evidence:'Limited historical evidence'
+    };
+    const playerId = value => /^\d+$/.test(value ?? '') &&
+        Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null;
+
+    function fromUrl(href) {
+        let url;
+        try { url = new URL(href, global.location.href); } catch { return null; }
+        if (url.origin !== global.location.origin) return null;
+        if (url.pathname === '/profiles.php') return playerId(url.searchParams.get('XID') || url.searchParams.get('userId'));
+        if (url.pathname === '/loader.php' && url.searchParams.get('sid') === 'attack') {
+            return playerId(url.searchParams.get('user2ID'));
+        }
+        return null;
+    }
+
+    function fromNode(node) {
+        const link = node.matches('a[href]') ? fromUrl(node.getAttribute('href')) : null;
+        return link || playerAttrs.map(name => playerId(node.getAttribute(name))).find(Boolean) || null;
+    }
+
+    function create(lookup) {
+        const document = global.document;
+        const bindings = new Map(), queued = new Set(), work = new Set(), cache = new Map();
+        let active = false, scheduled = null, flight = null, route = '', selector = '', root = null, mini = null;
+        const observer = new global.MutationObserver(onMutations);
+        const mounts = new global.MutationObserver(checkRoots);
+
+        function getId(host) {
+            const link = host.closest('a[href]');
+            const direct = fromNode(host) || (link && fromNode(link));
+            if (direct) return direct;
+            const ids = new Set([...host.querySelectorAll(identity)].map(fromNode).filter(Boolean));
+            if (ids.size === 1) return ids.values().next().value;
+            if (!ids.size && host === root?.querySelector('h1') && !host.closest('#profile-mini-root')) {
+                return fromUrl(global.location.href);
+            }
+            return null;
+        }
+
+        function render(badge, result, unavailable = false) {
+            const score = result?.score;
+            const known = Number.isInteger(score) && score >= 0 && score <= 100;
+            const label = 'Mug ' + (known ? score : '**') + '/100';
+            if (badge.firstChild?.nodeValue !== label) badge.textContent = label;
+            const reasons = Array.isArray(result?.reason_codes) ? result.reason_codes.map(code => explanations[code]).filter(Boolean) : [];
+            badge.title = known ? [label, 'Confidence: ' + result.confidence, ...reasons].join(' · ') :
+                unavailable ? 'Mugging Score lookup is temporarily unavailable.' : 'No historical Mugging Score available.';
+            badge.setAttribute('aria-label', known ? badge.title : label + '. ' + badge.title);
+        }
+
+        function bind(host) {
+            const previous = bindings.get(host);
+            const id = host.isConnected ? getId(host) : null;
+            const parentLink = host.closest('a[href]');
+            const placement = parentLink || host;
+            if (previous?.id === id && previous.badge.isConnected &&
+                previous.badge.parentNode === placement.parentNode) return;
+            previous?.badge.remove();
+            bindings.delete(host);
+            if (!id || !placement.parentNode) return;
+            const badge = document.createElement('span');
+            badge.setAttribute(marker, String(id));
+            badge.tabIndex = 0;
+            badge.addEventListener('click', () => {
+                const open = badge.querySelector('small');
+                if (open) { open.remove(); return; }
+                const detail = document.createElement('small');
+                detail.style.cssText = 'display:block;white-space:normal';
+                detail.textContent = badge.title;
+                badge.append(detail);
+            });
+            badge.style.cssText = 'display:inline-block;margin-inline-start:.4em;padding:0 .25em;border:1px solid currentColor;border-radius:.3em;font:inherit;font-size:.85em;white-space:nowrap;vertical-align:middle';
+            render(badge);
+            placement.after(badge);
+            bindings.set(host, {id, badge, placement});
+            const entry = cache.get(id);
+            if (entry?.until > Date.now()) render(badge, entry.result, entry.unavailable);
+            else queued.add(id);
+        }
+
+        function collect(node, candidates) {
+            if (node.nodeType !== 1 || !node.isConnected || node.closest('[' + marker + '],.ffscouter-gauge')) return;
+            const owner = node.closest(selector);
+            if (owner) candidates.add(owner);
+            if (bindings.has(node)) candidates.add(node);
+            for (const match of node.querySelectorAll(selector)) candidates.add(match);
+            const links = node.matches(identity) ? [node, ...node.querySelectorAll(identity)] : node.querySelectorAll(identity);
+            for (const link of links) {
+                if (!link.closest(selector) && !link.querySelector(selector) && !link.closest('.ffscouter-gauge')) candidates.add(link);
+            }
+        }
+
+        async function flush() {
+            scheduled = null;
+            if (!active) return;
+            if (route !== global.location.href) { checkRoots(); return; }
+            const candidates = new Set();
+            for (const node of work) collect(node, candidates);
+            work.clear();
+            for (const host of candidates) {
+                if (host.querySelector(selector) || (host.matches(identity) && host.closest(selector) !== host && host.closest(selector))) {
+                    const previous = bindings.get(host);
+                    previous?.badge.remove();
+                    bindings.delete(host);
+                } else bind(host);
+            }
+            if (flight || !queued.size) return;
+            const visible = new Set([...bindings.values()].filter(binding => binding.badge.isConnected).map(binding => binding.id));
+            const ids = [...queued].filter(id => visible.has(id)).slice(0, 100);
+            for (const id of queued) if (!visible.has(id)) queued.delete(id);
+            if (!ids.length) return;
+            for (const id of ids) queued.delete(id);
+            const controller = new AbortController();
+            const startedOn = route;
+            flight = controller;
+            let scores, unavailable = false;
+            try {
+                scores = (await lookup(ids, controller.signal))?.scores;
+                unavailable = !scores;
+            } catch { unavailable = true; }
+            if (flight !== controller || !active || controller.signal.aborted || startedOn !== global.location.href) return;
+            flight = null;
+            const requested = new Set(ids);
+            const until = Date.now() + (unavailable ? 10000 : 30000);
+            for (const id of ids) {
+                queued.delete(id);
+                cache.set(id, {until, result:scores?.[id], unavailable});
+            }
+            while (cache.size > 1000) cache.delete(cache.keys().next().value);
+            for (const [host, binding] of bindings) {
+                if (!requested.has(binding.id) || !binding.badge.isConnected) continue;
+                if (!host.isConnected || getId(host) !== binding.id || binding.placement.parentNode !== binding.badge.parentNode) {
+                    binding.badge.remove();
+                    bindings.delete(host);
+                    if (host.isConnected) work.add(host);
+                    continue;
+                }
+                render(binding.badge, scores?.[binding.id], unavailable);
+            }
+            if (queued.size || work.size) schedule();
+        }
+
+        function schedule() {
+            if (scheduled === null) scheduled = global.setTimeout(() => void flush(), 25);
+        }
+
+        function onMutations(records) {
+            if (route !== global.location.href) { checkRoots(); return; }
+            let removed = false;
+            for (const record of records) {
+                if (record.type === 'attributes') {
+                    if (record.target.closest(selector) || record.target.matches(identity) || bindings.has(record.target)) work.add(record.target);
+                    continue;
+                }
+                for (const node of record.addedNodes) {
+                    if (node.nodeType === 1 && !node.hasAttribute(marker)) work.add(node);
+                }
+                for (const node of record.removedNodes) {
+                    if (node.nodeType === 1 && !node.hasAttribute(marker)) removed = true;
+                }
+                if (removed && record.target.closest(selector)) work.add(record.target);
+            }
+            if (removed) {
+                for (const [host, binding] of bindings) {
+                    if (host.isConnected && binding.placement.isConnected) continue;
+                    binding.badge.remove();
+                    bindings.delete(host);
+                }
+            }
+            if (work.size) schedule();
+        }
+
+        function clearRoute() {
+            observer.disconnect();
+            flight?.abort();
+            flight = null;
+            global.clearTimeout(scheduled);
+            scheduled = null;
+            for (const binding of bindings.values()) binding.badge.remove();
+            bindings.clear();
+            work.clear();
+            queued.clear();
+        }
+
+        function checkRoots() {
+            if (!active) return;
+            const main = document.querySelector('.content-wrapper,#mainContainer') || document.body;
+            const overlay = document.getElementById('profile-mini-root');
+            if (main === root && mini === overlay && route === global.location.href) return;
+            clearRoute();
+            route = global.location.href;
+            root = main;
+            mini = overlay;
+            selector = [common, hosts[global.location.pathname], global.location.pathname === '/profiles.php' && 'h1'].filter(Boolean).join(',');
+            for (const scope of [root, mini]) {
+                if (!scope || (scope === mini && root?.contains(mini))) continue;
+                observer.observe(scope, {subtree:true, childList:true, attributes:true, attributeFilter:['href', ...playerAttrs]});
+                work.add(scope);
+            }
+            schedule();
+        }
+
+        return {
+            sync(enabled) {
+                if (active === enabled) return;
+                active = enabled;
+                if (active) {
+                    global.addEventListener('popstate', checkRoots);
+                    global.addEventListener('hashchange', checkRoots);
+                    global.navigation?.addEventListener('currententrychange', checkRoots);
+                    mounts.observe(document.body, {childList:true});
+                    checkRoots();
+                } else {
+                    mounts.disconnect();
+                    global.removeEventListener('popstate', checkRoots);
+                    global.removeEventListener('hashchange', checkRoots);
+                    global.navigation?.removeEventListener('currententrychange', checkRoots);
+                    clearRoute();
+                    cache.clear();
+                    root = mini = null;
+                    route = '';
+                }
+            }
+        };
+    }
+
+    global.SLINK_MUGGING_SCORES = Object.freeze({create, fromUrl});
+})(globalThis);

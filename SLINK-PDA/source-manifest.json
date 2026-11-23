@@ -1,7 +1,7 @@
 {
   "schema": 4,
   "mode": "direct-source",
-  "revision": "sha256-69dc038ac0c28f9344258fd1b2f60f6ad6fefb560c6d45886ae1c622f27800fa",
+  "revision": "sha256-0d92fb0fca7358f8355017193437f3b80fe2be04a7fd2327c1d52f86b3de013a",
   "storageProtocol": 3,
   "output": "SLINK_PDA_Dashboard.user.js",
   "fragments": [
@@ -13,6 +13,7 @@
     "src/00-theme-appearance.part",
     "src/00-errors.part",
     "src/00-mugging-ff.part",
+    "src/00-mugging-scores.part",
     "src/00-ff-backup.part",
     "src/00-chat-ff.part",
     "src/00-chat-inline-media.part",
