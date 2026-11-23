@@ -1933,7 +1933,7 @@ const pdaMuggingScores = global.SLINK_MUGGING_SCORES.create((ids, signal) => mug
     method:'POST', body:JSON.stringify({player_ids:ids}), headers:{'Content-Type':'application/json'}, signal
 }));
 function syncPdaMuggingScores(active = pdaDomActive()) {
-    pdaMuggingScores.sync(active && dataState.settings.mugging.enabled === true && hasScope('slink.mugging'));
+    pdaMuggingScores.sync(dataState.settings.mugging.enabled === true && hasScope('slink.mugging'), active);
 }
 function syncPdaForeground(active=pdaDomActive()) {
 syncPdaMuggingScores(active);
@@ -1969,7 +1969,7 @@ void scanIntendedProfileDom();
 }
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
 global.addEventListener('pagehide',stopPdaTargetTimers);
-global.addEventListener('pagehide',() => syncPdaMuggingScores(false));
+global.addEventListener('pagehide',() => pdaMuggingScores.sync(false));
 global.addEventListener('pagehide',()=>{void flushPdaCacheSave().catch(()=>{});});
 global.addEventListener('pageshow',startPdaTargetTimers);
 global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});

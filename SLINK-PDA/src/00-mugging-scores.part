@@ -4,6 +4,8 @@
     const marker = 'data-slink-mug-player-id';
     const identity = 'a[href*="profiles.php?"],a[href*="sid=attack"],' +
         playerAttrs.map(name => '[' + name + ']').join(',');
+    const excluded = '#events,#event-root,#events-root,[class*="event-feed" i],[class*="eventFeed"],#logs,#log-root,[class*="log-list" i],[class*="logList"],[id^="slink-"],[class*="ffscouter-gauge"]';
+    const listPages = new Set(['list','userlist','hof','peopleabroad','abroad','competition','elimination']);
     const common = '.honor-text-wrap,.user-wrap.user-name,.user.name,[class*="userInfoBox__"]';
     const hosts = {
         '/factions.php': '.member',
@@ -12,7 +14,7 @@
         '/bounties.php': '.target,.listed',
         '/forums.php': '.last-poster,.starter,.poster',
         '/messages.php': '.name',
-        '/page.php': '.name,ul.participants-list li'
+        '/page.php': '.name'
     };
     const explanations = {
         historically_profitable:'Historically profitable payouts',
@@ -21,6 +23,9 @@
         protection_mostly_expired:'Previous observed protection largely expired',
         recent_mug_observed:'Recent mug observed',
         possible_company_wages:'Possible company wages around the daily tick',
+        no_recorded_payouts:'No recorded payouts; score uses other available signals',
+        observed_mug_frequency:'Observed mug frequency contributes to this score',
+        company_tier_signal:'Company tier is a weak income signal',
         limited_evidence:'Limited historical evidence'
     };
     const playerId = value => /^\d+$/.test(value ?? '') &&
@@ -45,7 +50,7 @@
     function create(lookup) {
         const document = global.document;
         const bindings = new Map(), queued = new Set(), work = new Set(), cache = new Map();
-        let active = false, scheduled = null, flight = null, route = '', selector = '', root = null, mini = null;
+        let active = false, observing = false, scheduled = null, flight = null, route = '', selector = '', root = null, mini = null;
         const observer = new global.MutationObserver(onMutations);
         const mounts = new global.MutationObserver(checkRoots);
 
@@ -61,24 +66,33 @@
             return null;
         }
 
-        function render(badge, result, unavailable = false) {
+        function render(badge, result, unavailable = '') {
             const score = result?.score;
             const known = Number.isInteger(score) && score >= 0 && score <= 100;
             const label = 'Mug ' + (known ? score : '**') + '/100';
             if (badge.firstChild?.nodeValue !== label) badge.textContent = label;
             const reasons = Array.isArray(result?.reason_codes) ? result.reason_codes.map(code => explanations[code]).filter(Boolean) : [];
             badge.title = known ? [label, 'Confidence: ' + result.confidence, ...reasons].join(' · ') :
-                unavailable ? 'Mugging Score lookup is temporarily unavailable.' : 'No historical Mugging Score available.';
+                unavailable || (result?.last_mugged_at ? 'Mug history exists for this player. A recorded payout is needed to calculate a score.' :
+                    result ? 'No recorded mug payouts for this player.' : 'Looking up Mugging Score…');
             badge.setAttribute('aria-label', known ? badge.title : label + '. ' + badge.title);
         }
 
         function bind(host) {
             const previous = bindings.get(host);
+            if (host.closest(excluded)) {
+                previous?.badge.remove();
+                bindings.delete(host);
+                return;
+            }
             const id = host.isConnected ? getId(host) : null;
             const parentLink = host.closest('a[href]');
             const placement = parentLink || host;
             if (previous?.id === id && previous.badge.isConnected &&
-                previous.badge.parentNode === placement.parentNode) return;
+                previous.badge.parentNode === placement.parentNode) {
+                if (!(cache.get(id)?.until > Date.now())) queued.add(id);
+                return;
+            }
             previous?.badge.remove();
             bindings.delete(host);
             if (!id || !placement.parentNode) return;
@@ -103,20 +117,21 @@
         }
 
         function collect(node, candidates) {
-            if (node.nodeType !== 1 || !node.isConnected || node.closest('[' + marker + '],.ffscouter-gauge')) return;
+            if (node.nodeType !== 1 || !node.isConnected || node.closest('[' + marker + '],' + excluded)) return;
             const owner = node.closest(selector);
             if (owner) candidates.add(owner);
             if (bindings.has(node)) candidates.add(node);
             for (const match of node.querySelectorAll(selector)) candidates.add(match);
             const links = node.matches(identity) ? [node, ...node.querySelectorAll(identity)] : node.querySelectorAll(identity);
             for (const link of links) {
-                if (!link.closest(selector) && !link.querySelector(selector) && !link.closest('.ffscouter-gauge')) candidates.add(link);
+                if (!link.closest(selector) && !link.querySelector(selector) && !link.closest(excluded) &&
+                    link.closest('.members-list,.chain-attacks-list,.users-list,.user-list,.people-abroad,#profile-mini-root')) candidates.add(link);
             }
         }
 
         async function flush() {
             scheduled = null;
-            if (!active) return;
+            if (!active || !observing) return;
             if (route !== global.location.href) { checkRoots(); return; }
             const candidates = new Set();
             for (const node of work) collect(node, candidates);
@@ -137,11 +152,13 @@
             const controller = new AbortController();
             const startedOn = route;
             flight = controller;
-            let scores, unavailable = false;
+            let scores, unavailable = '';
             try {
                 scores = (await lookup(ids, controller.signal))?.scores;
-                unavailable = !scores;
-            } catch { unavailable = true; }
+                if (!scores) unavailable = 'Mugging Worker returned no scores.';
+            } catch (error) {
+                unavailable = 'Mugging Score lookup failed' + (error?.message ? ': ' + error.message : '.');
+            }
             if (flight !== controller || !active || controller.signal.aborted || startedOn !== global.location.href) return;
             flight = null;
             const requested = new Set(ids);
@@ -206,18 +223,22 @@
             queued.clear();
         }
 
-        function checkRoots() {
-            if (!active) return;
+        function checkRoots(force = false) {
+            if (!active || !observing) return;
             const main = document.querySelector('.content-wrapper,#mainContainer') || document.body;
             const overlay = document.getElementById('profile-mini-root');
-            if (main === root && mini === overlay && route === global.location.href) return;
-            clearRoute();
+            if (force !== true && main === root && mini === overlay && route === global.location.href) return;
+            if (route !== global.location.href || (root && root !== main) || (mini && mini !== overlay)) clearRoute();
             route = global.location.href;
             root = main;
             mini = overlay;
-            selector = [common, hosts[global.location.pathname], global.location.pathname === '/profiles.php' && 'h1'].filter(Boolean).join(',');
-            for (const scope of [root, mini]) {
-                if (!scope || (scope === mini && root?.contains(mini))) continue;
+            const page = global.location.pathname;
+            const sid = new URL(route).searchParams.get('sid')?.toLowerCase();
+            const supported = page === '/profiles.php' || page === '/travelagency.php' || page === '/people.php' ||
+                (page === '/page.php' ? listPages.has(sid) : Object.hasOwn(hosts, page) && page !== '/messages.php');
+            selector = [common, hosts[page], page === '/profiles.php' && 'h1'].filter(Boolean).join(',');
+            for (const scope of [supported ? root : null, mini]) {
+                if (!scope || (scope === mini && supported && root?.contains(mini))) continue;
                 observer.observe(scope, {subtree:true, childList:true, attributes:true, attributeFilter:['href', ...playerAttrs]});
                 work.add(scope);
             }
@@ -225,24 +246,38 @@
         }
 
         return {
-            sync(enabled) {
-                if (active === enabled) return;
+            sync(enabled, foreground = true) {
+                const next = enabled && foreground;
+                if (active === enabled && observing === next) return;
                 active = enabled;
-                if (active) {
+                observing = next;
+                if (observing) {
                     global.addEventListener('popstate', checkRoots);
                     global.addEventListener('hashchange', checkRoots);
                     global.navigation?.addEventListener('currententrychange', checkRoots);
                     mounts.observe(document.body, {childList:true});
-                    checkRoots();
+                    checkRoots(true);
+                    for (const [host, binding] of bindings) {
+                        if (!host.isConnected) { binding.badge.remove(); bindings.delete(host); }
+                    }
                 } else {
                     mounts.disconnect();
+                    observer.disconnect();
                     global.removeEventListener('popstate', checkRoots);
                     global.removeEventListener('hashchange', checkRoots);
                     global.navigation?.removeEventListener('currententrychange', checkRoots);
-                    clearRoute();
-                    cache.clear();
-                    root = mini = null;
-                    route = '';
+                    flight?.abort();
+                    flight = null;
+                    global.clearTimeout(scheduled);
+                    scheduled = null;
+                    work.clear();
+                    queued.clear();
+                    if (!active) {
+                        clearRoute();
+                        cache.clear();
+                        root = mini = null;
+                        route = '';
+                    }
                 }
             }
         };
