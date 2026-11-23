@@ -1932,7 +1932,14 @@ targetPollingTimer=null;targetStakeoutTimer=null;targetPollingKickoff=null;targe
 const pdaMuggingScores = global.SLINK_MUGGING_SCORES.create((ids, signal) => muggingRequest('/api/targets/scores', {
     method:'POST', body:JSON.stringify({player_ids:ids}), headers:{'Content-Type':'application/json'}, signal
 }));
+const syncPdaPayoutCapture = global.SLINK_MUGGING_SCORES.watchPayouts(payout => {
+    if (!dataState.settings.mugging.enabled || !hasScope('slink.mugging')) return;
+    queueMuggingContributionObservation(payout.target, {observedAt:payout.at,payout}, 'mug-payout');
+    schedulePdaCacheSave();
+    void syncMuggingContributorReports(false);
+});
 function syncPdaMuggingScores(active = pdaDomActive()) {
+    syncPdaPayoutCapture(active && dataState.settings.mugging.enabled === true && hasScope('slink.mugging'));
     pdaMuggingScores.sync(dataState.settings.mugging.enabled === true && hasScope('slink.mugging'), active);
 }
 function syncPdaForeground(active=pdaDomActive()) {
@@ -1969,7 +1976,7 @@ void scanIntendedProfileDom();
 }
 global.SLINK_PDA_PAGE_ACTIVITY.subscribe(syncPdaForeground);
 global.addEventListener('pagehide',stopPdaTargetTimers);
-global.addEventListener('pagehide',() => pdaMuggingScores.sync(false));
+global.addEventListener('pagehide',() => { pdaMuggingScores.sync(false); syncPdaPayoutCapture(false); });
 global.addEventListener('pagehide',()=>{void flushPdaCacheSave().catch(()=>{});});
 global.addEventListener('pageshow',startPdaTargetTimers);
 global.addEventListener('focus',()=>{if (pdaDomActive()) void scanIntendedProfileDom();});

@@ -283,5 +283,81 @@
         };
     }
 
-    global.SLINK_MUGGING_SCORES = Object.freeze({create, fromUrl});
+    function watchPayouts(send) {
+        const selector = 'div[class*="dialog___"] div[class*="title___"],div[class*="green___"] div[class*="title___"]';
+        const seen = new WeakSet();
+        let last = null;
+        let enabled = false;
+        let watchedRoot = null;
+
+        async function inspect(node) {
+            if (!enabled || seen.has(node)) return;
+            const url = new URL(global.location.href);
+            const target = playerId(url.searchParams.get('user2ID'));
+            const result = node.textContent.trim().replace(/\s+/g, ' ').match(/^You mugged .+? and stole \$([\d,]+)[.!]?$/i);
+            const amount = result ? Number(result[1].replaceAll(',', '')) : NaN;
+            if (!target || !Number.isSafeInteger(amount) || amount < 0) return;
+            seen.add(node);
+            const at = Date.now();
+            const dialog = node.closest('[class*="dialog___"],[class*="green___"]');
+            const links = [...(dialog?.querySelectorAll('a[href*="sid=attackLog"]') || [])];
+            const logId = links.map(link => {
+                const log = new URL(link.href, url);
+                return log.origin === url.origin && log.searchParams.get('ID');
+            }).find(id => /^[a-f0-9]{32}$/i.test(id || ''));
+            if (!logId && last && last.target === target && last.amount === amount && at - last.at < 15_000) return;
+            last = {target, amount, at};
+            try {
+                let id = 'local:' + global.crypto.randomUUID();
+                if (logId) {
+                    const digest = await global.crypto.subtle.digest('SHA-256', new TextEncoder().encode(logId.toLowerCase()));
+                    id = 'attack:' + [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2,'0')).join('');
+                }
+                if (enabled) await send({target, amount, at, id});
+            } catch (error) {
+                console.warn('[SLINK] Mug payout could not be queued:', error?.message || 'Try again after enabling Mugging.');
+            }
+        }
+
+        function find(node) {
+            if (node.nodeType !== 1) return;
+            if (node.matches(selector)) inspect(node);
+            for (const result of node.querySelectorAll(selector)) inspect(result);
+        }
+
+        const observer = new global.MutationObserver(records => {
+            if (watchedRoot === global.document.body &&
+                !['/page.php','/loader.php'].includes(global.location.pathname)) { refresh(); return; }
+            for (const record of records) {
+                const title = record.target.parentElement?.closest(selector) || record.target.closest?.(selector);
+                if (title) inspect(title);
+                for (const added of record.addedNodes) find(added);
+            }
+        });
+        function refresh() {
+            const url = new URL(global.location.href);
+            const root = enabled && ['/page.php','/loader.php'].includes(url.pathname) &&
+                url.searchParams.get('sid') === 'attack' ? global.document.body : null;
+            if (root === watchedRoot) return;
+            observer.disconnect();
+            watchedRoot = root;
+            if (!root) return;
+            observer.observe(root, {childList:true,subtree:true,characterData:true});
+            for (const node of root.querySelectorAll(selector)) inspect(node);
+        }
+        return value => {
+            if (enabled !== value) {
+                enabled = value;
+                for (const event of ['popstate','hashchange']) {
+                    if (enabled) global.addEventListener(event, refresh);
+                    else global.removeEventListener(event, refresh);
+                }
+                if (enabled) global.navigation?.addEventListener('currententrychange', refresh);
+                else global.navigation?.removeEventListener('currententrychange', refresh);
+            }
+            refresh();
+        };
+    }
+
+    global.SLINK_MUGGING_SCORES = Object.freeze({create, fromUrl, watchPayouts});
 })(globalThis);

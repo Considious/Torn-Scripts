@@ -558,11 +558,15 @@ return record.total;
 const muggingFairFightChecks=global.SLINK_MUGGING_FF.create({key:async()=>currentFfKey(),request:(ids,key,signal)=>requestJson('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(key)+'&targets='+ids.join(','),{signal,timeout:6000}),queue:async rows=>{for(const row of rows)queueMuggingContributionObservation(row.playerId,row.record,'fair-fight',true);schedulePdaCacheSave();}});
 function queueMuggingContributionObservation(playerId, record, mode, estimateOnly=false) {
 const pending = dataState.caches.muggingPendingSync && typeof dataState.caches.muggingPendingSync === 'object' ? dataState.caches.muggingPendingSync : {};
-pending[String(playerId)+(estimateOnly?':ff':'')] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, estimateOnly, pendingSync:true };
+pending[record?.payout?.id || String(playerId)+(estimateOnly?':ff':'')] = { playerId:Number(playerId), observedAt:Number(record?.observedAt) || Date.now(), record, mode, estimateOnly, pendingSync:true };
 const rows = Object.values(pending).sort((left, right) => Number(right.observedAt) - Number(left.observedAt)).slice(0, 500);
-dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [String(row.playerId)+(row.estimateOnly?':ff':''), row]));
+dataState.caches.muggingPendingSync = Object.fromEntries(rows.map(row => [row.record?.payout?.id || String(row.playerId)+(row.estimateOnly?':ff':''), row]));
 }
 function muggingContributorReport(row, client) {
+if (row?.record?.payout) return {
+  report_id:row.record.payout.id,payout_id:row.record.payout.id,player_id:row.playerId,
+  amount:row.record.payout.amount,observed_at:row.observedAt
+};
 const record = row?.record && typeof row.record === 'object' ? row.record : {};
 const playerId = validPlayerIntelligenceId(row?.playerId ?? record.playerId ?? record.id) || 0;
 const observedAt = Math.max(0, Number(row?.observedAt ?? record.observedAt) || Date.now());
@@ -661,7 +665,8 @@ async function runMuggingContribution(force = false) {
 const now = Date.now();
 const settings = dataState.settings.mugging;
 const previous = dataState.caches.muggingContribution || {};
-if (!settings.enabled || !hasScope('slink.mugging') || hasScope('admin.*') || !currentApiKey()) return previous;
+if (!settings.enabled || !hasScope('slink.mugging') || !currentApiKey()) return previous;
+if (hasScope('admin.*')) { await syncMuggingContributorReports(false); return previous; }
 if (!force && now - Number(previous.at || 0) < MUGGING_CONTRIBUTION_INTERVAL_MS) return previous;
 if (muggingContributionBusy) return previous;
 muggingContributionBusy = true;
