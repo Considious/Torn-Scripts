@@ -1,6 +1,6 @@
 # Stable release notice — 0.4.127
 
-The audit implementation through Candidate40 is also published on main. The stable launcher now follows main and retains stable cache/data identities. This file describes the separate testing channel; older notes below are historical. See MAIN-RELEASE.md for rollout limits.
+The audit implementation through Candidate40 is also published on main. The stable launcher now follows main and retains stable cache/data identities. This file describes the separate testing channel; older notes below are historical. See the [archived main release notes](https://github.com/Considious/Torn-Scripts/blob/bf9c1e84bd9970d5f4779fc8ab9b5d526a50f086/SLINK-PDA/MAIN-RELEASE.md) for rollout limits.
 
 # SLINK audit tester build — candidate 40
 
