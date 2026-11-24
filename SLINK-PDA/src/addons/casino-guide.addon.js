@@ -55,6 +55,16 @@
     for(const rank of ['',...ranks]){const n=make('option',rank||'Select card');n.value=rank;el.append(n);}
     return el;
   };
+  const inFocus=()=>!document.hidden&&(mode!=='blackjack'||document.hasFocus());
+  function visibleRanks(row){
+    return Array.from(row.children,card=>{
+      for(const name of card.classList){
+        const rank=/^card-(?:clubs|diamonds|hearts|spades)-(2|3|4|5|6|7|8|9|10|J|Q|K|A)$/i.exec(name)?.[1];
+        if(rank)return rank.toUpperCase();
+      }
+      return '';
+    }).filter(Boolean);
+  }
   const parse=text=>text.trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
   let mounted,queued=false;
   const key='slink.casino.hidden-games.v1',mark='data-slink-hidden-casino-game';
@@ -160,13 +170,15 @@
       root.removeAttribute(compact);
     }};
   }
-  function advisor(box){
+  function advisor(box,root){
     const controls=make('div'),dealer=select(),cards=make('input'),result=make('p');
     controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px';
     cards.type='text';cards.maxLength=130;cards.placeholder=mode==='highlow'?'e.g. 2, Q, 10':'e.g. A, 7';cards.autocomplete='off';
     result.setAttribute('role','status');
     const dbl=make('input'),split=make('input');dbl.type=split.type='checkbox';
+    let readState='';
     function calculate(){
+      if(mode==='blackjack'&&!inFocus())return;
       const hand=parse(cards.value);
       if(mode==='highlow'){
         const odds=highLow(dealer.value,hand);
@@ -175,18 +187,46 @@
         result.textContent=`Higher ${pct(odds.higher)} · Lower ${pct(odds.lower)} · Equal ${pct(odds.equal)}.`;return;
       }
       const model=blackjack(hand,dealer.value,{double:dbl.checked,splitHand:split.checked});
-      if(!model){result.textContent='Enter your visible hand and the dealer’s upcard.';return;}
+      if(!model){result.textContent='Waiting for your cards and the dealer’s upcard.';return;}
       result.textContent=model.done?`Total ${model.total} · ${model.done}.`:`Total ${model.total} · Suggested: ${model.moves[0][0]}.`+(model.pair?' This estimate does not compare splitting.':'');
     }
     controls.append(field(mode==='highlow'?'Visible card':'Dealer upcard',dealer),field(mode==='highlow'?'Other seen cards (optional)':'Your cards',cards));
-    if(mode==='blackjack')controls.append(field('Double is available',dbl),field('Hand was split',split));
+    if(mode==='blackjack'){
+      dealer.disabled=true;cards.readOnly=true;dbl.disabled=true;
+      controls.append(field('Double is available',dbl),field('Hand was split',split));
+    }
     for(const n of [dealer,cards,dbl,split])n.addEventListener('input',calculate);
     const note=mode==='highlow'?'Single-deck estimate. Only enter other cards you know are already out of the same deck. Equal ranks are shown separately.':
       'Approximate strategy for Hit, Stand, and Double, including soft 17 and six-card Charlie. Does not model Split, Surrender, Insurance, or exact shoe composition. Torn controls all play.';
     box.append(controls,result,make('small',note));calculate();
+    if(mode!=='blackjack')return null;
+    return {
+      update(){
+        if(!inFocus())return;
+        const hands=Array.from(root.querySelectorAll('.cards')).filter(row=>row.getClientRects().length)
+          .map(visibleRanks).filter(hand=>hand.length);
+        const dealerRow=document.querySelector('.dealer-cards .cards');
+        const shown=dealerRow?.getClientRects().length?visibleRanks(dealerRow):[];
+        const hand=hands.length===1?hands[0]:[];
+        const upcard=shown.length===1?shown[0]:'';
+        const action=document.querySelector('area[data-step="doubleDown"]');
+        const canDouble=Boolean(action?.classList.contains('enabled')&&!action.classList.contains('disabled'));
+        const next=JSON.stringify([hands.length,hand,upcard,canDouble]);
+        if(readState===next)return;
+        readState=next;
+        dealer.value=upcard;cards.value=hand.join(', ');dbl.checked=canDouble;
+        if(hands.length>1){result.textContent='Advice is paused while multiple hands are visible.';return;}
+        calculate();
+      },
+      pause(){
+        readState='';
+        dealer.value='';cards.value='';dbl.checked=false;
+        result.textContent='Focus Torn to read the Blackjack table.';
+      }
+    };
   }
   function sync(){
-    queued=false;if(document.hidden)return;
+    queued=false;if(!inFocus())return;
     const root=document.querySelector(mode==='lobby'?'.games-list':mode==='highlow'?'.actions-wrap':'.player-cards');
     if(mounted&&mounted.root===root&&mounted.box.isConnected){mounted.update?.();return;}
     mounted?.dispose();mounted=null;if(!root)return;
@@ -197,14 +237,27 @@
       box.style.cssText='position:fixed;z-index:10;inset-inline-start:max(8px,env(safe-area-inset-left));top:clamp(8px,22vh,170px);margin:0;inline-size:max-content;max-inline-size:min(220px,calc(100vw - 24px));max-block-size:40vh;overflow:auto';
       document.body.append(box);
     }else root.before(box);
-    const ui=mode==='lobby'?lobby(root,box):null;
-    if(ui)ui.update();else advisor(box);
-    mounted={root,box,update:ui?.update,dispose(){ui?.clear();box.remove();}};
+    const ui=mode==='lobby'?lobby(root,box):advisor(box,root);
+    ui?.update();
+    mounted={root,box,update:ui?.update,pause:ui?.pause,dispose(){ui?.clear?.();box.remove();}};
   }
-  function schedule(){if(!queued&&!document.hidden){queued=true;requestAnimationFrame(sync);}}
+  function schedule(){if(!queued&&inFocus()){queued=true;requestAnimationFrame(sync);}}
   function start(){
-    new MutationObserver(records=>{if(!mounted?.box.isConnected||records.some(r=>!mounted.box.contains(r.target)))schedule();}).observe(document.querySelector('#mainContainer')||document.body,{childList:true,subtree:true});
-    document.addEventListener('visibilitychange',schedule);sync();
+    const observer=new MutationObserver(records=>{if(!mounted?.box.isConnected||records.some(r=>!mounted.box.contains(r.target)))schedule();});
+    const observe=()=>observer.observe(document.querySelector('#mainContainer')||document.body,
+      mode==='blackjack'?{childList:true,subtree:true,attributes:true,attributeFilter:['class','hidden']}:{childList:true,subtree:true});
+    if(mode==='blackjack'){
+      const resume=()=>{if(inFocus()){observe();schedule();}};
+      const pause=()=>{observer.disconnect();mounted?.pause?.();};
+      g.addEventListener('focus',resume);
+      g.addEventListener('blur',pause);
+      g.addEventListener('pagehide',pause);
+      g.addEventListener('pageshow',resume);
+      document.addEventListener('visibilitychange',()=>{if(inFocus())resume();else pause();});
+      if(inFocus()){observe();sync();}
+    }else{
+      observe();document.addEventListener('visibilitychange',schedule);sync();
+    }
   }
   if(document.body)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
 })(globalThis);
