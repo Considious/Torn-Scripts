@@ -192,7 +192,11 @@
     mounted?.dispose();mounted=null;if(!root)return;
     const box=make('details');globalThis.SLINK_TORN_COMPONENTS?.card(box);
     box.append(make('summary',mode==='lobby'?'Show or hide casino games':mode==='highlow'?'SLINK High-Low odds':'SLINK Blackjack advice'));
-    root.before(box);
+    if(mode==='blackjack'){
+      // Keep advice out of the table layout so opening it cannot move the hand or controls.
+      box.style.cssText='position:fixed;z-index:10;inset-inline-start:max(8px,env(safe-area-inset-left));top:clamp(8px,22vh,170px);margin:0;inline-size:max-content;max-inline-size:min(220px,calc(100vw - 24px));max-block-size:40vh;overflow:auto';
+      document.body.append(box);
+    }else root.before(box);
     const ui=mode==='lobby'?lobby(root,box):null;
     if(ui)ui.update();else advisor(box);
     mounted={root,box,update:ui?.update,dispose(){ui?.clear();box.remove();}};
