@@ -15,12 +15,7 @@ if (!shouldRenderPdaModule('access')) return;
 const root = moduleRoot('access');
 if (!root) return;
 const permission = validSession('permission');
-const terms = dataState.terms || {};
 const accepted = ['permission', 'leveling', 'war'].every(termsAccepted);
-const termLinks = ['permission', 'leveling', 'war'].map(name => {
-const item = terms[name];
-return item?.version ? `<a href="${escapeHtml(item.url || '#')}" target="_blank" rel="noopener">${escapeHtml(name)} ${escapeHtml(item.version)}</a>` : `<span>${escapeHtml(name)} not loaded</span>`;
-}).join('');
 root.innerHTML = `<div class="grid">
 <article class="card wide"><div class="card-head"><div><h2>API &amp; feature access</h2><span class="muted">The key and sessions stay in this userscript's local storage.</span></div><span class="badge ${permission ? 'ready' : 'warn'}">${permission ? 'Connected' : 'Setup'}</span></div>
 ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : ''}
@@ -33,10 +28,10 @@ ${moduleState.access.error ? moduleMessage(moduleState.access.error, 'error') : 
 <div data-kal-key-field></div>
 ${PDA_API_KEY_AVAILABLE ? `<label class="check-row"><input type="checkbox" data-field="use-pda-api-key" ${dataState.usePdaApiKey ? 'checked' : ''}>Use Torn PDA's injected key for Torn API requests.</label><label class="check-row"><input type="checkbox" data-field="use-pda-ff-key" ${dataState.usePdaFfKey ? 'checked' : ''}>Use Torn PDA's injected key as the FFScouter fallback.</label>` : '<span class="muted wide">Torn PDA key injection was not detected. Saved Torn and FFScouter keys will be used independently.</span>'}
 <span class="muted wide">The FFScouter key is sent only to FFScouter when refining target estimates.</span>
-<label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK permission, Leveling, and War terms/disclosures shown below.</label>
+<label class="check-row wide"><input type="checkbox" data-field="accept-terms" ${accepted ? 'checked' : ''}>I accept the current SLINK API &amp; Data Terms.</label>
 <div class="access-actions wide"><button type="button" data-action="save-access">Save &amp; authenticate</button><button type="button" data-action="refresh-access-permissions">Refresh permissions</button><button type="button" data-action="open-market-watches">Manage saved Market watches</button><button type="button" data-action="load-terms">Load current terms</button><button class="danger" type="button" data-action="clear-access">Clear key &amp; sessions</button></div>
 </div>
-<div class="terms-list">${termLinks}</div>
+<div class="terms-list"><a href="${SLINK_TERMS_DOCUMENT_URL}" target="_blank" rel="noopener noreferrer">Read SLINK API &amp; Data Terms</a></div>
 </article>
 <article class="card wide"><div class="card-head"><div><h2>Settings backup</h2><span class="muted">Saved to Cloudflare twice daily while SLINK is running. API keys and login sessions are never included.</span></div><span class="badge ${dataState.caches.dataBackup?.lastRemoteAt ? 'ready' : 'warn'}">${dataState.caches.dataBackup?.lastRemoteAt ? 'Protected' : 'Not backed up'}</span></div>
 ${moduleState.access.notice ? moduleMessage(moduleState.access.notice, 'ready') : ''}
@@ -101,7 +96,7 @@ if(currentApiKey()!==previousApiKey)clearSessions();
 moduleState.access.error = '';
 try {
 await fetchAllTerms(false);
-if (!acceptedHere) throw new Error('Accept the current SLINK terms and disclosures before authenticating.');
+if (!acceptedHere) throw new Error('Accept the current SLINK terms in Access before authenticating.');
 if(!termsAccepted('permission'))clearSessions();
 acceptCurrentTerms();
 await ensurePermissionSession(true);

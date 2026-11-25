@@ -538,26 +538,25 @@ return terms;
 fetchAllTerms.pending=task;
 try{return await task;}finally{if(fetchAllTerms.pending===task)fetchAllTerms.pending=null;}
 }
+const SLINK_TERMS_DOCUMENT_URL = 'https://github.com/Considious/SLINK-Cloudflare-Services/blob/main/terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md';
 function termsAccepted(name) {
 const terms = dataState.terms?.[name];
-const accepted = dataState.accepted?.[name];
-if (!terms || !accepted || accepted.version !== terms.version || accepted.sha256 !== terms.sha256) return false;
-if (name === 'leveling') return accepted.disclosureVersion === terms.disclosureVersion && accepted.disclosureSha256 === terms.disclosureSha256;
-return true;
+const accepted = dataState.accepted?.permission || dataState.accepted?.[name];
+if (!terms?.version || !terms.sha256 || !accepted || accepted.version !== terms.version || accepted.sha256 !== terms.sha256) return false;
+if (name !== 'leveling') return true;
+const hasDisclosure = Boolean(accepted.disclosureVersion || accepted.disclosureSha256);
+return (hasDisclosure ? accepted.disclosureVersion : accepted.version) === terms.disclosureVersion
+&& (hasDisclosure ? accepted.disclosureSha256 : accepted.sha256) === terms.disclosureSha256;
 }
 function acceptCurrentTerms() {
-const now = Date.now();
-for (const name of ['permission', 'leveling', 'war']) {
-const terms = dataState.terms?.[name];
-if (!terms?.version || !terms?.sha256) throw new Error('Load the current SLINK terms before accepting them.');
-dataState.accepted[name] = {
-version:terms.version,
-sha256:terms.sha256,
-disclosureVersion:terms.disclosureVersion || '',
-disclosureSha256:terms.disclosureSha256 || '',
-acceptedAt:now
-};
+const { permission, leveling, war } = dataState.terms || {};
+if (!permission?.version || !permission.sha256) throw new Error('Load the current SLINK terms before accepting them.');
+if ([leveling, war].some(terms => terms?.version !== permission.version || terms.sha256 !== permission.sha256)
+|| leveling.disclosureVersion !== permission.version || leveling.disclosureSha256 !== permission.sha256
+|| [permission, leveling, war].some(terms => terms.url !== SLINK_TERMS_DOCUMENT_URL)) {
+throw new Error('SLINK services did not return matching Terms. Reload the current Terms in Access and try again.');
 }
+dataState.accepted.permission = { version:permission.version, sha256:permission.sha256, acceptedAt:Date.now() };
 writeDataState();
 }
 function normalizeSession(response) {
@@ -576,13 +575,13 @@ async function ensurePermissionSession(force = false) {
 const key = currentApiKey();
 if (!key) throw new Error('Save a Torn API key first.');
 const currentKeyFingerprint = await apiKeyFingerprint(key);
+await fetchAllTerms(false);
+if (!termsAccepted('permission')) throw new Error('Accept the current SLINK terms in Access before authenticating.');
 if (
 !force &&
 validSession('permission') &&
 dataState.sessions.permission?.apiKeyFingerprint === currentKeyFingerprint
 ) return dataState.sessions.permission;
-await fetchAllTerms(false);
-if (!termsAccepted('permission')) throw new Error('Accept the current SLINK terms before authenticating.');
 await reserveTornApi('/api/permissions/auth',{script:'SLINK Access authentication'});
 const response = await requestJson(`${URLS.permission}/api/permissions/auth`, {
 method:'POST',
@@ -604,9 +603,9 @@ return session;
 }
 async function ensureLevelingSession(force = false) {
 if (!hasScope('slink.level')) throw new Error('Your SLINK account does not have slink.level permission.');
-if (!force && validSession('leveling')) return dataState.sessions.leveling;
 await fetchAllTerms(false);
-if (!termsAccepted('leveling')) throw new Error('Accept the current SLINK Leveling terms and disclosure under Access.');
+if (!termsAccepted('leveling')) throw new Error('Accept the current SLINK terms in Access before authenticating.');
+if (!force && validSession('leveling')) return dataState.sessions.leveling;
 await reserveTornApi('/api/auth',{script:'SLINK Leveling authentication'});
 const terms = dataState.terms.leveling;
 const response = await requestJson(`${URLS.leveling}/api/auth`, {
@@ -626,9 +625,9 @@ return session;
 }
 async function ensureWarSession(force = false) {
 if (!hasScope('slink.war')) throw new Error('Your SLINK account does not have slink.war permission.');
-if (!force && validSession('war')) return dataState.sessions.war;
 await fetchAllTerms(false);
-if (!termsAccepted('war')) throw new Error('Accept the current SLINK War terms under Access.');
+if (!termsAccepted('war')) throw new Error('Accept the current SLINK terms in Access before authenticating.');
+if (!force && validSession('war')) return dataState.sessions.war;
 await reserveTornApi('/v2/user/basic');
 const terms = dataState.terms.war;
 const response = await requestJson(`${URLS.war}/api/auth`, {
