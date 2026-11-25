@@ -783,7 +783,7 @@ for(const kind of ['background','frame','panelSmoke','healthRoses','healthBlood'
 const suffix={panelSmoke:'panel-smoke',healthRoses:'health-roses',healthBlood:'health-blood'}[kind]||kind;
 assetCss['--slink-theme-'+suffix+'-image']=host.style.getPropertyValue('--s-theme-'+suffix+'-image');
 }
-tornPageTheme.update({theme:{tokens},settings:dataState.settings.tornTheme||{},assetCss});
+tornPageTheme.update({theme:{tokens},wallpaperTheme:host.dataset.theme,settings:dataState.settings.tornTheme||{},assetCss});
 if(!tornPageSettingsPanel){const container=shadow.querySelector('.theme-row')?.parentElement;
 if(container)tornPageSettingsPanel=global.SLINK_TORN_THEME.mountSettings(container,{
 read:()=>dataState.settings.tornTheme||{},
