@@ -9,7 +9,7 @@ const store={get:async(key,fallback)=>clone(native.get(key)??fallback),list:asyn
 const localStorage={get length(){return browser.size;},key:index=>[...browser.keys()][index]??null,getItem:key=>browser.get(key)??null,setItem:(key,value)=>{if(quota)throw Error('QuotaExceeded');browser.set(key,value);}};
 let id=0;
 function page(useNative=true){
- const ctx=vm.createContext({u:'targets',globalThis:{PDA_storage:useNative?store:null,localStorage},isRecord:value=>!!value&&typeof value==='object'&&!Array.isArray(value)});
+ const ctx=vm.createContext({u:'targets',n:'settings',i:'stats',l:'layout',c:'snoozes',f:'runtime',globalThis:{PDA_storage:useNative?store:null,localStorage},isRecord:value=>!!value&&typeof value==='object'&&!Array.isArray(value)});
  vm.runInContext(loader.slice(loader.indexOf('function nativeStorage()'),loader.indexOf('function mergeChanges(')),ctx);
  const factory=vm.createContext({});vm.runInContext(factorySource,factory);
  return {read:ctx.targetJournal,create:(snapshot,legacy={})=>factory.SLINK_PDA_TARGET_RECORDS.create({snapshot,legacy,write:ctx.targetJournal,id:()=>`bridge:${++id}`})};

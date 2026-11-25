@@ -326,6 +326,15 @@
   get:async(k,fallback)=>{key(k);return (await getMany([k]))[k]??fallback},
   set:(k,value)=>{key(k);return setMany({[k]:value})},
   getMany,setMany,recoverSettings,resetSettings,
+   runtimeCache:{
+    get:k=>store.get(k,null),
+    getMany:typeof store.getMany==='function'?keys=>store.getMany(keys):null,
+    set:(k,value)=>store.set(k,value),
+    setMany:typeof store.setMany==='function'?values=>store.setMany(values):null,
+    list:typeof store.list==='function'?()=>store.list():null,
+    delete:typeof store.delete==='function'?k=>store.delete(k):null,
+    lock:globalThis.navigator?.locks?.request?lock:null
+   },
   async diagnose(){
    const active=await selectedRecord().catch(()=>n);
    const report={nativeAvailable:true,manualRecoveryVersion:3,manualResetVersion:2,automaticRecoveryVersion:1,automaticRecovery:nativeStorage.automaticRecovery||null,checkpointStatus:nativeStorage.checkpointStatus||'not-created',coordinationAvailable:canSegment(),selectedRecord:active===n?'original':'recovered',reads:{}};
@@ -422,9 +431,178 @@ async function stageDigest(text){
  const bytes=await globalThis.crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
  return Array.from(new Uint8Array(bytes),v=>v.toString(16).padStart(2,'0')).join('');
 }
+const runtimeMetaKey=f+':verified:v1',runtimePartPrefix=runtimeMetaKey+':part:';
+const runtimePartLength=48000,runtimeMaxParts=160;
+const runtimeDigestPattern=/^[a-f0-9]{64}$/;
+const runtimeCacheUrl=digest=>t+'?slink-runtime='+digest;
+const runtimePartKey=(digest,index)=>runtimePartPrefix+digest+':'+index;
+function nativeRuntimeText(bundle){
+ const {savedAt,...verified}=bundle;
+ return JSON.stringify(verified);
+}
+function validRuntimeEntry(entry){
+ return isRecord(entry)&&runtimeDigestPattern.test(entry.digest)&&typeof entry.revision==='string'&&
+  [2,3].includes(entry.storageProtocol)&&Number.isSafeInteger(entry.length)&&entry.length>0&&
+  Math.ceil(entry.length/runtimePartLength)<=runtimeMaxParts;
+}
+async function readRuntimeMetadata(store){
+ const meta=await store.get(runtimeMetaKey);
+ if(meta===null||meta===undefined)return null;
+ if(meta.schema!==1||!validRuntimeEntry(meta.active)||meta.previous!==null&&!validRuntimeEntry(meta.previous)){
+  throw Error('SLINK runtime cache metadata is invalid.');
+ }
+ return meta;
+}
+async function verifyNativeRuntime(bundle,{legacy=false}={}){
+ if(!validBundle(bundle)||!globalThis.crypto?.subtle)throw Error('SLINK runtime cannot be verified.');
+ const digest=await stageDigest([bundle.runtimeSource,...bundle.addonSources].join('\n;\n'));
+ // Older direct-source manifests used opaque revision labels.
+ if(bundle.signature!==digest||!legacy&&bundle.revision.startsWith('sha256-')&&bundle.revision!=='sha256-'+digest){
+  throw Error('SLINK runtime did not match its SHA-256 revision.');
+ }
+ return bundle;
+}
+async function readRuntimeWebCache(entry){
+ if(!globalThis.caches)return null;
+ const cache=await globalThis.caches.open(stageCacheName);
+ const response=await cache.match(runtimeCacheUrl(entry.digest));
+ return response?await response.text():null;
+}
+async function writeRuntimeWebCache(text,digest){
+ if(!globalThis.caches||typeof Response!=='function')return;
+ const cache=await globalThis.caches.open(stageCacheName);
+ await cache.put(runtimeCacheUrl(digest),new Response(text));
+}
+async function readRuntimeParts(store,entry){
+ if(!store.getMany)return null;
+ const count=Math.ceil(entry.length/runtimePartLength),parts=[];
+ for(let offset=0;offset<count;offset+=4){
+  const keys=Array.from({length:Math.min(4,count-offset)},(_,index)=>runtimePartKey(entry.digest,offset+index));
+  const values=await store.getMany(keys);
+  for(let index=0;index<keys.length;index++){
+   const part=values?.[keys[index]],remaining=entry.length-(offset+index)*runtimePartLength;
+   if(typeof part!=='string'||part.length!==Math.min(runtimePartLength,remaining))return null;
+   parts.push(part);
+  }
+ }
+ return parts.join('');
+}
+async function verifyRuntimeEntry(text,entry){
+ if(typeof text!=='string'||text.length!==entry.length||await stageDigest(text)!==entry.digest)return null;
+ const bundle=JSON.parse(text);
+ return validBundle(bundle)&&bundle.revision===entry.revision&&bundle.storageProtocol===entry.storageProtocol?bundle:null;
+}
+async function readNativeRuntime(store){
+ if(!globalThis.crypto?.subtle)return{bundle:null,entry:null,meta:undefined};
+ const meta=await boundStartup(readRuntimeMetadata(store),2000).catch(()=>undefined);
+ const rejected=sessionGet(rejectedRevision);
+ for(const entry of [meta?.active,meta?.previous]){
+  if(!entry||entry.revision===rejected)continue;
+  const web=await boundStartup((async()=>verifyRuntimeEntry(await readRuntimeWebCache(entry),entry))(),400).catch(()=>null);
+  if(web)return{bundle:web,entry,meta};
+  const native=await boundStartup((async()=>{
+   const text=await readRuntimeParts(store,entry);
+   const bundle=await verifyRuntimeEntry(text,entry);
+   return bundle?{bundle,text}:null;
+  })(),6500).catch(()=>null);
+  if(native)return{...native,entry,meta};
+ }
+ const legacy=await boundStartup((async()=>{
+  const bundle=await store.get(f);
+  if(!validBundle(bundle)||bundle.revision===rejected)return null;
+  return verifyNativeRuntime(bundle,{legacy:true});
+ })(),2500).catch(()=>null);
+ return{bundle:legacy,entry:null,meta};
+}
+async function removeUnreferencedRuntimeParts(store,keep){
+ if(!store.list||!store.delete)return;
+ const keys=await store.list();
+ if(!Array.isArray(keys))return;
+ for(const key of keys){
+  if(typeof key!=='string'||!key.startsWith(runtimePartPrefix))continue;
+  const match=/^([a-f0-9]{64}):\d+$/.exec(key.slice(runtimePartPrefix.length));
+  if(match&&!keep.has(match[1]))await store.delete(key);
+ }
+}
+async function persistNativeRuntime(store,bundle,observed){
+ if(!store.lock||!store.getMany||!store.setMany||observed?.meta===undefined)return false;
+ const text=nativeRuntimeText(bundle),digest=await stageDigest(text);
+ const entry={revision:bundle.revision,storageProtocol:bundle.storageProtocol,digest,length:text.length};
+ if(!validRuntimeEntry(entry))return false;
+ const committed=await store.lock(async()=>{
+  const current=await readRuntimeMetadata(store);
+  // A slower page cannot replace a runtime published after that page read the index.
+  if(current?.active.digest!==observed.meta?.active.digest)return false;
+  if(current?.active.digest===digest&&await verifyRuntimeEntry(await readRuntimeParts(store,entry),entry))return true;
+  const previous=observed.entry||null;
+  const keep=new Set([digest,current?.active.digest,current?.previous?.digest]);
+  await removeUnreferencedRuntimeParts(store,keep);
+  const count=Math.ceil(text.length/runtimePartLength);
+  for(let offset=0;offset<count;offset+=4){
+   const parts=Object.fromEntries(Array.from({length:Math.min(4,count-offset)},(_,index)=>{
+    const part=offset+index;
+    return [runtimePartKey(digest,part),text.slice(part*runtimePartLength,(part+1)*runtimePartLength)];
+   }));
+   await store.setMany(parts);
+  }
+  if(!await verifyRuntimeEntry(await readRuntimeParts(store,entry),entry))throw Error('PDA did not retain the verified SLINK runtime.');
+  const meta={schema:1,active:entry,previous:previous?.digest===digest?current?.previous||null:previous,legacyRetired:current?.legacyRetired===true};
+  await store.set(runtimeMetaKey,meta);
+  const saved=await readRuntimeMetadata(store);
+  if(saved?.active.digest!==digest||saved?.previous?.digest!==meta.previous?.digest)throw Error('PDA did not confirm the SLINK runtime index.');
+  await removeUnreferencedRuntimeParts(store,new Set([digest,saved.previous?.digest])).catch(()=>{});
+  const retired=current?.previous?.digest;
+  if(retired&&retired!==digest&&retired!==saved.previous?.digest&&globalThis.caches){
+   const staged=await store.get(stageMeta).catch(()=>undefined);
+   if(staged!==undefined&&retired!==staged?.digest){
+    await boundStartup(globalThis.caches.open(stageCacheName).then(cache=>cache.delete(runtimeCacheUrl(retired))),1000).catch(()=>{});
+   }
+  }
+  return true;
+ });
+ if(committed)await boundStartup(writeRuntimeWebCache(text,digest),1000).catch(()=>{});
+ return committed;
+}
+async function retireLegacyRuntime(store,entry){
+ if(!store.lock||!store.list||!store.delete)return;
+ await store.lock(async()=>{
+  const current=await readRuntimeMetadata(store);
+  if(current?.active.digest!==entry.digest||current.legacyRetired)return;
+  const keys=await store.list();
+  if(!Array.isArray(keys))return;
+  if(keys.includes(f)){
+   // Prove a later boot can recover from privileged native segments alone.
+   if(!await verifyRuntimeEntry(await readRuntimeParts(store,entry),entry))return;
+   await store.delete(f);
+   const remaining=await store.list();
+   if(!Array.isArray(remaining)||remaining.includes(f))return;
+  }
+  await store.set(runtimeMetaKey,{...current,legacyRetired:true});
+ });
+}
 async function saveStaged(bundle){
  if(!globalThis.caches||!globalThis.crypto?.subtle||typeof Response!=='function')return false;
- const text=JSON.stringify(bundle),digest=await stageDigest(text),cache=await globalThis.caches.open(stageCacheName);
+ const store=nativeStorage()?.runtimeCache;
+ const text=store?nativeRuntimeText(bundle):JSON.stringify(bundle);
+ const digest=await stageDigest(text),cache=await globalThis.caches.open(stageCacheName);
+ if(store){
+  if(!store.lock)return false;
+  await verifyNativeRuntime(bundle);
+  return store.lock(async()=>{
+   const previous=await store.get(stageMeta);
+   await boundStartup(writeRuntimeWebCache(text,digest),1500);
+   await store.set(stageMeta,{revision:bundle.revision,digest});
+   const saved=await store.get(stageMeta);
+   if(saved?.digest!==digest||saved?.revision!==bundle.revision)return false;
+   if(runtimeDigestPattern.test(previous?.digest)&&previous.digest!==digest){
+    const current=await readRuntimeMetadata(store).catch(()=>undefined);
+    if(current!==undefined&&previous.digest!==current?.active.digest&&previous.digest!==current?.previous?.digest){
+     await boundStartup(cache.delete(runtimeCacheUrl(previous.digest)),1000).catch(()=>{});
+    }
+   }
+   return true;
+  });
+ }
  await cache.put(stageUrl,new Response(text));
  // This digest is held in privileged storage: Torn-origin storage alone cannot authorize code.
  await gmWrite(stageMeta,{revision:bundle.revision,digest});
@@ -432,12 +610,15 @@ async function saveStaged(bundle){
 }
 async function readStaged(revision){
  if(!globalThis.caches||!globalThis.crypto?.subtle)return null;
- const [meta,cache]=await Promise.all([gmRead(stageMeta,null),globalThis.caches.open(stageCacheName)]);
+ const store=nativeStorage()?.runtimeCache;
+ const [meta,cache]=await Promise.all([store?store.get(stageMeta):gmRead(stageMeta,null),globalThis.caches.open(stageCacheName)]);
  if(meta?.revision!==revision||!meta.digest)return null;
- const result=await cache.match(stageUrl),text=await result?.text();
+ if(store&&!runtimeDigestPattern.test(meta.digest))return null;
+ const result=await cache.match(store?runtimeCacheUrl(meta.digest):stageUrl),text=await result?.text();
  if(!text||await stageDigest(text)!==meta.digest)return null;
  const bundle=JSON.parse(text);
- return validBundle(bundle)&&bundle.revision===revision?bundle:null;
+ if(!validBundle(bundle)||bundle.revision!==revision)return null;
+ return store?verifyNativeRuntime(bundle):bundle;
 }
 async function stageUpdate(current){
  const now=Date.now(),last=Number(sessionGet(updateCheck))||0;
@@ -456,7 +637,9 @@ function loadRuntime(force=false){
  if(w)return w;
  w=(async()=>{
   startupMark('cache-start');
-  const cached=await gmRead(f,null).catch(()=>null);
+  const store=nativeStorage()?.runtimeCache;
+  const observed=store?await readNativeRuntime(store):null;
+  const cached=store?observed.bundle:await gmRead(f,null).catch(()=>null);
   startupMark(validBundle(cached)?'cache-hit':'cache-miss');
   const retry=sessionGet(g);
   if(retry){
@@ -468,25 +651,52 @@ function loadRuntime(force=false){
   if(!force&&validBundle(cached)){
    const hint=sessionGet(updateHint);
    if(hint.startsWith('staged:')&&hint.slice(7)!==cached.revision){
-    next=await boundStartup(readStaged(hint.slice(7)),200).catch(()=>null);
+    next=await boundStartup(readStaged(hint.slice(7)),store?1000:200).catch(()=>null);
     if(!next){sessionSet(updateHint,'');sessionSet(updateCheck,'');}
    }else if(hint.startsWith('fetch:')&&hint.slice(6)!==cached.revision){
     sessionSet(updateHint,'');
-    try{const manifest=await readSourceManifest(2500);if(manifest.revision===hint.slice(6)&&manifest.revision!==sessionGet(rejectedRevision))next=await fetchBundle(manifest);}catch{}
+    try{const manifest=await readSourceManifest(2500);if(manifest.revision===hint.slice(6)&&manifest.revision!==sessionGet(rejectedRevision)){
+     const candidate=await fetchBundle(manifest);
+     next=store&&globalThis.crypto?.subtle?await verifyNativeRuntime(candidate):candidate;
+    }}catch{}
    }
    if(!next){
-    try{await executeBundle(cached);void stageUpdate(cached);return;}catch(error){return showFailure(error);}
+    try{
+     await executeBundle(cached);void stageUpdate(cached);
+     if(store){
+      if(observed.entry){
+       if(observed.text)void writeRuntimeWebCache(observed.text,observed.entry.digest).catch(()=>{});
+       if(!observed.meta?.legacyRetired)void retireLegacyRuntime(store,observed.entry).catch(()=>{});
+      }else{
+       void persistNativeRuntime(store,cached,observed).catch(()=>{});
+      }
+     }
+     return;
+    }catch(error){
+     if(store&&observed.entry&&cached.revision&&sessionGet(rejectedRevision)!==cached.revision){
+      sessionSet(rejectedRevision,cached.revision);
+      sessionSet(updateHint,'');
+      if(sessionGet(rejectedRevision)===cached.revision){globalThis.location.reload();return;}
+     }
+     return showFailure(error);
+    }
    }
   }
-  if(!next)try{next=await fetchBundle();}catch(error){
+  if(!next)try{
+   const candidate=await fetchBundle();
+   next=store&&globalThis.crypto?.subtle?await verifyNativeRuntime(candidate):candidate;
+   if(store&&next.revision===sessionGet(rejectedRevision))throw Error('The current SLINK release did not start. Retry after an update is available.');
+  }catch(error){
    if(!validBundle(cached))return showFailure(error);
    try{return await executeBundle(cached);}catch(fallback){return showFailure(fallback);}
   }
   try{
    await executeBundle(next);
    try{
-    await gmWrite(f,next);sessionSet(updateHint,'');sessionSet(updateCheck,String(Date.now()));
-    if(globalThis.caches)void globalThis.caches.open(stageCacheName).then(cache=>cache.delete(stageUrl)).catch(()=>{});
+    if(store)await persistNativeRuntime(store,next,observed);
+    else await gmWrite(f,next);
+    sessionSet(updateHint,'');sessionSet(updateCheck,String(Date.now()));
+    if(!store&&globalThis.caches)void globalThis.caches.open(stageCacheName).then(cache=>cache.delete(stageUrl)).catch(()=>{});
    }catch{console.warn('[SLINK PDA] Runtime cache not saved; running source remains active.');}
   }catch(error){
    if(validBundle(cached)&&cached.signature!==next.signature)try{
