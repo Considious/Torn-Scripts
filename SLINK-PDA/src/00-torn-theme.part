@@ -16,11 +16,13 @@
     try{const url=new URL(match[1]);
       const remote=url.protocol==='https:'&&url.origin==='https://raw.githubusercontent.com'&&url.pathname.startsWith('/Considious/SLINK-Cloudflare-Services/main/themes/assets/');
       const packaged=url.protocol==='chrome-extension:'&&url.pathname.startsWith('/assets/themes/');
-      if((remote||packaged)&&!url.search&&!url.hash&&!url.username&&!url.password&&/\.(png|jpe?g|webp|svg)$/i.test(url.pathname)&&!/[\s<>;{}]/.test(match[1]))return 'url("'+url.href+'")';
+      const candyAsset=[CANDY_WALLPAPER_BASE+'bg-portrait.webp',CANDY_WALLPAPER_BASE+'frame-chocolate-v2.webp'].includes(url.href);
+      if((remote||packaged||candyAsset)&&!url.search&&!url.hash&&!url.username&&!url.password&&/\.(png|jpe?g|webp|svg)$/i.test(url.pathname)&&!/[\s<>;{}]/.test(match[1]))return 'url("'+url.href+'")';
     }catch{}return 'none';
   }
   const S='html['+ATTRIBUTE+']';
   const HALLOWEEN_WALLPAPER_BASE='https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/assets/themes/halloween-2026-haunted-background-';
+  const CANDY_WALLPAPER_BASE='https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/assets/themes/candy-cartel-';
   const CSS=`
 ${S} body{
   --default-bg-panel-color:var(--slt-panel)!important;--default-bg-panel-active-color:var(--slt-control)!important;
@@ -47,27 +49,38 @@ ${S} :is(.cont-gray,.cont-white){background-color:var(--slt-panel)!important;col
 /* Border-image paints inside the native box without changing its border width,
    padding, sizing or positioning. Fixed-width profile floats must retain space. */
 ${S}[data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image-source:var(--slt-texture)!important;border-image-slice:25% 8%!important;border-image-width:12px!important;border-image-outset:0!important;border-image-repeat:stretch!important;}
-${S}[data-slink-torn-background="halloween-2026"] body{
-  background-image:linear-gradient(transparent 78%,var(--slt-bg) 96%),var(--slt-haunt-wallpaper,var(--slt-image))!important;
-  background-size:100% var(--slt-haunt-height,177.68vw),100% auto!important;
+${S}:is([data-slink-torn-background="halloween-2026"],[data-slink-torn-background="slink-candy-cartel"]) body{
+  background-image:linear-gradient(transparent 78%,var(--slt-bg) 96%),var(--slt-wallpaper-image,var(--slt-image))!important;
+  background-size:100% var(--slt-wallpaper-height,177.68vw),100% auto!important;
   background-position:center top!important;
   background-repeat:no-repeat!important;
   background-attachment:scroll!important;
 }
 @media (min-width:768px){
   ${S}[data-slink-torn-background="halloween-2026"]{
-    --slt-haunt-wallpaper:url("${HALLOWEEN_WALLPAPER_BASE}scroll-v1.webp");
-    --slt-haunt-height:75vw;
+    --slt-wallpaper-image:url("${HALLOWEEN_WALLPAPER_BASE}scroll-v1.webp");
+    --slt-wallpaper-height:75vw;
   }
 }
 @media (min-width:768px) and (min-aspect-ratio:8/5){
   ${S}[data-slink-torn-background="halloween-2026"]{
-    --slt-haunt-wallpaper:url("${HALLOWEEN_WALLPAPER_BASE}wide-v1.webp");
-    --slt-haunt-height:56.25vw;
+    --slt-wallpaper-image:url("${HALLOWEEN_WALLPAPER_BASE}wide-v1.webp");
+    --slt-wallpaper-height:56.25vw;
+  }
+}
+@media (min-width:768px){
+  ${S}[data-slink-torn-background="slink-candy-cartel"]{
+    --slt-wallpaper-image:url("${CANDY_WALLPAPER_BASE}bg-4x3.webp");
+    --slt-wallpaper-height:75vw;
+  }
+}
+@media (min-width:768px) and (min-aspect-ratio:8/5){
+  ${S}[data-slink-torn-background="slink-candy-cartel"]{
+    --slt-wallpaper-image:url("${CANDY_WALLPAPER_BASE}bg-16x9.webp");
+    --slt-wallpaper-height:56.25vw;
   }
 }
 ${S}[data-slink-torn-palette="halloween-2026"][data-slink-torn-frames] :is(.cont-gray,.cont-white,.crimes-app .crime-root,.crimes-app .crimes-hub-root,#travel-root [class*="departPanel___"],#travel-root [class*="inventoryPanel___"],#attack-root [class*="coreWrap___"]){border-image:var(--slt-frame) 38% 20% / 18px 26px / 0 stretch!important;}
-${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-background] body{background-image:var(--slt-image)!important;background-repeat:repeat-y!important;}
 ${S}[data-slink-torn-palette="slink-candy-cartel"][data-slink-torn-frames] :is(.cont-gray,.cont-white){border-image:var(--slt-frame) 16% / 12px / 0 round!important;}
 ${S} :is(#mainContainer,.content-wrapper) :is(input[type=text],input[type=search],input[type=password],textarea,select):not(:disabled){background-color:var(--slt-control)!important;color:var(--slt-text)!important;caret-color:var(--slt-text);}
 ${S} :is(#mainContainer,.content-wrapper) :is(input,textarea,select):focus-visible{outline:2px solid var(--slt-accent);outline-offset:2px;}
@@ -108,7 +121,7 @@ ${S}[data-slink-torn-chat] #chatRoot textarea{background-color:var(--slt-control
       if(!style){style=document.createElement('style');style.id=STYLE_ID;(document.head||root).append(style);}
       if(style.textContent!==current.css)style.textContent=current.css;
       const flags={[ATTRIBUTE]:'on','data-slink-torn-palette':/^[a-z0-9-]+$/.test(snapshot.theme?.id||'')?snapshot.theme.id:null,'data-slink-torn-background':current.options.background&&current.hasImage
-          ? (snapshot.wallpaperTheme==='halloween-2026'?'halloween-2026':'on') : null,
+          ? (['halloween-2026','slink-candy-cartel'].includes(snapshot.wallpaperTheme)?snapshot.wallpaperTheme:'on') : null,
         'data-slink-torn-frames':current.options.frames&&current.hasFrame?'on':null,'data-slink-torn-chat':current.options.chat?'on':null};
       for(const [name,value]of Object.entries(flags))if(value===null){if(root.hasAttribute(name))root.removeAttribute(name);}else if(root.getAttribute(name)!==value)root.setAttribute(name,value);
     }

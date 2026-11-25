@@ -25,6 +25,16 @@ assert.equal(api.asset('url("javascript:alert(1)")'),'none');
 assert.equal(api.asset('url("https://raw.githubusercontent.com/Considious/SLINK-Cloudflare-Services/main/themes/assets/a.png?x=1")'),'none');
 const background='url("https://raw.githubusercontent.com/Considious/SLINK-Cloudflare-Services/main/themes/assets/halloween-2026-background.png")';
 assert.equal(api.asset(background),background);
+const candyArt='https://raw.githubusercontent.com/Considious/Torn-Scripts/main/SLINK-PDA/assets/themes/';
+const candyPortrait='url("'+candyArt+'candy-cartel-bg-portrait.webp")';
+assert.equal(api.asset(candyPortrait),candyPortrait);
+assert.equal(api.asset('url("'+candyArt+'other.webp")'),'none');
+for(const variant of ['portrait','4x3','16x9']){
+ const filename='candy-cartel-bg-'+variant+'.webp';
+ assert.ok(fs.readFileSync(new URL('./assets/themes/'+filename,import.meta.url)).length>500);
+}
+const candyWallpaper=api.compile({assetCss:{'--slink-theme-background-image':candyPortrait}});
+assert.ok(candyWallpaper.hasImage&&candyWallpaper.css.includes(candyArt+'candy-cartel-bg-4x3.webp')&&candyWallpaper.css.includes(candyArt+'candy-cartel-bg-16x9.webp'));
 const result=api.compile({theme:{tokens:{'--slink-bg':'red;}body{display:none','--slink-text':'#fefefe'}},settings:{enabled:true,opacity:37},assetCss:{'--slink-theme-background-image':background}});
 assert.equal(result.hasImage,true);assert.ok(!result.css.includes('display:none'));assert.ok(result.css.includes('--slt-bg:#121922'));assert.ok(result.css.includes('37%,transparent'));
 assert.ok(result.css.includes('--slt-header:'),'App headers have their own translucent palette token.');
