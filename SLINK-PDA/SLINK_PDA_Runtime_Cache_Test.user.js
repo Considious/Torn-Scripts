@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Runtime Cache Test
 // @namespace    Considious SLINK PDA runtime-cache test
-// @version      0.4.281
+// @version      0.4.282
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/review/pda-verified-runtime-cache/SLINK-PDA/SLINK_PDA_Runtime_Cache_Test.user.js
@@ -265,7 +265,7 @@ async function collectBootstrap(){const[data,e]=await Promise.all([readPersisted
   });
  }
  const failed=(operation,error)=>new Error('PDA native storage '+operation+' failed: '+String(error?.message||error?.code||error||'No acknowledgement'));
- async function readManyOnce(keys){
+ async function readManyOnce(keys,allowFullStore){
   keys.forEach(key);
   try {
    const values=typeof store.getMany==='function'?await store.getMany(keys):Object.fromEntries(await Promise.all(keys.map(async k=>[k,await store.get(k,null)])));
@@ -287,7 +287,7 @@ async function collectBootstrap(){const[data,e]=await Promise.all([readPersisted
      catch(retry){singleError=retry;}
     }
     let allError;
-    if(typeof store.loadAll==='function'&&!keys.some(k=>k.startsWith(prefix)||k.startsWith(legacyPrefix))&&(typeof f!=='string'||!keys.includes(f))){
+    if(allowFullStore&&typeof store.loadAll==='function'&&!keys.some(k=>k.startsWith(prefix)||k.startsWith(legacyPrefix))&&(typeof f!=='string'||!keys.includes(f))){
      try{const all=await store.loadAll();if(!isRecord(all))throw Error('PDA returned an unreadable storage result.');return Object.fromEntries(keys.map(k=>[k,all[k]??null]));}
      catch(retry){allError=retry;}
     }
@@ -300,8 +300,8 @@ async function collectBootstrap(){const[data,e]=await Promise.all([readPersisted
    throw failed('read',error);
   }
  }
- async function getManyLegacy(keys){
-  try{return await readManyOnce(keys);}
+ async function getManyLegacy(keys,allowFullStore=true){
+  try{return await readManyOnce(keys,allowFullStore);}
   catch(first){
    if(!castError(first))throw first;
    // A native bridge cast can be temporary. Retry only reads, with a finite
@@ -325,6 +325,21 @@ async function collectBootstrap(){const[data,e]=await Promise.all([readPersisted
    first.message+=' [SLINK_NATIVE_RECOVERY: targeted retries=2; list='+listing+']';
    throw first;
   }
+ }
+ async function readTargetRecords(keys){
+  const records={};
+  const batchSize=32;
+  for(let offset=0;offset<keys.length;offset+=batchSize){
+   const batch=keys.slice(offset,offset+batchSize);
+   // A supported targeted read must not fall back to the whole database
+   // when the bridge rejects one batch.
+   const values=await getManyLegacy(batch,false);
+   for(const key of batch){
+    if(values?.[key]==null)throw Error('Target journal read incomplete.');
+    records[key]=values[key];
+   }
+  }
+  return records;
  }
  async function getManyLocked(keys,allowAutomatic=true){
   const selected=keys.includes(n)?await selectedRecord():n;
@@ -379,13 +394,14 @@ async function collectBootstrap(){const[data,e]=await Promise.all([readPersisted
   // The optional downloaded-code cache is disposable and can be large. Verify
   // user records, not an extra full cache read on every page startup.
   if(typeof f==='string'&&keys.every(k=>k===f))return;
-  const saved=await getManyLegacy(keys);
+  const targetWrite=typeof u==='string'&&keys.length>0&&keys.every(k=>k.startsWith(u+':op:'));
+  const saved=targetWrite?await readTargetRecords(keys):await getManyLegacy(keys);
   for(const k of keys)if(JSON.stringify(saved[k])!==JSON.stringify(values[k]))throw Error('PDA native storage did not retain the '+(k===n?'settings':k===i?'battle stats':k===l?'window preferences':k===c?'alert snoozes':'target record')+' write. Keep this page open and retry; existing stored data was not cleared.');
  }
  const scoped={
   get:async(k,fallback)=>{key(k);return (await getManyLocked([k]))[k]??fallback;},
   set:(k,value)=>{key(k);return setManyLocked({[k]:value});},
-  getMany:getManyLocked,setMany:setManyLocked,
+  getMany:getManyLocked,setMany:setManyLocked,readTargetRecords,
   ...(typeof store.list==='function'?{list:()=>store.list()}:{}),
   ...(typeof store.loadAll==='function'?{loadAll:()=>store.loadAll()}:{}),
   ...(typeof store.delete==='function'?{delete:async k=>store.delete(key(k)===n?await selectedRecord():k)}:{})
@@ -450,10 +466,9 @@ async function collectBootstrap(){const[data,e]=await Promise.all([readPersisted
  async function read(){
   let records;
   if(store){
-   if(typeof store.list==='function'&&typeof store.getMany==='function'){
+   if(typeof store.list==='function'){
     const keys=(await store.list()).filter(key=>key.startsWith(prefix));
-    records=keys.length?await store.getMany(keys):{};
-    if(keys.some(key=>records?.[key]==null))throw Error('Target journal read incomplete.');
+    records=await store.readTargetRecords(keys);
    }else{
     if(typeof store.loadAll!=='function')throw Error('Native target storage enumeration unavailable.');
     records=await store.loadAll();
