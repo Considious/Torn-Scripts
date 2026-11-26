@@ -72,11 +72,30 @@
   if(source.length!==header.length||await digest(source)!==header.sha256)throw invalidParts('Recovered settings segments did not pass verification. Keep this page open; no settings were cleared.');
   (nativeStorage.partsCache ||= new Map()).set(record,{header:JSON.stringify(header),source});return JSON.parse(source);
  }
+ function quotaFailure(operation,error){
+  const pattern=/\b(?:GlobalQuotaExceeded|QuotaExceeded)\b/i;
+  const code=String(error?.code??'').match(pattern)?.[0]||String(error?.message??error).match(pattern)?.[0];
+  if(!code)return null;
+  const shared=code.toLowerCase()==='globalquotaexceeded';
+  const validBytes=value=>Number.isSafeInteger(value)&&value>=0;
+  const usage={...validBytes(error?.used)&&{used:error.used},...validBytes(error?.quota)&&{quota:error.quota}};
+  nativeStorage.lastQuotaFailure={scope:shared?'global':'script',code,operation,...usage,at:Date.now()};
+  const mib=bytes=>(bytes/1048576).toFixed(2);
+  const limits=[
+   usage.used===undefined?'':mib(usage.used)+' MiB attempted',
+   usage.quota===undefined?'':mib(usage.quota)+' MiB limit'
+  ].filter(Boolean);
+  const detail=limits.length?' ('+limits.join(', ')+')':'';
+  const message=shared
+   ?"Torn PDA's shared userscript storage quota exceeded"+detail+". Review storage used by installed scripts in PDA Dev Tools → Storage, then retry. [SLINK_STORAGE_GLOBAL_FULL]"
+   :"SLINK's Torn PDA storage quota exceeded"+detail+". Increase SLINK's limit in PDA Dev Tools → Storage, then retry. [SLINK_STORAGE_FULL]";
+  return Object.assign(new Error(message+' ('+code+')',{cause:error}),{code,...usage,nativeQuota:true});
+ }
+ async function withNativeQuota(operation,write){
+  try{return await write();}catch(error){throw quotaFailure(operation,error)||error;}
+ }
  async function writeParts(record,value){
-  try{return await writePartsInner(record,value);}catch(error){
-   if(/QuotaExceeded/i.test(String(error?.code||error?.message||error)))throw Error("PDA's native SLINK storage quota exceeded while preserving earlier records. Increase SLINK's per-script limit in PDA Dev Tools → Storage, or send a storage report before removing anything. This is not the phone's free-space or notifications permission. [SLINK_STORAGE_FULL]");
-   throw error;
-  }
+  return withNativeQuota('segmented settings write',()=>writePartsInner(record,value));
  }
  async function writePartsInner(record,value){
   const old=await store.get(record,null),bank=segmented(old)&&old.bank==='a'?'b':'a',source=JSON.stringify(value),count=Math.ceil(source.length/48000);
@@ -112,7 +131,7 @@
    }
    (nativeStorage.checkpointCache ||= new Map()).set(name,signature);
    nativeStorage.checkpointStatus='verified';
-  }catch{nativeStorage.checkpointStatus='unavailable';}
+  }catch(error){quotaFailure('settings checkpoint',error);nativeStorage.checkpointStatus='unavailable';}
  }
  async function automaticallyRecover(record){
   if(!canSegment()||typeof store.delete!=='function')return false;
@@ -148,7 +167,11 @@
     await store.set(record,verified.header);
     const restored=await store.get(record,null);if(JSON.stringify(restored)!==JSON.stringify(verified.header))throw Error('Restored header was not acknowledged.');
     nativeStorage.partsCache?.delete(record);if(JSON.stringify(await readParts(record,restored))!==JSON.stringify(value))throw Error('Restored settings did not match the checkpoint.');
-   }catch{nativeStorage.partsCache?.delete(record);throw Error('SLINK could not finish automatic storage repair. The verified checkpoint is retained; keep this page open and retry saving or reload once. [SLINK_STORAGE_AUTORECOVERY_FAILED]');}
+   }catch(error){
+    nativeStorage.partsCache?.delete(record);
+    const quota=quotaFailure('automatic settings recovery',error);
+    throw new Error('SLINK could not finish automatic storage repair. The verified checkpoint is retained; keep this page open and retry saving or reload once. [SLINK_STORAGE_AUTORECOVERY_FAILED]'+(quota?' '+quota.message:''),{cause:quota||error});
+   }
    const report={status:'recovered',restoredAt:Date.now(),generation:Number(verified.header.generation)||0,usedPrevious:!currentHeader||verified!==checkpoints[0]||Number(currentHeader?.generation)>Number(verified.header.generation)};
    nativeStorage.automaticRecovery=report;nativeStorage.segmentFailure=null;
    if(typeof m==='string')try{globalThis.document?.dispatchEvent(new CustomEvent(m+':repaired',{detail:JSON.stringify(report)}));}catch{}
@@ -175,7 +198,7 @@
   const snapshot=JSON.parse(JSON.stringify(value));
   await writeParts(record,snapshot);
   const selection={schema:1,record};
-  await store.set(selector,selection);
+  await withNativeQuota('settings recovery selection',()=>store.set(selector,selection));
   if(JSON.stringify(await store.get(selector,null))!==JSON.stringify(selection))throw Error('PDA did not confirm the recovery selection. Keep this page open and copy a storage report; do not clear saved data.');
   nativeStorage.selection=Promise.resolve(record);
   return {recovered:true,originalPreserved};
@@ -313,8 +336,8 @@
     // Retry only this structural bridge error with explicit single-key writes.
     // Quota/network errors do not trigger retries or another storage backend.
     try{for(const k of keys)await store.set(k,values[k]);}
-    catch(retry){throw failed('single-key write',retry);}
-   }else throw failed('write',error);
+    catch(retry){throw quotaFailure('single-key write',retry)||failed('single-key write',retry);}
+   }else throw quotaFailure('native write',error)||failed('write',error);
   }
   // The optional downloaded-code cache is disposable and can be large. Verify
   // user records, not an extra full cache read on every page startup.
@@ -329,15 +352,15 @@
    runtimeCache:{
     get:k=>store.get(k,null),
     getMany:typeof store.getMany==='function'?keys=>store.getMany(keys):null,
-    set:(k,value)=>store.set(k,value),
-    setMany:typeof store.setMany==='function'?values=>store.setMany(values):null,
+    set:(k,value)=>withNativeQuota('runtime cache metadata write',()=>store.set(k,value)),
+    setMany:typeof store.setMany==='function'?values=>withNativeQuota('runtime cache segment write',()=>store.setMany(values)):null,
     list:typeof store.list==='function'?()=>store.list():null,
     delete:typeof store.delete==='function'?k=>store.delete(k):null,
     lock:globalThis.navigator?.locks?.request?lock:null
    },
   async diagnose(){
    const active=await selectedRecord().catch(()=>n);
-   const report={nativeAvailable:true,manualRecoveryVersion:3,manualResetVersion:2,automaticRecoveryVersion:1,automaticRecovery:nativeStorage.automaticRecovery||null,checkpointStatus:nativeStorage.checkpointStatus||'not-created',coordinationAvailable:canSegment(),selectedRecord:active===n?'original':'recovered',reads:{}};
+   const report={nativeAvailable:true,manualRecoveryVersion:3,manualResetVersion:2,automaticRecoveryVersion:1,automaticRecovery:nativeStorage.automaticRecovery||null,checkpointStatus:nativeStorage.checkpointStatus||'not-created',lastQuotaFailure:nativeStorage.lastQuotaFailure||null,coordinationAvailable:canSegment(),selectedRecord:active===n?'original':'recovered',reads:{}};
    const type=value=>value===null?'null':Array.isArray(value)?'array':typeof value;
    for(const [name,run,summarize]of [
     ['settingsBatch',async()=>({[n]:(await store.getMany([active]))?.[active]}),value=>({resultType:type(value),recordPresent:value?.[n]!=null,segmented:segmented(value?.[n]),...(segmented(value?.[n])?{segmentCount:value[n].count,serializedCharacters:value[n].length}:{})})],
@@ -731,7 +754,8 @@ function runStorageJob(run){
   },error=>{
    clearTimeout(timer);nativeOutstanding=false;
    const readContext=String(error?.message||error).match(/\[SLINK_NATIVE_(?:READ|RECOVERY):[^\]]*\]/g);
-   if(readContext)storageReadFailure=readContext.join(' ');
+   if(error?.nativeQuota)storageReadFailure=error.message;
+   else if(readContext)storageReadFailure=readContext.join(' ');
    if(expired||/type ['"]Null['"] is not a subtype of type ['"]String['"]|QuotaExceeded|quota exceeded|Row too big|SLINK_STORAGE_ROW_TOO_LARGE|SLINK_STORAGE_AUTORECOVERY_FAILED/i.test(String(error?.message||error)))storagePaused=true;
    reject(error);
   });
