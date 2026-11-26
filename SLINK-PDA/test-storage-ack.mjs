@@ -103,3 +103,103 @@ console.log('PDA native acknowledgement, legacy migration, quota/retry, browser-
  assert.equal(native.get('data').apiKey,saved.apiKey,'The native key must remain unchanged');
  store.get=originalGet;store.set=originalSet;
  console.log('Native batch bridge retains Halloween theme and Chat FF preferences through the exact nullable single-key error and browser-cache loss.');
+
+// Exercise the actual storage bridge and bootstrap around the optional IDB
+// transaction. Requests can succeed and still be rolled back before commit.
+let idbValue,mode='complete',dataWrites=0;
+const batchWrite=store.setMany;
+store.setMany=async values=>{
+ if(Object.hasOwn(values,'data'))dataWrites++;
+ return batchWrite(values);
+};
+ctx.f='test-runtime';
+ctx.globalThis.indexedDB={
+ open(){
+  const request={};
+  setImmediate(()=>{
+   if(mode==='blocked'){request.onblocked();return;}
+   request.result={
+    close(){},
+    transaction(){
+     let active=true,pending;
+     const tx={
+      abort(){if(active){active=false;tx.onabort();}},
+      objectStore(){return {
+       get(){
+        const read={};
+        if(mode!=='timeout')setImmediate(()=>{
+         if(!active)return;
+         read.result=clone(idbValue);read.onsuccess();
+         if(!active)return;
+         if(mode==='abort'){tx.abort();return;}
+         if(pending)idbValue=clone(pending);
+         active=false;tx.oncomplete();
+        });
+        return read;
+       },
+       put(value){pending=value;}
+      };}
+     };
+     return tx;
+    }
+   };
+   request.onsuccess();
+  });
+  return request;
+ }
+};
+const when=Date.now()-10000;
+const catalog=(at,name)=>({at,data:{stocks:[{id:1,name,acronym:'TST',bonus:{passive:false},extra:'not-public-output'}]}});
+const originalData=clone(native.get('data'));
+originalData.caches.alertNotificationIds=['durable-alert'];
+originalData.caches.abroadStocks={watches:['durable-watch'],snoozes:{one:100}};
+originalData.caches.plugins={arson:{pending:['unsent']}};
+const saveCatalog=(stockCatalog,stamp)=>runtime.storageWrite('data',{...originalData,_savedAt:stamp,caches:{...originalData.caches,stockCatalog}});
+const first=catalog(when,'First');
+mode='abort';await saveCatalog(first,Date.now()+1);
+assert.deepEqual(native.get('data').caches.stockCatalog,first,'An aborted IDB transaction must retain the native cache');
+assert.equal(idbValue,undefined);
+mode='complete';await saveCatalog(first,Date.now()+2);
+assert(!Object.hasOwn(native.get('data').caches,'stockCatalog'),'The committed migration removes only the catalog from native storage');
+assert.equal(idbValue.data.stocks[0].extra,undefined);
+assert.equal((await ctx.collectBootstrap()).data.caches.stockCatalog.data.stocks[0].name,'First');
+for(const key of ['targetList','alertNotificationIds','abroadStocks','plugins'])assert.deepEqual(native.get('data').caches[key],originalData.caches[key]);
+assert.equal(native.get('data').apiKey,originalData.apiKey);
+assert.deepEqual(native.get('data').sessions,originalData.sessions);
+const priorWrites=dataWrites;
+const secondDocument=new EventTarget();
+const secondView=vm.createContext({setTimeout,clearTimeout,n:'data',s:'mirror',i:'stats',l:'ui',c:'snoozes',u:'targets',f:'test-runtime',m:'second-view',
+ d:new Set(['data','stats','ui','snoozes','targets']),CustomEvent,document:secondDocument,globalThis:{...ctx.globalThis}});
+vm.runInContext(loader.slice(loader.indexOf('function isRecord(value)'),loader.indexOf('function validBundle(value)')),secondView);
+vm.runInContext(loader.slice(loaderBridgeStart,loaderBridgeEnd),secondView);
+function saveFromSecondView(stockCatalog){
+ return new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>reject(Error('Missing second WebView acknowledgement')),2000);
+  secondDocument.addEventListener('second-view:ack',event=>{
+   const ack=JSON.parse(event.detail);
+   if(ack.id!=='stale-catalog'||ack.phase)return;
+   clearTimeout(timer);
+   if(ack.ok)resolve();else reject(Error(ack.error));
+  });
+  secondDocument.dispatchEvent(new CustomEvent('second-view',{detail:JSON.stringify({protocol:2,id:'stale-catalog',key:'data',
+   value:{...originalData,_savedAt:Date.now()+4,caches:{...originalData.caches,stockCatalog}}
+  })}));
+ });
+}
+await saveCatalog(catalog(when+20,'Newer'),Date.now()+3);
+await saveFromSecondView(catalog(when+10,'Stale view'));
+assert.equal(idbValue.data.stocks[0].name,'Newer','A stale page save cannot overwrite a newer catalog');
+assert.equal(dataWrites,priorWrites,'A cache-only update should not rewrite the native main record');
+mode='blocked';const blocked=catalog(when+30,'Blocked');await saveCatalog(blocked,Date.now()+5);
+assert.deepEqual(native.get('data').caches.stockCatalog,blocked,'A previous successful transaction does not authorize stripping a failed write');
+assert.equal((await ctx.collectBootstrap()).data.caches.stockCatalog.data.stocks[0].name,'Blocked');
+mode='timeout';const delayed=catalog(when+40,'Timed out');await saveCatalog(delayed,Date.now()+6);
+assert.deepEqual(native.get('data').caches.stockCatalog,delayed,'Timed-out IDB operations must fall back to native acknowledgement');
+mode='complete';await saveCatalog(delayed,Date.now()+7);
+idbValue={...delayed,data:{stocks:[{id:1,name:'malformed'}]}};
+assert(!Object.hasOwn((await ctx.collectBootstrap()).data.caches,'stockCatalog'),'Malformed browser records are ignored');
+idbValue=undefined;
+const afterEviction=await ctx.collectBootstrap();
+assert(!Object.hasOwn(afterEviction.data.caches,'stockCatalog'),'An evicted public catalog is rebuilt on refresh');
+assert.deepEqual(clone(afterEviction.data.caches.plugins),originalData.caches.plugins);
+console.log('Public stock cache: committed migration, native fallback, stale views, eviction and durable-data retention passed.');

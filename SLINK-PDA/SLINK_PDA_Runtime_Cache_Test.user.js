@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLINK PDA Runtime Cache Test
 // @namespace    Considious SLINK PDA runtime-cache test
-// @version      0.4.282
+// @version      0.4.283
 // @description  Mobile-first SLINK dashboard for Torn PDA with Combat, Efficiency, Quality of Life, and shared permissions.
 // @author       Considious [3853023]
 // @updateURL    https://raw.githubusercontent.com/Considious/Torn-Scripts/review/pda-verified-runtime-cache/SLINK-PDA/SLINK_PDA_Runtime_Cache_Test.user.js
@@ -63,7 +63,7 @@
  }
  return native?native.transaction(read):read(null);
 }
-async function collectBootstrap(){const[data,e]=await Promise.all([readPersistedData(),gmRead(i,null)]),t=u;let r;try{if(r=await targetJournal(),readPersistedData.failed&&!r.ops.some(e=>'migration'===e.kind))throw Error('Legacy target storage could not be read.')}catch{r={ops:[],error:'Target storage is unavailable. Reload to retry; saved targets have not been changed.'}}let o=null;try{o=JSON.parse(globalThis.localStorage?.getItem(i)||'null')}catch{}const a=[e,o,data?.caches?.ownBattleStats].filter(value=>isRecord(value)&&Number(value.total)>0).sort((e,t)=>Number(t.checkedAt||0)-Number(e.checkedAt||0))[0]||null;return{[n]:data,[i]:a,[t]:r,storageAutoRecovery:nativeStorage.automaticRecovery||null,storageWriteEvent:m,[l]:await gmRead(l,{}),[c]:await gmRead(c,{})}}function nativeStorage(){
+async function collectBootstrap(){const[nativeData,e,catalog]=await Promise.all([readPersistedData(),gmRead(i,null),nativeStorage()?stockCatalogTransaction():null]),data=catalog?hydrateStockCatalog(nativeData,catalog):nativeData,t=u;let r;try{if(r=await targetJournal(),readPersistedData.failed&&!r.ops.some(e=>'migration'===e.kind))throw Error('Legacy target storage could not be read.')}catch{r={ops:[],error:'Target storage is unavailable. Reload to retry; saved targets have not been changed.'}}let o=null;try{o=JSON.parse(globalThis.localStorage?.getItem(i)||'null')}catch{}const a=[e,o,data?.caches?.ownBattleStats].filter(value=>isRecord(value)&&Number(value.total)>0).sort((e,t)=>Number(t.checkedAt||0)-Number(e.checkedAt||0))[0]||null;return{[n]:data,[i]:a,[t]:r,storageAutoRecovery:nativeStorage.automaticRecovery||null,storageWriteEvent:m,[l]:await gmRead(l,{}),[c]:await gmRead(c,{})}}function nativeStorage(){
  const store=typeof PDA_storage==='object'?PDA_storage:globalThis.PDA_storage;
  if(!store||typeof store.get!=='function'||typeof store.set!=='function')return null;
  const key=value=>{if(typeof value!=='string'||!value)throw Error('SLINK storage requires a non-empty key.');return value};
@@ -523,6 +523,82 @@ function mergeChanges(e,current,t){if(JSON.stringify(e)===JSON.stringify(current
  }
  return store.transaction?store.transaction(migrate):migrate(store);
 }
+// Store public stock definitions separately. The Alerts snapshot also
+// contains personal data and stays on the existing native path.
+function publicStockCatalog(value){
+ if(!Number.isSafeInteger(value?.at)||value.at<=0||value.at>Date.now()+300000)return null;
+ const stocks=Array.isArray(value.data)?value.data:value.data?.stocks;
+ if(!Array.isArray(stocks)||stocks.length>512)return null;
+ const rows=[];
+ for(const stock of stocks){
+  const id=Number(stock?.id);
+  if(!Number.isSafeInteger(id)||id<=0||typeof stock.name!=='string'||stock.name.length>160||
+     typeof stock.acronym!=='string'||stock.acronym.length>24||typeof stock.bonus?.passive!=='boolean')return null;
+  rows.push({id,name:stock.name,acronym:stock.acronym,bonus:{passive:stock.bonus.passive}});
+ }
+ return {at:value.at,data:{stocks:rows}};
+}
+function hydrateStockCatalog(data,cached){
+ const native=data.caches?.stockCatalog;
+ if(Object.hasOwn(data.caches||{},'stockCatalog')&&(!publicStockCatalog(native)||native.at>=cached.at))return data;
+ return {...data,caches:{...data.caches,stockCatalog:cached}};
+}
+function stockCatalogTransaction(candidate=null){
+ return new Promise(resolve=>{
+  let db,tx,settled=false;
+  const finish=value=>{
+   if(settled)return;
+   settled=true;clearTimeout(timer);db?.close();resolve(value);
+  };
+  function abort(){
+   try{tx?.abort();}catch{}
+   finish(null);
+  }
+  const timer=setTimeout(abort,650);
+  try{
+   const indexedDB=globalThis.indexedDB;
+   if(!indexedDB){finish(null);return;}
+   const open=indexedDB.open(f+':public-data:v1',1);
+   open.onblocked=open.onerror=()=>finish(null);
+   open.onupgradeneeded=()=>{
+    if(settled){try{open.transaction.abort();}catch{}return;}
+    open.result.createObjectStore('catalogs');
+   };
+   open.onsuccess=()=>{
+    db=open.result;
+    if(settled){db.close();return;}
+    try{
+     tx=db.transaction('catalogs',candidate?'readwrite':'readonly');
+     let saved=null;
+     tx.oncomplete=()=>finish(saved);
+     tx.onerror=tx.onabort=()=>finish(null);
+     const store=tx.objectStore('catalogs'),read=store.get('stockCatalog');
+     read.onsuccess=()=>{
+      if(settled)return;
+      try{
+       saved=publicStockCatalog(read.result);
+       if(candidate&&(!saved||candidate.at>saved.at)){
+        store.put(candidate,'stockCatalog');
+        saved=candidate;
+       }
+      }catch{abort();}
+     };
+    }catch{abort();}
+   };
+  }catch{finish(null);}
+ });
+}
+async function persistStockCatalog(value,current,submitted){
+ const selected=publicStockCatalog(value.caches?.stockCatalog);
+ const pending=publicStockCatalog(submitted.caches?.stockCatalog);
+ const previous=publicStockCatalog(current?.caches?.stockCatalog);
+ const latest=[selected,pending,previous].reduce((best,row)=>row&&(!best||row.at>best.at)?row:best,null);
+ if(!latest||!await stockCatalogTransaction(latest))return null;
+ if(!selected)return value;
+ const caches={...value.caches};
+ delete caches.stockCatalog;
+ return {...value,caches};
+}
 async function gmWrite(key,value,store=nativeStorage()){
  if(store){await store.set(key,value);return;}
  if(typeof globalThis.GM_setValue!=='function')throw Error('Browser storage unavailable.');
@@ -942,6 +1018,15 @@ const acknowledge=(payload,e,t='',value,phase)=>{try{document.dispatchEvent(new 
   }else if(savedAt(current)>savedAt(value))return;
   if(payload.base?.protected&&current)for(const key of Object.keys(payload.base.protected)){
    value[key]=mergeChanges(payload.base.protected[key],payload.value[key],Object.hasOwn(current,key)?current[key]:value[key]);
+  }
+  if(store&&payload.key===n){
+   const migrated=await persistStockCatalog(value,current,payload.value);
+   if(migrated){
+    value=migrated;
+    // A cache-only save can finish after IndexedDB commits. Comparing the
+    // full durable payload still sends migration and ordinary edits to PDA.
+    if(isRecord(current)&&JSON.stringify({...current,_savedAt:0})===JSON.stringify({...value,_savedAt:0}))return;
+   }
   }
   await gmWrite(payload.key,value,store);
  }
