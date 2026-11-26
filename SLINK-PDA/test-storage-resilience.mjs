@@ -21,7 +21,7 @@ assert(loader.includes('slink-pda-dashboard:runtime-cache:v1'), 'The startup loa
 assert(!loader.includes('SLINK_PDA_Runtime.js?v='), 'The startup loader must not depend on a generated runtime bundle.');
 assert(loader.includes('primaryFailed')&&loader.includes('await gmWrite(n,selected)'), 'Mirror repair must not overwrite primary storage after a failed primary read, and must repair the primary when safe.');
 assert(core.includes('function portableBackupPayload()'), 'PDA must generate a restricted portable backup.');
-const backupFunction=core.slice(core.indexOf('function portableBackupPayload()'),core.indexOf('async function restorePortableBackup'));
+const backupFunction=core.slice(core.indexOf('function cloudBackupSecretField('),core.indexOf('async function restorePortableBackup'));
 const backupContext=vm.createContext({dataState:{apiKey:'torn-secret',sessions:{token:'secret'},settings:{ordinary:42,plugins:{chat:{giphy:{enabled:true,apiKey:'giphy-secret'}}}},caches:{targetList:{one:{note:'keep'}}}},state:{page:'qualityOfLife',qualityOfLifeTab:'chat'}});
 vm.runInContext(backupFunction+';globalThis.backup=portableBackupPayload();',backupContext);
 assert.equal(backupContext.backup.settings.ordinary,42,'The backup must retain ordinary settings.');
@@ -30,8 +30,9 @@ assert.equal(backupContext.backup.settings.plugins.chat.giphy.apiKey,undefined,'
 assert.equal(backupContext.dataState.settings.plugins.chat.giphy.apiKey,'giphy-secret','Redaction must not erase the local key.');
 assert.equal(backupContext.backup.apiKey,undefined);
 assert.equal(backupContext.backup.sessions,undefined);
-assert(core.includes("targetList:JSON.parse(JSON.stringify(dataState.caches?.targetList || {}))"), 'The backup must include saved targets.');
-assert(core.includes('uiState:{'), 'The backup must include dashboard layout and tab preferences.');
+assert.equal(backupContext.backup.targetList.one.note,'keep','The backup must include saved targets.');
+assert.equal(backupContext.backup.uiState.page,'qualityOfLife','The backup must include dashboard layout.');
+assert.equal(backupContext.backup.uiState.qualityOfLifeTab,'chat','The backup must include tab preferences.');
 assert(!/function portableBackupPayload\(\)[\s\S]*?\n}\n/.exec(core)?.[0].includes('sessions'), 'Portable backups must not include login sessions.');
 assert(dashboard.includes('API keys and login sessions are never included'), 'The Access UI must clearly explain backup exclusions.');
 assert(shell.includes("data-action=\"restore-data-backup\"") || shell.includes("action === 'restore-data-backup'"), 'The Access UI restore action must be wired.');

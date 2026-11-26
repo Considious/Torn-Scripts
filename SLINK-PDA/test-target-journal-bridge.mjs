@@ -9,7 +9,7 @@ const store={get:async(key,fallback)=>clone(native.get(key)??fallback),list:asyn
 const localStorage={get length(){return browser.size;},key:index=>[...browser.keys()][index]??null,getItem:key=>browser.get(key)??null,setItem:(key,value)=>{if(quota)throw Error('QuotaExceeded');browser.set(key,value);}};
 let id=0;
 function page(useNative=true){
- const ctx=vm.createContext({u:'targets',globalThis:{PDA_storage:useNative?store:null,localStorage},isRecord:value=>!!value&&typeof value==='object'&&!Array.isArray(value)});
+ const ctx=vm.createContext({u:'targets',n:'settings',i:'stats',l:'layout',c:'snoozes',f:'runtime',globalThis:{PDA_storage:useNative?store:null,localStorage},isRecord:value=>!!value&&typeof value==='object'&&!Array.isArray(value)});
  vm.runInContext(loader.slice(loader.indexOf('function nativeStorage()'),loader.indexOf('function mergeChanges(')),ctx);
  const factory=vm.createContext({});vm.runInContext(factorySource,factory);
  return {read:ctx.targetJournal,create:(snapshot,legacy={})=>factory.SLINK_PDA_TARGET_RECORDS.create({snapshot,legacy,write:ctx.targetJournal,id:()=>`bridge:${++id}`})};
@@ -33,4 +33,39 @@ const browserPage=page(false),fallback=browserPage.create(await browserPage.read
 quota=true;await assert.rejects(fallback.change('patch',9,fallback.snapshot()['9'],{name:'Unsaved'}),/Quota/);quota=false;await fallback.retry();
 const list=store.list,getMany=store.getMany;delete store.list;delete store.getMany;
 await assert.rejects(a.read(),/enumeration unavailable/);store.loadAll=async()=>Object.fromEntries(native);assert.ok((await a.read()).ops.length);delete store.loadAll;store.list=list;store.getMany=getMany;
+native.clear();
+const rows=Array.from({length:69},(_,i)=>({schema:1,id:'bounded:'+i,kind:'add',value:{name:'Target '+i}}));
+for(const row of rows)native.set('targets:op:'+row.id,row);
+const reads=[];
+store.getMany=async keys=>{
+ reads.push(keys.length);
+ assert(keys.length<=32,'Each native journal request must be bounded');
+ return getMany(keys);
+};
+const bounded=await a.read();
+assert.deepEqual(JSON.parse(JSON.stringify(bounded.ops)),rows);
+assert.deepEqual(reads,[32,32,5]);
+const last=rows.at(-1),lastKey='targets:op:'+last.id;
+native.set(lastKey,{...last,schema:99});
+await assert.rejects(a.read(),/damaged/);
+native.set(lastKey,last);
+const unread='targets:op:bounded:33';
+store.getMany=async keys=>{
+ const values=await getMany(keys);
+ if(keys.includes(unread))delete values[unread];
+ return values;
+};
+await assert.rejects(a.read({ops:[{schema:1,id:'unsaved',kind:'add'}]}),/incomplete/);
+assert(!native.has('targets:op:unsaved'));
+let broadReads=0;
+store.loadAll=async()=>{broadReads++;return Object.fromEntries(native);};
+store.getMany=async keys=>{
+ if(keys.includes(unread))throw Error("type 'Null' is not a subtype of type 'String' in type cast");
+ return getMany(keys);
+};
+await assert.rejects(a.read(),/not a subtype/);
+assert.equal(broadReads,0,'A failed targeted batch must never load the entire native store');
+delete store.getMany;
+assert.equal((await a.read()).ops.length,rows.length,'Older bridges can read listed rows individually');
+assert.equal(broadReads,0);
 console.log('Actual PDA loader target bridge: independent WebViews, native/browser backends, read-only refresh, quota, partial acknowledgement, malformed records and cache-clear recovery passed.');

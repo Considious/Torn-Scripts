@@ -56,7 +56,52 @@ async function boot(){
  await vm.runInContext(loader,context);assert.ok(bootstrap,'Launcher must supply its real bootstrap');return {context,bootstrap,document};
 }
 const launched=await boot();assert.deepEqual(launched.bootstrap[nativeKey],data);assert.equal(launched.bootstrap.storageAutoRecovery.status,'recovered');
-const channel=launched.context.__SLINK_PDA_STORAGE_BRIDGE__.channel,updated={...data,_savedAt:Date.now(),settings:{...data.settings,theme:'updated-after-repair'}};
-await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Save acknowledgement missing')),2000);launched.document.addEventListener(channel+':ack',event=>{const ack=JSON.parse(event.detail);if(ack.id!=='integration-save'||ack.phase)return;clearTimeout(timer);ack.ok?resolve():reject(Error(ack.error));});launched.document.dispatchEvent(new CustomEvent(channel,{detail:JSON.stringify({protocol:2,id:'integration-save',key:nativeKey,value:updated,base:{settings:data.settings,targetList:{}}})}));});
+function sendSave(view,id,key,value,base,onWorking){
+ const channel=view.context.__SLINK_PDA_STORAGE_BRIDGE__.channel;
+ return new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>reject(Error('Save acknowledgement missing for '+id)),2000);
+  const name=channel+':ack';
+  function receive(event){
+   const ack=JSON.parse(event.detail);
+   if(ack.id!==id)return;
+   if(ack.phase==='working')onWorking?.();
+   if(ack.phase)return;
+   clearTimeout(timer);view.document.removeEventListener(name,receive);
+   if(ack.ok)resolve();else reject(Error(ack.error));
+  }
+  view.document.addEventListener(name,receive);
+  view.document.dispatchEvent(new CustomEvent(channel,{detail:JSON.stringify({protocol:2,id,key,value,base})}));
+ });
+}
+const updated={...data,_savedAt:Date.now(),settings:{...data.settings,theme:'updated-after-repair'}};
+await sendSave(launched,'integration-save',nativeKey,updated,{settings:data.settings,targetList:{}});
 const reload=await boot();assert.equal(reload.bootstrap[nativeKey].settings.theme,'updated-after-repair');assert.equal(reload.bootstrap[nativeKey].apiKey,data.apiKey);assert.deepEqual(reload.bootstrap[nativeKey].accepted,data.accepted);
+
+const uiKey='slink-pda-dashboard:ui:v1',runtime=live.fresh().runtimeCache;
+let enterRuntime,releaseRuntime,startUi;
+const entered=new Promise(resolve=>{enterRuntime=resolve;}),held=new Promise(resolve=>{releaseRuntime=resolve;});
+const inProgress=runtime.lock(async()=>{
+ enterRuntime();await held;await runtime.set('fixture-runtime-metadata',{verified:true});
+});
+await entered;
+const uiWorking=new Promise(resolve=>{startUi=resolve;});
+const uiWrite=sendSave(reload,'waiting-ui',uiKey,{minimized:true},null,startUi);
+try{
+ await uiWorking;
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(live.records.has(uiKey),false,'Another page must wait for a native runtime write to release the storage lock');
+}finally{
+ releaseRuntime();
+ await Promise.all([inProgress,uiWrite]);
+}
+assert.deepEqual(live.records.get(uiKey),{minimized:true});
+
+const mergeBase={settings:updated.settings,targetList:{}};
+await Promise.all([
+ sendSave(launched,'settings-left',nativeKey,{...updated,settings:{...updated.settings,theme:'from-left'}},mergeBase),
+ sendSave(reload,'settings-right',nativeKey,{...updated,settings:{...updated.settings,market:{watches:[]}}},mergeBase)
+]);
+const merged=await live.fresh().get(nativeKey,null);
+assert.equal(merged.settings.theme,'from-left');
+assert.deepEqual(copy(merged.settings.market),{watches:[]});
 console.log('Automatic native recovery: verified checkpoints, row/cast failures, prior-bank rollback, full launcher/bootstrap/save acknowledgement/reload, interrupted repair, concurrency, bounded metadata, no-op saves, quota/timeouts, invalid/missing backups and unrelated-record preservation passed.');
