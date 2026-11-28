@@ -538,7 +538,8 @@ return terms;
 fetchAllTerms.pending=task;
 try{return await task;}finally{if(fetchAllTerms.pending===task)fetchAllTerms.pending=null;}
 }
-const SLINK_TERMS_DOCUMENT_URL = 'https://github.com/Considious/SLINK-Cloudflare-Services/blob/main/terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md';
+const SLINK_TERMS_DOCUMENT_URL = 'https://sharedliveintelligencenetwork.app/terms/slink-api-data-terms.txt';
+const SLINK_LEGACY_TERMS_DOCUMENT_URL = 'https://github.com/Considious/SLINK-Cloudflare-Services/blob/main/terms/2026-08-23/SLINK_API_Data_Terms_of_Service.md';
 function termsAccepted(name) {
 const terms = dataState.terms?.[name];
 const accepted = dataState.accepted?.permission || dataState.accepted?.[name];
@@ -553,7 +554,7 @@ const { permission, leveling, war } = dataState.terms || {};
 if (!permission?.version || !permission.sha256) throw new Error('Load the current SLINK terms before accepting them.');
 if ([leveling, war].some(terms => terms?.version !== permission.version || terms.sha256 !== permission.sha256)
 || leveling.disclosureVersion !== permission.version || leveling.disclosureSha256 !== permission.sha256
-|| [permission, leveling, war].some(terms => terms.url !== SLINK_TERMS_DOCUMENT_URL)) {
+|| [permission, leveling, war].some(terms => terms.url !== SLINK_TERMS_DOCUMENT_URL && terms.url !== SLINK_LEGACY_TERMS_DOCUMENT_URL)) {
 throw new Error('SLINK services did not return matching Terms. Reload the current Terms in Access and try again.');
 }
 dataState.accepted.permission = { version:permission.version, sha256:permission.sha256, acceptedAt:Date.now() };
